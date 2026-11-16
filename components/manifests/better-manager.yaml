@@ -2,7 +2,7 @@ schema_version: 2
 id: better-manager
 display_name: Better Manager
 component_type: diagnostic
-version: 0.2.15
+version: 0.2.16
 summary: Installs, updates, verifies, and rolls back every Better OS component.
 icon: manager
 # Better Manager is a component in its own catalog, so updating it replaces the
@@ -15,67 +15,68 @@ targets:
   distributions: [zorin, ubuntu]
   releases: [22.04, 24.04]
   architectures: [amd64, arm64]
-# The checksums below belong to the published v0.2.15 release assets. Each one
-# was re-hashed from the package downloaded back from the public release rather
-# than copied from its sidecar, which is what ADR 0002 requires a manifest to
-# record.
+# Placeholder checksums until v0.2.16 is published. ADR 0002 records the
+# checksum of a *published* release asset; the v0.2.15 values these variants
+# carried describe 0.2.15's packages, not 0.2.16's. The real values are written
+# back once the release is public and every asset has been re-downloaded and
+# verified.
 artifacts:
   - release: "22.04"
     architecture: amd64
-    url: https://github.com/TimLai666/better-os/releases/download/v0.2.15/better-manager_0.2.15_ubuntu-22.04_amd64.deb
-    sha256: 471843a22d8826cce357463d4cbfb35744b349ec687485cf6601a3be3831362b
-    release_asset: better-manager_0.2.15_ubuntu-22.04_amd64.deb
+    url: https://github.com/TimLai666/better-os/releases/download/v0.2.16/better-manager_0.2.16_ubuntu-22.04_amd64.deb
+    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    release_asset: better-manager_0.2.16_ubuntu-22.04_amd64.deb
     companions:
       - package: better-shell-adapter
-        url: https://github.com/TimLai666/better-os/releases/download/v0.2.15/better-shell-adapter_0.2.15_ubuntu-22.04_amd64.deb
-        sha256: c9f37b072e9e62cbcb716d69ecdc1fb6423ab2e48fe7a7171c3e79dda824b22a
-        release_asset: better-shell-adapter_0.2.15_ubuntu-22.04_amd64.deb
+        url: https://github.com/TimLai666/better-os/releases/download/v0.2.16/better-shell-adapter_0.2.16_ubuntu-22.04_amd64.deb
+        sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+        release_asset: better-shell-adapter_0.2.16_ubuntu-22.04_amd64.deb
       - package: better-manager-daemon
-        url: https://github.com/TimLai666/better-os/releases/download/v0.2.15/better-manager-daemon_0.2.15_ubuntu-22.04_amd64.deb
-        sha256: eaf4da3a34b793902fdc579a23a3e6176423ad6e421a747a2f774f75c65959d5
-        release_asset: better-manager-daemon_0.2.15_ubuntu-22.04_amd64.deb
+        url: https://github.com/TimLai666/better-os/releases/download/v0.2.16/better-manager-daemon_0.2.16_ubuntu-22.04_amd64.deb
+        sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+        release_asset: better-manager-daemon_0.2.16_ubuntu-22.04_amd64.deb
   - release: "22.04"
     architecture: arm64
-    url: https://github.com/TimLai666/better-os/releases/download/v0.2.15/better-manager_0.2.15_ubuntu-22.04_arm64.deb
-    sha256: 17cd31a3bd1c0c62e10cfd78c940aa07b3ac707b67ea9ca1ed7f67ddc907b071
-    release_asset: better-manager_0.2.15_ubuntu-22.04_arm64.deb
+    url: https://github.com/TimLai666/better-os/releases/download/v0.2.16/better-manager_0.2.16_ubuntu-22.04_arm64.deb
+    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    release_asset: better-manager_0.2.16_ubuntu-22.04_arm64.deb
     companions:
       - package: better-shell-adapter
-        url: https://github.com/TimLai666/better-os/releases/download/v0.2.15/better-shell-adapter_0.2.15_ubuntu-22.04_arm64.deb
-        sha256: a4a42aacd8e1cb4bf57eff0cddbdbeb77f11a35e39091f8a86157f1abbedf5c8
-        release_asset: better-shell-adapter_0.2.15_ubuntu-22.04_arm64.deb
+        url: https://github.com/TimLai666/better-os/releases/download/v0.2.16/better-shell-adapter_0.2.16_ubuntu-22.04_arm64.deb
+        sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+        release_asset: better-shell-adapter_0.2.16_ubuntu-22.04_arm64.deb
       - package: better-manager-daemon
-        url: https://github.com/TimLai666/better-os/releases/download/v0.2.15/better-manager-daemon_0.2.15_ubuntu-22.04_arm64.deb
-        sha256: 115085ba026989550b6118411d68ab71132cf985f68ed5575345e9a662495521
-        release_asset: better-manager-daemon_0.2.15_ubuntu-22.04_arm64.deb
+        url: https://github.com/TimLai666/better-os/releases/download/v0.2.16/better-manager-daemon_0.2.16_ubuntu-22.04_arm64.deb
+        sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+        release_asset: better-manager-daemon_0.2.16_ubuntu-22.04_arm64.deb
   - release: "24.04"
     architecture: amd64
-    url: https://github.com/TimLai666/better-os/releases/download/v0.2.15/better-manager_0.2.15_ubuntu-24.04_amd64.deb
-    sha256: e3944bc19e36872cf09d1e811079b36c65d69bbf1e21f1fced5e6e652c422707
-    release_asset: better-manager_0.2.15_ubuntu-24.04_amd64.deb
+    url: https://github.com/TimLai666/better-os/releases/download/v0.2.16/better-manager_0.2.16_ubuntu-24.04_amd64.deb
+    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    release_asset: better-manager_0.2.16_ubuntu-24.04_amd64.deb
     companions:
       - package: better-shell-adapter
-        url: https://github.com/TimLai666/better-os/releases/download/v0.2.15/better-shell-adapter_0.2.15_ubuntu-24.04_amd64.deb
-        sha256: 0ad7827bde81049002037afdb5385bbe5af66b1851a05605efbc63bd4b4ee13f
-        release_asset: better-shell-adapter_0.2.15_ubuntu-24.04_amd64.deb
+        url: https://github.com/TimLai666/better-os/releases/download/v0.2.16/better-shell-adapter_0.2.16_ubuntu-24.04_amd64.deb
+        sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+        release_asset: better-shell-adapter_0.2.16_ubuntu-24.04_amd64.deb
       - package: better-manager-daemon
-        url: https://github.com/TimLai666/better-os/releases/download/v0.2.15/better-manager-daemon_0.2.15_ubuntu-24.04_amd64.deb
-        sha256: a180e7ee7ab9900af47908723c72163ffb2f5da2f8e889f9ff9a5cba4813dfd3
-        release_asset: better-manager-daemon_0.2.15_ubuntu-24.04_amd64.deb
+        url: https://github.com/TimLai666/better-os/releases/download/v0.2.16/better-manager-daemon_0.2.16_ubuntu-24.04_amd64.deb
+        sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+        release_asset: better-manager-daemon_0.2.16_ubuntu-24.04_amd64.deb
   - release: "24.04"
     architecture: arm64
-    url: https://github.com/TimLai666/better-os/releases/download/v0.2.15/better-manager_0.2.15_ubuntu-24.04_arm64.deb
-    sha256: 20fc8470fb8dc1479d04133b742bed30dde6b99c3fda8829aa35384e32b7deaf
-    release_asset: better-manager_0.2.15_ubuntu-24.04_arm64.deb
+    url: https://github.com/TimLai666/better-os/releases/download/v0.2.16/better-manager_0.2.16_ubuntu-24.04_arm64.deb
+    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    release_asset: better-manager_0.2.16_ubuntu-24.04_arm64.deb
     companions:
       - package: better-shell-adapter
-        url: https://github.com/TimLai666/better-os/releases/download/v0.2.15/better-shell-adapter_0.2.15_ubuntu-24.04_arm64.deb
-        sha256: 3f42a58b384e25158a91573b55384eba959a288ed734f97c4ff34ec016ddf6f7
-        release_asset: better-shell-adapter_0.2.15_ubuntu-24.04_arm64.deb
+        url: https://github.com/TimLai666/better-os/releases/download/v0.2.16/better-shell-adapter_0.2.16_ubuntu-24.04_arm64.deb
+        sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+        release_asset: better-shell-adapter_0.2.16_ubuntu-24.04_arm64.deb
       - package: better-manager-daemon
-        url: https://github.com/TimLai666/better-os/releases/download/v0.2.15/better-manager-daemon_0.2.15_ubuntu-24.04_arm64.deb
-        sha256: eeb2681a2890f5ea11645cbcbda2bfe8d391fe36c5c34793b03cc09039645bfa
-        release_asset: better-manager-daemon_0.2.15_ubuntu-24.04_arm64.deb
+        url: https://github.com/TimLai666/better-os/releases/download/v0.2.16/better-manager-daemon_0.2.16_ubuntu-24.04_arm64.deb
+        sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+        release_asset: better-manager-daemon_0.2.16_ubuntu-24.04_arm64.deb
 lifecycle:
   install: plan-local-apt-install
   enable: plan-enable
