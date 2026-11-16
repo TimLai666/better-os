@@ -48,11 +48,17 @@ every window.
    GNOME Shell itself (Mutter has no layer-shell for an outside process), so
    this is shell code too: same ADR question as item 2, and it must be
    designed together with ticket 95's top menu bar so the two do not
-   overlap. Its start button carries the Better OS mark (no Zorin logo) and
-   opens Better Launcher as its start menu, anchored to the button like
-   ticket 82's Start-menu panel; the Launcher stays its own Rust window that
-   the shell positions, since a shell extension cannot host a GPUI window,
-   and the shell-side code only reports the click and the button's position.
+   overlap. Owner's direction (2026-11-16) for the left end of the taskbar:
+   keep the "Show Applications" button (GNOME's application grid, which the
+   owner likes) and add a Better OS button with the Better OS mark (no Zorin
+   logo) that opens Better Launcher anchored to it, like ticket 82's
+   Start-menu panel. Two shapes are open for the owner to pick at design
+   time: (a) the Better OS button sits beside Show Applications; (b) it
+   replaces the Zorin start button. (b) needs Launcher complete as a start
+   menu; power, restart, lock and log out then live in ticket 95's top bar
+   Better OS menu, not in Launcher. The Launcher stays its own Rust window
+   that the shell positions (a shell extension cannot host a GPUI window);
+   the shell-side code only reports the click and the button's position.
    The component turns Zorin's or Ubuntu's own taskbar off while it
    runs and puts it back on removal.
 4. One radius everywhere: the GTK layer, Better OS windows, and the
