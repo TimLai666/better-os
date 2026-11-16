@@ -41,7 +41,16 @@ every window.
    a value or deciding anything, so this needs a new ADR the owner approves
    (a relay that applies a clip the Rust service decides, or a different
    route), plus measurements of the shader's cost on the owner's machine.
-3. One radius everywhere: the GTK layer, Better OS windows, and the
+3. **A Better OS taskbar** (owner, 2026-11-16): so Better OS looks the same
+   on Ubuntu and other distributions and does not depend on Zorin. Today the
+   taskbar is Zorin's own `zorin-taskbar@zorinos.com` extension (Ubuntu ships
+   Ubuntu Dock instead). On GNOME under Wayland a panel can only be drawn by
+   GNOME Shell itself (Mutter has no layer-shell for an outside process), so
+   this is shell code too: same ADR question as item 2, and it must be
+   designed together with ticket 95's top menu bar so the two do not
+   overlap. The component turns Zorin's or Ubuntu's own taskbar off while it
+   runs and puts it back on removal.
+4. One radius everywhere: the GTK layer, Better OS windows, and the
    compositor clip all take it from the component's single setting.
 
 ## Done when
