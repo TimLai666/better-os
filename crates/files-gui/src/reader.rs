@@ -37,7 +37,9 @@ use std::time::{Duration, Instant};
 use files_core::listing::{
     DirectoryReader, ListingEvent, ListingRequest, ListingSession, ListingSink,
 };
-use files_core::{Entry, ListingError, Location, SkippedEntry, TrashLocation, list_applications};
+use files_core::{
+    Entry, ListingError, Location, SkippedEntry, TrashLocation, list_applications_sized,
+};
 use files_platform::{LocalDirectoryReader, ReaderConfig, TrashDirectory, read_trash};
 
 use crate::apps::CatalogHandle;
@@ -120,6 +122,9 @@ pub struct FilesReader {
     /// and how its files' types are told.
     recent_list: Option<PathBuf>,
     recent_mime: Option<Arc<dyn files_platform::MimeDetector>>,
+    /// The Applications view's sizes (ticket 128). Never read for a reader
+    /// built with [`Self::new`], so a test never asks the host's dpkg.
+    application_sizes: crate::app_sizes::ApplicationSizes,
 }
 
 impl FilesReader {
@@ -138,6 +143,7 @@ impl FilesReader {
             include_hidden_applications: AtomicBool::new(false),
             recent_list: None,
             recent_mime: None,
+            application_sizes: crate::app_sizes::ApplicationSizes::none(),
         }
     }
 
@@ -173,6 +179,19 @@ impl FilesReader {
                 .collect()
         })
         .with_recent_list(files_platform::recent::recent_file_from_env(), Some(mime))
+        .with_application_sizes(crate::app_sizes::ApplicationSizes::from_env())
+    }
+
+    /// Where the Applications view's sizes come from.
+    pub fn with_application_sizes(mut self, sizes: crate::app_sizes::ApplicationSizes) -> Self {
+        self.application_sizes = sizes;
+        self
+    }
+
+    /// Moves when application sizes arrive; the window lists the
+    /// Applications view again when it does.
+    pub fn application_sizes_generation(&self) -> u64 {
+        self.application_sizes.generation()
     }
 
     /// Where the local device trashes listed beside the home trash come from.
@@ -383,16 +402,22 @@ impl DirectoryReader for FilesReader {
                 // replaces the handle's catalog and leaves this listing
                 // finishing the one it started with, rather than blocking
                 // either of them.
+                let generation = self.catalog.generation();
                 let catalog = self.catalog.snapshot();
                 let view = self
                     .catalog
                     .view(self.include_hidden_applications.load(Ordering::Relaxed));
+                let sizes = self.application_sizes.clone();
                 let _ = thread::Builder::new()
                     .name("files-applications-listing".to_string())
                     .spawn(move || {
                         let mut sink = sink;
-                        if list_applications(&catalog, &view, &mut sink).is_ok() {
+                        let size_of = |record: &app_catalog_core::ApplicationRecord| {
+                            sizes.size_of(record, generation)
+                        };
+                        if list_applications_sized(&catalog, &view, &mut sink, &size_of).is_ok() {
                             let _ = sink.finish();
+                            sizes.read_missing(&catalog, generation);
                         }
                         // A cancelled listing drops the sink, whose `Drop`
                         // reports the cancellation.

@@ -554,6 +554,8 @@ pub struct FilesSession {
     pub search: SearchState,
     /// How much each folder in view holds (ticket 126).
     pub folder_sizes: crate::folder_sizes::FolderSizes,
+    /// The application sizes the panes last listed with (ticket 128).
+    application_sizes_seen: u64,
     /// The file the embedded chooser is open for, when it is open.
     pub chooser: Option<ChooserRequest>,
     /// The application whose details panel is open.
@@ -723,6 +725,7 @@ impl FilesSession {
             search: SearchState::default(),
             folder_sizes: crate::folder_sizes::FolderSizes::default()
                 .watching_with(Arc::clone(&hub)),
+            application_sizes_seen: 0,
             chooser: None,
             details: None,
             policy_confirmation: None,
@@ -1232,6 +1235,19 @@ impl FilesSession {
             .iter_visible()
             .filter(|entry| model.selection().contains(&entry.id()))
             .collect()
+    }
+
+    /// The size the Applications view has for one application, for its
+    /// details panel (ticket 128).
+    pub fn application_size(&self, desktop_id: &str) -> Option<&files_core::ApplicationSize> {
+        let entry = self
+            .pane()
+            .model()
+            .get(&files_core::EntryId::Application(desktop_id.to_string()))?;
+        match &entry.body {
+            files_core::EntryBody::Application(facts) => Some(&facts.size),
+            _ => None,
+        }
     }
 
     pub fn focused_entry(&self) -> Option<&Entry> {
@@ -2970,6 +2986,23 @@ impl FilesSession {
 
     // --- Frame ------------------------------------------------------------
 
+    /// Lists the Applications view again when sizes it was waiting for are
+    /// in. The refresh keeps selection and scroll, and its rows carry the
+    /// sizes, so a size sort settles on them.
+    fn pump_application_sizes(&mut self) {
+        let generation = self.reader.application_sizes_generation();
+        if generation == self.application_sizes_seen {
+            return;
+        }
+        self.application_sizes_seen = generation;
+        let reader = self.reader.clone();
+        for (_, pane) in &mut self.panes {
+            if matches!(pane.location(), Location::Applications) {
+                pane.refresh(reader.as_ref());
+            }
+        }
+    }
+
     /// Drains whatever arrived and returns whether the window has to redraw.
     ///
     /// The active pane is pumped every frame; background tabs are pumped too,
@@ -2983,6 +3016,7 @@ impl FilesSession {
         }
         changed |= self.pump_watches();
         changed |= self.pump_folder_sizes(changed);
+        self.pump_application_sizes();
         if changed {
             // Entries arriving move indices around. The cursor is re-derived
             // from the selection's identity, which is what keeps the focused
@@ -3048,6 +3082,16 @@ impl FilesSession {
 
     /// What the cell of `entry`'s size says.
     pub fn size_label(&self, entry: &Entry) -> crate::folder_sizes::SizeLabel {
+        // An application's size is its own record, whatever the folder-size
+        // preference (ticket 128).
+        if let files_core::EntryBody::Application(facts) = &entry.body {
+            let c = crate::i18n::copy(self.locale);
+            return crate::folder_sizes::SizeLabel {
+                text: crate::app_sizes::size_text(&facts.size, c),
+                tooltip: crate::app_sizes::size_note(&facts.size, c),
+                is_value: facts.size.bytes().is_some(),
+            };
+        }
         self.folder_sizes.label(
             entry,
             self.preferences.folder_sizes,

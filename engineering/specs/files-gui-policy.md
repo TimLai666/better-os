@@ -190,3 +190,47 @@ seen by any watch (one inotify watch per folder in a tree would exhaust the
 user's limit), so such a total can be up to five minutes old when the person
 comes back to it. A change made between a walk finishing and that folder's own
 watch being placed (a few milliseconds) is missed the same way.
+
+## Application sizes
+
+The Applications view (ticket 128) shows how much space each application
+takes, in the Size column, its grid tile, the Properties panel, and the
+application details panel. Every figure comes from a record the system
+already keeps, read without privilege (`files_platform::app_size`):
+
+| Where it came from | What the size is |
+| --- | --- |
+| A Flatpak (its entry resolves into `flatpak/app/<id>/…`, or it runs `flatpak`) | `flatpak info --show-size`, the app alone. The runtime named in the deployment's `metadata` is shared with other apps and not added; the panel names it. |
+| A Snap (its entry is in snapd's desktop folder) | The current revision's `/var/lib/snapd/snaps/<name>_<rev>.snap`, the revision `/snap/<name>/current` points at. |
+| An AppImage, or a program in the person's home | The program file's size. |
+| Anything else | dpkg's `Installed-Size` of the package `dpkg-query -S` names as the desktop entry's owner. |
+
+A Debian application is its package alone, and the note under its size says
+so. Adding the dependencies only it uses was considered and not done: dpkg
+records what a package depends on, not which of those nothing else needs,
+and apt's "installed automatically" mark is not that either, so any total
+would be a guess.
+
+When there is no record, the cell is "—" and its tooltip, and the panels,
+give the reason: no installed package owns the entry, more than one does,
+the package records no size, Flatpak did not answer, the snap revision is
+gone, the program file is gone, or dpkg could not be asked. No size is ever
+filled in from a default.
+
+The person's own data for an application is never part of its size. It is
+shown as a separate "Data" figure only where its folder is known for
+certain: a Flatpak's `~/.var/app/<id>` and a snap's `~/snap/<name>`. A native
+application's `~/.config` folder has no recorded name, and guessing one
+would count another program's files. The folder is measured by the same
+walk as a folder's size (`files_platform::folder_size`, above): hard links
+once, never across a filesystem. A data folder it cannot count in full
+(more than 200,000 items, a part it cannot read, or longer than 20 seconds)
+shows no Data figure rather than part of one.
+
+Sizes never hold up the listing. The view lists at once, each row reading
+"Calculating…" until its size is known; then one thread
+(`files-application-sizes`) asks dpkg once for every package and `flatpak`
+once per Flatpak, and the view is listed again in place, keeping selection
+and scroll. Sizes are kept for ten minutes and forgotten when the catalog
+changes. A size sort orders the known sizes and puts every row without one after
+them in either direction, as it does a folder without a size.

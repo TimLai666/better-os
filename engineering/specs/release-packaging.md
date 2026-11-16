@@ -43,6 +43,12 @@ Release package 必須符合以下條件：
    runtime libraries。
 3. `apt install ./<package>.deb` 能自動解析並安裝這些 runtime dependencies，
    使用者不需要先照開發文件安裝 linker packages。
+4. 每個套件的 control 都有 `Installed-Size`（KiB，Debian policy 5.6.20），
+   由 `packaging/build-deb.sh` 的 `add_installed_size` 依 staging 目錄
+   （不含 `DEBIAN/`）的 apparent size 算出。`dpkg-deb` 不會自己補這個欄位，
+   少了它 dpkg 的 status 檔就沒有大小，Better Files 的應用程式檢視只能顯示
+   「這個套件沒有記錄大小」（ticket 128）。`packaging/verify-deb.sh` 對每個
+   套件（含 `better-manager-daemon`）都要求它是正整數。
 
 ## Bootstrap installer 契約
 

@@ -236,6 +236,86 @@ pub struct ApplicationFacts {
     pub icon: Option<IconReference>,
     pub categories: Vec<String>,
     pub comment: Option<String>,
+    /// How much space the application takes, from what the system records
+    /// (ticket 128). The row's [`Entry::size`] carries the same bytes when
+    /// they are known, so sorting by size needs nothing of its own.
+    pub size: ApplicationSize,
+}
+
+/// What an application's size was read from.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ApplicationSizeSource {
+    /// dpkg's `Installed-Size` of the package that owns the desktop entry.
+    /// The package alone: which dependencies only this application uses
+    /// cannot be told reliably from dpkg's records, so none are added.
+    DebianPackage { package: String },
+    /// The installed size `flatpak info` reports for the app. The runtime it
+    /// runs on is shared with other applications and is not added.
+    Flatpak {
+        app_id: String,
+        runtime: Option<String>,
+    },
+    /// The squashfs file of the snap's current revision.
+    Snap { name: String, revision: String },
+    /// The size of the program file itself: an AppImage, or a program in
+    /// the person's home.
+    File { path: PathBuf },
+}
+
+/// Why an application has no size.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ApplicationSizeUnknown {
+    /// No installed package owns the desktop entry, and it is not a Flatpak,
+    /// a Snap, an AppImage, or a program in the person's home.
+    NoOwner,
+    /// More than one package claims the entry, so none of them is its size.
+    SeveralPackages,
+    /// The owning package's record has no `Installed-Size`.
+    NotRecorded { package: String },
+    /// The Flatpak could not be asked about (`flatpak` missing or failed).
+    FlatpakUnanswered { app_id: String },
+    /// The snap's current revision or its file is not there.
+    SnapMissing { name: String },
+    /// The program file is not there.
+    ProgramMissing { path: PathBuf },
+    /// dpkg could not be asked.
+    DpkgUnanswered,
+}
+
+/// An application's size, as its row and its panels show it.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub enum ApplicationSize {
+    /// Not read yet. Sizes are read after the listing, off the window's thread.
+    #[default]
+    Pending,
+    Known {
+        bytes: u64,
+        source: ApplicationSizeSource,
+        /// The person's own data for the application, when where it lives is
+        /// known for certain (a Flatpak's `~/.var/app/<id>`, a snap's
+        /// `~/snap/<name>`). Never part of `bytes`.
+        data: Option<u64>,
+    },
+    Unknown(ApplicationSizeUnknown),
+}
+
+impl ApplicationSize {
+    /// The application's own bytes, when known.
+    pub fn bytes(&self) -> Option<u64> {
+        match self {
+            ApplicationSize::Known { bytes, .. } => Some(*bytes),
+            _ => None,
+        }
+    }
+
+    /// What the row's sortable size is.
+    pub fn entry_size(&self) -> EntrySize {
+        match self {
+            ApplicationSize::Known { bytes, .. } => EntrySize::Bytes(*bytes),
+            ApplicationSize::Pending => EntrySize::Unknown,
+            ApplicationSize::Unknown(_) => EntrySize::NotApplicable,
+        }
+    }
 }
 
 /// Facts about an item sitting in the trash.
@@ -382,6 +462,7 @@ mod tests {
                 icon: None,
                 categories: vec!["Utility".to_string()],
                 comment: None,
+                size: ApplicationSize::Pending,
             }),
         }
     }

@@ -36,11 +36,15 @@ pub mod selection;
 pub mod sort;
 pub mod tabs;
 
-pub use applications::{ApplicationView, OpenIntent, OpenRefusal, list_applications, open_intent};
+pub use applications::{
+    ApplicationView, OpenIntent, OpenRefusal, list_applications, list_applications_sized,
+    open_intent, set_application_size,
+};
 pub use cache::ListingCache;
 pub use entry::{
-    ApplicationFacts, Entry, EntryBody, EntryId, EntryKind, EntrySize, FileFacts, FileTime,
-    HiddenReason, HiddenState, PermissionsSummary, SymlinkStatus, TrashedFacts,
+    ApplicationFacts, ApplicationSize, ApplicationSizeSource, ApplicationSizeUnknown, Entry,
+    EntryBody, EntryId, EntryKind, EntrySize, FileFacts, FileTime, HiddenReason, HiddenState,
+    PermissionsSummary, SymlinkStatus, TrashedFacts,
 };
 pub use error::{ListingError, LocationError, NavigationError};
 pub use hidden::{HiddenPreference, HiddenRules};

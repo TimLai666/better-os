@@ -309,6 +309,12 @@ for package_name in \
         printf 'Unexpected architecture for %s: %s\n' "$package_name" "$actual_arch" >&2
         exit 1
     }
+    # dpkg records the size only from the control file; Better Files shows it
+    # for the package's application (ticket 128).
+    [[ "$(dpkg-deb -f "$deb_path" Installed-Size)" =~ ^[1-9][0-9]*$ ]] || {
+        printf 'Missing Installed-Size for %s\n' "$package_name" >&2
+        exit 1
+    }
 
     if [[ "$depends" =~ (^|,)[[:space:]]*[^,]*-dev([[:space:]]|,|$) ]]; then
         printf 'Build-time development package leaked into %s: %s\n' "$package_name" "$depends" >&2
@@ -931,6 +937,10 @@ fi
 )
 
 daemon_depends="$(dpkg-deb -f "$daemon_path" Depends)"
+[[ "$(dpkg-deb -f "$daemon_path" Installed-Size)" =~ ^[1-9][0-9]*$ ]] || {
+    printf 'Missing Installed-Size for %s\n' "$daemon_name" >&2
+    exit 1
+}
 if [[ "$daemon_depends" =~ (^|,)[[:space:]]*[^,]*-dev([[:space:]]|,|$) ]]; then
     printf 'Build-time development package leaked into %s: %s\n' "$daemon_name" "$daemon_depends" >&2
     exit 1

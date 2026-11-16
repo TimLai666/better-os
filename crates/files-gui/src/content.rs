@@ -38,9 +38,11 @@ pub struct RenderedRow {
     pub kind: EntryKind,
     pub size: String,
     /// Why the size cell says what it says, for a tooltip: a folder that was
-    /// not counted, or could only be counted in part.
+    /// not counted or counted in part, or what an application's size counts
+    /// or why it has none (ticket 128).
     pub size_tooltip: Option<String>,
-    /// The size cell is a byte count (a file's, or a measured folder's).
+    /// The size cell is a byte count (a file's, a measured folder's, or
+    /// an application's).
     pub size_is_value: bool,
     pub modified: String,
     pub type_label: String,
@@ -62,8 +64,10 @@ pub fn tile_caption(row: &RenderedRow) -> String {
     let day = row.modified.split(' ').next().unwrap_or("").trim();
     let day = if day == "—" { "" } else { day };
     // A folder's caption also carries a state that is not a number
-    // ("Calculating…", "Can't read"); "—" says nothing and is left out.
-    let size = if (row.kind == EntryKind::File && row.size_is_value)
+    // ("Calculating…", "Can't read"); "—" says nothing and is left out. An
+    // application's carries its size once it is read, not "Calculating…".
+    let size = if (matches!(row.kind, EntryKind::File | EntryKind::Application)
+        && row.size_is_value)
         || (row.kind == EntryKind::Directory && row.size != "—")
     {
         row.size.as_str()
@@ -105,8 +109,18 @@ pub fn rendered_row_named(
         id: entry.id(),
         name: entry.name.clone(),
         kind: entry.kind,
-        size: format::entry_size(entry.size),
-        size_tooltip: None,
+        size: match &entry.body {
+            files_core::EntryBody::Application(facts) => {
+                crate::app_sizes::size_text(&facts.size, c)
+            }
+            _ => format::entry_size(entry.size),
+        },
+        size_tooltip: match &entry.body {
+            files_core::EntryBody::Application(facts) => {
+                crate::app_sizes::size_note(&facts.size, c)
+            }
+            _ => None,
+        },
         size_is_value: entry.size.bytes().is_some(),
         modified: format::file_time(entry.modified),
         type_label: type_label_named(entry, c, describe),

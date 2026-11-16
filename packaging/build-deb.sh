@@ -8,6 +8,17 @@ ARCH="${DEB_HOST_ARCH:-}"
 RELEASE_TARGET="local"
 MAINTAINER="TimLai666 <tim930102@icloud.com>"
 
+# Records the package's Installed-Size (KiB, as Debian policy 5.6.20 has it)
+# in its control file. dpkg-deb does not compute it; without it dpkg's status
+# file has no size for the package, and Better Files' Applications view can
+# only say that the package records none (ticket 128).
+add_installed_size() {
+    local staging_dir="$1"
+    local kib
+    kib="$(du -sk --apparent-size --exclude=DEBIAN "$staging_dir" | cut -f1)"
+    sed -i "/^Maintainer: /a Installed-Size: $kib" "$staging_dir/DEBIAN/control"
+}
+
 usage() {
     printf 'Usage: %s [--output-dir DIR] [--target TARGET]\n' "$0"
 }
@@ -479,6 +490,7 @@ make_package() {
         add_handoff_hook "$staging_dir"
     fi
 
+    add_installed_size "$staging_dir"
     dpkg-deb --build --root-owner-group "$staging_dir" "$deb_path" >/dev/null
     (
         cd "$OUTPUT_DIR"
@@ -706,6 +718,7 @@ POSTRM
         "$staging_dir/DEBIAN/prerm" \
         "$staging_dir/DEBIAN/postrm"
 
+    add_installed_size "$staging_dir"
     dpkg-deb --build --root-owner-group "$staging_dir" "$deb_path" >/dev/null
     (
         cd "$OUTPUT_DIR"
