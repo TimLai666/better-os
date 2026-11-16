@@ -1,0 +1,11 @@
+# A stand-in display manager for the check: it starts, stays active, and never
+# opens a login session, which is what ticket 139 saw GDM do.
+[Unit]
+Description=Stand-in GDM that never opens the login screen
+
+[Service]
+Type=simple
+ExecStart=/bin/sleep infinity
+
+[Install]
+Alias=display-manager.service

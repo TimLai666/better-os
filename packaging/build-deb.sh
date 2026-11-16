@@ -536,6 +536,9 @@ make_daemon_package() {
     # Ticket 86: writes the charge limit the person chose back at boot.
     install -m 0644 "$ROOT_DIR/packaging/daemon/better-hardware-restore.service" \
         "$staging_dir/usr/lib/systemd/system/better-hardware-restore.service"
+    # Ticket 140 (ADR 0033): watches for the login screen once per boot.
+    install -m 0644 "$ROOT_DIR/packaging/daemon/better-greeter-watch.service" \
+        "$staging_dir/usr/lib/systemd/system/better-greeter-watch.service"
     install -m 0644 "$ROOT_DIR/packaging/daemon/org.betteros.Manager1.service" \
         "$staging_dir/usr/share/dbus-1/system-services/org.betteros.Manager1.service"
     install -m 0644 "$ROOT_DIR/packaging/daemon/org.betteros.Manager1.conf" \
@@ -630,6 +633,13 @@ if [ "$1" = "configure" ]; then
     elif [ -d /run/systemd/system ]; then
         systemctl enable better-hardware-restore.service >/dev/null 2>&1 || true
     fi
+    # The login screen watch (ADR 0033) is enabled, never started here: it
+    # watches a boot from its start, and this boot has a desktop already.
+    if command -v deb-systemd-helper >/dev/null 2>&1; then
+        deb-systemd-helper enable better-greeter-watch.service >/dev/null 2>&1 || true
+    elif [ -d /run/systemd/system ]; then
+        systemctl enable better-greeter-watch.service >/dev/null 2>&1 || true
+    fi
     if command -v dbus-send >/dev/null 2>&1; then
         dbus-send --system --type=method_call --dest=org.freedesktop.DBus \
             /org/freedesktop/DBus org.freedesktop.DBus.ReloadConfig \
@@ -691,12 +701,25 @@ if [ "$1" = "remove" ]; then
     elif [ -d /run/systemd/system ]; then
         systemctl disable better-hardware-restore.service >/dev/null 2>&1 || true
     fi
+    # The login screen watch's enablement goes too (ADR 0033).
+    if command -v deb-systemd-helper >/dev/null 2>&1; then
+        deb-systemd-helper disable better-greeter-watch.service >/dev/null 2>&1 || true
+    elif [ -d /run/systemd/system ]; then
+        systemctl disable better-greeter-watch.service >/dev/null 2>&1 || true
+    fi
 fi
 PRERM
 
     cat > "$staging_dir/DEBIAN/postrm" <<'POSTRM'
 #!/bin/sh
 set -e
+
+# Removing the package takes the login screen watch's records and its
+# setting with it (ADR 0033, ticket 140): they describe a watch that is gone,
+# and the person ticked nothing to keep them.
+if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
+    rm -rf /var/lib/better-os/boot-watch
+fi
 
 if [ "$1" = "purge" ]; then
     # Transaction history, cached packages, and the stored charge limit
@@ -705,6 +728,7 @@ if [ "$1" = "purge" ]; then
     rm -rf /var/lib/better-os /var/cache/better-os
     if command -v deb-systemd-helper >/dev/null 2>&1; then
         deb-systemd-helper purge better-hardware-restore.service >/dev/null 2>&1 || true
+        deb-systemd-helper purge better-greeter-watch.service >/dev/null 2>&1 || true
     fi
 fi
 

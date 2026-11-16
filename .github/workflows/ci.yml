@@ -175,6 +175,8 @@ jobs:
           shellcheck --shell=sh packaging/maintainer/autostart-overrides.sh
           shellcheck packaging/tests/autostart-overrides.test.sh
           bash packaging/tests/autostart-overrides.test.sh
+          bash -n packaging/boot-watch/run.sh packaging/boot-watch/check.sh
+          shellcheck packaging/boot-watch/run.sh packaging/boot-watch/check.sh
       # ADR 0028: the handoff a privileged service of 0.2.12 or older is
       # updated through, against fake dpkg, systemd, and apt.
       - name: Lint and test the privileged service handoff
@@ -315,6 +317,13 @@ jobs:
           rm -rf dist/e2e dist/e2e-client dist/e2e-legacy
         env:
           GH_TOKEN: ${{ github.token }}
+      # Ticket 140 (ADR 0033): the login screen watch against a real systemd,
+      # logind, and journal, with a stand-in gdm.service that starts and never
+      # opens a session. It runs in a throwaway container because it restarts
+      # a unit named gdm.service.
+      - name: The login screen watch restarts a GDM that shows nothing, once
+        run: |
+          bash packaging/boot-watch/run.sh target/release/better-manager-daemon
       - name: Upload Debian packages
         uses: actions/upload-artifact@v7
         with:

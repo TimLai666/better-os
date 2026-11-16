@@ -961,6 +961,7 @@ for required_file in \
     usr/libexec/better-manager-daemon \
     usr/lib/systemd/system/better-manager-daemon.service \
     usr/lib/systemd/system/better-hardware-restore.service \
+    usr/lib/systemd/system/better-greeter-watch.service \
     usr/share/dbus-1/system-services/org.betteros.Manager1.service \
     usr/share/dbus-1/system.d/org.betteros.Manager1.conf \
     usr/share/polkit-1/actions/org.betteros.manager.policy \
@@ -1033,7 +1034,7 @@ dpkg-deb --ctrl-tarfile "$daemon_path" | tar -xO ./prerm \
     printf "The daemon's prerm does not remove the drive entries it wrote\n" >&2
     exit 1
 }
-for unit in better-manager-daemon.service better-hardware-restore.service; do
+for unit in better-manager-daemon.service better-hardware-restore.service better-greeter-watch.service; do
     unit_file="$daemon_extract/usr/lib/systemd/system/$unit"
     if ! grep -qx 'BindReadOnlyPaths=/sys' "$unit_file" \
         || ! grep -qx 'ProtectKernelTunables=yes' "$unit_file" \
@@ -1049,6 +1050,52 @@ grep -q '^ExecStart=/usr/libexec/better-manager-daemon --restore-hardware$' \
 }
 dpkg-deb --ctrl-tarfile "$daemon_path" | tar -xO ./postinst | grep -q 'enable better-hardware-restore.service' || {
     printf 'The daemon postinst does not enable better-hardware-restore.service\n' >&2
+    exit 1
+}
+
+# Ticket 140 (ADR 0033): the login screen watch runs the daemon's own mode,
+# is off the boot's critical path (no default dependencies, so wanting it
+# adds no After= to graphical.target), has a hard start timeout, and is
+# enabled on install and disabled with its records removed on removal. Its
+# off switch has its own polkit action and the bus policy lets callers reach
+# it.
+watch_unit="$daemon_extract/usr/lib/systemd/system/better-greeter-watch.service"
+for line in \
+    'ExecStart=/usr/libexec/better-manager-daemon --watch-login-screen' \
+    'Type=oneshot' \
+    'DefaultDependencies=no' \
+    'TimeoutStartSec=180' \
+    'WantedBy=graphical.target' \
+    'StateDirectoryMode=0755'; do
+    grep -qx "$line" "$watch_unit" || {
+        printf 'better-greeter-watch.service lacks %s\n' "$line" >&2
+        exit 1
+    }
+done
+if grep -Eq '^(After|Requires|BindsTo|Before)=.*(gdm|display-manager|graphical)' "$watch_unit"; then
+    printf 'better-greeter-watch.service must not be ordered against GDM or graphical.target\n' >&2
+    exit 1
+fi
+grep -q 'org.betteros.manager.login-screen-watch' \
+    "$daemon_extract/usr/share/polkit-1/actions/org.betteros.manager.policy" || {
+    printf 'The polkit policy does not declare org.betteros.manager.login-screen-watch\n' >&2
+    exit 1
+}
+grep -q 'send_interface="org.betteros.BootWatch1"' \
+    "$daemon_extract/usr/share/dbus-1/system.d/org.betteros.Manager1.conf" || {
+    printf 'The bus policy does not let callers reach org.betteros.BootWatch1\n' >&2
+    exit 1
+}
+dpkg-deb --ctrl-tarfile "$daemon_path" | tar -xO ./postinst | grep -q 'enable better-greeter-watch.service' || {
+    printf 'The daemon postinst does not enable better-greeter-watch.service\n' >&2
+    exit 1
+}
+dpkg-deb --ctrl-tarfile "$daemon_path" | tar -xO ./prerm | grep -q 'disable better-greeter-watch.service' || {
+    printf 'The daemon prerm does not disable better-greeter-watch.service\n' >&2
+    exit 1
+}
+dpkg-deb --ctrl-tarfile "$daemon_path" | tar -xO ./postrm | grep -q 'rm -rf /var/lib/better-os/boot-watch' || {
+    printf 'The daemon postrm does not remove the login screen watch records\n' >&2
     exit 1
 }
 

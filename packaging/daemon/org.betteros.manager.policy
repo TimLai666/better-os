@@ -76,4 +76,18 @@
       <allow_active>auth_admin_keep</allow_active>
     </defaults>
   </action>
+
+  <!-- ADR 0033, ticket 140. Turns the login screen watch off or on: one
+       boolean in /var/lib/better-os/boot-watch/settings.json, nothing else. -->
+  <action id="org.betteros.manager.login-screen-watch">
+    <description>Turn the login screen watch on or off</description>
+    <description xml:lang="zh_TW">開啟或關閉登入畫面守護</description>
+    <message>Authentication is required to change the login screen watch</message>
+    <message xml:lang="zh_TW">變更登入畫面守護需要驗證身分</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
 </policyconfig>

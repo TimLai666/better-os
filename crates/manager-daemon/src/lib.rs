@@ -21,6 +21,7 @@
 
 pub mod apt;
 pub mod authorize;
+pub mod boot_watch;
 pub mod dpkg_state;
 pub mod drives;
 pub mod executor;
@@ -44,6 +45,10 @@ pub const SERVICE_PACKAGE: &str = "better-manager-daemon";
 
 /// Where transaction journals and rollback records live.
 pub const STATE_DIR: &str = "/var/lib/better-os";
+
+/// The login screen watch's records and setting (ADR 0033), readable by
+/// everyone.
+pub const BOOT_WATCH_DIR: &str = manager_ipc::boot_watch::DIR;
 
 /// The charge limit the person chose, for `--restore-hardware` at boot.
 pub const HARDWARE_STATE: &str = "/var/lib/better-os/hardware.json";

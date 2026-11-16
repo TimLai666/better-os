@@ -452,6 +452,16 @@ collection is explicitly configured to include them.
   removable drive is mounted and unmounted by the window through UDisks2, as
   the person may. The daemon's prerm on removal runs
   `--remove-drive-entries`.
+- The login screen watch (ticket 140, ADR 0033) is the daemon binary's
+  `--watch-login-screen` mode, run once per boot by
+  `better-greeter-watch.service`, which nothing in the boot waits for. It
+  reads logind and the journal, restarts `gdm.service` at most once per boot
+  and never while a person's session exists, and writes 0644 records under
+  `/var/lib/better-os/boot-watch/`. `manager_ipc::boot_watch` owns the
+  records' format, `manager_core::login_watch` what a person is told (Home,
+  Health, `better-manager-cli doctor` read the files unprivileged), and the
+  off switch is `org.betteros.BootWatch1.SetEnabled` behind
+  `org.betteros.manager.login-screen-watch`.
 - `touchpad-platform` writes and reads what it claims. Its GVariant change-set
   encoder, which lives in `defaults-platform` and is shared with Better
   Defaults, is pinned byte-for-byte against values GLib produced, including the

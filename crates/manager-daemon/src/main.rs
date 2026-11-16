@@ -79,6 +79,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         return Ok(());
     }
+    // `better-greeter-watch.service` at boot (ADR 0033, ticket 140): watch
+    // for the login screen once, restart GDM once if it never appears, and
+    // record what happened. Never fails the unit over what it found.
+    if arguments.first().map(String::as_str) == Some("--watch-login-screen") {
+        if arguments.len() > 1 {
+            return Err("--watch-login-screen takes no value".into());
+        }
+        let host = manager_daemon::boot_watch::SystemWatchHost::new();
+        let outcome = manager_daemon::boot_watch::run(
+            &host,
+            &manager_ipc::boot_watch::Records::system(),
+            manager_daemon::boot_watch::Timings::BOOT,
+        );
+        eprintln!("better-greeter-watch: {outcome:?}");
+        return Ok(());
+    }
     if let Some(argument) = arguments.first() {
         if argument == "--restore-hardware" {
             let root = hardware_platform::sysfs::SysRoot::system();
@@ -106,7 +122,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
         }
         return Err(format!(
-            "better-manager-daemon takes no argument but --restore-hardware, --remove-drive-entries, --write-attribute, or --write-via-helper; got {argument:?}"
+            "better-manager-daemon takes no argument but --restore-hardware, --watch-login-screen, --remove-drive-entries, --write-attribute, or --write-via-helper; got {argument:?}"
         )
         .into());
     }
@@ -162,12 +178,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         manager_daemon::drives::DrivePaths::system(),
         gate.clone(),
     );
+    let boot_watch = manager_daemon::boot_watch::BootWatchService::new(
+        PolkitAuthorizer::new(zbus::connection::Builder::system()?.build().await?),
+        manager_ipc::boot_watch::Records::system(),
+        gate.clone(),
+    );
     let connection = serve(
         zbus::connection::Builder::system()?,
         BUS_NAME,
         service,
         hardware,
         drives,
+        boot_watch,
     )
     .await?;
 

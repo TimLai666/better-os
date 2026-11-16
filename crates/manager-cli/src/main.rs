@@ -320,6 +320,114 @@ fn doctor_lines(check: &DoctorCheck) -> Vec<String> {
     lines
 }
 
+/// The login screen watch (ADR 0033, ticket 140) as `doctor` prints it: the
+/// setting, what this boot's watch found, and every kept record, newest
+/// first, with what was recorded and where the whole record is.
+fn login_watch_lines(report: &manager_core::login_watch::Report) -> Vec<String> {
+    use manager_core::login_watch::{LastBootOutcome, RestartOutcome, Setting, utc_time};
+    let setting = match report.setting {
+        Setting::OnByDefault | Setting::On => "on",
+        Setting::Off => "off (turned off in Better Manager)",
+        Setting::Unreadable => "setting unreadable, so it does nothing",
+    };
+    let mut lines = vec![format!("login screen watch: {setting}")];
+    if let Some(last) = &report.last_boot {
+        let what = match &last.outcome {
+            LastBootOutcome::LoginScreenAppeared { after_seconds } => {
+                format!("the login screen appeared {after_seconds} s after GDM started")
+            }
+            LastBootOutcome::PersonPresent => {
+                "someone was already logged in, so nothing was checked".to_string()
+            }
+            LastBootOutcome::Restarted => {
+                "the login screen did not appear; see the record below".to_string()
+            }
+            LastBootOutcome::AlreadyHandled => {
+                "already handled once this boot; never restarted twice".to_string()
+            }
+            LastBootOutcome::TurnedOff => "turned off, nothing checked".to_string(),
+            LastBootOutcome::SettingUnreadable => {
+                "the setting could not be read, nothing checked".to_string()
+            }
+            LastBootOutcome::NoGdm {
+                display_manager: Some(unit),
+            } => format!("the display manager is {unit}, not GDM; nothing to watch"),
+            LastBootOutcome::NoGdm {
+                display_manager: None,
+            } => "no display manager is installed; nothing to watch".to_string(),
+            LastBootOutcome::GdmNotStarted { state } => {
+                format!("GDM did not start in time ({state}); left to systemd")
+            }
+            LastBootOutcome::CouldNotWatch { details } => {
+                format!("could not watch: {details}")
+            }
+        };
+        lines.push(format!(
+            "  last startup checked {}: {what}",
+            utc_time(last.checked_at_unix_seconds)
+        ));
+    }
+    if report.events.is_empty() {
+        lines.push("  no startup without a login screen is recorded".to_string());
+    }
+    for event in &report.events {
+        let outcome = match &event.restart {
+            RestartOutcome::Recovered { after_seconds } => {
+                format!("Better OS restarted it, and it appeared {after_seconds} s later")
+            }
+            RestartOutcome::StillMissing { waited_seconds } => format!(
+                "Better OS restarted it, and it still had not appeared {waited_seconds} s later"
+            ),
+            RestartOutcome::RestartFailed { details } => {
+                format!("Better OS could not restart it: {details}")
+            }
+            RestartOutcome::PersonAppeared => {
+                "someone logged in before the restart, so it was not restarted".to_string()
+            }
+            RestartOutcome::AppearedBeforeRestart => {
+                "it appeared just before the restart, so it was not restarted".to_string()
+            }
+            RestartOutcome::Pending => {
+                "Better OS asked for a restart and its outcome was never recorded".to_string()
+            }
+        };
+        lines.push(format!(
+            "  {}: the login screen didn't appear {} s after GDM started; {outcome}",
+            utc_time(event.detected_at_unix_seconds),
+            event.waited_seconds
+        ));
+        let evidence = &event.evidence;
+        let graphical = match evidence.seat0_can_graphical {
+            Some(true) => "yes",
+            Some(false) => "no",
+            None => "unknown",
+        };
+        let devices = if evidence.drm_devices.is_empty() {
+            "none".to_string()
+        } else {
+            evidence.drm_devices.join(", ")
+        };
+        let failed = evidence
+            .failed_units
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .count();
+        lines.push(format!(
+            "    seat0 ready for graphics: {graphical} · display devices: {devices} · failed units: {failed}"
+        ));
+        for problem in &evidence.problems {
+            lines.push(format!("    not recorded: {problem}"));
+        }
+    }
+    if !report.events.is_empty() {
+        lines.push(format!(
+            "  full records, journal excerpts included: {}",
+            manager_core::login_watch::Records::system().dir().display()
+        ));
+    }
+    lines
+}
+
 /// How dpkg's record reads to a person: one heading line, then each package
 /// dpkg left unfinished in dpkg's own words, then what to do about it.
 fn package_system_lines(state: &PackageSystemState) -> Vec<String> {
@@ -1072,6 +1180,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     println!("{line}");
                 }
             }
+            // The machine's own record, read the same in either mode: it
+            // is a file, not a fabricated state.
+            let report = manager_core::login_watch::Report::read(
+                &manager_core::login_watch::Records::system(),
+            );
+            for line in login_watch_lines(&report) {
+                println!("{line}");
+            }
         }
         Command::Catalog { command } => match command {
             CatalogCommand::Status => print_catalog_status(&catalog_status),
@@ -1549,6 +1665,69 @@ mod tests {
         assert!(
             messages.contains("warning: what was started could not be saved"),
             "{messages}"
+        );
+    }
+
+    #[test]
+    fn doctor_lists_the_login_screen_watch_and_every_record() {
+        use manager_core::login_watch::{
+            Event, Evidence, LastBoot, LastBootOutcome, Report, RestartOutcome, Setting,
+        };
+        let event = Event {
+            version: 1,
+            boot_id: "0123456789abcdef0123456789abcdef".to_string(),
+            detected_at_unix_seconds: 1_794_832_980,
+            display_manager: "gdm.service".to_string(),
+            waited_seconds: 30,
+            evidence: Evidence {
+                seat0_can_graphical: Some(false),
+                drm_devices: vec!["card1".to_string(), "renderD128".to_string()],
+                failed_units: "gnome-remote-desktop.service loaded failed failed\n".to_string(),
+                ..Evidence::default()
+            },
+            restart: RestartOutcome::Recovered { after_seconds: 5 },
+        };
+        let report = Report {
+            setting: Setting::OnByDefault,
+            last_boot: Some(LastBoot {
+                version: 1,
+                boot_id: "f".repeat(32),
+                checked_at_unix_seconds: 1_794_900_000,
+                outcome: LastBootOutcome::LoginScreenAppeared { after_seconds: 4 },
+            }),
+            events: vec![event],
+        };
+        let lines = login_watch_lines(&report);
+        assert_eq!(lines[0], "login screen watch: on");
+        assert!(
+            lines[1].contains("the login screen appeared 4 s after GDM started"),
+            "{lines:?}"
+        );
+        assert_eq!(
+            lines[2],
+            "  2026-11-16 12:43 UTC: the login screen didn't appear 30 s after GDM started; \
+             Better OS restarted it, and it appeared 5 s later"
+        );
+        assert_eq!(
+            lines[3],
+            "    seat0 ready for graphics: no · display devices: card1, renderD128 · failed units: 1"
+        );
+        assert!(
+            lines[4].ends_with("/var/lib/better-os/boot-watch"),
+            "{lines:?}"
+        );
+
+        let off = Report {
+            setting: Setting::Off,
+            last_boot: None,
+            events: Vec::new(),
+        };
+        assert_eq!(
+            login_watch_lines(&off),
+            [
+                "login screen watch: off (turned off in Better Manager)",
+                "  no startup without a login screen is recorded"
+            ]
         );
     }
 }

@@ -136,6 +136,13 @@ fn apps_entries(locale: Locale) -> Vec<SearchEntry> {
     vec![
         entry(s.apps_updates, "", apps_card::UPDATES),
         entry(s.apps_health, s.apps_health_description, apps_card::HEALTH),
+        // The login screen watch's card is on Health; the search finds
+        // Health's card on Apps.
+        entry(
+            crate::login_watch::copy(locale).title,
+            crate::login_watch::copy(locale).about,
+            apps_card::HEALTH,
+        ),
         entry(
             s.apps_activity,
             s.apps_activity_description,

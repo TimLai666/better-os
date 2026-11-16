@@ -11,6 +11,8 @@
 //! treated as untrusted input in both directions: closed enums, no unknown
 //! fields, and size limits checked before parsing.
 
+pub mod boot_watch;
+
 use std::fmt;
 
 use better_core::ComponentId;

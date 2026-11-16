@@ -502,6 +502,13 @@ GUI or dependency compiles when the relevant command was not executed.
   installed, and the catalog is read from the process's own `XDG_DATA_DIRS`, so
   a manager started without the Flatpak paths reports Flatpak applications as
   gone. The choice buttons in the window have not been looked at.
+- The login screen watch (ticket 140, ADR 0033) has run against a real
+  systemd, logind, and journal only in CI's container check
+  (`packaging/boot-watch/run.sh`, a stand-in `gdm.service` that never opens
+  a session); this machine has no Docker and no VM image. It has never
+  watched a real boot or restarted a real GDM, and the greeter-seen path is
+  proved by fakes only. It treats ticket 139's symptom; the cause is still
+  ticket 139's.
 - Which drives mount automatically (ticket 127, ADR 0032) lives only in the
   system's files: Better OS's marked block in `/etc/fstab` and
   `/etc/udev/rules.d/90-better-os-drives.rules`, written only by

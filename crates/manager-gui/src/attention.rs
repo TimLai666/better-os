@@ -70,18 +70,20 @@ pub(crate) struct AttentionItem {
 #[allow(dead_code)]
 pub(crate) mod row {
     pub(crate) const APPS_PACKAGES_INTERRUPTED: u16 = 1;
-    pub(crate) const APPS_COMPONENT_FAILED: u16 = 2;
-    pub(crate) const APPS_COMPONENT_DRIFT: u16 = 3;
-    pub(crate) const APPS_UPDATES: u16 = 4;
-    pub(crate) const APPS_CATALOG: u16 = 5;
-    pub(crate) const KEEP_AWAKE_SERVICE_STOPPED: u16 = 6;
-    pub(crate) const KEEP_AWAKE_SESSION_ACTIVE: u16 = 7;
-    pub(crate) const KEEP_AWAKE_CANNOT_STOP_SLEEP: u16 = 8;
-    pub(crate) const TOUCHPAD_SAFE_MODE: u16 = 9;
-    pub(crate) const TOUCHPAD_GESTURES_OFF: u16 = 10;
-    pub(crate) const DEFAULT_APPS_CHANGED: u16 = 11;
-    pub(crate) const FIXES_FOUND: u16 = 12;
-    pub(crate) const SYSTEM_BATTERY_WORN: u16 = 13;
+    /// The login screen didn't appear at startup (ticket 140).
+    pub(crate) const APPS_LOGIN_SCREEN: u16 = 2;
+    pub(crate) const APPS_COMPONENT_FAILED: u16 = 3;
+    pub(crate) const APPS_COMPONENT_DRIFT: u16 = 4;
+    pub(crate) const APPS_UPDATES: u16 = 5;
+    pub(crate) const APPS_CATALOG: u16 = 6;
+    pub(crate) const KEEP_AWAKE_SERVICE_STOPPED: u16 = 7;
+    pub(crate) const KEEP_AWAKE_SESSION_ACTIVE: u16 = 8;
+    pub(crate) const KEEP_AWAKE_CANNOT_STOP_SLEEP: u16 = 9;
+    pub(crate) const TOUCHPAD_SAFE_MODE: u16 = 10;
+    pub(crate) const TOUCHPAD_GESTURES_OFF: u16 = 11;
+    pub(crate) const DEFAULT_APPS_CHANGED: u16 = 12;
+    pub(crate) const FIXES_FOUND: u16 = 13;
+    pub(crate) const SYSTEM_BATTERY_WORN: u16 = 14;
 }
 
 /// What one component looks like to Home.
@@ -114,6 +116,9 @@ pub(crate) struct Snapshot {
     pub(crate) default_apps_changed: usize,
     /// The system battery's health, as System last read it (ticket 86).
     pub(crate) battery_health: Option<u8>,
+    /// A startup in the last week whose login screen didn't appear, as the
+    /// login screen watch recorded it (ticket 140).
+    pub(crate) login_screen_late: Option<manager_core::login_watch::Event>,
 }
 
 impl Snapshot {
@@ -129,6 +134,7 @@ impl Snapshot {
             keep_awake: Default::default(),
             default_apps_changed: 0,
             battery_health: None,
+            login_screen_late: None,
         }
     }
 
@@ -165,6 +171,7 @@ pub(crate) fn apps_attention(snapshot: &Snapshot) -> Vec<AttentionItem> {
             AttentionAction::Open(Page::Health),
         ));
     }
+    items.extend(crate::login_watch::attention(snapshot));
     for component in &snapshot.components {
         let severity = match component.status {
             ComponentStatus::Failed => Some(Severity::Error),
@@ -288,6 +295,7 @@ mod tests {
             keep_awake: Default::default(),
             default_apps_changed: 0,
             battery_health: None,
+            login_screen_late: None,
         }
     }
 

@@ -68,6 +68,17 @@ impl DbusPrivilegedExecutor {
     }
 }
 
+/// Turns the login screen watch on or off (ADR 0033) and returns whether it
+/// is on, as the service read it back. polkit may ask for an administrator,
+/// so this takes as long as the person does. It needs no transaction
+/// protocol, so it does not go through [`DbusPrivilegedExecutor::connect`]'s
+/// version check.
+pub fn set_login_screen_watch(system: &Connection, enabled: bool) -> Result<bool, PlatformError> {
+    let proxy = Proxy::new(system, BUS_NAME, OBJECT_PATH, "org.betteros.BootWatch1")
+        .map_err(|error| PlatformError::DaemonUnavailable(error.to_string()))?;
+    call_while_leaving(|| proxy.call("SetEnabled", &(enabled,)))
+}
+
 /// How often, and how far apart, a call refused by a daemon that is leaving is
 /// asked again. The next call after it has gone starts a new daemon.
 const LEAVING_ATTEMPTS: u32 = 40;

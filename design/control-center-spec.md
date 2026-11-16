@@ -191,6 +191,7 @@ duplicates a page's rules.
 | Source | When | Header (zh-TW / en) | Description (zh-TW / en) | Button (zh-TW / en) → target |
 | --- | --- | --- | --- | --- |
 | Apps | dpkg left an install unfinished | 套件安裝中途被中斷 / A package installation was interrupted | 完成之前，任何元件都無法安裝、更新或移除。 / Nothing can be installed, updated, or removed until it's finished. | 修復 / Repair → Apps › Health |
+| Apps | the login screen didn't appear at a startup in the last 7 days (ticket 140); a warning when it came back, an error when it did not | {date} 開機時登入畫面沒有出現 / The login screen didn't appear at startup on {date} | (what Better OS did: Better OS 已重新啟動它，{n} 秒後登入畫面出現了。 / Better OS restarted it, and it appeared {n} s later., and the other outcomes) | 查看 / View → Apps › Health |
 | Apps | a component failed or is degraded | {component} 需要處理 / {component} needs attention | 它沒有通過檢查。 / It didn't pass its check. | 查看 / View → its details |
 | Apps | record and machine disagree | {component} 和紀錄對不上 / {component} doesn't match its record | 對齊之前無法安裝、更新或還原。 / It can't be installed, updated, or restored until they match. | 查看 / View → its details |
 | Apps | updates available | 有 {n} 個更新 / {n} updates available | 確認後才會安裝。 / Nothing is installed until you confirm. | 查看更新 / See updates → Apps › Updates |
@@ -593,6 +594,14 @@ removal succeeded, never before and never unlinked. **Restore** asks
 dpkg again, and the results list with how long ago it ran), the
 interrupted-package card with Repair, a 查看 / View button on each failed
 component's result that opens its page, and all evidence sentences.
+Below the summary card, the 登入畫面守護 / Login screen watch expander
+(ticket 140, ADR 0033): a switch that turns the watch on or off through the
+privileged service (polkit asks), the newest record as its description, and
+as rows what the watch does, 這次開機 / This startup with what it found,
+every kept record (header, what Better OS did, and the evidence line
+seat0 可顯示圖形 · 顯示裝置 · 失敗的服務 / seat0 ready for graphics · Display
+devices · Failed services), and the records folder with 開啟資料夾 / Open
+folder.
 
 **Activity** keeps the filters (All, Successful, Warnings, Failures), the
 list, and Clear history (now behind a `ContentDialog`: 清除所有活動紀錄？ /
