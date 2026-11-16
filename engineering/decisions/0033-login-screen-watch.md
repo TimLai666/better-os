@@ -36,8 +36,10 @@ and read the journal.
   shows nothing).
 - **Automatic login.** When any of `/etc/gdm3/custom.conf`,
   `/etc/gdm3/daemon.conf`, `/etc/gdm/custom.conf`, or `/etc/gdm/daemon.conf`
-  turns on `AutomaticLoginEnable` or `TimedLoginEnable` in `[daemon]`, no
-  login screen is expected and GDM is never restarted on that machine.
+  turns on `AutomaticLoginEnable` in a `[daemon]` section, no login screen
+  is expected and GDM is never restarted on that machine. Timed login still
+  shows the login screen, so it is watched, with the deadline moved to
+  `TimedLoginDelay` (GDM's default 30 s) plus 30 s.
 - **The rule.** Once GDM is active, logind is asked every second, read-only,
   over D-Bus. A session of class `user*` or `lock-screen` anywhere means a
   person is there, and the boot is left alone. GDM's greeter, or any
@@ -49,8 +51,11 @@ and read the journal.
   2. the event record is written, outcome `pending`, before anything is
      restarted, so a watch killed later still marks the boot;
   3. logind is asked once more, and a person who logged in on a text console
-     meanwhile keeps GDM; so does a `gdm-session-worker` running in GDM's own
-     cgroup, a login GDM is in the middle of;
+     meanwhile keeps GDM; so does a `gdm-session-worker` in GDM's own cgroup
+     whose process title names a person's login (`pam/gdm-password`,
+     `gdm-autologin`, `gdm-fingerprint`, `gdm-smartcard`). The worker that
+     launches the greeter (`gdm-launch-environment`) does not count: a
+     greeter that hangs after it started is the case the watch is for;
   4. `systemctl restart --no-block gdm.service` (or `gdm3.service`, the only
      two units the watch will name);
   5. it waits up to 30 s for the login screen and records the outcome.

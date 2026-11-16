@@ -67,29 +67,56 @@ pub const GDM_CONFIG_FILES: [&str; 4] = [
     "/etc/gdm/daemon.conf",
 ];
 
-/// Whether any of GDM's configuration turns on automatic or timed login in
-/// its `[daemon]` section. GDM's boolean keys accept `true` and `1`
-/// (GKeyFile); anything else is off. With either on, the login screen may
-/// never appear by design, and the watch never restarts GDM.
-pub fn automatic_login(files: &[String]) -> bool {
-    files.iter().any(|text| {
+/// What GDM's configuration says about logging someone in without the login
+/// screen, read from every file's `[daemon]` sections (a section may repeat;
+/// a header may carry spaces). Boolean keys accept `true` and `1`, as
+/// GKeyFile does; anything else is off.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct GdmLogin {
+    /// `AutomaticLoginEnable`: no login screen at all, so the watch never
+    /// restarts GDM.
+    pub automatic: bool,
+    /// `TimedLoginEnable`, with `TimedLoginDelay` (GDM's default 30 s): the
+    /// login screen shows and logs someone in after the delay.
+    pub timed_delay: Option<Duration>,
+}
+
+/// GDM's own default `TimedLoginDelay`.
+pub const GDM_TIMED_LOGIN_DELAY: Duration = Duration::from_secs(30);
+
+pub fn gdm_login(files: &[String]) -> GdmLogin {
+    let mut automatic = false;
+    let mut timed = false;
+    let mut delay = None;
+    for text in files {
         let mut in_daemon = false;
-        text.lines().any(|line| {
+        for line in text.lines() {
             let line = line.trim();
-            if line.starts_with('[') {
-                in_daemon = line.eq_ignore_ascii_case("[daemon]");
-                return false;
+            if let Some(header) = line.strip_prefix('[') {
+                let name = header.trim_end().strip_suffix(']').unwrap_or(header);
+                in_daemon = name.trim().eq_ignore_ascii_case("daemon");
+                continue;
             }
             if !in_daemon || line.starts_with('#') {
-                return false;
+                continue;
             }
             let Some((key, value)) = line.split_once('=') else {
-                return false;
+                continue;
             };
-            matches!(key.trim(), "AutomaticLoginEnable" | "TimedLoginEnable")
-                && matches!(value.trim().to_ascii_lowercase().as_str(), "true" | "1")
-        })
-    })
+            let value = value.trim();
+            let on = matches!(value.to_ascii_lowercase().as_str(), "true" | "1");
+            match key.trim() {
+                "AutomaticLoginEnable" => automatic |= on,
+                "TimedLoginEnable" => timed |= on,
+                "TimedLoginDelay" => delay = value.parse::<u64>().ok().map(Duration::from_secs),
+                _ => {}
+            }
+        }
+    }
+    GdmLogin {
+        automatic,
+        timed_delay: timed.then(|| delay.unwrap_or(GDM_TIMED_LOGIN_DELAY)),
+    }
 }
 
 /// The watch's timings. [`Timings::BOOT`] is what ships.
@@ -173,7 +200,8 @@ fn decide(
     if records.handled(boot_id) {
         return LastBootOutcome::AlreadyHandled;
     }
-    if automatic_login(&host.gdm_config()) {
+    let gdm = gdm_login(&host.gdm_config());
+    if gdm.automatic {
         return LastBootOutcome::AutomaticLogin;
     }
 
@@ -208,7 +236,13 @@ fn decide(
     };
 
     // The login screen, or a person, before the deadline.
-    let deadline = active_since + timings.deadline;
+    // Timed login shows the login screen too, so it is watched; the person
+    // gets the whole delay, and the usual 30 s past it, before anything acts.
+    let wait = match gdm.timed_delay {
+        Some(delay) => timings.deadline.max(delay + timings.deadline),
+        None => timings.deadline,
+    };
+    let deadline = active_since + wait;
     let sessions = loop {
         let sessions = match host.sessions() {
             Ok(sessions) => sessions,
@@ -548,8 +582,19 @@ fn command(program: &str, arguments: &[&str]) -> Result<String, String> {
     }
 }
 
-/// Whether a process named `gdm-session-worker` (its `comm` is cut to 15
-/// bytes) runs in `unit`'s cgroup, read from `proc`.
+/// The PAM services of a person logging in. GDM's greeter is launched by a
+/// worker for `gdm-launch-environment`, which is never counted: a greeter
+/// that hangs after its worker started must still be restarted.
+pub const PERSON_LOGIN_SERVICES: [&str; 4] = [
+    "pam/gdm-password",
+    "pam/gdm-autologin",
+    "pam/gdm-fingerprint",
+    "pam/gdm-smartcard",
+];
+
+/// Whether a `gdm-session-worker` (its `comm` is cut to 15 bytes) logging a
+/// person in runs in `unit`'s cgroup, read from `proc`. The worker names its
+/// PAM service in its process title, `gdm-session-worker [pam/gdm-password]`.
 pub fn login_worker_in(proc: &Path, unit: &str) -> bool {
     let Ok(entries) = std::fs::read_dir(proc) else {
         return false;
@@ -558,7 +603,13 @@ pub fn login_worker_in(proc: &Path, unit: &str) -> bool {
     entries.filter_map(Result::ok).any(|entry| {
         let dir = entry.path();
         let comm = std::fs::read_to_string(dir.join("comm")).unwrap_or_default();
+        let title = std::fs::read(dir.join("cmdline"))
+            .map(|bytes| String::from_utf8_lossy(&bytes).replace('\0', " "))
+            .unwrap_or_default();
         comm.trim() == "gdm-session-wor"
+            && PERSON_LOGIN_SERVICES
+                .iter()
+                .any(|service| title.contains(&format!("[{service}]")))
             && std::fs::read_to_string(dir.join("cgroup"))
                 .unwrap_or_default()
                 .lines()
@@ -1219,26 +1270,61 @@ mod tests {
     }
 
     #[test]
-    fn automatic_or_timed_login_in_any_gdm_file_means_never_restart() {
+    fn gdm_configuration_is_read_from_every_daemon_section() {
         let on = "[daemon]\nAutomaticLoginEnable=True\nAutomaticLogin=tim\n".to_string();
-        let timed = "# x\n[daemon]\nTimedLoginEnable = 1\n".to_string();
         let commented = "[daemon]\n#AutomaticLoginEnable=true\n".to_string();
         let other_section = "[security]\nAutomaticLoginEnable=true\n".to_string();
         let off = "[daemon]\nAutomaticLoginEnable=false\n".to_string();
-        assert!(automatic_login(std::slice::from_ref(&on)));
-        assert!(automatic_login(&[off.clone(), timed]));
-        assert!(!automatic_login(&[commented, other_section, off]));
-        assert!(!automatic_login(&[]));
+        assert!(gdm_login(std::slice::from_ref(&on)).automatic);
+        assert_eq!(
+            gdm_login(&[commented, other_section, off]),
+            GdmLogin::default()
+        );
+        assert_eq!(gdm_login(&[]), GdmLogin::default());
+        // A header with spaces, and [daemon] twice with another between.
+        let spaced = "[daemon]   \nWaylandEnable=true\n[security]\nx=1\n[ daemon ]\nAutomaticLoginEnable = 1\n"
+            .to_string();
+        assert!(gdm_login(&[spaced]).automatic);
+        let timed =
+            "[daemon]\nTimedLoginEnable=true\n[debug]\n[daemon]\nTimedLoginDelay=90\n".to_string();
+        assert_eq!(
+            gdm_login(&[timed]),
+            GdmLogin {
+                automatic: false,
+                timed_delay: Some(Duration::from_secs(90))
+            }
+        );
+        let timed_default = "[daemon]\nTimedLoginEnable=1\n".to_string();
+        assert_eq!(
+            gdm_login(&[timed_default]).timed_delay,
+            Some(GDM_TIMED_LOGIN_DELAY)
+        );
+    }
 
+    #[test]
+    fn automatic_login_means_never_restart() {
         let (_dir, records) = records();
         let mut host = Fake::new();
-        host.config = vec![on];
+        host.config = vec!["[daemon]\nAutomaticLoginEnable=true\n".to_string()];
         assert_eq!(
             run(&host, &records, Timings::BOOT),
             LastBootOutcome::AutomaticLogin
         );
         assert!(host.restarts.borrow().is_empty());
         assert!(records.events().is_empty());
+    }
+
+    #[test]
+    fn timed_login_is_watched_after_its_delay_plus_thirty_seconds() {
+        let (_dir, records) = records();
+        let mut host = Fake::new();
+        host.config = vec!["[daemon]\nTimedLoginEnable=true\nTimedLoginDelay=60\n".to_string()];
+        run(&host, &records, Timings::BOOT);
+        let restarts = host.restarts.borrow();
+        assert_eq!(restarts.len(), 1);
+        // GDM active at 6 s, plus 60 s of delay, plus 30 s.
+        assert!(restarts[0].0 >= Duration::from_secs(96), "{restarts:?}");
+        assert_eq!(records.events()[0].waited_seconds, 90);
     }
 
     #[test]
@@ -1255,22 +1341,38 @@ mod tests {
     }
 
     #[test]
-    fn a_session_worker_is_found_only_in_gdms_own_cgroup() {
+    fn only_a_person_login_worker_in_gdms_own_cgroup_counts() {
         let proc = tempfile::tempdir().unwrap();
-        let process = |pid: &str, comm: &str, cgroup: &str| {
+        let process = |pid: &str, comm: &str, title: &str, cgroup: &str| {
             let dir = proc.path().join(pid);
             std::fs::create_dir_all(&dir).unwrap();
             std::fs::write(dir.join("comm"), format!("{comm}\n")).unwrap();
+            // A process title padded with NULs, as setproctitle leaves it.
+            std::fs::write(dir.join("cmdline"), format!("{title}\0\0")).unwrap();
             std::fs::write(dir.join("cgroup"), format!("0::{cgroup}\n")).unwrap();
         };
-        process("1", "systemd", "/init.scope");
+        process("1", "systemd", "/sbin/init", "/init.scope");
         process(
             "900",
             "gdm-session-wor",
+            "gdm-session-worker [pam/gdm-password]",
             "/user.slice/user-1000.slice/session-2.scope",
         );
         assert!(!login_worker_in(proc.path(), "gdm.service"));
-        process("901", "gdm-session-wor", "/system.slice/gdm.service");
+        // The worker that launches the greeter is not a person logging in.
+        process(
+            "901",
+            "gdm-session-wor",
+            "gdm-session-worker [pam/gdm-launch-environment]",
+            "/system.slice/gdm.service",
+        );
+        assert!(!login_worker_in(proc.path(), "gdm.service"));
+        process(
+            "902",
+            "gdm-session-wor",
+            "gdm-session-worker [pam/gdm-password]",
+            "/system.slice/gdm.service",
+        );
         assert!(login_worker_in(proc.path(), "gdm.service"));
         assert!(!login_worker_in(proc.path(), "gdm3.service"));
     }

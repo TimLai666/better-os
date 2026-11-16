@@ -96,3 +96,8 @@ the owner having to notice and report it.
   administrator disabled; an earlier boot's `pending` record shown as
   interrupted. The setting is removed with the package; ADR 0033 says why
   the uninstall box does not apply.
+- Re-review: only a person's login worker (`pam/gdm-password`,
+  `-autologin`, `-fingerprint`, `-smartcard`) holds a restart, never the
+  greeter's `gdm-launch-environment`; timed login is watched with the
+  deadline at `TimedLoginDelay` + 30 s; the GDM config parser takes padded
+  headers and repeated `[daemon]` sections.
