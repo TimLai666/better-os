@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC1091,SC2034 # the library is sourced with its header variables
+# shellcheck disable=SC1091,SC2015,SC2030,SC2031,SC2034 # each case sources the library in a subshell with its header variables; checks read "test && pass || fail"
 # Drives packaging/maintainer/autostart-overrides.sh against a scratch passwd
 # file and scratch homes. Nothing outside the scratch directory is read or
 # written.
