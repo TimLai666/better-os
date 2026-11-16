@@ -65,6 +65,12 @@ contract.
   confirmation that is ticked by default; unticked, it stays for a reinstall.
   Each manifest's `paths` names that data so the manager knows what to
   delete.
+- Everything Better OS offers is complete after one action in Better
+  Manager (owner, 2026-11-16): installing a component, turning a feature on,
+  or switching something over needs no terminal command, no further setting,
+  and no second step the person has to know about; undoing it is one action
+  too and leaves the machine as it was. A feature that works only after a
+  manual step is not done.
 - A component's systemd **user** units are managed by `manager-core`, never by
   a window or a command directly. `RealDriver` takes the controller through
   `with_user_units`; a driver built without one manages no units. Enabling,
