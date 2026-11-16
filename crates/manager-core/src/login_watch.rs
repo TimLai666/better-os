@@ -6,7 +6,8 @@
 //! and `better-manager-cli doctor` never disagree.
 
 pub use manager_ipc::boot_watch::{
-    Event, Evidence, LastBoot, LastBootOutcome, Records, RestartOutcome, Setting,
+    Event, Evidence, LastBoot, LastBootOutcome, Records, RestartOutcome, Setting, current_boot_id,
+    interrupted,
 };
 
 /// How long after a late login screen Home keeps saying so. Health and the
@@ -20,15 +21,29 @@ pub struct Report {
     pub last_boot: Option<LastBoot>,
     /// Newest first.
     pub events: Vec<Event>,
+    /// False when this reader may not open the evidence: the events then
+    /// carry no journal excerpts, and the details need an administrator.
+    pub evidence_readable: bool,
+    /// This boot's id, to tell a record cut off on an earlier boot.
+    pub current_boot: Option<String>,
 }
 
 impl Report {
     pub fn read(records: &Records) -> Self {
+        let events = records.read_events();
         Self {
             setting: records.setting(),
             last_boot: records.last_boot(),
-            events: records.events(),
+            events: events.events,
+            evidence_readable: events.evidence_readable,
+            current_boot: current_boot_id(),
         }
+    }
+
+    /// Whether `event` asked for a restart on an earlier boot and never wrote
+    /// how it ended: the watch was cut off.
+    pub fn interrupted(&self, event: &Event) -> bool {
+        interrupted(event, self.current_boot.as_deref())
     }
 
     /// The event Home tells the person about: the newest, while it is less
@@ -45,7 +60,8 @@ impl Report {
         match event.restart {
             RestartOutcome::Recovered { .. }
             | RestartOutcome::AppearedBeforeRestart
-            | RestartOutcome::PersonAppeared => Severity::Warning,
+            | RestartOutcome::PersonAppeared
+            | RestartOutcome::LoginInProgress => Severity::Warning,
             RestartOutcome::Pending
             | RestartOutcome::StillMissing { .. }
             | RestartOutcome::RestartFailed { .. } => Severity::Error,
@@ -124,6 +140,8 @@ mod tests {
         let report = Report {
             setting: Setting::OnByDefault,
             last_boot: None,
+            evidence_readable: true,
+            current_boot: None,
             events: vec![
                 event(1_000_000, RestartOutcome::Recovered { after_seconds: 5 }),
                 event(500_000, RestartOutcome::StillMissing { waited_seconds: 30 }),
@@ -157,6 +175,21 @@ mod tests {
         ] {
             assert_eq!(Report::severity(&event(0, outcome)), Severity::Error);
         }
+    }
+
+    #[test]
+    fn a_report_calls_an_earlier_boots_pending_record_interrupted() {
+        let mut pending = event(0, RestartOutcome::Pending);
+        let report = Report {
+            setting: Setting::On,
+            last_boot: None,
+            events: Vec::new(),
+            evidence_readable: true,
+            current_boot: Some("f".repeat(32)),
+        };
+        assert!(report.interrupted(&pending));
+        pending.boot_id = "f".repeat(32);
+        assert!(!report.interrupted(&pending));
     }
 
     #[test]

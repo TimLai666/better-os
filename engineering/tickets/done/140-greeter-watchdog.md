@@ -83,3 +83,16 @@ the owner having to notice and report it.
   check is the closest evidence, and it cannot open a greeter session, so
   "the login screen appeared in time" is proved by fakes only.
 - The cause of the hang is still ticket 139's.
+
+## Notes
+
+- Security review (2026-11-16), all addressed: no
+  restart with GDM automatic or timed login on, or with a
+  `gdm-session-worker` in GDM's cgroup; only a closed session is skipped
+  when logind is read; `RemainAfterExit=yes` and every run's `last-boot.json`
+  marking the boot as watched; this boot's record never pruned; evidence
+  0640 root:adm in `evidence/` (0750) with a public summary; `O_NOFOLLOW`
+  and `create_new` on writes; an upgrade never re-enables a unit an
+  administrator disabled; an earlier boot's `pending` record shown as
+  interrupted. The setting is removed with the package; ADR 0033 says why
+  the uninstall box does not apply.

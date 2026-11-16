@@ -34,6 +34,10 @@ and read the journal.
   up after 60 s if GDM never becomes active (systemd reports a display
   manager that fails to start; this watch is for one that starts and then
   shows nothing).
+- **Automatic login.** When any of `/etc/gdm3/custom.conf`,
+  `/etc/gdm3/daemon.conf`, `/etc/gdm/custom.conf`, or `/etc/gdm/daemon.conf`
+  turns on `AutomaticLoginEnable` or `TimedLoginEnable` in `[daemon]`, no
+  login screen is expected and GDM is never restarted on that machine.
 - **The rule.** Once GDM is active, logind is asked every second, read-only,
   over D-Bus. A session of class `user*` or `lock-screen` anywhere means a
   person is there, and the boot is left alone. GDM's greeter, or any
@@ -45,23 +49,41 @@ and read the journal.
   2. the event record is written, outcome `pending`, before anything is
      restarted, so a watch killed later still marks the boot;
   3. logind is asked once more, and a person who logged in on a text console
-     meanwhile keeps GDM;
+     meanwhile keeps GDM; so does a `gdm-session-worker` running in GDM's own
+     cgroup, a login GDM is in the middle of;
   4. `systemctl restart --no-block gdm.service` (or `gdm3.service`, the only
      two units the watch will name);
   5. it waits up to 30 s for the login screen and records the outcome.
-- **At most once per boot.** The record's name carries the boot id; a boot
-  that has one is never restarted again, even when the unit is run by hand.
-  Without a readable boot id nothing is done.
+- **At most once per boot.** The unit has `RemainAfterExit=yes`, so a second
+  `systemctl start` runs nothing. Every run writes `last-boot.json` with the
+  boot id, whatever it found, and an event record's name carries the boot id;
+  a boot named by either is never watched again, even when the unit is
+  restarted by hand. Without a readable boot id nothing is done. logind
+  errors other than a session that closed while being read (`UnknownObject`,
+  `NoSuchSession`) stop the watch with nothing restarted.
 - **No GDM.** When `display-manager.service` is not found, or resolves to
   another display manager, the watch does nothing and says so in
   `last-boot.json`.
-- **Records.** `/var/lib/better-os/boot-watch/` (`StateDirectory=`, 0755),
-  files 0644 so the person and Better Manager read them unprivileged:
-  `last-boot.json` (what the watch did on the latest boot, every boot) and
-  `<unix seconds>-<boot id>.json` per late login screen, the newest 20 kept.
-  Each journal section keeps its last 64 KiB, whole lines; nothing is
-  redacted, and nothing beyond what those journal lines already carry is
-  added (sessions are kept by id, class, type, and seat, not by user name).
+- **Records, and who reads them.** `/var/lib/better-os/boot-watch/`
+  (`StateDirectory=`, 0755) holds what anyone may read, 0644:
+  `settings.json`, `last-boot.json` (what the watch did on the latest boot),
+  and `summary.json` (every record without its evidence). The evidence,
+  `evidence/<unix seconds>-<boot id>.json` per late login screen, is 0640 in a
+  0750 directory, both root:adm. The journal excerpts can carry what any
+  system journal carries (user names in logind's lines, device serials), and
+  `adm` is the group Ubuntu already trusts with the system journal: the first
+  user of an install is in it, a second account usually is not. So the person
+  who administers the machine sees everything, and anyone else sees what
+  happened and is told the details need an administrator. Each journal
+  section keeps its last 64 KiB, whole lines, and nothing is redacted from
+  them; sessions are kept by id, class, type, and seat, not by user name. The
+  newest 20 events are kept, and this boot's own record is never the one
+  pruned, whatever its clock named it. Every file is written to a temporary
+  created new with `O_NOFOLLOW` and renamed into place, so a planted link
+  is never written through.
+- **Interrupted.** A record still `pending` from an earlier boot is shown as
+  interrupted: the restart was asked for and the watch never wrote how it
+  ended.
 - **What a person sees.** Home shows "The login screen didn't appear at
   startup on {date}" with what Better OS did, for a week after it happened,
   as a warning when the login screen came back and an error when it did not.
@@ -73,8 +95,17 @@ and read the journal.
   `org.betteros.manager.login-screen-watch` (`auth_admin_keep`). The window
   asks; it never writes. An unreadable file means the watch does nothing and
   Health says the setting could not be read.
-- **Uninstall.** The prerm disables the unit on removal and the postrm
-  removes the whole directory, records and setting, on removal and on purge.
+- **Install and uninstall.** The postinst enables the unit on a first install
+  and, on an upgrade, only when it was enabled (debhelper's `was-enabled`
+  shape), so an administrator's `systemctl disable` survives upgrades. The
+  prerm disables it on removal and the postrm removes the whole directory,
+  records and setting, on removal and on purge.
+- **The setting goes with the package.** AGENTS.md's "Also delete my
+  settings and history" box belongs to a component Better Manager
+  uninstalls. `better-manager-daemon` is not one: it has no manifest, Better
+  Manager never offers to remove it, and it leaves only through apt, which
+  shows no box. Its on/off choice is therefore removed with it, as the charge
+  limit's stored choice is on purge. A reinstall starts with the watch on.
 
 ## Consequences
 

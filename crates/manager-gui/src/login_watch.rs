@@ -43,9 +43,12 @@ impl LoginWatchState {
         self.report = Some(Report::read(&records()));
     }
 
-    /// The event Home tells of, for the window's snapshot.
-    pub(crate) fn recent(&self, now: u64) -> Option<Event> {
-        self.report.as_ref()?.recent(now).cloned()
+    /// The event Home tells of, for the window's snapshot, and whether it
+    /// was cut off on an earlier boot.
+    pub(crate) fn recent(&self, now: u64) -> Option<(Event, bool)> {
+        let report = self.report.as_ref()?;
+        let event = report.recent(now)?;
+        Some((event.clone(), report.interrupted(event)))
     }
 }
 
@@ -58,6 +61,10 @@ pub(crate) struct Copy {
     pub(crate) still_missing: &'static str,
     pub(crate) restart_failed: &'static str,
     pub(crate) pending: &'static str,
+    pub(crate) interrupted: &'static str,
+    pub(crate) login_in_progress: &'static str,
+    pub(crate) automatic_login: &'static str,
+    pub(crate) details_need_admin: &'static str,
     pub(crate) person_appeared: &'static str,
     pub(crate) appeared_before_restart: &'static str,
     pub(crate) view: &'static str,
@@ -103,6 +110,10 @@ const ZH_TW: Copy = Copy {
     still_missing: "Better OS 重新啟動了它，但登入畫面還是沒有出現。",
     restart_failed: "Better OS 無法重新啟動它：{details}",
     pending: "Better OS 要求重新啟動它，但沒有記錄到結果。",
+    interrupted: "Better OS 要求重新啟動它時被中斷，沒來得及記錄結果。",
+    login_in_progress: "GDM 正在處理登入，所以沒有重新啟動。",
+    automatic_login: "這台電腦設定成自動登入，所以不會出現登入畫面，也不會重新啟動 GDM。",
+    details_need_admin: "完整紀錄含系統日誌節錄，只有管理員能看。可以用終端機執行 sudo ls {dir} 查看。",
     person_appeared: "重新啟動前已經有人登入，所以沒有重新啟動。",
     appeared_before_restart: "它在重新啟動前出現了，所以沒有重新啟動。",
     view: "查看",
@@ -141,6 +152,10 @@ const EN_US: Copy = Copy {
     still_missing: "Better OS restarted it, but it still didn't appear.",
     restart_failed: "Better OS couldn't restart it: {details}",
     pending: "Better OS asked to restart it, and no result was recorded.",
+    interrupted: "Better OS was interrupted while restarting it, before it could record how it ended.",
+    login_in_progress: "GDM was in the middle of a login, so it wasn't restarted.",
+    automatic_login: "This PC logs in automatically, so there's no login screen and GDM is never restarted.",
+    details_need_admin: "The full records include journal excerpts, so only an administrator can read them: sudo ls {dir}",
     person_appeared: "Someone logged in before the restart, so it wasn't restarted.",
     appeared_before_restart: "It appeared just before the restart, so it wasn't restarted.",
     view: "View",
@@ -181,7 +196,12 @@ pub(crate) fn header(locale: Locale, event: &Event, offset: UtcOffset) -> String
 
 /// The newest record in one line, for the card's description: what
 /// happened, then what Better OS did.
-pub(crate) fn summary(locale: Locale, event: &Event, offset: UtcOffset) -> String {
+pub(crate) fn summary(
+    locale: Locale,
+    event: &Event,
+    interrupted: bool,
+    offset: UtcOffset,
+) -> String {
     let separator = match locale.resolved() {
         Locale::ZhTw => "。",
         Locale::EnUs | Locale::System => ". ",
@@ -189,14 +209,17 @@ pub(crate) fn summary(locale: Locale, event: &Event, offset: UtcOffset) -> Strin
     format!(
         "{}{separator}{}",
         header(locale, event, offset),
-        outcome(locale, &event.restart)
+        outcome(locale, &event.restart, interrupted)
     )
 }
 
-/// What Better OS did about it.
-pub(crate) fn outcome(locale: Locale, restart: &RestartOutcome) -> String {
+/// What Better OS did about it. `interrupted`: a `pending` restart from an
+/// earlier boot, whose end was never recorded.
+pub(crate) fn outcome(locale: Locale, restart: &RestartOutcome, interrupted: bool) -> String {
     let c = copy(locale);
     match restart {
+        RestartOutcome::Pending if interrupted => c.interrupted.to_string(),
+        RestartOutcome::LoginInProgress => c.login_in_progress.to_string(),
         RestartOutcome::Recovered { after_seconds } => {
             c.recovered.replace("{n}", &after_seconds.to_string())
         }
@@ -249,6 +272,7 @@ pub(crate) fn last_boot_line(locale: Locale, report: &Report) -> String {
         LastBootOutcome::Restarted => c.restarted.to_string(),
         LastBootOutcome::AlreadyHandled => c.already_handled.to_string(),
         LastBootOutcome::TurnedOff => c.turned_off.to_string(),
+        LastBootOutcome::AutomaticLogin => c.automatic_login.to_string(),
         LastBootOutcome::SettingUnreadable => c.setting_unreadable.to_string(),
         LastBootOutcome::NoGdm {
             display_manager: Some(unit),
@@ -285,7 +309,7 @@ pub(crate) fn write_error(locale: Locale, error: &manager_platform::PlatformErro
 /// Home's card for a late login screen in the last week (spec section 3,
 /// row 2).
 pub(crate) fn attention(snapshot: &Snapshot) -> Vec<AttentionItem> {
-    let Some(event) = &snapshot.login_screen_late else {
+    let Some((event, interrupted)) = &snapshot.login_screen_late else {
         return Vec::new();
     };
     let offset = UtcOffset::for_system(event.detected_at_unix_seconds);
@@ -297,7 +321,7 @@ pub(crate) fn attention(snapshot: &Snapshot) -> Vec<AttentionItem> {
         },
         row: row::APPS_LOGIN_SCREEN,
         header: header(snapshot.locale, event, offset),
-        description: outcome(snapshot.locale, &event.restart),
+        description: outcome(snapshot.locale, &event.restart, *interrupted),
         action_label: copy(snapshot.locale).view,
         action: AttentionAction::Open(Page::Health),
     }]
@@ -341,19 +365,19 @@ mod tests {
             "The login screen didn't appear at startup on 2026-11-16 20:43"
         );
         assert_eq!(
-            outcome(Locale::EnUs, &late.restart),
+            outcome(Locale::EnUs, &late.restart, false),
             "Better OS restarted it, and it appeared 5 s later."
         );
         assert_eq!(
-            outcome(Locale::ZhTw, &late.restart),
+            outcome(Locale::ZhTw, &late.restart, false),
             "Better OS 已重新啟動它，5 秒後登入畫面出現了。"
         );
         assert_eq!(
-            summary(Locale::ZhTw, &late, TAIPEI),
+            summary(Locale::ZhTw, &late, false, TAIPEI),
             "2026-11-16 20:43 開機時登入畫面沒有出現。Better OS 已重新啟動它，5 秒後登入畫面出現了。"
         );
         assert_eq!(
-            summary(Locale::EnUs, &late, TAIPEI),
+            summary(Locale::EnUs, &late, false, TAIPEI),
             "The login screen didn't appear at startup on 2026-11-16 20:43. Better OS restarted it, and it appeared 5 s later."
         );
     }
@@ -369,10 +393,13 @@ mod tests {
             },
             RestartOutcome::PersonAppeared,
             RestartOutcome::AppearedBeforeRestart,
+            RestartOutcome::LoginInProgress,
         ] {
             for locale in [Locale::ZhTw, Locale::EnUs] {
-                let words = outcome(locale, &restart);
-                assert!(!words.is_empty() && !words.contains('{'), "{words}");
+                for interrupted in [false, true] {
+                    let words = outcome(locale, &restart, interrupted);
+                    assert!(!words.is_empty() && !words.contains('{'), "{words}");
+                }
             }
         }
     }
@@ -400,7 +427,8 @@ mod tests {
     fn home_shows_a_recent_event_as_a_warning_or_an_error_opening_health() {
         let mut snapshot = Snapshot::empty(Locale::EnUs);
         assert!(attention(&snapshot).is_empty());
-        snapshot.login_screen_late = Some(event(RestartOutcome::Recovered { after_seconds: 5 }));
+        snapshot.login_screen_late =
+            Some((event(RestartOutcome::Recovered { after_seconds: 5 }), false));
         let items = attention(&snapshot);
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].severity, Severity::Warning);
@@ -410,9 +438,19 @@ mod tests {
                 .header
                 .starts_with("The login screen didn't appear at startup on ")
         );
-        snapshot.login_screen_late =
-            Some(event(RestartOutcome::StillMissing { waited_seconds: 30 }));
+        snapshot.login_screen_late = Some((
+            event(RestartOutcome::StillMissing { waited_seconds: 30 }),
+            false,
+        ));
         assert_eq!(attention(&snapshot)[0].severity, Severity::Error);
+        // A restart cut off on an earlier boot says so.
+        snapshot.login_screen_late = Some((event(RestartOutcome::Pending), true));
+        let items = attention(&snapshot);
+        assert_eq!(items[0].severity, Severity::Error);
+        assert_eq!(
+            items[0].description,
+            "Better OS was interrupted while restarting it, before it could record how it ended."
+        );
     }
 
     #[test]
@@ -426,6 +464,8 @@ mod tests {
                 outcome,
             }),
             events: Vec::new(),
+            evidence_readable: true,
+            current_boot: None,
         };
         assert_eq!(
             last_boot_line(
@@ -447,7 +487,13 @@ mod tests {
             setting: Setting::OnByDefault,
             last_boot: None,
             events: Vec::new(),
+            evidence_readable: true,
+            current_boot: None,
         };
+        assert_eq!(
+            last_boot_line(Locale::ZhTw, &report(LastBootOutcome::AutomaticLogin)),
+            "這台電腦設定成自動登入，所以不會出現登入畫面，也不會重新啟動 GDM。"
+        );
         assert_eq!(
             last_boot_line(Locale::EnUs, &never),
             "No startup has been checked yet. The watch starts with the next one."

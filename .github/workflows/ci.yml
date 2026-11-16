@@ -177,6 +177,10 @@ jobs:
           bash packaging/tests/autostart-overrides.test.sh
           bash -n packaging/boot-watch/run.sh packaging/boot-watch/check.sh
           shellcheck packaging/boot-watch/run.sh packaging/boot-watch/check.sh
+          sh -n packaging/maintainer/greeter-watch.sh
+          shellcheck --shell=sh packaging/maintainer/greeter-watch.sh
+          shellcheck packaging/tests/greeter-watch.test.sh
+          bash packaging/tests/greeter-watch.test.sh
       # ADR 0028: the handoff a privileged service of 0.2.12 or older is
       # updated through, against fake dpkg, systemd, and apt.
       - name: Lint and test the privileged service handoff

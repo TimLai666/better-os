@@ -1206,6 +1206,7 @@ impl ManagerApp {
                 Some(event) => login_watch::summary(
                     self.locale,
                     event,
+                    report.interrupted(event),
                     crate::pages::keep_awake::localtime::UtcOffset::for_system(
                         event.detected_at_unix_seconds,
                     ),
@@ -1248,18 +1249,30 @@ impl ManagerApp {
             let offset = crate::pages::keep_awake::localtime::UtcOffset::for_system(
                 event.detected_at_unix_seconds,
             );
+            let outcome =
+                login_watch::outcome(self.locale, &event.restart, report.interrupted(event));
+            // Someone outside adm sees what happened, not the journal.
+            let description = if report.evidence_readable {
+                format!(
+                    "{outcome}\n{}",
+                    login_watch::evidence_line(self.locale, event)
+                )
+            } else {
+                outcome
+            };
             expander = expander.row(
-                SettingsRow::new(login_watch::header(self.locale, event, offset)).description(
-                    format!(
-                        "{}\n{}",
-                        login_watch::outcome(self.locale, &event.restart),
-                        login_watch::evidence_line(self.locale, event)
-                    ),
-                ),
+                SettingsRow::new(login_watch::header(self.locale, event, offset))
+                    .description(description),
             );
         }
-        if !report.events.is_empty() {
-            let dir = login_watch::records().dir().display().to_string();
+        if !report.events.is_empty() && !report.evidence_readable {
+            let dir = login_watch::records().evidence_dir().display().to_string();
+            expander = expander.row(SettingsRow::new(
+                w.details_need_admin.replace("{dir}", &dir),
+            ));
+        }
+        if !report.events.is_empty() && report.evidence_readable {
+            let dir = login_watch::records().evidence_dir().display().to_string();
             let url = format!("file://{dir}");
             expander = expander.row(
                 SettingsRow::new(w.records_at.replace("{dir}", &dir)).content(

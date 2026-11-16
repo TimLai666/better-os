@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use manager_ipc::boot_watch::{
     Event, Evidence, LastBoot, LastBootOutcome, MAX_EVENTS, MAX_SECTION_BYTES, RECORD_VERSION,
-    Records, RestartOutcome, SessionSeen, Setting, is_boot_id, tail,
+    Records, RestartOutcome, SessionSeen, Setting, Summary, is_boot_id, tail,
 };
 
 /// The display manager units this watch knows. Anything else is left alone.
@@ -52,6 +52,44 @@ pub trait WatchHost {
     fn evidence(&self, unit: &str) -> Evidence;
     /// Asks systemd to restart `unit`, without waiting for the job.
     fn restart(&self, unit: &str) -> Result<(), String>;
+    /// The text of every GDM configuration file there is.
+    fn gdm_config(&self) -> Vec<String>;
+    /// Whether a `gdm-session-worker` runs in `unit`'s cgroup: GDM is in the
+    /// middle of a login (a greeter starting, or a password being checked).
+    fn login_worker_running(&self, unit: &str) -> bool;
+}
+
+/// GDM's configuration files, in the order GDM reads them.
+pub const GDM_CONFIG_FILES: [&str; 4] = [
+    "/etc/gdm3/custom.conf",
+    "/etc/gdm3/daemon.conf",
+    "/etc/gdm/custom.conf",
+    "/etc/gdm/daemon.conf",
+];
+
+/// Whether any of GDM's configuration turns on automatic or timed login in
+/// its `[daemon]` section. GDM's boolean keys accept `true` and `1`
+/// (GKeyFile); anything else is off. With either on, the login screen may
+/// never appear by design, and the watch never restarts GDM.
+pub fn automatic_login(files: &[String]) -> bool {
+    files.iter().any(|text| {
+        let mut in_daemon = false;
+        text.lines().any(|line| {
+            let line = line.trim();
+            if line.starts_with('[') {
+                in_daemon = line.eq_ignore_ascii_case("[daemon]");
+                return false;
+            }
+            if !in_daemon || line.starts_with('#') {
+                return false;
+            }
+            let Some((key, value)) = line.split_once('=') else {
+                return false;
+            };
+            matches!(key.trim(), "AutomaticLoginEnable" | "TimedLoginEnable")
+                && matches!(value.trim().to_ascii_lowercase().as_str(), "true" | "1")
+        })
+    })
 }
 
 /// The watch's timings. [`Timings::BOOT`] is what ships.
@@ -109,7 +147,7 @@ pub fn run(host: &dyn WatchHost, records: &Records, timings: Timings) -> LastBoo
         checked_at_unix_seconds: host.wall_clock(),
         outcome: outcome.clone(),
     };
-    if let Err(error) = write_record(&records.last_boot_path(), &last) {
+    if let Err(error) = write_record(&records.last_boot_path(), &last, Readers::Everyone) {
         eprintln!("better-greeter-watch: could not write the last boot record: {error}");
     }
     outcome
@@ -132,8 +170,11 @@ fn decide(
             details: "no boot id".to_string(),
         };
     }
-    if records.has_event_for(boot_id) {
+    if records.handled(boot_id) {
         return LastBootOutcome::AlreadyHandled;
+    }
+    if automatic_login(&host.gdm_config()) {
+        return LastBootOutcome::AutomaticLogin;
     }
 
     // GDM is the display manager, and it is running.
@@ -204,7 +245,7 @@ fn decide(
         restart: RestartOutcome::Pending,
     };
     let path = records.event_path(detected_at, boot_id);
-    if let Err(error) = write_record(&path, &event) {
+    if let Err(error) = write_event(records, &path, &event) {
         // Without the record, "once per boot" would rest on nothing.
         eprintln!(
             "better-greeter-watch: could not write {}: {error}",
@@ -214,21 +255,23 @@ fn decide(
             details: format!("record not written: {error}"),
         };
     }
-    prune(records);
+    prune(records, boot_id);
 
-    // A person who logged in on a text console in the meantime keeps GDM.
+    // A person who logged in on a text console in the meantime keeps GDM, and
+    // so does a login GDM is in the middle of.
     event.restart = match host.sessions().map(|sessions| look(&sessions)) {
         Ok(Seen::Person) => RestartOutcome::PersonAppeared,
         Ok(Seen::LoginScreen) => RestartOutcome::AppearedBeforeRestart,
         Err(details) => RestartOutcome::RestartFailed {
             details: format!("logind: {details}"),
         },
+        Ok(Seen::Nothing) if host.login_worker_running(&unit) => RestartOutcome::LoginInProgress,
         Ok(Seen::Nothing) => match host.restart(&unit) {
             Err(details) => RestartOutcome::RestartFailed { details },
             Ok(()) => wait_after_restart(host, timings),
         },
     };
-    if let Err(error) = write_record(&path, &event) {
+    if let Err(error) = write_event(records, &path, &event) {
         eprintln!(
             "better-greeter-watch: could not update {}: {error}",
             path.display()
@@ -260,18 +303,65 @@ fn wait_after_restart(host: &dyn WatchHost, timings: Timings) -> RestartOutcome 
 }
 
 /// Keeps the newest [`MAX_EVENTS`] event records.
-pub fn prune(records: &Records) {
-    let names = records.event_names();
-    let excess = names.len().saturating_sub(MAX_EVENTS);
+/// Never this boot's own record, whatever its name sorts as (a clock that was
+/// wrong at boot names it as the oldest).
+pub fn prune(records: &Records, current_boot: &str) {
+    let own = format!("-{current_boot}{}", manager_ipc::boot_watch::EVENT_SUFFIX);
+    let names: Vec<String> = records
+        .event_names()
+        .into_iter()
+        .filter(|name| !name.ends_with(&own))
+        .collect();
+    let others_kept = MAX_EVENTS.saturating_sub(1);
+    let excess = names.len().saturating_sub(others_kept);
     for name in names.iter().take(excess) {
-        let _ = std::fs::remove_file(records.dir().join(name));
+        let _ = std::fs::remove_file(records.evidence_dir().join(name));
     }
 }
 
-/// Writes `value` as JSON, readable by everyone (0644), replacing the file
-/// whole.
-pub fn write_record<T: serde::Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
+/// Who may read a file the watch writes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Readers {
+    /// 0644: the setting, the last boot, the summary.
+    Everyone,
+    /// 0640 root:adm: an event with its journal excerpts.
+    Administrators,
+}
+
+/// The `adm` group's id, when it exists.
+fn evidence_gid() -> Option<libc::gid_t> {
+    let name = std::ffi::CString::new(manager_ipc::boot_watch::EVIDENCE_GROUP).ok()?;
+    // SAFETY: a valid C string; the returned pointer is read at once and
+    // not kept.
+    let group = unsafe { libc::getgrnam(name.as_ptr()) };
+    // SAFETY: non-null pointers from getgrnam point at a valid group.
+    (!group.is_null()).then(|| unsafe { (*group).gr_gid })
+}
+
+/// Hands `path` to root:adm when this runs as root. Elsewhere (a test) the
+/// mode alone is set.
+fn give_to_administrators(path: &Path) -> std::io::Result<()> {
+    // SAFETY: geteuid has no preconditions.
+    if unsafe { libc::geteuid() } != 0 {
+        return Ok(());
+    }
+    let gid = evidence_gid().ok_or_else(|| std::io::Error::other("there is no adm group"))?;
+    std::os::unix::fs::lchown(path, Some(0), Some(gid))
+}
+
+/// Writes `value` as JSON for `readers`, replacing the file whole. The
+/// temporary file is created new and never through a symbolic link, and the
+/// rename replaces a link rather than following it.
+pub fn write_record<T: serde::Serialize>(
+    path: &Path,
+    value: &T,
+    readers: Readers,
+) -> std::io::Result<()> {
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    let mode = match readers {
+        Readers::Everyone => 0o644,
+        Readers::Administrators => 0o640,
+    };
     let dir = path.parent().unwrap_or(Path::new("."));
     std::fs::create_dir_all(dir)?;
     let temporary = dir.join(format!(
@@ -280,17 +370,51 @@ pub fn write_record<T: serde::Serialize>(path: &Path, value: &T) -> std::io::Res
             .and_then(|n| n.to_str())
             .unwrap_or("record")
     ));
+    match std::fs::remove_file(&temporary) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error),
+        _ => {}
+    }
     let json = serde_json::to_vec_pretty(value).map_err(std::io::Error::other)?;
     let mut file = std::fs::OpenOptions::new()
         .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o644)
+        .create_new(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .mode(mode)
         .open(&temporary)?;
     file.write_all(&json)?;
-    file.set_permissions(std::fs::Permissions::from_mode(0o644))?;
+    file.set_permissions(std::fs::Permissions::from_mode(mode))?;
+    if readers == Readers::Administrators {
+        give_to_administrators(&temporary)?;
+    }
     file.sync_all()?;
     std::fs::rename(&temporary, path)
+}
+
+/// Writes an event into the evidence directory (0750 root:adm, the file
+/// 0640), then the public summary of every kept event.
+pub fn write_event(records: &Records, path: &Path, event: &Event) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let evidence = records.evidence_dir();
+    std::fs::create_dir_all(&evidence)?;
+    let meta = std::fs::symlink_metadata(&evidence)?;
+    if !meta.is_dir() {
+        return Err(std::io::Error::other(
+            "the evidence directory is not a directory",
+        ));
+    }
+    std::fs::set_permissions(&evidence, std::fs::Permissions::from_mode(0o750))?;
+    give_to_administrators(&evidence)?;
+    write_record(path, event, Readers::Administrators)?;
+    write_summary(records)
+}
+
+/// Rewrites the public summary from the evidence directory.
+pub fn write_summary(records: &Records) -> std::io::Result<()> {
+    write_record(
+        &records.summary_path(),
+        &Summary::of(&records.events()),
+        Readers::Everyone,
+    )
 }
 
 /// Turns the watch on or off. Written by the privileged service, never by a
@@ -299,6 +423,7 @@ pub fn set_enabled(records: &Records, enabled: bool) -> std::io::Result<()> {
     write_record(
         &records.settings_path(),
         &manager_ipc::boot_watch::Settings { enabled },
+        Readers::Everyone,
     )
 }
 
@@ -423,6 +548,43 @@ fn command(program: &str, arguments: &[&str]) -> Result<String, String> {
     }
 }
 
+/// Whether a process named `gdm-session-worker` (its `comm` is cut to 15
+/// bytes) runs in `unit`'s cgroup, read from `proc`.
+pub fn login_worker_in(proc: &Path, unit: &str) -> bool {
+    let Ok(entries) = std::fs::read_dir(proc) else {
+        return false;
+    };
+    let cgroup_end = format!("/{unit}");
+    entries.filter_map(Result::ok).any(|entry| {
+        let dir = entry.path();
+        let comm = std::fs::read_to_string(dir.join("comm")).unwrap_or_default();
+        comm.trim() == "gdm-session-wor"
+            && std::fs::read_to_string(dir.join("cgroup"))
+                .unwrap_or_default()
+                .lines()
+                .any(|line| line.trim_end().ends_with(&cgroup_end))
+    })
+}
+
+/// The D-Bus error name of a failed call, or its text when it has none.
+fn error_name(error: &zbus::Error) -> String {
+    match error {
+        zbus::Error::MethodError(name, _, _) => name.as_str().to_string(),
+        zbus::Error::FDO(error) => zbus::DBusError::name(error.as_ref()).to_string(),
+        other => other.to_string(),
+    }
+}
+
+/// The errors logind and the bus answer with for a session that has closed.
+pub fn session_gone(error_name: &str) -> bool {
+    matches!(
+        error_name,
+        "org.freedesktop.DBus.Error.UnknownObject"
+            | "org.freedesktop.DBus.Error.UnknownInterface"
+            | "org.freedesktop.login1.NoSuchSession"
+    )
+}
+
 /// `systemctl show`'s `Key=Value` lines.
 pub fn parse_unit_state(text: &str) -> UnitState {
     let field = |key: &str| {
@@ -512,13 +674,19 @@ impl WatchHost for SystemWatchHost {
                 "org.freedesktop.login1.Session",
             )
             .map_err(|e| e.to_string())?;
-            // A session that closed between the list and the question is gone,
-            // not an error.
-            let (Ok(class), Ok(kind)) = (
-                session.get_property::<String>("Class"),
-                session.get_property::<String>("Type"),
-            ) else {
-                continue;
+            // A session that closed between the list and the question is
+            // gone, and only that is skipped. Any other failure means logind
+            // could not say, and the watch restarts nothing on a guess.
+            let read = |name: &str| session.get_property::<String>(name);
+            let (class, kind) = match (read("Class"), read("Type")) {
+                (Ok(class), Ok(kind)) => (class, kind),
+                (Err(error), _) | (_, Err(error)) => {
+                    let name = error_name(&error);
+                    if session_gone(&name) {
+                        continue;
+                    }
+                    return Err(format!("session {id}: {name}: {error}"));
+                }
             };
             sessions.push(SessionSeen {
                 id,
@@ -604,6 +772,17 @@ impl WatchHost for SystemWatchHost {
         }
     }
 
+    fn gdm_config(&self) -> Vec<String> {
+        GDM_CONFIG_FILES
+            .iter()
+            .filter_map(|path| std::fs::read_to_string(path).ok())
+            .collect()
+    }
+
+    fn login_worker_running(&self, unit: &str) -> bool {
+        login_worker_in(Path::new("/proc"), unit)
+    }
+
     fn restart(&self, unit: &str) -> Result<(), String> {
         if !GDM_UNITS.contains(&unit) {
             return Err(format!(
@@ -643,6 +822,8 @@ mod tests {
         restarts: RefCell<Vec<(Duration, String)>>,
         restart_error: Option<String>,
         evidence_reads: Cell<u32>,
+        config: Vec<String>,
+        worker: bool,
     }
 
     impl Fake {
@@ -661,6 +842,8 @@ mod tests {
                 restarts: RefCell::new(Vec::new()),
                 restart_error: None,
                 evidence_reads: Cell::new(0),
+                config: Vec::new(),
+                worker: false,
             }
         }
     }
@@ -705,6 +888,12 @@ mod tests {
                 drm_devices: vec!["card1".to_string(), "renderD128".to_string()],
                 ..Evidence::default()
             }
+        }
+        fn gdm_config(&self) -> Vec<String> {
+            self.config.clone()
+        }
+        fn login_worker_running(&self, _unit: &str) -> bool {
+            self.worker
         }
         fn restart(&self, unit: &str) -> Result<(), String> {
             if let Some(error) = &self.restart_error {
@@ -758,14 +947,14 @@ mod tests {
             records.last_boot().unwrap().outcome,
             LastBootOutcome::Restarted
         );
-        // Readable by the person.
+        // The event for administrators, the last boot for everyone.
         use std::os::unix::fs::PermissionsExt;
         for name in records.event_names() {
-            let mode = std::fs::metadata(records.dir().join(name))
+            let mode = std::fs::metadata(records.evidence_dir().join(name))
                 .unwrap()
                 .permissions()
                 .mode();
-            assert_eq!(mode & 0o777, 0o644);
+            assert_eq!(mode & 0o777, 0o640);
         }
         let mode = std::fs::metadata(records.last_boot_path())
             .unwrap()
@@ -854,6 +1043,12 @@ mod tests {
             fn restart(&self, unit: &str) -> Result<(), String> {
                 self.0.restart(unit)
             }
+            fn gdm_config(&self) -> Vec<String> {
+                self.0.gdm_config()
+            }
+            fn login_worker_running(&self, unit: &str) -> bool {
+                self.0.login_worker_running(unit)
+            }
         }
         let outcome = run(&Late(&host), &records, Timings::BOOT);
         assert_eq!(outcome, LastBootOutcome::Restarted);
@@ -915,8 +1110,12 @@ mod tests {
             LastBootOutcome::TurnedOff
         );
         set_enabled(&records, true).unwrap();
+        // Each case below is its own boot: a boot already watched is never
+        // watched again.
+        let boot = |n: u8| format!("{n:032x}");
 
         let mut host = Fake::new();
+        host.boot = boot(1);
         host.unit.load_state = "not-found".to_string();
         host.unit.id = "display-manager.service".to_string();
         assert_eq!(
@@ -926,6 +1125,7 @@ mod tests {
             }
         );
         let mut host = Fake::new();
+        host.boot = boot(2);
         host.unit.id = "lightdm.service".to_string();
         assert_eq!(
             run(&host, &records, Timings::BOOT),
@@ -941,7 +1141,8 @@ mod tests {
             }
         );
         std::fs::write(records.settings_path(), "garbage").unwrap();
-        let host = Fake::new();
+        let mut host = Fake::new();
+        host.boot = boot(3);
         assert_eq!(
             run(&host, &records, Timings::BOOT),
             LastBootOutcome::SettingUnreadable
@@ -1004,11 +1205,192 @@ mod tests {
             fn restart(&self, unit: &str) -> Result<(), String> {
                 self.0.restart(unit)
             }
+            fn gdm_config(&self) -> Vec<String> {
+                self.0.gdm_config()
+            }
+            fn login_worker_running(&self, unit: &str) -> bool {
+                self.0.login_worker_running(unit)
+            }
         }
         run(&Slow(&host), &records, Timings::BOOT);
         let spent = host.now.get() - Duration::from_secs(5);
         assert!(spent < Duration::from_secs(150), "{spent:?}");
         assert_eq!(host.restarts.borrow().len(), 1);
+    }
+
+    #[test]
+    fn automatic_or_timed_login_in_any_gdm_file_means_never_restart() {
+        let on = "[daemon]\nAutomaticLoginEnable=True\nAutomaticLogin=tim\n".to_string();
+        let timed = "# x\n[daemon]\nTimedLoginEnable = 1\n".to_string();
+        let commented = "[daemon]\n#AutomaticLoginEnable=true\n".to_string();
+        let other_section = "[security]\nAutomaticLoginEnable=true\n".to_string();
+        let off = "[daemon]\nAutomaticLoginEnable=false\n".to_string();
+        assert!(automatic_login(std::slice::from_ref(&on)));
+        assert!(automatic_login(&[off.clone(), timed]));
+        assert!(!automatic_login(&[commented, other_section, off]));
+        assert!(!automatic_login(&[]));
+
+        let (_dir, records) = records();
+        let mut host = Fake::new();
+        host.config = vec![on];
+        assert_eq!(
+            run(&host, &records, Timings::BOOT),
+            LastBootOutcome::AutomaticLogin
+        );
+        assert!(host.restarts.borrow().is_empty());
+        assert!(records.events().is_empty());
+    }
+
+    #[test]
+    fn a_login_gdm_is_in_the_middle_of_is_not_restarted() {
+        let (_dir, records) = records();
+        let mut host = Fake::new();
+        host.worker = true;
+        assert_eq!(
+            run(&host, &records, Timings::BOOT),
+            LastBootOutcome::Restarted
+        );
+        assert!(host.restarts.borrow().is_empty());
+        assert_eq!(records.events()[0].restart, RestartOutcome::LoginInProgress);
+    }
+
+    #[test]
+    fn a_session_worker_is_found_only_in_gdms_own_cgroup() {
+        let proc = tempfile::tempdir().unwrap();
+        let process = |pid: &str, comm: &str, cgroup: &str| {
+            let dir = proc.path().join(pid);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("comm"), format!("{comm}\n")).unwrap();
+            std::fs::write(dir.join("cgroup"), format!("0::{cgroup}\n")).unwrap();
+        };
+        process("1", "systemd", "/init.scope");
+        process(
+            "900",
+            "gdm-session-wor",
+            "/user.slice/user-1000.slice/session-2.scope",
+        );
+        assert!(!login_worker_in(proc.path(), "gdm.service"));
+        process("901", "gdm-session-wor", "/system.slice/gdm.service");
+        assert!(login_worker_in(proc.path(), "gdm.service"));
+        assert!(!login_worker_in(proc.path(), "gdm3.service"));
+    }
+
+    #[test]
+    fn only_a_closed_session_is_skipped_and_any_other_logind_error_stops_the_watch() {
+        assert!(session_gone("org.freedesktop.DBus.Error.UnknownObject"));
+        assert!(session_gone("org.freedesktop.login1.NoSuchSession"));
+        assert!(!session_gone("org.freedesktop.DBus.Error.AccessDenied"));
+        assert!(!session_gone("org.freedesktop.DBus.Error.NoReply"));
+        assert!(!session_gone("org.freedesktop.DBus.Error.Timeout"));
+    }
+
+    #[test]
+    fn a_boot_whose_last_boot_record_names_it_is_never_watched_again() {
+        let (_dir, records) = records();
+        let mut host = Fake::new();
+        host.script = vec![(Duration::ZERO, session("user", "tty", ""))];
+        assert_eq!(
+            run(&host, &records, Timings::BOOT),
+            LastBootOutcome::PersonPresent
+        );
+        // The unit run again by hand, the person gone and nothing on screen.
+        let host = Fake::new();
+        assert_eq!(
+            run(&host, &records, Timings::BOOT),
+            LastBootOutcome::AlreadyHandled
+        );
+        assert!(host.restarts.borrow().is_empty());
+    }
+
+    #[test]
+    fn this_boots_record_survives_pruning_even_when_its_clock_named_it_oldest() {
+        let (_dir, records) = records();
+        for index in 0..MAX_EVENTS as u64 {
+            let mut host = Fake::new();
+            host.boot = format!("{:032x}", index + 100);
+            host.now.set(Duration::from_secs(5 + (index + 1) * 1000));
+            host.unit.active_since = Some(host.now.get() + Duration::from_secs(1));
+            run(&host, &records, Timings::BOOT);
+        }
+        // A boot whose clock was years behind: its name sorts first.
+        struct Behind<'a>(&'a Fake);
+        impl WatchHost for Behind<'_> {
+            fn boot_id(&self) -> Option<String> {
+                self.0.boot_id()
+            }
+            fn display_manager(&self) -> Result<UnitState, String> {
+                self.0.display_manager()
+            }
+            fn monotonic(&self) -> Duration {
+                self.0.monotonic()
+            }
+            fn wall_clock(&self) -> u64 {
+                10
+            }
+            fn sleep(&self, d: Duration) {
+                self.0.sleep(d)
+            }
+            fn sessions(&self) -> Result<Vec<SessionSeen>, String> {
+                self.0.sessions()
+            }
+            fn evidence(&self, unit: &str) -> Evidence {
+                self.0.evidence(unit)
+            }
+            fn restart(&self, unit: &str) -> Result<(), String> {
+                self.0.restart(unit)
+            }
+            fn gdm_config(&self) -> Vec<String> {
+                Vec::new()
+            }
+            fn login_worker_running(&self, _unit: &str) -> bool {
+                false
+            }
+        }
+        let host = Fake::new();
+        run(&Behind(&host), &records, Timings::BOOT);
+        assert_eq!(records.event_names().len(), MAX_EVENTS);
+        assert!(records.has_event_for(BOOT));
+        assert_eq!(host.restarts.borrow().len(), 1);
+    }
+
+    #[test]
+    fn evidence_is_for_administrators_and_the_summary_carries_no_journal() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_dir, records) = records();
+        run(&Fake::new(), &records, Timings::BOOT);
+        let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&records.evidence_dir()), 0o750);
+        let event = records.evidence_dir().join(&records.event_names()[0]);
+        assert_eq!(mode(&event), 0o640);
+        assert_eq!(mode(&records.summary_path()), 0o644);
+        let summary = std::fs::read_to_string(records.summary_path()).unwrap();
+        assert!(
+            !summary.contains("Starting GNOME Display Manager"),
+            "{summary}"
+        );
+        assert!(
+            std::fs::read_to_string(&event)
+                .unwrap()
+                .contains("Starting GNOME Display Manager")
+        );
+    }
+
+    #[test]
+    fn a_record_is_never_written_through_a_planted_link() {
+        let (dir, records) = records();
+        std::fs::create_dir_all(records.dir()).unwrap();
+        let target = dir.path().join("elsewhere");
+        std::fs::write(&target, "keep").unwrap();
+        // A link where the temporary file goes, and one where the record goes.
+        std::os::unix::fs::symlink(&target, records.dir().join(".last-boot.json.tmp")).unwrap();
+        std::os::unix::fs::symlink(&target, records.last_boot_path()).unwrap();
+        run(&Fake::new(), &records, Timings::BOOT);
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "keep");
+        assert!(
+            !std::fs::symlink_metadata(records.last_boot_path())
+                .unwrap()
+                .is_symlink()
+        );
     }
 
     #[test]

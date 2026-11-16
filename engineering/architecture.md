@@ -456,8 +456,9 @@ collection is explicitly configured to include them.
   `--watch-login-screen` mode, run once per boot by
   `better-greeter-watch.service`, which nothing in the boot waits for. It
   reads logind and the journal, restarts `gdm.service` at most once per boot
-  and never while a person's session exists, and writes 0644 records under
-  `/var/lib/better-os/boot-watch/`. `manager_ipc::boot_watch` owns the
+  and never while a person's session or an automatic login exists, and
+  writes under `/var/lib/better-os/boot-watch/`: a 0644 summary anyone
+  reads, and the evidence, journal excerpts, 0640 root:adm in `evidence/`. `manager_ipc::boot_watch` owns the
   records' format, `manager_core::login_watch` what a person is told (Home,
   Health, `better-manager-cli doctor` read the files unprivileged), and the
   off switch is `org.betteros.BootWatch1.SetEnabled` behind

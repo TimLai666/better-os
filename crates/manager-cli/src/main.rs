@@ -346,6 +346,9 @@ fn login_watch_lines(report: &manager_core::login_watch::Report) -> Vec<String> 
                 "already handled once this boot; never restarted twice".to_string()
             }
             LastBootOutcome::TurnedOff => "turned off, nothing checked".to_string(),
+            LastBootOutcome::AutomaticLogin => {
+                "GDM logs in automatically, so it is never restarted".to_string()
+            }
             LastBootOutcome::SettingUnreadable => {
                 "the setting could not be read, nothing checked".to_string()
             }
@@ -372,6 +375,13 @@ fn login_watch_lines(report: &manager_core::login_watch::Report) -> Vec<String> 
     }
     for event in &report.events {
         let outcome = match &event.restart {
+            RestartOutcome::Pending if report.interrupted(event) => {
+                "Better OS asked for a restart and was interrupted before it could record how it ended"
+                    .to_string()
+            }
+            RestartOutcome::LoginInProgress => {
+                "GDM was in the middle of a login, so it was not restarted".to_string()
+            }
             RestartOutcome::Recovered { after_seconds } => {
                 format!("Better OS restarted it, and it appeared {after_seconds} s later")
             }
@@ -396,6 +406,9 @@ fn login_watch_lines(report: &manager_core::login_watch::Report) -> Vec<String> 
             utc_time(event.detected_at_unix_seconds),
             event.waited_seconds
         ));
+        if !report.evidence_readable {
+            continue;
+        }
         let evidence = &event.evidence;
         let graphical = match evidence.seat0_can_graphical {
             Some(true) => "yes",
@@ -420,10 +433,18 @@ fn login_watch_lines(report: &manager_core::login_watch::Report) -> Vec<String> 
         }
     }
     if !report.events.is_empty() {
-        lines.push(format!(
-            "  full records, journal excerpts included: {}",
-            manager_core::login_watch::Records::system().dir().display()
-        ));
+        let dir = manager_core::login_watch::Records::system().evidence_dir();
+        lines.push(if report.evidence_readable {
+            format!(
+                "  full records, journal excerpts included: {}",
+                dir.display()
+            )
+        } else {
+            format!(
+                "  the details, journal excerpts included, are for administrators: sudo ls {}",
+                dir.display()
+            )
+        });
     }
     lines
 }
@@ -1696,6 +1717,8 @@ mod tests {
                 outcome: LastBootOutcome::LoginScreenAppeared { after_seconds: 4 },
             }),
             events: vec![event],
+            evidence_readable: true,
+            current_boot: None,
         };
         let lines = login_watch_lines(&report);
         assert_eq!(lines[0], "login screen watch: on");
@@ -1713,14 +1736,34 @@ mod tests {
             "    seat0 ready for graphics: no · display devices: card1, renderD128 · failed units: 1"
         );
         assert!(
-            lines[4].ends_with("/var/lib/better-os/boot-watch"),
+            lines[4].ends_with("/var/lib/better-os/boot-watch/evidence"),
             "{lines:?}"
         );
+
+        // Someone outside adm: the summary, and where the details are.
+        let mut pending = report.events[0].clone();
+        pending.restart = RestartOutcome::Pending;
+        pending.evidence = Evidence::default();
+        let summary = Report {
+            evidence_readable: false,
+            current_boot: Some("f".repeat(32)),
+            events: vec![pending],
+            ..report
+        };
+        let lines = login_watch_lines(&summary);
+        assert!(
+            lines[2].ends_with("was interrupted before it could record how it ended"),
+            "{lines:?}"
+        );
+        assert!(lines[3].contains("are for administrators"), "{lines:?}");
+        assert_eq!(lines.len(), 4, "{lines:?}");
 
         let off = Report {
             setting: Setting::Off,
             last_boot: None,
             events: Vec::new(),
+            evidence_readable: true,
+            current_boot: None,
         };
         assert_eq!(
             login_watch_lines(&off),

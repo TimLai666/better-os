@@ -15,11 +15,16 @@ Before=shutdown.target
 
 [Service]
 Type=oneshot
+# Once per boot: a later `systemctl start` finds it active and runs nothing.
+# The program also refuses a boot it already recorded.
+RemainAfterExit=yes
 ExecStart=/usr/libexec/better-manager-daemon --watch-login-screen
 # The program gives up well inside this: 60 s for GDM to start, 30 s for the
 # login screen, the evidence, and 30 s after the restart.
 TimeoutStartSec=180
-# The records directory, 0755, its files 0644: readable by the person.
+# The records directory, 0755, with the public files 0644 (the setting, the
+# last boot, the summary). The program keeps the evidence, journal excerpts,
+# in its evidence/ subdirectory, 0750 root:adm with 0640 files (ADR 0033).
 StateDirectory=better-os/boot-watch
 StateDirectoryMode=0755
 UMask=0022

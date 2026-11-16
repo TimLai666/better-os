@@ -118,7 +118,8 @@ pub(crate) struct Snapshot {
     pub(crate) battery_health: Option<u8>,
     /// A startup in the last week whose login screen didn't appear, as the
     /// login screen watch recorded it (ticket 140).
-    pub(crate) login_screen_late: Option<manager_core::login_watch::Event>,
+    /// With whether it was cut off on an earlier boot.
+    pub(crate) login_screen_late: Option<(manager_core::login_watch::Event, bool)>,
 }
 
 impl Snapshot {

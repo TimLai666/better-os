@@ -1,9 +1,12 @@
 //! The login screen watch's records (ADR 0033, ticket 140).
 //!
 //! `better-greeter-watch.service` runs once per boot as root and writes these
-//! files under [`DIR`]; Better Manager's window and command line read them
-//! unprivileged, because every file is 0644. The privileged service writes
-//! [`SETTINGS_FILE`] when the person turns the watch off or on.
+//! files under [`DIR`]. What anyone may read is 0644 there: the setting, what
+//! the latest boot's watch did, and [`SUMMARY_FILE`], every record without
+//! its evidence. The evidence (journal excerpts, failed units) is in
+//! [`EVIDENCE_DIR`], 0750 root:adm with 0640 files, so only an administrator
+//! reads it (ADR 0033). The privileged service writes [`SETTINGS_FILE`] when
+//! the person turns the watch off or on.
 //!
 //! Everything here is read as untrusted input: a file larger than its limit is
 //! skipped before it is parsed, unknown fields are refused, and a file that
@@ -15,6 +18,16 @@ use serde::{Deserialize, Serialize};
 
 /// Where the records live.
 pub const DIR: &str = "/var/lib/better-os/boot-watch";
+
+/// The full records, journal excerpts included: 0750 root:adm.
+pub const EVIDENCE_DIR: &str = "evidence";
+
+/// Every record without its evidence, readable by everyone.
+pub const SUMMARY_FILE: &str = "summary.json";
+
+/// The group that may read the evidence: the first user of an Ubuntu install
+/// is in it, as everyone who may read the system journal is.
+pub const EVIDENCE_GROUP: &str = "adm";
 
 /// The person's choice, written by the privileged service.
 pub const SETTINGS_FILE: &str = "settings.json";
@@ -133,6 +146,9 @@ pub enum RestartOutcome {
     /// A person's session appeared between the deadline and the restart, so
     /// nothing was restarted.
     PersonAppeared,
+    /// GDM was running a login (a `gdm-session-worker`) at the deadline, so
+    /// nothing was restarted.
+    LoginInProgress,
     /// The login screen appeared between the deadline and the restart, so
     /// nothing was restarted.
     AppearedBeforeRestart,
@@ -169,6 +185,10 @@ pub enum LastBootOutcome {
     AlreadyHandled,
     /// The person turned the watch off.
     TurnedOff,
+    /// GDM logs someone in automatically (`AutomaticLoginEnable` or
+    /// `TimedLoginEnable`), so a missing login screen is expected and GDM is
+    /// never restarted.
+    AutomaticLogin,
     /// The settings file could not be read, so the watch did nothing.
     SettingUnreadable,
     /// No GDM: `display_manager` names what is there instead, if anything.
@@ -226,9 +246,18 @@ impl Records {
         self.dir.join(LAST_BOOT_FILE)
     }
 
+    pub fn evidence_dir(&self) -> PathBuf {
+        self.dir.join(EVIDENCE_DIR)
+    }
+
+    pub fn summary_path(&self) -> PathBuf {
+        self.dir.join(SUMMARY_FILE)
+    }
+
     /// The file an event of `boot_id` detected at `at` is written to.
     pub fn event_path(&self, at: u64, boot_id: &str) -> PathBuf {
-        self.dir.join(format!("{at:020}-{boot_id}{EVENT_SUFFIX}"))
+        self.evidence_dir()
+            .join(format!("{at:020}-{boot_id}{EVENT_SUFFIX}"))
     }
 
     pub fn setting(&self) -> Setting {
@@ -253,7 +282,7 @@ impl Records {
 
     /// The event files' names, oldest first.
     pub fn event_names(&self) -> Vec<String> {
-        let Ok(entries) = std::fs::read_dir(&self.dir) else {
+        let Ok(entries) = std::fs::read_dir(self.evidence_dir()) else {
             return Vec::new();
         };
         let mut names: Vec<String> = entries
@@ -272,18 +301,99 @@ impl Records {
             .any(|name| name.ends_with(&suffix))
     }
 
-    /// Every readable event, newest first.
+    /// Whether this boot was already watched: an event record, or
+    /// `last-boot.json` naming it. Either way GDM is never restarted again.
+    pub fn handled(&self, boot_id: &str) -> bool {
+        self.has_event_for(boot_id) || self.last_boot().is_some_and(|last| last.boot_id == boot_id)
+    }
+
+    /// Every event with its evidence, newest first. Needs the evidence
+    /// directory to be readable.
     pub fn events(&self) -> Vec<Event> {
+        let evidence = self.evidence_dir();
         let mut events: Vec<Event> = self
             .event_names()
             .iter()
-            .filter_map(|name| read_capped(&self.dir.join(name), MAX_EVENT_BYTES))
+            .filter_map(|name| read_capped(&evidence.join(name), MAX_EVENT_BYTES))
             .filter_map(|bytes| serde_json::from_slice::<Event>(&bytes).ok())
             .filter(|event| event.version == RECORD_VERSION)
             .collect();
         events.sort_by_key(|event| std::cmp::Reverse(event.detected_at_unix_seconds));
         events
     }
+}
+
+impl Records {
+    /// What this reader may see: every record with its evidence when the
+    /// evidence directory is readable, otherwise the public summary, every
+    /// record with its evidence left empty.
+    pub fn read_events(&self) -> Events {
+        if std::fs::read_dir(self.evidence_dir()).is_ok() {
+            return Events {
+                events: self.events(),
+                evidence_readable: true,
+            };
+        }
+        let mut events: Vec<Event> = read_capped(&self.summary_path(), MAX_EVENT_BYTES)
+            .and_then(|bytes| serde_json::from_slice::<Summary>(&bytes).ok())
+            .filter(|summary| summary.version == RECORD_VERSION)
+            .map(|summary| summary.events)
+            .unwrap_or_default();
+        events.retain(|event| event.version == RECORD_VERSION);
+        events.sort_by_key(|event| std::cmp::Reverse(event.detected_at_unix_seconds));
+        Events {
+            events,
+            evidence_readable: false,
+        }
+    }
+}
+
+/// The records a reader got.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Events {
+    /// Newest first.
+    pub events: Vec<Event>,
+    /// False when only the summary could be read: each event's evidence is
+    /// then empty, and the details need an administrator.
+    pub evidence_readable: bool,
+}
+
+/// [`SUMMARY_FILE`]: every record with its evidence left empty.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Summary {
+    pub version: u32,
+    pub events: Vec<Event>,
+}
+
+impl Summary {
+    /// The public summary of `events`: nothing from the journal.
+    pub fn of(events: &[Event]) -> Self {
+        Self {
+            version: RECORD_VERSION,
+            events: events
+                .iter()
+                .map(|event| Event {
+                    evidence: Evidence::default(),
+                    ..event.clone()
+                })
+                .collect(),
+        }
+    }
+}
+
+/// Whether a record's `pending` restart belongs to an earlier boot: the
+/// watch was cut off and never wrote how it ended.
+pub fn interrupted(event: &Event, current_boot: Option<&str>) -> bool {
+    event.restart == RestartOutcome::Pending
+        && current_boot.is_some_and(|boot| boot != event.boot_id)
+}
+
+/// This boot's id, dashes removed, as the watch records it.
+pub fn current_boot_id() -> Option<String> {
+    let raw = std::fs::read_to_string("/proc/sys/kernel/random/boot_id").ok()?;
+    let id = raw.trim().replace('-', "");
+    is_boot_id(&id).then_some(id)
 }
 
 /// `<20 digits>-<boot id>.json`, and nothing else in the directory.
@@ -370,11 +480,12 @@ mod tests {
     fn events_are_read_newest_first_and_stray_or_oversized_files_are_left_out() {
         let dir = tempfile::tempdir().unwrap();
         let records = Records::at(dir.path());
+        std::fs::create_dir_all(records.evidence_dir()).unwrap();
         for at in [100, 300, 200] {
             let path = records.event_path(at, BOOT);
             std::fs::write(path, serde_json::to_vec(&event(at, BOOT)).unwrap()).unwrap();
         }
-        std::fs::write(dir.path().join("notes.json"), "{}").unwrap();
+        std::fs::write(records.evidence_dir().join("notes.json"), "{}").unwrap();
         std::fs::write(records.event_path(400, BOOT), "not json").unwrap();
         let big = records.event_path(500, BOOT);
         std::fs::write(&big, vec![b' '; MAX_EVENT_BYTES as usize + 1]).unwrap();
@@ -386,6 +497,78 @@ mod tests {
         assert_eq!(shown, [300, 200, 100]);
         assert!(records.has_event_for(BOOT));
         assert!(!records.has_event_for("ffffffffffffffffffffffffffffffff"));
+    }
+
+    #[test]
+    fn without_the_evidence_directory_a_reader_gets_the_summary_and_no_journal() {
+        let dir = tempfile::tempdir().unwrap();
+        let records = Records::at(dir.path());
+        let mut full = event(100, BOOT);
+        full.evidence.display_manager_journal = "gdm: secret line".to_string();
+        let summary = Summary::of(std::slice::from_ref(&full));
+        assert!(
+            summary.events[0]
+                .evidence
+                .display_manager_journal
+                .is_empty()
+        );
+        std::fs::write(
+            records.summary_path(),
+            serde_json::to_vec(&summary).unwrap(),
+        )
+        .unwrap();
+        // No evidence directory at all stands for one this reader may not open.
+        let read = records.read_events();
+        assert!(!read.evidence_readable);
+        assert_eq!(read.events.len(), 1);
+        assert_eq!(read.events[0].restart, full.restart);
+        assert!(read.events[0].evidence.display_manager_journal.is_empty());
+
+        std::fs::create_dir_all(records.evidence_dir()).unwrap();
+        std::fs::write(
+            records.event_path(100, BOOT),
+            serde_json::to_vec(&full).unwrap(),
+        )
+        .unwrap();
+        let read = records.read_events();
+        assert!(read.evidence_readable);
+        assert_eq!(
+            read.events[0].evidence.display_manager_journal,
+            "gdm: secret line"
+        );
+    }
+
+    #[test]
+    fn a_pending_record_from_an_earlier_boot_is_interrupted() {
+        let mut pending = event(100, BOOT);
+        pending.restart = RestartOutcome::Pending;
+        assert!(interrupted(
+            &pending,
+            Some("ffffffffffffffffffffffffffffffff")
+        ));
+        // This boot's own pending record is still running, not interrupted.
+        assert!(!interrupted(&pending, Some(BOOT)));
+        assert!(!interrupted(&pending, None));
+        assert!(!interrupted(
+            &event(100, BOOT),
+            Some("ffffffffffffffffffffffffffffffff")
+        ));
+    }
+
+    #[test]
+    fn a_boot_named_by_the_last_boot_record_is_handled() {
+        let dir = tempfile::tempdir().unwrap();
+        let records = Records::at(dir.path());
+        assert!(!records.handled(BOOT));
+        let last = LastBoot {
+            version: RECORD_VERSION,
+            boot_id: BOOT.to_string(),
+            checked_at_unix_seconds: 1,
+            outcome: LastBootOutcome::PersonPresent,
+        };
+        std::fs::write(records.last_boot_path(), serde_json::to_vec(&last).unwrap()).unwrap();
+        assert!(records.handled(BOOT));
+        assert!(!records.handled("ffffffffffffffffffffffffffffffff"));
     }
 
     #[test]

@@ -1063,6 +1063,7 @@ watch_unit="$daemon_extract/usr/lib/systemd/system/better-greeter-watch.service"
 for line in \
     'ExecStart=/usr/libexec/better-manager-daemon --watch-login-screen' \
     'Type=oneshot' \
+    'RemainAfterExit=yes' \
     'DefaultDependencies=no' \
     'TimeoutStartSec=180' \
     'WantedBy=graphical.target' \
@@ -1086,11 +1087,19 @@ grep -q 'send_interface="org.betteros.BootWatch1"' \
     printf 'The bus policy does not let callers reach org.betteros.BootWatch1\n' >&2
     exit 1
 }
-dpkg-deb --ctrl-tarfile "$daemon_path" | tar -xO ./postinst | grep -q 'enable better-greeter-watch.service' || {
-    printf 'The daemon postinst does not enable better-greeter-watch.service\n' >&2
+# Enabled on a first install, and on an upgrade only if it was enabled, so
+# an administrator's disable survives (packaging/maintainer/greeter-watch.sh,
+# tested by packaging/tests/greeter-watch.test.sh).
+dpkg-deb --ctrl-tarfile "$daemon_path" | tar -xO ./postinst \
+    | grep -q '^    better_os_greeter_watch_configure "${2:-}"$' || {
+    printf 'The daemon postinst does not configure better-greeter-watch.service\n' >&2
     exit 1
 }
-dpkg-deb --ctrl-tarfile "$daemon_path" | tar -xO ./prerm | grep -q 'disable better-greeter-watch.service' || {
+dpkg-deb --ctrl-tarfile "$daemon_path" | tar -xO ./postinst | grep -q 'was-enabled' || {
+    printf 'The daemon postinst re-enables better-greeter-watch.service unconditionally\n' >&2
+    exit 1
+}
+dpkg-deb --ctrl-tarfile "$daemon_path" | tar -xO ./prerm | grep -q '^    better_os_greeter_watch_disable$' || {
     printf 'The daemon prerm does not disable better-greeter-watch.service\n' >&2
     exit 1
 }

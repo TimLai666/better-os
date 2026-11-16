@@ -599,6 +599,7 @@ make_daemon_package() {
         printf '#!/bin/sh\nset -e\n\n'
         printf "better_os_daemon_busy='/run/better-os/daemon-busy'\n\n"
         cat "$ROOT_DIR/packaging/maintainer/daemon.sh"
+        cat "$ROOT_DIR/packaging/maintainer/greeter-watch.sh"
         cat <<'POSTINST'
 
 # True when this script runs inside the daemon's own unit: Better Manager is
@@ -634,12 +635,9 @@ if [ "$1" = "configure" ]; then
         systemctl enable better-hardware-restore.service >/dev/null 2>&1 || true
     fi
     # The login screen watch (ADR 0033) is enabled, never started here: it
-    # watches a boot from its start, and this boot has a desktop already.
-    if command -v deb-systemd-helper >/dev/null 2>&1; then
-        deb-systemd-helper enable better-greeter-watch.service >/dev/null 2>&1 || true
-    elif [ -d /run/systemd/system ]; then
-        systemctl enable better-greeter-watch.service >/dev/null 2>&1 || true
-    fi
+    # watches a boot from its start, and this boot has a desktop already. An
+    # upgrade keeps an administrator's disable.
+    better_os_greeter_watch_configure "${2:-}"
     if command -v dbus-send >/dev/null 2>&1; then
         dbus-send --system --type=method_call --dest=org.freedesktop.DBus \
             /org/freedesktop/DBus org.freedesktop.DBus.ReloadConfig \
@@ -685,6 +683,7 @@ case "$1" in
         ;;
 esac
 PRERM
+    cat "$ROOT_DIR/packaging/maintainer/greeter-watch.sh" >> "$staging_dir/DEBIAN/prerm"
     cat >> "$staging_dir/DEBIAN/prerm" <<'PRERM'
 
 # Removal takes the boot-time charge limit's enablement with it (AGENTS.md:
@@ -702,11 +701,7 @@ if [ "$1" = "remove" ]; then
         systemctl disable better-hardware-restore.service >/dev/null 2>&1 || true
     fi
     # The login screen watch's enablement goes too (ADR 0033).
-    if command -v deb-systemd-helper >/dev/null 2>&1; then
-        deb-systemd-helper disable better-greeter-watch.service >/dev/null 2>&1 || true
-    elif [ -d /run/systemd/system ]; then
-        systemctl disable better-greeter-watch.service >/dev/null 2>&1 || true
-    fi
+    better_os_greeter_watch_disable
 fi
 PRERM
 
