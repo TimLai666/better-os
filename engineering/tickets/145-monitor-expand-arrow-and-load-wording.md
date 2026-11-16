@@ -19,16 +19,16 @@ The owner reported on 2026-11-16 (Better Monitor 0.2.16):
   double click on the row keeps its current meaning; keyboard Right/Left
   expand and collapse. Check every tree in the suite for the same fault
   (Better Git, Better Files columns, Manager) and fix at the shared source.
-- **Load**: show the load average as how busy the processor is, with the raw
-  number as detail. For example 「處理器忙碌程度：約 4%（1 分鐘平均）」 with
-  the line 「24 個邏輯處理器中，平均約 1 個在工作或排隊等待」, and the raw
-  load average (0.95 / 1, 5, 15 minutes) in the details tooltip. Above 100%
-  it says work is waiting: 「有工作在排隊等處理器」. Wording in both
-  languages through the monitor's copy, defined in `monitor-views` (no GPUI)
-  with tests; never a figure that reads as a fact when the load is unknown.
+- **Load note** (owner, 2026-11-16): keep the row 「等待執行（1 分鐘平均）」
+  as it is; the problem is that the note at the bottom of the card does not
+  say which row it explains. Tie the note to its row: mark the row and the
+  note with the same marker (e.g. 「等待執行（1 分鐘平均）*」 and the note
+  starting with 「*」), or put the note directly under that row as secondary
+  text. Apply the same rule to every card in Better Monitor whose note
+  explains one row, so a note always names or marks the row it belongs to.
 
 ## Done when
 
-- Tests: arrow click toggles, keyboard toggles, double click unchanged; load
-  wording for idle, busy, overloaded and unknown.
+- Tests: arrow click toggles, keyboard toggles, double click unchanged; the note is
+  tied to its row.
 - Screens in zh-TW and English.
