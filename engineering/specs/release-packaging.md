@@ -297,6 +297,17 @@ unit，開啟時會把已啟用卻沒在跑的元件啟動起來。套件本身�
 仍然以停用狀態安裝，由 Better Manager 啟用。
 
 目前的 release 是
+[`v0.2.16`](https://github.com/TimLai666/better-os/releases/tag/v0.2.16)，由 commit
+`1301ba2e6a1b062d508b0dbbd43a0a7e15952861` 的 CI run
+[`43853640912`](https://github.com/TimLai666/better-os/actions/runs/43853640912)
+產生，十個套件、40 個 `.deb` 與 40 個 `.deb.sha256`，共 82 個 assets。內容是
+ticket 85、86、87、88、89、124、125、126、127、128，以及 Better Files 的磁碟圖示與我的最愛修正。
+打包方式新增：每個套件都帶 `Installed-Size`，`better-manager` 的 manifest 把
+`better-manager-daemon` 也列為 companion。重新下載的 40 個套件和 CI 產物逐位元組
+相同，40 個 manifest checksum（含 `better-shell-adapter` 與 `better-manager-daemon`
+companion 各 4 個）都從下載回來的檔案重算。
+
+上一版是
 [`v0.2.15`](https://github.com/TimLai666/better-os/releases/tag/v0.2.15)，由 commit
 `d965138c9b39c78779f73d7b6fa2a9d91f40094b` 的 CI run
 [`43683907528`](https://github.com/TimLai666/better-os/actions/runs/43683907528)
