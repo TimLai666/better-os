@@ -10,7 +10,20 @@ its system disk's — even though browsing inside it reaches its other disks.
 GVfs reports the free space of the filesystem behind the path asked about, so
 a single figure for "the machine" is the root filesystem's.
 
+## Owner's note (2026-11-16)
+
+With ordinary SMB the remote side chooses which disks it shares, and each
+share is its own entry. Better Files opens a tailnet machine over SFTP
+(`sftp://<machine>/`, ticket 117), which is SSH: it shows the remote's whole
+filesystem from `/` with the person's own permissions, so there is no list of
+shared disks — that is why only the root filesystem's capacity appears.
+
 ## What to build
+
+- When a tailnet machine also serves SMB, list its shares (as `smb://<machine>`
+  shows them) under the machine, each with its own capacity, as the remote
+  chose them; SFTP stays available for the whole filesystem. Which one a click
+  on the machine opens is an owner decision to record here before building.
 
 - Decide and record (spec, ADR if it adds a remote probe) how Better Files
   learns a remote machine's mounted filesystems over the existing SFTP
