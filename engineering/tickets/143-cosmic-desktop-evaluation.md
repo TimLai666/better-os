@@ -27,6 +27,15 @@ installs COSMIC and switches the person to it, with nothing else to set up.
 - Write an ADR with the options — stay on GNOME, support both, or make COSMIC
   the primary desktop — with the work each needs, for the owner to decide.
 
+## Desktop icons (owner, 2026-11-16)
+
+The desktop must keep holding files and folders as it does today (Zorin's
+`zorin-desktop-icons` extension on GNOME). Confirm whether COSMIC's own
+desktop mode in COSMIC Files is in the stable release and how it behaves; and
+weigh Better Files drawing the desktop itself as a layer-shell surface, which
+would give the same desktop on GNOME-free installs and match Better Files'
+own views. Either way the switch keeps what is on `~/Desktop` in place.
+
 ## Owner's rule this ticket must meet
 
 Installing and switching is one action in Better Manager: no terminal, no
