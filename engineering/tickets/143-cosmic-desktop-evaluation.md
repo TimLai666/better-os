@@ -40,3 +40,64 @@ own views. Either way the switch keeps what is on `~/Desktop` in place.
 
 Installing and switching is one action in Better Manager: no terminal, no
 extra settings, and removal puts the previous desktop back.
+
+## Our own desktop session (owner, 2026-11-21)
+
+Told that on GNOME nothing but the shell can draw a panel, the owner asked
+again whether Better OS should make its own desktop, and added a requirement:
+every gesture has the transition macOS has (the result follows the fingers,
+can be turned back halfway, and settles when they lift).
+
+What has piled up since this ticket was written, each one reached on GNOME
+only through shell code and its own widening of the GJS bounds:
+
+- a taskbar and a top bar (ticket 142 item 3, tickets 151 to 159, ADR 0036);
+- a notification island and a right-edge notification center (ticket 161);
+- one corner radius for every window, which only a compositor can clip
+  (ticket 142 item 2);
+- the desktop surface and stacks (ticket 144);
+- gestures that animate. AGENTS.md records that on GNOME 46 Better OS's
+  gestures fire at the end and nothing animates. Only code inside the shell
+  can drive its transitions, so finger-following gestures on GNOME mean
+  JavaScript that takes progress values and drives the overview and the
+  workspace animation through GNOME Shell's private methods, which change
+  between releases;
+- the edge swipe for the notification center, which no desktop reports and
+  which needs the pad's raw contacts (ticket 161, N3).
+
+So the evaluation gains a fourth option beside "stay on GNOME", "support
+both", and "make COSMIC the primary desktop":
+
+**A Better OS session on COSMIC's compositor.** `cosmic-comp` is Rust and
+GPL-3.0, as this project is. Better OS would ship a session of its own: that
+compositor (as released, or with patches kept as a small fork), and Better
+OS's own panels, launcher, notifications, and gesture transitions as Rust
+processes on layer-shell, with no GJS. The GPUI this workspace builds against
+already has a layer-shell surface (`crates/gpui/src/platform/layer_shell.rs`
+at the pinned revision); nobody has run a Better OS window as one.
+
+Writing a compositor from nothing is not an option to evaluate: input,
+several monitors, fractional scaling, input methods, screen sharing,
+XWayland, accessibility, and graphics-driver faults are years of work before
+the first Better OS feature.
+
+For this option, find out and write down:
+
+- which of the list above `cosmic-comp` already allows from outside (layer
+  shell, session lock, foreign toplevel management, workspace protocols), and
+  which need a change inside it: finger-following workspace and overview
+  transitions for gestures Better OS defines, the edge swipe, clipping every
+  window to one radius;
+- what a fork costs to keep: how often upstream moves, how large each patch
+  would be, and whether upstream would take them;
+- what the session still needs that GNOME gives today for nothing: settings
+  daemons, portals, polkit agent, keyring, screen lock and greeter, input
+  methods (the owner types Chinese), Bluetooth and network prompts, XWayland;
+- what of today's work carries over unchanged (every window, the services,
+  the top bar's service and view) and what is GNOME-only and would be left
+  behind (the shell adapter relays, the dconf adapters);
+- how it meets the owner's rule above: one action in Better Manager installs
+  the session and switches to it, and removal puts the previous desktop back.
+
+Until this is decided, each new GNOME-only relay is work that the fourth
+option would not use. Say in the ADR which of tickets 151 to 161 should wait.
