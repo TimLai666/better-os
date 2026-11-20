@@ -1,22 +1,25 @@
-# ADR 0038: COSMIC as Better OS's desktop — stay on GNOME, support both, or move
+# ADR 0038: Better OS's desktop — stay on GNOME, add COSMIC, move to COSMIC, or a Better OS session on COSMIC's compositor
 
 ## Status
 
-Proposed on 2026-11-21 for ticket 143, for the owner to decide. Nothing it
-describes is built until the owner chooses an option; the tickets it names are
-written after that choice.
+Proposed on 2026-11-21 for ticket 143, for the owner to decide, and revised
+the same day for the owner's fourth option and the gesture requirement added
+to the ticket. Nothing it describes is built until the owner chooses an
+option; the tickets it names are written after that choice.
 
 ## The owner's decisions
 
 | # | Decision | Recommendation |
 | --- | --- | --- |
-| C1 | Which option: **A** stay on GNOME, **B** support both with GNOME as the default, **C** make COSMIC the primary desktop | **B**, staged as below: the cheap desktop-neutral pieces first, the one-click COSMIC component last, after a pinned install has been proved on Zorin OS 18 in a VM |
-| C2 | Whether Better Manager may add System76's APT source, its signing key, and an APT pin to a person's machine (AGENTS.md: no public APT repository or signing implementation without a decision) | **Yes, narrowly**: one source file, one keyring holding the one fingerprint below, and a pin that takes only the 26 COSMIC package names from it |
-| C3 | Login screen when COSMIC is installed: keep GDM, or let `cosmic-greeter` take over | **Keep GDM**; it lists the COSMIC session, and ADR 0033's watch keeps working |
-| C4 | Input method on COSMIC: install Fcitx 5 with `fcitx5-chewing` in place of IBus | **Yes**; IBus 1.5.29 offers COSMIC no Wayland input method, Fcitx 5 was seen typing Zhuyin into a Better OS window |
-| C5 | Better OS windows' frame on COSMIC: the GTK frame they draw today, or COSMIC's own title bar | **COSMIC's own title bar** (server-side), so they match every COSMIC window |
-| C6 | Who draws the desktop's icons (ticket 144) | **Better Files**: a layer-shell surface on COSMIC, and on GNOME a second row in ADR 0036's program table that replaces Zorin's extension while it runs |
-| C7 | COSMIC's own panel while Better OS's top bar runs | **Hidden, and put back exactly** when the bar is turned off or removed |
+| C1 | Which option: **A** stay on GNOME; **B** support both, GNOME the default, COSMIC as a second desktop; **C** COSMIC the primary desktop; **D** a Better OS session of its own on COSMIC's compositor, beside GNOME | **D**, beside GNOME, which stays the installed default until the Better OS session has passed its VM check and a week on the owner's machine. Build now only what carries over to D; hold the GNOME-only relays (the list under "Which of tickets 150 to 161 should wait") |
+| C2 | Whether Better Manager may add System76's APT source, its signing key, and an APT pin to a person's machine (AGENTS.md: no public APT repository or signing implementation without a decision) | **Yes, narrowly**: one source file, one keyring holding the one fingerprint below, and a pin that takes only the named COSMIC packages from it (14 for D, 26 for B or C). The alternative, Better OS building those packages itself, is in option D's work |
+| C3 | The login screen: keep GDM, or let `cosmic-greeter` take over | **Keep GDM**; it lists any Wayland session, and ADR 0033's watch keeps working |
+| C4 | Input method outside GNOME: Fcitx 5 with `fcitx5-chewing` in place of IBus | **Yes**; IBus 1.5.29 offers `cosmic-comp` no Wayland input method, Fcitx 5 was seen typing Zhuyin into a Better OS window |
+| C5 | Better OS windows' frame outside GNOME: the GTK frame they draw today, or the compositor's title bar | **The compositor's** (server-side), so they match every other window |
+| C6 | Who draws the desktop's icons (ticket 144) | **Better Files**: a layer-shell surface outside GNOME; on GNOME a second row in ADR 0036's program table, replacing Zorin's extension while it runs, built only if the owner keeps building GNOME-only surfaces (option A or B) |
+| C7 | COSMIC's own panel while Better OS's top bar runs (options B and C) | **Hidden, and put back exactly**; in option D there is no COSMIC panel to hide |
+| C8 | (D) Run `cosmic-comp` as System76 releases it and wait for upstream's gesture settings, or keep a Better OS patch that hands swipes to Better OS | **Unmodified first.** Add the one gesture patch, shipped as a Better OS package, only when the rest of the session works and upstream still has none. Upstream refuses code written by a language model (its pull request template), so a patch Better OS's agents write stays Better OS's |
+| C9 | (D) Display, network, Bluetooth, sound, users, and region settings in the Better OS session | **COSMIC Settings** inside the session at first; moving each page into Better Manager (ADR 0017) is later work with its own tickets |
 
 ## Context
 
@@ -25,6 +28,21 @@ System76's Rust desktop, and set the bar for any move: once Better OS is
 installed, one action in Better Manager installs COSMIC and switches the person
 to it, with nothing else to set up, and removing it puts the previous desktop
 back. Better OS today is written against GNOME 46 on Zorin OS 18 and Ubuntu.
+
+On 2026-11-21, told that on GNOME nothing but the shell can draw a panel, the
+owner asked again whether Better OS should make its own desktop, and added a
+requirement: **every gesture has the transition macOS has**: the result
+follows the fingers, can be turned back halfway, and settles when they lift.
+Since the first evaluation, the work reached on GNOME only through shell code
+has grown: the taskbar and top bar (ticket 142, tickets 151 to 159, ADR 0036),
+a notification island and a right-edge notification center (ticket 161), one
+corner radius for every window (ticket 142), the desktop and its stacks
+(ticket 144), finger-following gestures, and the notification center's edge
+swipe (ticket 161, N3). The owner named a fourth option: **a Better OS session
+on COSMIC's compositor** (`cosmic-comp`, Rust and GPL-3.0 like Better OS),
+with Better OS's panels, launcher, notifications, and gesture transitions as
+Rust processes on layer-shell and no GJS. Writing a compositor from nothing is
+excluded by the ticket.
 
 Every claim below names its source: a URL with the date it was read, a file in
 an upstream repository at the commit read, a command run on this machine
@@ -181,12 +199,18 @@ web reads were on 2026-11-21. "Not run" marks what was not observed.
   question to `gdm3` keeps GDM. GDM lists sessions from
   `/usr/share/wayland-sessions/`, where COSMIC installs `cosmic.desktop`
   (`Exec=/usr/bin/start-cosmic`); GDM starting it was **not run**.
-- **COSMIC writes GNOME's settings.** `cosmic-settings-daemon` syncs its theme
-  into GTK's settings (1.10.0 release notes: interface font and font size now
-  set by it); in the VM `org.gnome.desktop.interface gtk-theme` read
-  `'Pop-dark'` and `color-scheme` `'prefer-dark'`. A person who logs into
-  COSMIC and back into GNOME finds those keys changed unless they are captured
-  first and put back.
+- **COSMIC keeps its GTK settings apart from GNOME's.** `start-cosmic` sets
+  `DCONF_PROFILE=cosmic`, and that profile is `user-db:cosmic` then
+  `user-db:user` (`pop-os/cosmic-session`, `data/start-cosmic` and
+  `data/dconf/profile/cosmic`): inside a COSMIC session every GSettings write,
+  `cosmic-settings-daemon`'s theme and font syncing included, goes to
+  `~/.config/dconf/cosmic`, and GNOME's own database is only read. (The VM's
+  `gtk-theme 'Pop-dark'` was read from a serial shell outside that profile,
+  so it says nothing about a person's GNOME values.) One consequence for
+  Better OS: `defaults-platform` always writes `/ca/desrt/dconf/Writer/user`
+  and reads `~/.config/dconf/user` (`dconf_writer.rs`, `dconf.rs`), so a
+  GNOME key it writes from a COSMIC session lands in GNOME's database and is
+  hidden there by any value the `cosmic` database holds.
 
 ### Each GNOME-specific part of Better OS on COSMIC
 
@@ -278,9 +302,11 @@ Harder or lost:
   ADR 0036's closed program table, an amendment to ADR 0036, and Zorin's
   extension disabled while it runs and re-enabled on removal.
 - **Recommendation (C6):** Better Files draws the desktop. On COSMIC it can be
-  built as soon as the owner chooses B or C. On GNOME it waits on ADR 0036's
-  acceptance; until then GNOME keeps Zorin's extension and has no stacks.
-  Either way `~/Desktop` is never moved: every option reads the same folder.
+  built in options B, C, and D, and in D it is the session's only desktop. On
+  GNOME (A, B) it needs an amendment adding a desktop row to ADR 0036, which
+  the owner accepted on 2026-11-21 for the bar alone; until then GNOME keeps
+  Zorin's extension and has no stacks, and under D that row waits like
+  ticket 151. Either way `~/Desktop` is never moved: every option reads the same folder.
 
 ### GPUI on COSMIC
 
@@ -296,119 +322,401 @@ system bell, so GPUI loses only a blurred background and the bell. In the VM
 speed can be judged) every window drew, scaled, took input, and opened
 COSMIC's own file chooser through the portal (screenshot 14).
 
+
+### The fourth option: a Better OS session on `cosmic-comp`
+
+A session of Better OS's own: `cosmic-comp` as the compositor, the COSMIC
+daemons Better OS does not replace, and Better OS's top bar, taskbar,
+launcher, notification island and center, desktop, and gesture transitions as
+Rust processes on layer-shell. Sources as above (`cosmic-comp` master
+`6968c5d`, 2026-11-20, unless a line says otherwise); no VM was needed for
+this part and none was run.
+
+#### What `cosmic-comp` allows from outside, and what needs a change inside it
+
+| Piece | From outside today | Inside `cosmic-comp` |
+| --- | --- | --- |
+| Top bar, taskbar, notification island and center | Layer-shell surfaces for any client outside a security context (`state.rs` line 744, `client_not_sandboxed`); the focused window, every window, and window actions through `zcosmic_toplevel_info_v1`, `ext_foreign_toplevel_list_v1`, and `zcosmic_toplevel_manager_v1`; workspaces through `ext_workspace_v1`. To show notifications Better OS owns `org.freedesktop.Notifications` itself, which is simple in its own session: `cosmic-notifications` is not started (in COSMIC's session `cosmic-session` starts it beside the panel, `src/main.rs` lines 270–310) | Nothing |
+| Desktop surface and stacks (ticket 144) | A layer-shell surface on the background layer, one per output (GPUI below); COSMIC Files' desktop process is not started in Better OS's session, so Better Files also owns `org.freedesktop.FileManager1` there | Nothing |
+| One corner radius for every window (ticket 142) | Already done: every floating and tiled window is clipped to the theme's `radius_s` (plus 4 px above 4), maximized windows excepted (`src/shell/element/window.rs`, `corner_radius`; `AppearanceConfig` defaults true). The radius is COSMIC theme configuration (`com.system76.CosmicTheme.*`, `corner_radii`), written through cosmic-config | Nothing, unless the radius must differ from the theme's small radius |
+| Window title bars in Better OS's style | The compositor draws server-side title bars with libcosmic | `cosmic_comp::run(Hooks)` takes compile-time hooks for window and stack decorations (`src/hooks.rs`, "an _unstable_ interface"): a Better OS compositor binary linking `cosmic-comp` as a library could draw its own title bars without a patch, in libcosmic (iced), not GPUI |
+| Finger-following workspace switch | Already, for four fingers: the compositor feeds the swipe's delta into `update_workspace_delta` while the fingers move and settles with their velocity in `end_workspace_swipe` (`src/input/mod.rs` lines 1294–1350); it can be turned back halfway | To use three fingers, or Better OS's own directions: a gesture setting (the open pull requests below do this) |
+| Finger-following overview, launcher, notification center, or any transition Better OS defines | Not possible: every swipe of three or more fingers stays in the compositor (`src/input/mod.rs` lines 1195–1210 set `gesture_state` for any count ≥ 3, and the update and end handlers then never forward the event); three fingers do nothing ("TODO: 3 finger gestures"); no protocol hands a swipe to an unfocused client. COSMIC's own overview (`cosmic-workspaces`) opens without following the fingers | A patch: a private protocol through which the session's gesture service, a non-sandboxed client, claims swipes of a given finger count and receives begin, update (finger count and delta), and end (cancelled or not); and a request to drive the workspace switch with the existing `update_workspace_delta` and `end_workspace_swipe`. It touches `src/input/mod.rs` (the three swipe arms), a new module under `src/wayland/protocols/` and its handler, one line in `state.rs`, and one protocol XML: about 400 to 800 lines, an estimate from the size of the open gesture pull requests (+191/−47 to +488/−411). The overview, the launcher, and the notification center then follow the fingers inside Better OS's own processes, which draw them |
+| The notification center's edge swipe (ticket 161, N3) | Not from any Wayland protocol | Not inside the compositor either: for a touchpad, libinput reports a swipe as the movement of the fingers' logical centre and passes individual touch points only for touchscreens (<https://wayland.freedesktop.org/libinput/doc/latest/gestures.html>, "Swipe gestures" and "Touchscreen gestures"), and `cosmic-comp` reads input through libinput. Where the fingers are on the pad is read from the evdev node, as Better Touchpad's scroll pass-through does (ADR 0030): ticket 161's option (a), the same in every option of this ADR |
+
+**Upstream's plans for gestures.** COSMIC's roadmap lists "Customizable
+touchpad gestures" and a "Workspaces animation" item under Epoch 3, after
+Epoch 2, with no dates, each epoch "roughly six to eight months"
+(<https://system76.com/blog/post/cosmic-epoch-2-and-3-roadmap>, published
+2026-02-04). Issue 315, "Touchpad: Navigation Gestures", is open since
+2024-02-19 and was pointed at Epoch 3 on 2026-02-18
+(<https://github.com/pop-os/cosmic-comp/issues/315>). Six pull requests that
+make gestures configurable or add gestures are open and unmerged: 396
+(2024-04-01, a gesture configuration backend), 1109, 1799, 2824, 2838, and
+3054 (2026-11-10); 2252 and 2386 were closed. A comment on 1799 quotes the
+maintainers preferring to "rework and merge" 396 before adding gestures
+(<https://github.com/pop-os/cosmic-comp/pull/1799>). Each maps a gesture to
+an action that fires once (or to the existing workspace swipe); none hands
+progress to an outside process. Small outside pull requests do merge (794,
+natural four-finger direction, merged 2024-08-30; 2215, workspace wrapping,
+merged 2026-04-14).
+
+#### What a fork costs
+
+- **Pace.** 503 commits reached `cosmic-comp`'s default branch between
+  2025-12-10 and 2026-11-20 (GitHub's commits listing), 61 of them in
+  `src/input/mod.rs` and 34 in `src/state.rs`, the two files a gesture patch
+  touches; Epoch releases came every one to three weeks. A patch there
+  conflicts often enough that it must be rebased and rebuilt for every
+  release, and Better OS would ship `cosmic-comp` as its own package from then
+  on (built in ADR 0021's release environments, for 24.04; whether it builds
+  on 22.04 was not tried).
+- **Size.** One patch of an estimated 400 to 800 lines for gestures. Nothing
+  else on the list above needs one; title bars in Better OS's style are a
+  library build with hooks, not a patch.
+- **Would upstream take it.** Configurable gestures are wanted upstream, but
+  the open pull requests have waited up to 31 months, and COSMIC's pull
+  request template (`pop-os/cosmic-epoch`, `.github/PULL_REQUEST_TEMPLATE.md`)
+  requires the author to certify "I have not included any LLM (also known as
+  AI) generated content in this PR", and closes pull requests without the
+  checkbox. Better OS's code is written by agents, so nothing Better OS
+  writes can be offered upstream unless a person writes it again by hand.
+- **Licence.** `cosmic-comp` is `GPL-3.0-only` (`src/main.rs`'s SPDX line,
+  GitHub's licence field `GPL-3.0`); Better OS is GPL-3.0-or-later (ADR 0003).
+  A patched compositor stays GPL-3.0-only and its source must be offered with
+  the package, which is the Corresponding Source question AGENTS.md already
+  leaves to the owner. Better OS's own processes only talk to it over Wayland
+  and D-Bus and are not affected.
+- **No fork.** Run the released compositor, which already gives the
+  four-finger workspace switch that follows the fingers and settles, and wait
+  for Epoch 3. While waiting Better OS loses: three-finger gestures, an
+  overview, launcher, or notification center that follows the fingers, and
+  any gesture of Better OS's own design. Gestures that fire at the end (the
+  state on GNOME today) cannot be had either, because the compositor keeps
+  the swipes.
+
+#### What the session needs that GNOME gives today
+
+| Need | Provided by | Maturity (evidence) |
+| --- | --- | --- |
+| Starting the session | A Better OS session file in `/usr/share/wayland-sessions/` and a small launcher: `cosmic-comp <program>` runs the program once it is up (`src/lib.rs` lines 125–147), and that program starts a systemd user target with the services below. `cosmic-session` cannot be reused: its list of components is fixed in code (`src/main.rs` lines 270–356) | New Better OS work, medium |
+| Settings daemon (theme, fonts, GTK and Qt sync, brightness and input-source keys) | `cosmic-settings-daemon` | Stable 1.11 in Pop (seen running) |
+| Portals (file chooser, screenshot, screen cast, remote desktop, settings) | `xdg-desktop-portal-cosmic`; `XDG_CURRENT_DESKTOP` must include `COSMIC` for its `UseIn=COSMIC`, plus GTK's portal for what COSMIC lacks (Pop's `cosmic-portals.conf`: `default=cosmic;gtk;`) | Stable; the file chooser was seen opening for a GPUI window |
+| Polkit agent | `cosmic-osd` (`src/subscriptions/polkit_agent.rs`, `src/components/polkit_dialog.rs`), which also draws volume and brightness pop-ups | Stable 1.11 |
+| Keyring | `gnome-keyring` and `oo7` through the Secret portal (Pop's `cosmic-portals.conf`: `Secret=oo7-portal;gnome-keyring;`) | GNOME's own, unchanged |
+| Screen lock and idle | `cosmic-greeter` as the locker (`ext_session_lock_manager_v1`), `cosmic-idle` for blanking and suspend, `cosmic-bg` for the wallpaper, also on the lock screen (1.9.0) | Stable; both seen running |
+| Login screen | GDM (decision C3), which lists the session file | GDM starting a non-GNOME session was not run |
+| Input methods for Chinese | Fcitx 5 with `fcitx5-chewing`, started by the session, over `zwp_input_method_v2` and `text-input-v3` | Seen working in a Better OS window; IBus does not serve this compositor |
+| Network and Bluetooth prompts | In COSMIC they live in the panel's applets and COSMIC Settings (NetworkManager secret agent code in `cosmic-settings` `pages/networking/` and `cosmic-applet-network`; BlueZ agent bindings in `pop-os/dbus-settings-bindings`, `bluez/src/agent1.rs`; read, not run). Without COSMIC's panel, Better OS's status area (ticket 157) must register its own NetworkManager secret agent and BlueZ agent, or run COSMIC Settings' | **Medium**, new Better OS work |
+| System settings pages | COSMIC Settings (decision C9) | Stable |
+| XWayland | `cosmic-comp` starts it (seen, rootless) | Stable |
+| Accessibility | Orca with AT-SPI, `cosmic_a11y_manager_v1` (magnifier, filters) | Shipped; depth not assessed |
+| Screen sharing | `xdg-desktop-portal-cosmic` ScreenCast and RemoteDesktop over `ext-image-copy-capture` and PipeWire | Shipped in Pop with PipeWire 1.6.8; on noble's PipeWire 1.0.5 not run |
+| Tray watcher, notifications, launcher, app grid, desktop | Better OS (top bar's tray host, ticket 161's island and center, Better Launcher, Better Files) | Better OS's own tickets |
+
+#### What carries over unchanged and what stays behind on GNOME
+
+- **Carries over:** every GPUI window (`files-gui`, `git-gui`, `monitor-gui`,
+  `manager-gui`, `launcher-gui`, `awake-gui`, `touchpad-gui`,
+  `app-chooser-gui`; five were seen on `cosmic-comp`); every service
+  (`manager-daemon`, `storage-service`, `monitor-service`, `awake-service`,
+  `touchpad-gesture-service`'s recognizer, `touchpad-scroll`, the hardware
+  helpers); both trays (`awake-tray`, `monitor-tray`); `drive-mounts`; the
+  defaults engine's XDG and `mimeapps.list` adapters; the top bar's service
+  and view (ticket 152), which open as `WindowKind::LayerShell` instead of a
+  dock the shell made (ticket 160); ADR 0033's login screen watch while GDM
+  stays.
+- **Stays behind (GNOME only):** `adapters/gnome-shell-touchpad/`,
+  `adapters/gnome-shell-adapter/` and every relay in it (window attention,
+  ADR 0036's panel relay), `manager_platform::shell_extensions`,
+  `touchpad-session`'s adapter bus, `touchpad-platform/src/gnome.rs`, the
+  dconf and GSettings adapters in `defaults-platform` (`gsettings.rs`,
+  `dconf_writer.rs`) for GNOME's keys, `launcher-platform/src/shortcut.rs`'s
+  GNOME keybinding, `better_ui::system_frame`'s GTK frame (the compositor
+  draws title bars), `hardware-platform`'s `gnome-settings-daemon` endpoints
+  (UPower's keyboard backlight endpoint is already its fallback), and the
+  window-attention service's per-application choices, which have no
+  equivalent (above).
+
+#### GPUI's layer-shell surface at the pinned revision
+
+`crates/gpui/src/platform/layer_shell.rs` and
+`crates/gpui_linux/src/linux/wayland/window.rs` (Zed `ae394f3`) offer:
+`WindowKind::LayerShell(LayerShellOptions)` with a namespace, the four layers
+(background, bottom, top, overlay), any combination of the four edge anchors,
+an exclusive zone and its edge (also changeable after creation:
+`Window::set_exclusive_zone`, `set_exclusive_edge`), margins, keyboard
+interactivity (none, exclusive, on demand), the output chosen by `display_id`,
+an input region (`set_input_region`), and popups parented to a layer surface
+(`get_popup` on the layer surface). It refuses with
+`LayerShellNotSupportedError` where the compositor has no layer-shell, which
+is why it cannot run on GNOME. A Better OS panel would still need: one window
+per output and following outputs as they come and go (GPUI opens one surface
+per call), changing anchors, margins, or the layer after creation (not
+exposed), and its own slide and follow-the-fingers animation drawn inside a
+fixed surface with the input region trimmed to what is visible. **Nobody has
+run a Better OS window as a layer-shell surface**; in the VM Better Launcher
+ran as a normal window.
+
+#### One action in Better Manager, and removal
+
+- **Install** (`better-os-session` component, through `manager-daemon`):
+  System76's source, key, and pin (decision C2) for the 14 packages the
+  session needs (`cosmic-comp`, `cosmic-settings-daemon`,
+  `xdg-desktop-portal-cosmic`, `cosmic-osd`, `cosmic-idle`, `cosmic-greeter`
+  and its daemon, `cosmic-bg`, `cosmic-randr`, `cosmic-settings`,
+  `cosmic-icons`, `cosmic-theme-bundles`, `adw-gtk3`, `pop-sound-theme`;
+  every other dependency resolves to the host's own noble versions,
+  `session-closure-on-host-noble.txt`), with the display manager question
+  preseeded to `gdm3`; Fcitx 5 and Chewing from Ubuntu's archive; Better OS's
+  session package (session file, launcher, systemd user target, the session's
+  configuration of COSMIC's daemons); the person's AccountsService session set
+  to it; and "Log out now" in the same action. If decision C8 adds the
+  gesture patch, `cosmic-comp` then comes from Better OS's own release assets
+  instead of System76's repository, like every other Better OS package; and
+  Better OS could build all 14 itself the same way and drop C2, at the cost
+  of building about ten Rust repositories per COSMIC release.
+- **Removal:** the previous session back in AccountsService, the packages,
+  source, key, and pin purged, GDM untouched; Better OS's session settings
+  deleted unless "Also delete my settings and history" is unticked. GNOME's
+  dconf database is never written by COSMIC's daemons (their profile writes
+  to `~/.config/dconf/cosmic`, above), so GNOME comes back as it was; COSMIC's
+  database goes with the settings.
+- **Without the pin** Pop's repository would replace 566 of the host's
+  packages, the kernel and systemd among them; **on Ubuntu 22.04** there is
+  nothing to install (Pop's `jammy` compositor is the January 2025 alpha), so
+  option D, like B and C, is offered on 24.04 bases only.
+- **Not run:** any of this on Zorin OS 18 or Ubuntu 24.04, and GDM starting
+  the session. It is option D's first check.
+
+### Gestures that follow the fingers, on each option
+
+- **A (GNOME 46).** GNOME's own trackers already follow the fingers for the
+  overview (vertical) and workspaces (horizontal), but Better OS takes them off
+  (`SuppressBuiltInGestures`) to run the Mac-style preset, whose actions fire
+  at the end. For Better OS's gestures to follow the fingers, JavaScript in
+  the shell must take progress values from Better OS and call
+  `Main.overview._gestureBegin`, `_gestureUpdate`, and `_gestureEnd`
+  (`js/ui/overview.js`) and `WorkspaceAnimationController`'s
+  `_switchWorkspaceBegin`, `_switchWorkspaceUpdate`, and `_switchWorkspaceEnd`
+  (`js/ui/workspaceAnimation.js`, reached as `Main.wm._workspaceAnimation`),
+  passing an object shaped like the shell's `SwipeTracker`, because those
+  methods set `tracker.orientation` and call `tracker.confirmSwipe(distance,
+  snapPoints, progress, cancelProgress)`. The names are the same in GNOME
+  Shell 45.0, 46.0, 47.0, 48.0, and 49.0, but they are private (leading
+  underscore) and their bodies change: 46 dropped the
+  `Meta.disable_unredirect_for_display` call 45 made in `_gestureUpdate`, and
+  49 returns early when progress is 0 (read from `GNOME/gnome-shell` at those
+  tags on 2026-11-21). This breaks ADR 0018's bounds in three places: it
+  calls methods the shell does not expose as actions, it keeps an object
+  with state between calls (the tracker stand-in), and it relays a stream of
+  progress values, one per frame, from Rust over the session bus, which adds
+  a bus round trip to every frame. It needs a new ADR, and its own
+  measurements of the added latency. The cheaper alternative on GNOME is to
+  leave GNOME's own swipes on for the two transitions GNOME animates and give
+  up the Mac preset's directions for them. The island, the center, and the
+  desktop are Better OS windows on GNOME (ADR 0036's docks) and can follow
+  the fingers themselves, given the progress.
+- **B and C (COSMIC as System76 ships it).** The four-finger workspace switch
+  follows the fingers and settles; nothing else does, and nothing can be
+  added from outside until upstream's gesture settings arrive (Epoch 3), and
+  even those, as proposed, fire actions rather than hand over progress.
+- **D (Better OS's session).** The workspace switch as in B; with decision
+  C8's patch, every other transition (overview, launcher, notification
+  center, desktop stacks) is drawn by Better OS's own layer-shell processes
+  from the progress the gesture protocol delivers, with no shell code. The
+  edge swipe comes from the evdev pass-through in every option.
+
 ## Options and the work each needs
 
 ### A. Stay on GNOME
 
-No new work. Tickets 142 (items 2 and 3), 144, 151–159 continue as written,
-each on ADR 0036 or a further shell ADR. Ticket 160 is withdrawn. COSMIC is
-not offered.
+No new desktop. Tickets 142 (items 2 and 3), 144, 151–159, and 161 continue
+on ADR 0036 and further shell ADRs: compositor rounding for every window,
+the island and center as more docks, a desktop row, and, for gestures that
+follow the fingers, JavaScript driving the shell's private transitions (above).
+Ticket 160 is withdrawn. COSMIC is not offered.
 
-### B. Support both, GNOME the default
+### B. Support both, GNOME the default, COSMIC a second desktop
 
-1. **Desktop-neutral pieces first** (they are right whichever desktop runs):
-   Better Monitor's `@instance` grouping fix (small); Tracker as a dependency
-   where it is missing (small).
+1. **Desktop-neutral pieces first:** Better Monitor's `@instance` grouping fix
+   (small); Tracker as a dependency where it is missing (small).
 2. **The cosmic-config adapter** in `defaults-platform`, with capture and
    restore (medium).
 3. **COSMIC backends:** Touchpad page (medium), scroll factor (small),
    launcher key (small), default window-attention choice (small), server-side
    frame on COSMIC (small), Better Awake's ScreenSaver backend and fullscreen
-   provider (small to medium), and
-   honest "not on COSMIC" states for gestures and per-application attention,
-   which already read well (screenshots 04, 07).
-4. **A `better-desktop-cosmic` component**, the one action the owner asked
-   for, through `manager-daemon` (each step is a privileged operation with its
-   polkit action and an undo):
-   - add System76's source, keyring, and the pin of decision C2 (medium,
-     plus the ADR that rule needs);
+   provider (small to medium), and honest "not on COSMIC" states for gestures
+   and per-application attention, which already read well (screenshots 04,
+   07).
+4. **A `better-desktop-cosmic` component**, through `manager-daemon` (each
+   step a privileged operation with its polkit action and an undo):
+   - add System76's source, keyring, and the pin of decision C2 (medium, plus
+     the ADR that rule needs);
    - preseed the display manager to `gdm3` and install the 26 packages
      (medium);
    - install `fcitx5`, `fcitx5-chewing`, and its GTK front ends, and carry the
      person's IBus engines over where Fcitx 5 has the same one (medium);
    - set the person's session to `cosmic` in AccountsService, which GDM reads
      (small);
-   - capture GNOME's interface keys that `cosmic-settings-daemon` overwrites,
-     and carry over to cosmic-config the wallpaper, dark or light mode, keyboard
+   - carry over to cosmic-config the wallpaper, dark or light mode, keyboard
      layouts, display scale, and the dock's pinned applications (medium);
-     `mimeapps.list` and `~/Desktop` are shared and untouched;
-   - offer "Log out now" as part of the same action, since a desktop changes
-     only at the next login;
-   - switching back sets the previous session and puts the captured GNOME
-     keys back; removal also purges the 26 packages, the source, keyring, and
-     pin, and deletes COSMIC's per-person settings unless "Also delete my
-     settings and history" is unticked (medium);
+     `mimeapps.list` and `~/Desktop` are shared and untouched, and COSMIC
+     never writes GNOME's dconf database;
+   - offer "Log out now" as part of the same action;
+   - switching back sets the previous session; removal also purges the 26
+     packages, the source, keyring, and pin, and deletes COSMIC's per-person
+     settings unless "Also delete my settings and history" is unticked
+     (medium);
    - a VM check on Zorin OS 18 and Ubuntu 24.04 of install, login through
-     GDM, switching back, and removal, the part this ticket could not run
-     (medium).
+     GDM, switching back, and removal (medium).
 5. **Ticket 160** (the bar on COSMIC) and a COSMIC taskbar row in ticket 142,
-   each medium.
+   each medium; COSMIC's panel hidden while they run (decision C7).
 6. **Not offered on Ubuntu 22.04.**
 
 ### C. COSMIC the primary desktop
 
-Everything in B, plus:
+Everything in B, plus: the gesture pipeline on COSMIC (large, upstream or the
+evdev route), per-application window attention (large, upstream), Better OS's
+taskbar and top bar replacing COSMIC's panel and dock by default (medium
+each), deciding what happens to the GNOME code for people who stay on GNOME,
+and for ticket 76's Debian distribution building and signing COSMIC itself
+(Debian has none).
 
-- the gesture pipeline on COSMIC (large: an upstream change, or reading the
-  touchpad ourselves after a written security review);
-- per-application window attention (large, upstream);
-- Better OS's taskbar and top bar replacing COSMIC's panel and dock by default
-  (medium each, on layer-shell);
-- deciding what happens to the GNOME code for people who stay on Zorin or
-  Ubuntu with GNOME (keep it, doubling maintenance, or drop it, dropping 22.04
-  entirely);
-- for ticket 76's Debian distribution: Debian has no COSMIC, so Better OS would
-  build about 30 source packages per COSMIC release and publish them from its
-  own signed repository (large, and the signing decision AGENTS.md defers).
+### D. A Better OS session on `cosmic-comp`, beside GNOME
+
+1. **The session** (medium): session file, launcher (`cosmic-comp` running
+   it), systemd user target starting COSMIC's settings daemon, portal,
+   `cosmic-osd`, `cosmic-idle`, the locker, and `cosmic-bg`, Fcitx 5, and
+   Better OS's own processes; `XDG_CURRENT_DESKTOP` naming Better OS and
+   COSMIC so the portal and COSMIC's daemons apply.
+2. **The install component** (medium): as B's item 4, with the 14-package
+   closure instead of 26, the session package, and the same removal.
+3. **The surfaces, all GPUI on layer-shell, no shell code:** the top bar
+   (tickets 152, 156, 157, 160: its service and view as planned, opened as a
+   layer surface), the taskbar or dock (ticket 142 item 3, medium), the
+   notification island and center with Better OS's own
+   `org.freedesktop.Notifications` (ticket 161, medium), the desktop and
+   stacks in Better Files (ticket 144, medium), Better Launcher as an overlay
+   layer surface (small), and a Better OS overview (large: window thumbnails
+   through `ext-image-copy-capture`, workspaces through `ext_workspace_v1`).
+4. **Status-area agents:** a NetworkManager secret agent and a BlueZ pairing
+   agent in the top bar's status area, or COSMIC Settings for those prompts
+   (medium).
+5. **The COSMIC backends from B** that still apply in the session: the
+   cosmic-config adapter, the Touchpad page, scroll factor, launcher key,
+   server-side frame, Awake's ScreenSaver and fullscreen providers (as B,
+   items 2 and 3).
+6. **Gestures** (decision C8): the four-finger workspace switch works as
+   released; Better OS's own transitions need the gesture patch (medium to
+   write, then a rebase and rebuild with every COSMIC release), and the edge
+   swipe the evdev route (ticket 161 (a), large with its security review).
+7. **Not offered on Ubuntu 22.04**; the GNOME session stays everyone's
+   fallback and the default until the Better OS session has passed its checks.
 
 ### What each option does to the tickets
 
-| Ticket | A | B | C |
-| --- | --- | --- | --- |
-| 142 (theme, corners, taskbar) | As written; item 2 needs a shell ADR, item 3 ADR 0036's row | GNOME as written; on COSMIC the corners are done by the compositor and the taskbar is a layer-shell process | COSMIC part only; GNOME part kept or dropped with the GNOME code |
-| 144 (desktop stacks) | Waits on ADR 0036 and a desktop row | Better Files' desktop on COSMIC first, GNOME after ADR 0036 | Better Files' desktop on COSMIC |
-| 94 (Super+Space, file search) | As written | Also writes COSMIC's `system_actions`; Super+Space is COSMIC's input-source switch, so it moves there too; Tracker installed where missing | Same as B |
-| 95 and 150–160 (top bar) | 151–159 as written, 160 withdrawn | All of them; 151 and 159 are GNOME-only | 152–158 and 160; 151 and 159 only if GNOME is kept |
-| 99 (Better Input) | IBus and Fcitx 5 both | Must work under Fcitx 5 on COSMIC | Fcitx 5 first |
-| 139, 140 (GDM) | As written | As written while GDM stays | As written while GDM stays |
-| 76 direction 3 (own Debian distribution) | GNOME is in Debian | Same as A, COSMIC an extra | Better OS builds and signs COSMIC itself |
+| Ticket | A | B | C | D |
+| --- | --- | --- | --- | --- |
+| 142 (theme, corners, taskbar) | Item 2 needs a shell ADR, item 3 ADR 0036's row | GNOME as written; on COSMIC corners are the compositor's and the taskbar a layer surface | COSMIC part only | Corners already done by `cosmic-comp`; the taskbar a layer surface; the GNOME items wait |
+| 144 (desktop stacks) | Waits on a desktop row in ADR 0036 | COSMIC first, GNOME after the row | Better Files on COSMIC | Better Files on a layer surface |
+| 94 (Super+Space, file search) | As written | Also COSMIC's `system_actions` | Same as B | The session's own key bindings in `cosmic-comp`'s configuration; Tracker started by the session |
+| 99 (Better Input) | IBus and Fcitx 5 | Fcitx 5 on COSMIC | Fcitx 5 first | Fcitx 5 in the session |
+| 139, 140 (GDM) | As written | As written while GDM stays | As written while GDM stays | As written while GDM stays |
+| 76 direction 3 (Debian) | GNOME is in Debian | As A | Better OS builds COSMIC | Better OS builds the 14 packages, or the fork, for Debian |
+
+### Which of tickets 150 to 161 should wait
+
+The owner decided on 2026-11-21 (`design/top-bar-spec.md` section 0) that the
+bar is shape A, ADR 0036 is accepted, the bar carries no application menus
+(tickets 153 to 155 are being revised and are not built as written in any
+option), and XEmbed icons are handled as section 0 records. This list does not
+change those decisions; it says which work each option would not use.
+
+| Ticket | A | B | C | D |
+| --- | --- | --- | --- | --- |
+| 150 one dbusmenu crate | build | build | build | build |
+| 151 shell adapter panel relay | build | build | wait | **wait** |
+| 152 top bar component (service and view) | build | build | build | build, with the layer-shell path first |
+| 153–155 menus | as revised by the owner's D5 | same | same | same |
+| 156 tray | build | build | build | build |
+| 157 status area | build | build | build | build, with the network and Bluetooth agents |
+| 158 clock and notifications | build after 161's design | same | same | build after 161, notifications from Better OS's own daemon |
+| 159 with Zorin's taskbar | build | build | wait | **wait** |
+| 160 top bar on COSMIC | withdrawn | build | build | build (the main path) |
+| 161 island and center | design, then GNOME build | design, both builds | design, COSMIC build | design; **its GNOME build (the ADR 0036 amendment for more docks, banner suppression) waits**; the edge swipe (evdev) is built in every option |
+
+- **Wasted by building now if D is chosen:** ticket 151's JavaScript relay and
+  its tests, ticket 159's Zorin taskbar entry, and the GNOME half of 161 (an
+  ADR 0036 amendment, two more dock windows, banner suppression). The service
+  and the view of 152, the tray of 156, the status area of 157, and 161's
+  design all carry over, because the view opens as a layer surface instead of
+  a dock.
+- **Lost by waiting if D is not chosen in the end:** the owner's own GNOME
+  desktop has no Better OS top bar, island, or center until 151 and 161's
+  GNOME half are built after all, a delay of about the time those tickets
+  take; nothing built in the meantime is thrown away.
 
 ## Risks
 
 - **Runtime compatibility on Zorin's base is unproved.** The packages declare
   nothing newer than noble has, but were built against Pop's newer Wayland,
-  Mesa, and PipeWire; a missing symbol shows only when it runs.
-- **A third-party repository on the person's machine.** Its key signs System76's
-  kernel and systemd too; the pin is what keeps those off the machine, and a
-  pin written wrong replaces the base system on the next upgrade.
-- **COSMIC moves fast.** Twelve releases in eleven months, and a behaviour
-  Better OS relies on (the decoration default changed on 2026-11-06) can
-  change without notice.
-- **Upstream gaps** (gestures, attention, IBus) are not Better OS's to close
-  quickly.
-- **Two desktops double every desktop-facing test**, and the evidence for this
-  ADR is one VM with software rendering, a live session, and no GDM.
+  Mesa, and PipeWire; a missing symbol shows only when it runs. This applies
+  to B, C, and D.
+- **A third-party repository on the person's machine.** Its key signs
+  System76's kernel and systemd too; the pin is what keeps those off the
+  machine, and a pin written wrong replaces the base system on the next
+  upgrade. D can remove this risk by building the 14 packages itself.
+- **COSMIC moves fast.** Twelve releases in eleven months and 503 compositor
+  commits; a behaviour Better OS relies on (the decoration default changed on
+  2026-11-06) can change without notice. In D this is the compositor under
+  the whole session.
+- **A fork Better OS cannot give back.** Upstream refuses machine-written
+  code, so the gesture patch stays Better OS's to rebase for as long as
+  upstream has no equivalent.
+- **A session is a desktop's worth of small duties** (agents, prompts, OSD,
+  locking, startup order), each of which GNOME does without being asked; a
+  missed one shows up as a dialog that never appears.
+- **Every desktop-facing test doubles** while GNOME stays supported, and the
+  evidence here is one VM with software rendering, a live session, no GDM,
+  and no layer-shell Better OS window.
 
 ## Recommendation
 
-**B, with GNOME the default**, in this order: the desktop-neutral pieces, the
-cosmic-config adapter and the COSMIC backends, the bar and the desktop on
-COSMIC, and the one-click component last, after its VM check on Zorin OS 18
-passes. Reasons:
+**D, beside GNOME**, in this order: build now only what carries over (150,
+152 with its layer-shell path, 156, 157, 161's design and its edge swipe
+through the evdev route, the cosmic-config adapter, Better Monitor's grouping
+fix); hold 151, 159, and 161's GNOME build; then the Better OS session on
+the released `cosmic-comp` with the top bar, notifications, desktop, and
+launcher as layer surfaces; then its one-click component after a VM check on
+Zorin OS 18 and Ubuntu 24.04; then decision C8's gesture patch if upstream
+still has none. GNOME stays installed and the default until the Better OS
+session has passed that check and a week on the owner's machine. Reasons:
 
-- The owner's own machine is Zorin with GNOME, with the GNOME grid and six
-  Zorin extensions in use, IBus-Chewing for Chinese, and the Mac-style
-  gestures Better Touchpad is built for. C takes the gestures and the grid away
-  today and depends on upstream to give them back.
-- COSMIC does make the owner's newest requests far cheaper (uniform corners,
-  a top bar and taskbar in Rust, a desktop drawn by Better Files), and every
-  Better OS window already runs on it, so offering it costs one component and
-  a set of backends, not a rewrite.
-- The one-click switch meets the owner's rule only with a pinned third-party
-  source, which needs C2, and only on 24.04 bases; offering it before a pinned
-  install has run on Zorin would ship the one step nobody has seen.
-- For the Debian distribution, GNOME is packaged by Debian and COSMIC is not;
-  B keeps that direction's cost where it is.
+- Everything the owner has asked for since this ticket was written (top bar,
+  taskbar, island, center, one radius, desktop stacks, transitions that follow
+  the fingers) is either already done by `cosmic-comp` or is a Better OS
+  process on layer-shell there, while on GNOME each one is shell JavaScript
+  and a further widening of ADR 0018, and the gesture requirement means
+  driving GNOME's private transition methods per frame from outside.
+- Stock COSMIC (B, C) does not meet the gesture requirement at all, and puts
+  System76's panel, notifications, and desktop where Better OS's would be; D
+  uses COSMIC's compositor and daemons and leaves the surfaces to Better OS.
+- Only one piece needs a change inside the compositor (handing swipes to
+  Better OS), and it can wait until the rest of the session works; the
+  compositor is never written from nothing.
+- Every Better OS window already runs on `cosmic-comp`, the services and the
+  bar's service and view carry over, and what stays behind is the shell
+  adapter, the GNOME keys, and the GTK frame.
+- What D costs the owner today is real and is why GNOME stays beside it: the
+  GNOME application grid, Zorin's extensions and Zorin Appearance, IBus
+  (Fcitx 5 instead), Ubuntu 22.04, and an overview Better OS has to build.
+  Choosing D also means accepting C2 (or building the 14 packages) and
+  living with a compositor that moves weekly.
+
+If the owner does not want a session of Better OS's own, the recommendation
+is **A**: building B's second, stock desktop costs most of D's install work
+and gives none of the requested transitions.
 
 ## What was run
 
@@ -436,8 +744,19 @@ are in `/home/tim/Developer/better-os-evidence/143/`, outside the repository:
 | `15-files-200.png`, `16-manager-150.png` | Better Files at 200 % and Better Manager at 150 % |
 | `17-cosmic-files-desktop-mode-context-menu.png` | COSMIC Files' desktop mode with `~/Desktop`'s contents |
 | `wayland-info-and-portals.txt`, `session-and-config.txt` | Every global `cosmic-comp` advertised, the installed COSMIC versions, the portal's interfaces, the session bus names, COSMIC's shortcut and touchpad defaults |
-| `pop-noble-repo-shadows-host-packages.tsv`, `cosmic-closure-on-host-noble.txt` | The 566 packages Pop's `noble` would replace on this host, and the 26-package pinned closure |
+| `pop-noble-repo-shadows-host-packages.tsv`, `cosmic-closure-on-host-noble.txt`, `session-closure-on-host-noble.txt` | The 566 packages Pop's `noble` would replace on this host, the 26-package pinned closure for COSMIC, and the 14-package closure for option D's session |
+| `scripts/` | The VM launcher, the QMP and serial driver, the closure script, and the screenshot cropper |
 
-Not run: a light-mode pass; COSMIC installed onto Zorin OS 18 or Ubuntu 24.04
-with the pin; GDM starting a COSMIC session; switching back and removing; real
-hardware; any touchpad.
+The fourth option's evidence is source only, read on 2026-11-21:
+`cosmic-comp` master `6968c5d` (`src/input/mod.rs`, `src/state.rs`,
+`src/lib.rs`, `src/main.rs`, `src/hooks.rs`, `src/shell/element/window.rs`),
+`cosmic-session` (`src/main.rs`, `data/start-cosmic`, `data/dconf/profile/cosmic`),
+`cosmic-osd`, `cosmic-idle`, COSMIC's pull request template, issues and pull
+requests named above, System76's roadmap post, libinput's gesture
+documentation, GNOME Shell 45.0 to 49.0's `overview.js`,
+`workspaceAnimation.js`, and `swipeTracker.js`, and GPUI at `ae394f3`.
+
+Not run: a light-mode pass; COSMIC or the Better OS session installed onto
+Zorin OS 18 or Ubuntu 24.04 with the pin; GDM starting either session;
+switching back and removing; a Better OS window as a layer-shell surface;
+`cosmic-comp` with a gesture patch; real hardware; any touchpad.
