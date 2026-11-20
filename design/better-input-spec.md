@@ -838,7 +838,9 @@ engine by itself on the next focus is not known and is ticket 183's first test.
 ## 7. The control center page
 
 A new navigation item below 預設應用程式 / Default apps: icon `Keyboard`,
-label 輸入法 / Input. `better-manager --page input` opens it. The mockups are
+label 輸入法 / Input. `better-manager --page input` opens it. (Ticket 229
+proposes it as a sub-page of 時間與語言 / Time & language instead, with the
+same `--page input`: decision M3 of `design/system-settings-spec.md`.) The mockups are
 `design/better-input/page-*.html` and `voice-setup-*.html`.
 
 ### 7.1 Status (top of the page)
