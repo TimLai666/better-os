@@ -9,10 +9,11 @@
 
 use std::ops::Range;
 
+use better_ui::icon_set::{self, Picture};
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
+use gpui_component::IconName;
 use gpui_component::input::{InputEvent, InputState};
-use gpui_component::{Icon, IconName};
 
 use better_ui::fluent::button::{Button, ButtonKind};
 use better_ui::fluent::chip::Chip;
@@ -33,17 +34,13 @@ use better_ui::fluent::{
 use git_core::{EdgeKind, RefKind};
 use git_platform::{GraphQuery, GraphScope};
 
-use crate::app::{BRANCH_ICON, ContextTarget, GitApp};
+use crate::app::{ContextTarget, GitApp};
 use crate::graph::{Direction, GraphCopy, GraphSpot, graph_copy};
 use crate::i18n::{Copy, fill};
 use crate::session::Repo;
 
 /// A graph row: one line, as a list row in `DESIGN.md`.
 pub(crate) const GRAPH_ROW: Pixels = px(36.0);
-/// The tag glyph, drawn like [`BRANCH_ICON`] in Lucide's 24px grid, because
-/// gpui-component's icon set has none.
-pub(crate) const TAG_ICON: &str = "better-git/tag.svg";
-pub(crate) const TAG_SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.6 2.6A2 2 0 0 0 11.2 2H4a2 2 0 0 0-2 2v7.2a2 2 0 0 0 .6 1.4l8.7 8.7a2.4 2.4 0 0 0 3.4 0l6.6-6.6a2.4 2.4 0 0 0 0-3.4z"/><circle cx="7.5" cy="7.5" r="1.5"/></svg>"#;
 /// The author and date columns' widths.
 const AUTHOR_WIDTH: Pixels = px(132.0);
 const DATE_WIDTH: Pixels = px(72.0);
@@ -388,7 +385,7 @@ impl GitApp {
                 ))
             })
             .child(
-                Button::icon_button("graph-find", IconName::Search, g.find)
+                Button::icon_button("graph-find", Picture::Search, g.find)
                     .kind(ButtonKind::Subtle)
                     .tooltip(format!("{} (Ctrl+F)", g.shortcut_find))
                     .on_click(Self::act(cx, |this, window, cx| {
@@ -728,11 +725,11 @@ impl GitApp {
                 let hue = lane_hue(row.lane);
                 let chip = match l.kind {
                     RefKind::Local => Chip::new(l.name.clone())
-                        .icon(Icon::empty().path(BRANCH_ICON))
+                        .icon(Picture::Branch)
                         .hue(hue)
                         .emphasized(l.current),
-                    RefKind::Remote => Chip::new(l.name.clone()).icon(IconName::Globe).hue(hue),
-                    RefKind::Tag => Chip::new(l.name.clone()).icon(Icon::empty().path(TAG_ICON)),
+                    RefKind::Remote => Chip::new(l.name.clone()).icon(Picture::Cloud).hue(hue),
+                    RefKind::Tag => Chip::new(l.name.clone()).icon(Picture::Tag),
                     RefKind::Head => Chip::new(g_head).hue(hue).emphasized(true),
                 };
                 let mut holder = div().id(("graph-label", index * 64 + i)).child(chip);
@@ -1152,12 +1149,7 @@ impl GitApp {
                     .h(px(28.0))
                     .px(spacing::MD)
                     .rounded(radius::SM)
-                    .child(
-                        Icon::empty()
-                            .path(BRANCH_ICON)
-                            .size(px(12.0))
-                            .text_color(p.text_secondary),
-                    )
+                    .child(icon_set::picture(Picture::Branch, 12.0))
                     .child(label(branch.name.clone(), BODY, p.text_primary))
                     .drag_over::<DraggedGraphCommit>(move |s, _, _, _| {
                         s.bg(with_alpha(p.accent, 0.25))

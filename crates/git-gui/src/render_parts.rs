@@ -4,6 +4,7 @@
 //! decides anything; the decisions are in `dialog_check`, `identity`,
 //! `shortcuts`, `worktree_links`, and `better_ui::fluent::toast`.
 
+use better_ui::icon_set::{Glyph, Picture};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, Context, Div, Focusable as _, InteractiveElement as _, IntoElement,
@@ -197,11 +198,13 @@ impl GitApp {
         for (shortcut, name) in self.shortcut_labels() {
             let keys = crate::keys::label(shortcut.action());
             let tooltip = format!("{name} ({keys})");
-            let icon = match shortcut {
-                Shortcut::Editor => IconName::File,
-                Shortcut::Files => IconName::FolderOpen,
-                Shortcut::Terminal => IconName::SquareTerminal,
-                Shortcut::GitHub => IconName::Github,
+            // Each opens another application, so each shows that thing; the
+            // GitHub button keeps GitHub's own mark.
+            let icon: Glyph = match shortcut {
+                Shortcut::Editor => Picture::CodeEditor.into(),
+                Shortcut::Files => Picture::FolderOpen.into(),
+                Shortcut::Terminal => Picture::Terminal.into(),
+                Shortcut::GitHub => IconName::Github.into(),
             };
             let mut button =
                 Button::new(("toolbar-shortcut", shortcut as usize), ButtonKind::Subtle)
@@ -315,7 +318,7 @@ impl GitApp {
                     )))
                     .child(
                         Button::standard("worktree-add", c.add_worktree)
-                            .icon(IconName::Plus)
+                            .icon(Picture::Add)
                             .on_click(Self::act(cx, |this, _, _| {
                                 this.flyout = None;
                                 this.session.dialog =
@@ -416,19 +419,15 @@ impl GitApp {
                 ))
             })
             .children(self.highlight_ring(index, p))
-            .child(
-                if w.missing {
-                    Icon::new(IconName::TriangleAlert)
-                } else {
-                    Icon::empty().path(crate::app::WORKTREE_ICON)
-                }
-                .size(px(16.0))
-                .text_color(if w.missing {
-                    p.caution
-                } else {
-                    p.text_secondary
-                }),
-            )
+            // A worktree that is gone keeps its warning mark.
+            .child(if w.missing {
+                Icon::new(IconName::TriangleAlert)
+                    .size(px(16.0))
+                    .text_color(p.caution)
+                    .into_any_element()
+            } else {
+                better_ui::icon_set::picture(Picture::Worktree, 16.0).into_any_element()
+            })
             .child(
                 div()
                     .flex()
