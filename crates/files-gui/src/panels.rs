@@ -2,7 +2,7 @@
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
-use gpui_component::{ActiveTheme, *};
+use gpui_component::{ActiveTheme, IconName, h_flex, v_flex};
 
 use crate::app::FilesApp;
 use crate::drives::DriveText as _;

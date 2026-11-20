@@ -6,10 +6,8 @@
 //! one, plus this crate's own controls. Nothing here is a list of call
 //! sites: the names come from the source each time the test runs.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-
-use better_ui::icon_set::{Picture, load};
 
 /// The toolkit icons a window may still name: DESIGN.md's plain symbols
 /// (arrows, chevrons, close, check, plus and minus as bare marks, the window
@@ -133,61 +131,66 @@ fn sources() -> BTreeMap<String, String> {
     out
 }
 
-/// Every picture a window names exists in the set and is served, both its
-/// layers; and every window that names a picture serves the set from its
-/// own `AssetSource`, or no picture it names would load.
+/// The text from `at` up to the call's closing parenthesis.
+fn call_argument(text: &str) -> &str {
+    let mut depth = 0usize;
+    for (index, c) in text.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' if depth == 0 => return &text[..index],
+            ')' => depth -= 1,
+            _ => {}
+        }
+    }
+    text
+}
+
+/// Every window that starts GPUI hands it an asset source, and every asset
+/// source a window hands GPUI serves the icon set: otherwise no picture in
+/// that window loads. Checked at each `application()` start and each
+/// `with_assets(...)` call, binary by binary, not crate by crate: the type
+/// named there must have an `AssetSource` impl in the same crate that calls
+/// `icon_set::load`.
 #[test]
-fn every_picture_a_window_uses_is_drawn_and_served() {
-    let by_name: BTreeMap<&str, Picture> = Picture::ALL.iter().map(|p| (p.name(), *p)).collect();
+fn every_window_hands_gpui_an_asset_source_that_serves_the_icon_set() {
     let sources = sources();
-    let mut used = HashSet::new();
-    let mut missing = Vec::new();
-    let mut crates_using = BTreeSet::new();
+    let mut faults = Vec::new();
+    let mut calls = 0;
     for (file, text) in &sources {
-        for (name, line) in names_after(text, "Picture::") {
-            // `Picture::ALL` and the type's own methods are not pictures.
-            if name == "ALL" || !name.starts_with(|c: char| c.is_ascii_uppercase()) {
+        let window = file.split('/').next().unwrap();
+        for (at, _) in text.match_indices("gpui_platform::application()") {
+            let statement = &text[at..text[at..].find(';').map_or(text.len(), |end| at + end)];
+            if !statement.contains(".with_assets(") {
+                faults.push(format!("{file}: starts GPUI without an asset source"));
+            }
+        }
+        for (at, _) in text.match_indices(".with_assets(") {
+            calls += 1;
+            let argument = call_argument(&text[at + ".with_assets(".len()..]).trim();
+            let ty = argument.rsplit("::").next().unwrap_or(argument);
+            if argument.starts_with("gpui_component_assets") {
+                faults.push(format!("{file}: hands GPUI the toolkit's assets alone"));
                 continue;
             }
-            match by_name.get(name.as_str()) {
-                Some(picture) => {
-                    used.insert(*picture);
-                    crates_using.insert(file.split('/').next().unwrap().to_string());
-                }
-                None => missing.push(format!("{file}:{line} names Picture::{name}")),
+            let serves = sources
+                .iter()
+                .filter(|(other, _)| other.starts_with(&format!("{window}/")))
+                .filter(|(_, other)| other.contains(&format!("AssetSource for {ty} ")))
+                .any(|(_, other)| {
+                    let impl_at = other.find(&format!("AssetSource for {ty} ")).unwrap();
+                    let body = &other[impl_at..];
+                    let body = &body[..body.find("\n}").unwrap_or(body.len())];
+                    body.contains("icon_set::load(")
+                });
+            if !serves {
+                faults.push(format!(
+                    "{file}: hands GPUI {argument}, whose AssetSource does not serve icon_set::load"
+                ));
             }
         }
     }
-    assert!(missing.is_empty(), "no drawing: {missing:#?}");
-    assert!(
-        used.len() > 50,
-        "the scan found only {} pictures",
-        used.len()
-    );
-    for picture in &used {
-        assert!(
-            load(picture.path()).is_some(),
-            "{} is not served",
-            picture.name()
-        );
-        if let Some((path, _)) = picture.second_layer() {
-            assert!(load(path).is_some(), "{path} is not served");
-        }
-    }
-    // A window crate that names a picture must hand GPUI the set.
-    for window in crates_using
-        .iter()
-        .filter(|name| name.as_str() != "better-ui")
-    {
-        let serves = sources
-            .iter()
-            .filter(|(file, _)| file.starts_with(&format!("{window}/")))
-            .any(|(_, text)| text.contains("icon_set::load("));
-        assert!(
-            serves,
-            "{window} draws pictures but never serves icon_set::load"
-        );
-    }
+    assert!(calls >= 9, "the scan found only {calls} with_assets calls");
+    assert!(faults.is_empty(), "{faults:#?}");
 }
 
 /// No window names a toolkit line icon for a thing or an action: every
@@ -221,6 +224,62 @@ fn no_window_names_a_toolkit_icon_for_a_thing_or_an_action() {
     assert!(
         offences.is_empty(),
         "toolkit icons standing for a thing or an action: {offences:#?}"
+    );
+}
+
+/// The same rule against the other ways to reach a toolkit icon: an alias
+/// (`IconName as Glyphs`, after which `Glyphs::Folder` escapes the scan
+/// above), a glob import of the toolkit (after which a bare `Folder` does),
+/// and a kit SVG named by its path (`"icons/folder.svg"`).
+#[test]
+fn no_window_reaches_a_toolkit_icon_another_way() {
+    let symbols: BTreeSet<&str> = SYMBOLS.iter().map(|(name, _)| *name).collect();
+    let mut offences = Vec::new();
+    for (file, text) in sources() {
+        if FIXTURES.contains(&file.as_str()) {
+            continue;
+        }
+        for (index, line) in text.lines().enumerate() {
+            let at = format!("{file}:{}", index + 1);
+            let code = line.trim_start();
+            if code.starts_with("//") {
+                continue;
+            }
+            if code.contains("IconName as ") {
+                offences.push(format!("{at}: renames IconName"));
+            }
+            if code.starts_with("use gpui_component::")
+                && (code.contains("::*") || code.contains("{*") || code.contains(", *"))
+            {
+                offences.push(format!("{at}: glob-imports the toolkit"));
+            }
+            let mut rest = line;
+            while let Some(found) = rest.find("\"icons/") {
+                let after = &rest[found + "\"icons/".len()..];
+                let name: String = after
+                    .chars()
+                    .take_while(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '-')
+                    .collect();
+                let pascal: String = name
+                    .split('-')
+                    .map(|part| {
+                        let mut chars = part.chars();
+                        chars
+                            .next()
+                            .map(|first| first.to_ascii_uppercase().to_string() + chars.as_str())
+                            .unwrap_or_default()
+                    })
+                    .collect();
+                if after[name.len()..].starts_with(".svg") && !symbols.contains(pascal.as_str()) {
+                    offences.push(format!("{at}: names the kit's icons/{name}.svg"));
+                }
+                rest = &after[name.len()..];
+            }
+        }
+    }
+    assert!(
+        offences.is_empty(),
+        "toolkit icons reached another way: {offences:#?}"
     );
 }
 

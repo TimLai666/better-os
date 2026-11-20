@@ -2,7 +2,7 @@
 //! could decide; this file routes and lays out.
 
 use gpui::*;
-use gpui_component::{ActiveTheme, scroll::ScrollableElement, *};
+use gpui_component::{ActiveTheme, StyledExt as _, h_flex, scroll::ScrollableElement, v_flex};
 
 use crate::{
     app::AwakeApp, i18n::copy, layout::COMPACT_VIEWPORT_WIDTH, model::Section, shell::actions,

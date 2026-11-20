@@ -294,7 +294,7 @@ fn every_path_is_unique_and_load_serves_it() {
         assert_eq!(load(path), Some(picture.svg().as_bytes()));
         assert_eq!(super::catalog::Picture::from_path(path), Some(picture));
     }
-    assert_eq!(load("icons/folder.svg"), None);
+    assert_eq!(load("icons/chevron-down.svg"), None);
     assert_eq!(load("better-ui/icons/object/no-such-icon.svg"), None);
     assert_eq!(load(""), None);
 }

@@ -327,6 +327,11 @@ mod tests {
             );
         }
         // The kit's own still come through.
-        assert!(FilesAssets.load("icons/folder.svg").unwrap().is_some());
+        assert!(
+            FilesAssets
+                .load("icons/chevron-down.svg")
+                .unwrap()
+                .is_some()
+        );
     }
 }

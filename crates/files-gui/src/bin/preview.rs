@@ -1022,7 +1022,7 @@ fn main() {
         std::process::exit(2);
     };
     let file = std::fs::canonicalize(&file).unwrap_or(file);
-    let app = gpui_platform::application().with_assets(gpui_component_assets::Assets);
+    let app = gpui_platform::application().with_assets(files_gui::icons::FilesAssets);
     app.run(move |cx| {
         gpui_component::init(cx);
         let options = WindowOptions {
