@@ -73,9 +73,14 @@ print UTC because the CLI has none of them.
   local wall clock, like the window.
 - Better Awake's schedule provider no longer runs on UTC when the machine has
   no timezone data: it reports itself unavailable with
-  `awake.provider.no_time_zone`, which the rule editor shows under its
-  localized "Reported reason" in both languages, the way every provider key is
-  shown (no provider key has a translated sentence).
+  `awake.provider.no_time_zone`, shown as "This computer has no time zone
+  set, so the local time a schedule needs is not known." / 「這台電腦沒有設定
+  時區，所以不知道排程需要的當地時間。」
+- Every provider reason key is a sentence now, in one table both windows use
+  (`awake_ipc::reasons`, used by `awake-gui` and the Keep awake page; the tray
+  shows no reasons). A test collects every `awake.provider.*` key from
+  `awake-platform` and `awake-core` and fails when one lacks either sentence;
+  an unknown key reads "Unknown reason (key)" / 「原因不明（key）」.
 - Known effect (also in `engineering/specs/files-gui-policy.md`): an item
   Better Files or Better Git 0.2.16 and older trashed carries a UTC
   `DeletionDate` and now reads as local time, so its deleted time shows
