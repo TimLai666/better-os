@@ -99,6 +99,25 @@ fn restore(backup: &Backup, backend: &mut dyn TouchpadBackend) -> RunState {
     backend.restore(&plan).state()
 }
 
+/// Why nothing can be put back in this session although a capture exists:
+/// the session's dconf database could not be decided. The sentence is the
+/// person's (Better Manager shows the last line in Activity with the exit 3
+/// warning); with no capture there is nothing to put back and no warning.
+pub fn refused_before_removal(
+    store: &TouchpadStore,
+    backend: &crate::GnomeBackend,
+) -> Option<String> {
+    let reason = backend.profile_refusal()?;
+    if matches!(store.load_backup(), Ok(None)) {
+        return None;
+    }
+    Some(
+        crate::dconf_profile::sentence_for_environment(reason)
+            .unwrap_or(reason)
+            .to_string(),
+    )
+}
+
 /// The run before removal. `reachable` is whether the desktop's settings
 /// can be written in this session.
 pub fn put_back_before_removal(
@@ -228,6 +247,29 @@ mod tests {
                 1,
             ))
             .unwrap();
+    }
+
+    // Review finding 4: a session whose dconf database could not be decided
+    // gets the person's sentence and the exit 3 warning, not a pending restore
+    // that waits for a session forever; with nothing captured, nothing at all.
+    #[test]
+    fn a_refused_session_profile_is_reported_only_when_something_was_captured() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = TouchpadStore::new(directory.path().to_path_buf());
+        let backend = crate::GnomeBackend::without_database(
+            None,
+            &crate::dconf_profile::ProfileError::NotTheSessionEnvironment {
+                desktop: "betteros:cosmic".to_string(),
+            },
+        );
+        assert_eq!(refused_before_removal(&store, &backend), None);
+        captured_tap_off(&store);
+        let said = refused_before_removal(&store, &backend).unwrap();
+        let (en, zh) =
+            crate::dconf_profile::sentence("dconf.session_profile_not_in_environment").unwrap();
+        assert!(said == en || said == zh, "{said}");
+        let reachable = crate::GnomeBackend::read_only("/nonexistent/dconf/user", None);
+        assert_eq!(refused_before_removal(&store, &reachable), None);
     }
 
     fn tap(backend: &MockBackend) -> Option<Reading> {

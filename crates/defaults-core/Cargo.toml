@@ -14,6 +14,7 @@ serde.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+defaults-platform = { workspace = true, features = ["dconf-write", "test-support"] }
 # The mixed-handler-group tests run the production `mimeapps.list` adapter over
 # a temporary file.
 app-chooser-core.workspace = true

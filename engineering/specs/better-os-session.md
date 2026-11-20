@@ -408,13 +408,20 @@ target session uses: `defaults_platform::dconf_profile` follows dconf's own
 lookup (a mandatory profile, then `DCONF_PROFILE`, then the runtime and `user`
 profiles, then `user-db:user`; names through `/etc/dconf/profile/` and then
 `XDG_DATA_DIRS`), and the GNOME adapters and Better Touchpad's backend read
-that database and write through `/ca/desrt/dconf/Writer/<name>`. The launcher
-entry and tool entry point also read the later `user-db` lines beneath it, so
-a list the session's own database does not hold starts from GNOME's. A
-profile whose first database is not a `user-db`, one that exists and cannot
-be read, and a process whose `XDG_CURRENT_DESKTOP` names COSMIC or Better OS
-with no `DCONF_PROFILE` (both sessions set it, so such a process does not have
-the session's environment) are reported, and nothing is written.
+that database and write through its writer object (`/ca/desrt/dconf/Writer/<name>`,
+or `/ca/desrt/dconf/<name>` for a `service-db`, and the safe writer dconf 51
+uses for a home on NFS). A value shown from a `user-db` beneath the session's
+own is displayed (launcher lists, tool entries, Better Touchpad's settings and
+its shortcut check) but captured as not held, so a restore resets the
+session's key instead of copying the value into it. Every defaults record
+names the database it was captured from and written to (a 0.2.16 record names
+none and means GNOME's), and status, verify, and restore use that database in
+whichever session they run. A first `system-db` or `file-db`, a named profile
+that cannot be read, and a process whose `XDG_CURRENT_DESKTOP` names COSMIC or
+Better OS with no `DCONF_PROFILE` (both sessions set it, so such a process does
+not have the session's environment) are reported with a sentence that says
+what to do, and nothing is written; an unreadable `user` profile falls back to
+`user-db:user` as dconf does.
 
 ## Gestures
 

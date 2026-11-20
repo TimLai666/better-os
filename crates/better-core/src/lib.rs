@@ -10,9 +10,10 @@ pub mod package_health;
 pub mod self_update;
 
 pub use defaults::{
-    AdapterId, DefaultIntegration, DefaultsValue, HealthPrerequisite, IntegrationExclusivity,
-    IntegrationId, IntegrationKind, IntegrationTarget, KeyObservation, MAX_INTEGRATION_ID_LENGTH,
-    MAX_TARGET_KEY_LENGTH, ObservedValue, RequiredPrivilege, RestorePolicy, SessionEffect,
+    AdapterId, DconfDatabase, DefaultIntegration, DefaultsValue, HealthPrerequisite,
+    IntegrationExclusivity, IntegrationId, IntegrationKind, IntegrationTarget, KeyObservation,
+    MAX_INTEGRATION_ID_LENGTH, MAX_TARGET_KEY_LENGTH, ObservedValue, RequiredPrivilege,
+    RestorePolicy, SessionEffect,
 };
 pub use desktop::{CurrentDesktop, UNKNOWN_DESKTOP};
 pub use host::{

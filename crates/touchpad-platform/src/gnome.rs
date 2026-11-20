@@ -192,6 +192,10 @@ fn from_gnome_speed(speed: f64) -> Option<Sensitivity> {
 
 pub struct GnomeBackend {
     database: PathBuf,
+    /// The user databases beneath the session's own, in profile order: a
+    /// setting the session's database does not hold is shown from the first
+    /// of these that does, as [`Reading::Inherited`]. Writes never go there.
+    beneath: Vec<PathBuf>,
     /// Why the session's database could not be decided, as `reason:detail`;
     /// every read reports it rather than reading some other file.
     unavailable: Option<String>,
@@ -213,12 +217,19 @@ impl GnomeBackend {
     /// says why.
     pub fn read_only_session(device: Option<&DeviceCapabilities>) -> Self {
         match Self::session_database() {
-            Ok(session) => Self::read_only(session.path, device),
+            Ok(session) => {
+                let mut backend = Self::read_only(session.path, device);
+                backend.beneath = session.beneath;
+                backend
+            }
             Err(error) => Self::without_database(device, &error),
         }
     }
 
-    fn without_database(device: Option<&DeviceCapabilities>, error: &ProfileError) -> Self {
+    pub(crate) fn without_database(
+        device: Option<&DeviceCapabilities>,
+        error: &ProfileError,
+    ) -> Self {
         let mut backend =
             Self::read_only_with_reason(PathBuf::new(), device, error.reason(), error.to_string());
         backend.unavailable = Some(format!("{}:{error}", error.reason()));
@@ -247,6 +258,7 @@ impl GnomeBackend {
             }
         };
         let database = session.path;
+        let beneath = session.beneath;
         match DconfWriter::connect_session(&session.writer_path)
             .and_then(|writer| writer.probe().map(|()| writer))
         {
@@ -261,6 +273,7 @@ impl GnomeBackend {
                 let capabilities = capabilities_for(true, device, scroll.as_deref());
                 Self {
                     database,
+                    beneath,
                     unavailable: None,
                     writer: Some(writer),
                     capabilities,
@@ -307,6 +320,7 @@ impl GnomeBackend {
         let _ = device;
         Self {
             database,
+            beneath: Vec::new(),
             unavailable: None,
             #[cfg(feature = "dconf-write")]
             writer: None,
@@ -329,10 +343,25 @@ impl GnomeBackend {
             status: BackendStatus::reachable("gnome", format!("writing through {writer:?}")),
             capabilities: capabilities_for(true, device, None),
             database,
+            beneath: Vec::new(),
             unavailable: None,
             writer: Some(writer),
             scroll: None,
         }
+    }
+
+    /// A backend over a session's database and the ones beneath it, writing
+    /// through `writer` (opened at the session database's writer object).
+    /// This is what the session profile test builds against a private bus.
+    #[cfg(feature = "dconf-write")]
+    pub fn with_session(
+        session: &SessionDatabase,
+        writer: DconfWriter,
+        device: Option<&DeviceCapabilities>,
+    ) -> Self {
+        let mut backend = Self::with_writer(session.path.clone(), writer, device);
+        backend.beneath = session.beneath.clone();
+        backend
     }
 
     /// Carry the scroll factors through `scroll`. This is how a test gives the
@@ -373,6 +402,15 @@ impl GnomeBackend {
         &self.status
     }
 
+    /// The reason key the session's dconf database could not be decided
+    /// with, when it could not (`dconf.session_profile_not_in_environment`).
+    /// Such a backend reads and writes nothing; it is not "no session".
+    pub fn profile_refusal(&self) -> Option<&str> {
+        self.unavailable
+            .as_deref()
+            .map(|reason| reason.split_once(':').map_or(reason, |(key, _)| key))
+    }
+
     /// The full dconf path of a setting, for a diagnostics screen that has to
     /// say exactly which key was read.
     pub fn key_path(setting: SettingId) -> Option<String> {
@@ -383,24 +421,56 @@ impl GnomeBackend {
         if let Some(reason) = &self.unavailable {
             return Err(Reading::unknown(reason.clone()));
         }
-        match std::fs::read(&self.database) {
-            Ok(bytes) => GvdbDatabase::parse(&bytes)
-                .map_err(|error| Reading::unknown(format!("gnome.database_unreadable:{error}"))),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                // No database at all means the user has never changed a
-                // peripheral setting. Every key is at its session default,
-                // which is a definite state and a restorable one.
-                Ok(GvdbDatabase::default())
+        load_database(&self.database)
+    }
+}
+
+/// What the session shows for a key its own database does not hold: the
+/// first database beneath that holds it, as [`Reading::Inherited`], or the
+/// session default. A database beneath that cannot be read is reported for
+/// the key that needed it.
+fn shown_from_beneath(
+    shape: KeyShape,
+    key: &str,
+    beneath: &[(String, Result<GvdbDatabase, Reading>)],
+) -> Reading {
+    for (name, database) in beneath {
+        match database {
+            Ok(database) => {
+                if let Some(value) = database.get(key) {
+                    return match to_reading(shape, Some(value)) {
+                        Reading::Value { value } => Reading::Inherited {
+                            value,
+                            from: name.clone(),
+                        },
+                        other => other,
+                    };
+                }
             }
-            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
-                Err(Reading::PermissionDenied {
-                    reason: "gnome.database_not_readable".to_string(),
-                })
-            }
-            Err(error) => Err(Reading::unknown(format!(
-                "gnome.database_unreadable:{error}"
-            ))),
+            Err(_) => return Reading::unknown("gnome.database_beneath_unreadable"),
         }
+    }
+    to_reading(shape, None)
+}
+
+fn load_database(path: &Path) -> Result<GvdbDatabase, Reading> {
+    match std::fs::read(path) {
+        Ok(bytes) => GvdbDatabase::parse(&bytes)
+            .map_err(|error| Reading::unknown(format!("gnome.database_unreadable:{error}"))),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            // No database at all means the user has never changed a
+            // peripheral setting. Every key is at its session default,
+            // which is a definite state and a restorable one.
+            Ok(GvdbDatabase::default())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+            Err(Reading::PermissionDenied {
+                reason: "gnome.database_not_readable".to_string(),
+            })
+        }
+        Err(error) => Err(Reading::unknown(format!(
+            "gnome.database_unreadable:{error}"
+        ))),
     }
 }
 
@@ -518,6 +588,19 @@ impl TouchpadBackend for GnomeBackend {
     }
 
     fn read(&self, settings: &[SettingId]) -> Vec<(SettingId, Reading)> {
+        // Read once per call, and only used for a key the session's own
+        // database does not hold.
+        let beneath: Vec<(String, Result<GvdbDatabase, Reading>)> = self
+            .beneath
+            .iter()
+            .map(|path| {
+                let name = path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                (name, load_database(path))
+            })
+            .collect();
         let database = match self.load() {
             Ok(database) => database,
             Err(reading) => {
@@ -540,10 +623,13 @@ impl TouchpadBackend for GnomeBackend {
                         let _ = detail;
                         Reading::unsupported(reason)
                     }
-                    Some(entry) => to_reading(
-                        entry.shape,
-                        database.get(&format!("{TOUCHPAD_PREFIX}{}", entry.key)),
-                    ),
+                    Some(entry) => {
+                        let key = format!("{TOUCHPAD_PREFIX}{}", entry.key);
+                        match database.get(&key) {
+                            Some(value) => to_reading(entry.shape, Some(value)),
+                            None => shown_from_beneath(entry.shape, &key, &beneath),
+                        }
+                    }
                 };
                 (*setting, reading)
             })

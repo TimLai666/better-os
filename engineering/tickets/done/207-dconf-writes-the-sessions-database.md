@@ -43,10 +43,22 @@ the session.
   takes the writer path it names. Tests: `dconf_profile.rs`'s unit tests over
   scratch profiles, and four private-bus tests at the end of
   `crates/defaults-core/tests/gnome_writes.rs`.
-- Deliberate limits, written in the module: a first `service-db` (or a
-  `user-db` on NFS, which dconf turns into one), `system-db`, or `file-db` is
-  reported and not written; `system-db` values and locks are not read, as
+- Deliberate limits, written in the module: a first `system-db` or `file-db`
+  is reported and not written; `system-db` values and locks are not read, as
   before. A process whose `XDG_CURRENT_DESKTOP` names COSMIC or `BetterOS` and
   has no `DCONF_PROFILE` is reported rather than given GNOME's database.
+- Review round (2026-11-21): every defaults record names its dconf database
+  (`SnapshotEntry::dconf_database`, schema version unchanged so 0.2.16 still
+  reads it; absent means GNOME's) and status, verify, and restore use it; a
+  value shown from a database beneath the session's is captured as unset and
+  restored by reset; Better Touchpad shows such a value (`Reading::Inherited`,
+  never stored) and its shortcut check reads every database; each refusal has
+  a sentence in English and zh-TW in Better Manager, Better Touchpad, and the
+  before-removal step (exit 3); an unreadable `user` profile falls back to
+  `user-db:user` with a note; a database beneath that cannot be read fails only
+  the keys that need it; `service-db` is written through its own writer, and
+  on NFS the installed dconf decides (51.0 and later through the safe writer,
+  0.40 as before). Private-bus tests fail rather than skip under CI, which now
+  installs `dconf-service`.
 - That the session's processes really carry `DCONF_PROFILE=betteros` is the
   session launcher's job (ticket 203) and is not exercised here.

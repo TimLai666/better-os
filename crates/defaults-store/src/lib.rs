@@ -28,7 +28,7 @@ use std::process;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use better_core::defaults::{DefaultsValue, IntegrationId, ObservedValue};
+use better_core::defaults::{DconfDatabase, DefaultsValue, IntegrationId, ObservedValue};
 use better_core::manifest::ComponentId;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -103,9 +103,30 @@ pub struct SnapshotEntry {
     /// What a verifying read last saw.
     pub last_verified_value: Option<DefaultsValue>,
     pub restore_state: RestoreState,
+    /// The dconf database the previous value was read from and the change
+    /// written to, for an integration an adapter keeps in dconf. Status,
+    /// verify, and restore use this database, never whichever one the
+    /// running session would write now.
+    ///
+    /// Added without raising [`SNAPSHOT_SCHEMA_VERSION`]: absent is what
+    /// 0.2.16 and older wrote, and means GNOME's database
+    /// ([`Self::recorded_dconf_database`]); and a Better Manager 0.2.16 that
+    /// reads a newer record ignores the field (`SnapshotEntry` does not deny
+    /// unknown fields there either), so a rollback keeps every record rather
+    /// than reporting it as written by a newer version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dconf_database: Option<DconfDatabase>,
 }
 
 impl SnapshotEntry {
+    /// The dconf database this record is about. A record that names none was
+    /// written by 0.2.16 or older, which always wrote GNOME's database.
+    pub fn recorded_dconf_database(&self) -> DconfDatabase {
+        self.dconf_database
+            .clone()
+            .unwrap_or_else(DconfDatabase::gnome_user)
+    }
+
     /// The last value Better Manager knows it is responsible for. Anything else
     /// on the system now came from somewhere else.
     pub fn last_known_value(&self) -> Option<&DefaultsValue> {

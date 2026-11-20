@@ -17,14 +17,11 @@
 mod common;
 
 use std::cell::RefCell;
-use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
 use std::rc::Rc;
-use std::time::{Duration, Instant};
 
 use better_core::defaults::{
-    AdapterId, DefaultIntegration, DefaultsValue, IntegrationKind, ObservedValue,
+    AdapterId, DconfDatabase, DefaultIntegration, DefaultsValue, IntegrationKind, ObservedValue,
 };
 use common::*;
 use defaults_core::{
@@ -32,9 +29,10 @@ use defaults_core::{
     Selection, SystemContext,
 };
 use defaults_platform::dconf::ChangesetSender;
-use defaults_platform::dconf_profile::{ProfileEnvironment, session_database_in};
-use defaults_platform::dconf_writer::{DconfWriter, USER_WRITER_PATH};
+use defaults_platform::dconf_profile::session_database_in;
+use defaults_platform::dconf_writer::USER_WRITER_PATH;
 use defaults_platform::gvariant::{ChangeValue, Changeset};
+use defaults_platform::test_support::{PrivateDconf, read_database};
 use defaults_platform::{AdapterSet, DconfAdapter};
 use defaults_store::SnapshotStore;
 
@@ -221,146 +219,32 @@ fn a_refused_write_is_a_failure_and_the_setting_is_left_as_it_was() {
     );
 }
 
-/// A `dbus-daemon` and a `dconf-service` that belong to this test alone.
-struct PrivateDconf {
-    bus: Child,
-    service: Child,
-    address: String,
-    database: PathBuf,
-    _directory: tempfile::TempDir,
-}
-
-impl PrivateDconf {
-    fn start() -> Option<Self> {
-        let service_binary = ["/usr/libexec/dconf-service", "/usr/lib/dconf/dconf-service"]
-            .into_iter()
-            .map(PathBuf::from)
-            .find(|path| path.exists())?;
-        let directory = tempfile::tempdir().ok()?;
-        let root = directory.path();
-        for name in ["config", "runtime", "home", "cache"] {
-            std::fs::create_dir_all(root.join(name)).ok()?;
-        }
-        // No <servicedir>, so nothing on this bus can be activated — in
-        // particular not a dconf-service carrying the developer's environment.
-        let config = root.join("bus.conf");
-        std::fs::write(
-            &config,
-            format!(
-                "<!DOCTYPE busconfig PUBLIC \"-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN\" \
-                 \"http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd\">\n\
-                 <busconfig><type>session</type><listen>unix:tmpdir={}</listen>\
-                 <auth>EXTERNAL</auth><policy context=\"default\">\
-                 <allow send_destination=\"*\" eavesdrop=\"true\"/><allow eavesdrop=\"true\"/>\
-                 <allow own=\"*\"/></policy></busconfig>\n",
-                root.display()
-            ),
-        )
-        .ok()?;
-        let path = std::env::var("PATH").unwrap_or_default();
-        let isolated = |command: &mut Command| {
-            command
-                .env_clear()
-                .env("PATH", &path)
-                .env("HOME", root.join("home"))
-                .env("XDG_CONFIG_HOME", root.join("config"))
-                .env("XDG_RUNTIME_DIR", root.join("runtime"))
-                .env("XDG_CACHE_HOME", root.join("cache"));
-        };
-
-        let mut bus_command = Command::new("dbus-daemon");
-        bus_command
-            .arg(format!("--config-file={}", config.display()))
-            .args(["--nofork", "--print-address"])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null());
-        isolated(&mut bus_command);
-        let mut bus = bus_command.spawn().ok()?;
-        let mut address = String::new();
-        BufReader::new(bus.stdout.take()?)
-            .read_line(&mut address)
-            .ok()?;
-        let address = address.trim().to_string();
-        if address.is_empty() {
-            let _ = bus.kill();
-            let _ = bus.wait();
-            return None;
-        }
-
-        let mut service_command = Command::new(service_binary);
-        service_command.stdout(Stdio::null()).stderr(Stdio::null());
-        isolated(&mut service_command);
-        service_command.env("DBUS_SESSION_BUS_ADDRESS", &address);
-        let service = match service_command.spawn() {
-            Ok(service) => service,
-            Err(_) => {
-                let _ = bus.kill();
-                let _ = bus.wait();
-                return None;
-            }
-        };
-        let dconf = Self {
-            bus,
-            service,
-            address,
-            database: root.join("config/dconf/user"),
-            _directory: directory,
-        };
-
-        // The service owns its name a moment after it starts. Nothing can
-        // activate it on this bus, so until then a call simply fails.
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while Instant::now() < deadline {
-            if dconf.writer().probe().is_ok() {
-                return Some(dconf);
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        None
-    }
-
-    fn writer(&self) -> DconfWriter {
-        DconfWriter::connect_to(&self.address, USER_WRITER_PATH)
-            .expect("the private bus is listening")
-    }
-
-    fn adapter(&self) -> DconfAdapter {
-        DconfAdapter::with_sender(
-            AdapterId::GnomeKeybinding,
-            &self.database,
-            Box::new(self.writer()),
-        )
-    }
-}
-
-impl Drop for PrivateDconf {
-    fn drop(&mut self) {
-        let _ = self.service.kill();
-        let _ = self.service.wait();
-        let _ = self.bus.kill();
-        let _ = self.bus.wait();
-    }
-}
-
+// The private service lives in `defaults_platform::test_support`, shared with
+// Better Touchpad's tests. Under CI a missing `dconf-service` fails the test
+// rather than skipping it.
 macro_rules! dconf_or_skip {
     () => {
-        match PrivateDconf::start() {
+        match PrivateDconf::start_or_skip() {
             Some(dconf) => dconf,
-            None => {
-                eprintln!(
-                    "skipping: dbus-daemon or dconf-service is not available in this environment"
-                );
-                return;
-            }
+            None => return,
         }
     };
+}
+
+/// The adapter every private-bus test of a GNOME keybinding uses.
+fn keybinding_adapter(dconf: &PrivateDconf) -> DconfAdapter {
+    DconfAdapter::with_sender(
+        AdapterId::GnomeKeybinding,
+        &dconf.database,
+        Box::new(dconf.writer()),
+    )
 }
 
 #[test]
 fn a_key_that_held_nothing_is_applied_verified_and_reset_on_restore() {
     let dconf = dconf_or_skip!();
     let snapshots = tempfile::tempdir().unwrap();
-    let mut run = Run::new(snapshots.path(), dconf.adapter());
+    let mut run = Run::new(snapshots.path(), keybinding_adapter(&dconf));
     assert_eq!(
         run.state(),
         (IntegrationState::NotDefault, ObservedValue::Unset)
@@ -421,7 +305,7 @@ fn a_key_the_user_had_set_is_put_back_to_their_value() {
     dconf.writer().change(&own).unwrap();
 
     let snapshots = tempfile::tempdir().unwrap();
-    let mut run = Run::new(snapshots.path(), dconf.adapter());
+    let mut run = Run::new(snapshots.path(), keybinding_adapter(&dconf));
     assert_eq!(
         run.state(),
         (IntegrationState::NotDefault, keys(&["<Super>h", "<Alt>h"]))
@@ -537,55 +421,6 @@ fn a_tool_entry_no_schema_defines_is_unavailable_and_never_written() {
 // `defaults_platform::dconf_profile` over the private service's own scratch
 // directories, never the developer's.
 
-impl PrivateDconf {
-    /// The scratch directory every XDG variable of the service points into.
-    fn root(&self) -> PathBuf {
-        self.database
-            .ancestors()
-            .nth(3)
-            .expect("the database is root/config/dconf/user")
-            .to_path_buf()
-    }
-
-    fn writer_at(&self, object_path: &str) -> DconfWriter {
-        DconfWriter::connect_to(&self.address, object_path).expect("the private bus is listening")
-    }
-
-    /// The profile environment of a session over this service's directories.
-    fn environment(&self, dconf_profile: Option<&str>, desktop: &str) -> ProfileEnvironment {
-        let root = self.root();
-        ProfileEnvironment {
-            dconf_profile: dconf_profile.map(str::to_string),
-            desktop: better_core::CurrentDesktop::parse(desktop),
-            mandatory_dir: root.join("run/dconf/user"),
-            uid: 1000,
-            runtime_dir: root.join("runtime"),
-            sysconf_dir: root.join("etc"),
-            data_dirs: vec![root.join("share")],
-            config_home: root.join("config"),
-            config_home_on_nfs: false,
-        }
-    }
-
-    /// The Better OS session's profile, as its package installs it.
-    fn install_session_profile(&self) {
-        let profile = self.root().join("share/dconf/profile/betteros");
-        std::fs::create_dir_all(profile.parent().unwrap()).unwrap();
-        std::fs::write(profile, "user-db:betteros\nuser-db:user\n").unwrap();
-    }
-
-    /// GNOME's own database, given values the way GNOME Settings would.
-    fn seed_gnome(&self, key: &str, value: ChangeValue) {
-        let mut change = Changeset::new("/").unwrap();
-        change.set_path(key, value).unwrap();
-        self.writer().change(&change).unwrap();
-    }
-}
-
-fn read_database(path: &Path) -> defaults_platform::gvdb::GvdbDatabase {
-    defaults_platform::gvdb::GvdbDatabase::parse(&std::fs::read(path).unwrap()).unwrap()
-}
-
 #[test]
 fn in_the_better_os_session_a_key_is_written_to_its_database_and_gnome_s_is_untouched() {
     let dconf = dconf_or_skip!();
@@ -604,6 +439,7 @@ fn in_the_better_os_session_a_key_is_written_to_its_database_and_gnome_s_is_unto
     let adapter = DconfAdapter::for_database(
         AdapterId::GnomeKeybinding,
         Ok(session.clone()),
+        Some(dconf.dirs()),
         Some(Box::new(writer)),
     );
     let snapshots = tempfile::tempdir().unwrap();
@@ -668,6 +504,7 @@ fn in_the_better_os_session_a_launcher_list_starts_from_what_the_session_shows()
         session_database_in(&dconf.environment(Some("betteros"), "BetterOS:COSMIC")).unwrap();
     let adapter = defaults_platform::LauncherEntryAdapter::for_database(
         Ok(session.clone()),
+        Some(dconf.dirs()),
         vec![PathBuf::from(SCHEMAS)],
         Some(Box::new(dconf.writer_at(&session.writer_path))),
     );
@@ -707,6 +544,7 @@ fn with_gnome_s_default_profile_the_write_goes_where_it_always_did() {
     let adapter = DconfAdapter::for_database(
         AdapterId::GnomeKeybinding,
         Ok(session.clone()),
+        Some(dconf.dirs()),
         Some(Box::new(dconf.writer_at(&session.writer_path))),
     );
     let snapshots = tempfile::tempdir().unwrap();
@@ -727,10 +565,186 @@ fn a_session_without_its_profile_in_the_environment_writes_nothing() {
     let adapter = DconfAdapter::for_database(
         AdapterId::GnomeKeybinding,
         decided,
+        Some(dconf.dirs()),
         Some(Box::new(dconf.writer())),
     );
     let snapshots = tempfile::tempdir().unwrap();
     let mut run = Run::new(snapshots.path(), adapter);
     assert!(!run.apply().results[0].outcome.is_success());
     assert!(!dconf.database.exists(), "GNOME's database was written");
+}
+
+/// The keybinding adapter of the session `environment` describes, over the
+/// private service, as production builds it for this process's own session.
+fn session_adapter(dconf: &PrivateDconf, profile: Option<&str>, desktop: &str) -> DconfAdapter {
+    let session = session_database_in(&dconf.environment(profile, desktop));
+    let writer_path = session
+        .as_ref()
+        .map(|session| session.writer_path.clone())
+        .unwrap_or_else(|_| USER_WRITER_PATH.to_string());
+    DconfAdapter::for_database(
+        AdapterId::GnomeKeybinding,
+        session,
+        Some(dconf.dirs()),
+        Some(Box::new(dconf.writer_at(&writer_path))),
+    )
+}
+
+/// Moves a run's record into a new run with another adapter: the same
+/// person, signed in to another session.
+fn in_other_session(run: Run, adapter: DconfAdapter) -> Run {
+    let mut adapters = AdapterSet::in_memory();
+    adapters.insert(Box::new(adapter));
+    Run { adapters, ..run }
+}
+
+// Review finding 1: applied under GNOME, restored from the Better OS
+// session. The record names GNOME's database, so the restore resets the key
+// there, the session's database is never written, and the session's status
+// reads GNOME's database rather than calling the value changed.
+#[test]
+fn a_change_made_under_gnome_is_put_back_in_gnome_s_database_from_the_session() {
+    let dconf = dconf_or_skip!();
+    dconf.install_session_profile();
+    let snapshots = tempfile::tempdir().unwrap();
+    let mut run = Run::new(
+        snapshots.path(),
+        session_adapter(&dconf, None, "zorin:GNOME"),
+    );
+    assert!(run.apply().results[0].outcome.is_success());
+    let record = run
+        .store
+        .history()
+        .unwrap()
+        .latest_entry(&component("better-files"), &integration_id(INTEGRATION))
+        .cloned()
+        .unwrap();
+    assert_eq!(record.dconf_database, Some(DconfDatabase::gnome_user()));
+
+    let mut run = in_other_session(
+        run,
+        session_adapter(&dconf, Some("betteros"), "BetterOS:COSMIC"),
+    );
+    assert_eq!(
+        run.state(),
+        (IntegrationState::Default, keys(&["<Super>f"])),
+        "the session's status must read the database the record names"
+    );
+    let restored = run.restore();
+    assert_eq!(
+        restored.results[0].outcome,
+        EntryOutcome::Restored {
+            value: ObservedValue::Unset
+        }
+    );
+    assert!(read_database(&dconf.database).get(HOME_KEY).is_none());
+    assert!(
+        !dconf.root().join("config/dconf/betteros").exists(),
+        "the session's database was written"
+    );
+}
+
+// The same record, from a process of the session that does not have the
+// session's environment: the record still says where to put the value back.
+#[test]
+fn a_recorded_change_is_put_back_even_where_the_session_s_profile_is_refused() {
+    let dconf = dconf_or_skip!();
+    let snapshots = tempfile::tempdir().unwrap();
+    let mut run = Run::new(
+        snapshots.path(),
+        session_adapter(&dconf, None, "zorin:GNOME"),
+    );
+    assert!(run.apply().results[0].outcome.is_success());
+    let mut run = in_other_session(run, session_adapter(&dconf, None, "BetterOS:COSMIC"));
+    assert!(run.restore().results[0].outcome.is_success());
+    assert!(read_database(&dconf.database).get(HOME_KEY).is_none());
+}
+
+// A record 0.2.16 wrote names no database: it is GNOME's, which is the only
+// one 0.2.16 wrote, wherever it is restored from.
+#[test]
+fn a_record_without_a_database_is_put_back_in_gnome_s() {
+    let dconf = dconf_or_skip!();
+    dconf.install_session_profile();
+    dconf.seed_gnome(
+        HOME_KEY,
+        ChangeValue::TextList(vec!["<Super>f".to_string()]),
+    );
+    let snapshots = tempfile::tempdir().unwrap();
+    let store = SnapshotStore::at_path(snapshots.path());
+    store
+        .write(&defaults_store::Snapshot::new(
+            defaults_store::SystemIdentity {
+                distribution: "zorin".to_string(),
+                desktop_session: "zorin:gnome".to_string(),
+            },
+            vec![defaults_store::SnapshotEntry {
+                component_id: component("better-files"),
+                integration_id: integration_id(INTEGRATION),
+                previous_value: ObservedValue::Unset,
+                better_value: list(&["<Super>f"]),
+                applied_value: Some(list(&["<Super>f"])),
+                last_verified_value: Some(list(&["<Super>f"])),
+                restore_state: defaults_store::RestoreState::Available,
+                dconf_database: None,
+            }],
+        ))
+        .unwrap();
+    let mut run = Run::new(
+        snapshots.path(),
+        session_adapter(&dconf, Some("betteros"), "BetterOS:COSMIC"),
+    );
+    assert!(run.restore().results[0].outcome.is_success());
+    assert!(read_database(&dconf.database).get(HOME_KEY).is_none());
+    assert!(!dconf.root().join("config/dconf/betteros").exists());
+}
+
+// Review finding 2: in the session, a favourites list the session shows from
+// GNOME's database is captured as not held by the session's own, and a
+// restore resets the session's key instead of writing that list into it.
+#[test]
+fn in_the_session_a_restored_launcher_list_is_reset_not_copied() {
+    let dconf = dconf_or_skip!();
+    dconf.seed_gnome(
+        FAVORITES,
+        ChangeValue::TextList(vec!["org.example.Mine.desktop".to_string()]),
+    );
+    dconf.install_session_profile();
+    let session =
+        session_database_in(&dconf.environment(Some("betteros"), "BetterOS:COSMIC")).unwrap();
+    let adapter = defaults_platform::LauncherEntryAdapter::for_database(
+        Ok(session.clone()),
+        Some(dconf.dirs()),
+        vec![PathBuf::from(SCHEMAS)],
+        Some(Box::new(dconf.writer_at(&session.writer_path))),
+    );
+    let mut integration = launcher_entry();
+    integration.restore_policy = better_core::defaults::RestorePolicy::CapturedValue;
+    let snapshots = tempfile::tempdir().unwrap();
+    let mut run = Run::declaring(snapshots.path(), Box::new(adapter), integration);
+    assert!(run.apply().results[0].outcome.is_success());
+    let record = run
+        .store
+        .history()
+        .unwrap()
+        .latest_entry(
+            &component("better-files"),
+            &integration_id("overview-entry"),
+        )
+        .cloned()
+        .unwrap();
+    assert_eq!(record.previous_value, ObservedValue::Unset);
+
+    let restored = run.restore();
+    assert!(
+        restored.results[0].outcome.is_success(),
+        "{:?}",
+        restored.results[0].outcome
+    );
+    assert!(
+        read_database(&session.path).get(FAVORITES).is_none(),
+        "the list was copied into the session's database"
+    );
+    // GNOME's list shows through again, as it did before.
+    assert_eq!(run.state().1, keys(&["org.example.Mine.desktop"]));
 }

@@ -125,6 +125,17 @@ impl DconfWriter {
     /// An empty change set is not sent. The service would accept it, but a
     /// call that writes nothing is a notification for no reason.
     pub fn change(&self, changeset: &Changeset) -> Result<String, WriterError> {
+        self.change_at(&self.object_path, changeset)
+    }
+
+    /// Sends one change set to the writer object at `object_path` on the
+    /// same connection: the database a defaults record names, which may not
+    /// be the one this writer was opened for.
+    pub fn change_at(
+        &self,
+        object_path: &str,
+        changeset: &Changeset,
+    ) -> Result<String, WriterError> {
         if changeset.is_empty() {
             return Ok(String::new());
         }
@@ -134,7 +145,7 @@ impl DconfWriter {
                 .connection
                 .call_method(
                     Some(SERVICE),
-                    self.object_path.as_str(),
+                    object_path,
                     Some(INTERFACE),
                     "Change",
                     &(blob,),

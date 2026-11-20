@@ -303,7 +303,10 @@ fn known_shortcuts(options: &StartupOptions) -> KnownShortcuts {
         Ok(database) => database,
         Err(error) => return KnownShortcuts::unavailable(error.reason()),
     };
-    match keybindings::read(&database.path) {
+    let stacked: Vec<_> = std::iter::once(database.path)
+        .chain(database.beneath)
+        .collect();
+    match keybindings::read_stacked(&stacked) {
         KeybindingReading::Recorded(bindings) => KnownShortcuts::from_bindings(
             bindings
                 .into_iter()

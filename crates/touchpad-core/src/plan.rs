@@ -164,7 +164,9 @@ impl RestorePlan {
                             setting,
                             value: *value,
                         },
-                        Reading::SessionDefault { .. } => RestoreStep::Reset { setting },
+                        Reading::SessionDefault { .. } | Reading::Inherited { .. } => {
+                            RestoreStep::Reset { setting }
+                        }
                         other => RestoreStep::Impossible {
                             setting,
                             reason: "touchpad.captured_value_is_indeterminate".to_string(),

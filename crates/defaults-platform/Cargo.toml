@@ -10,6 +10,9 @@ license.workspace = true
 # bus. Without it the GNOME adapters read and verify, and report Manual action
 # required for a change, and the crate links no D-Bus stack.
 dconf-write = ["dep:zbus", "dep:tokio"]
+# A real dconf-service on a private bus, for other crates' tests. No shipped
+# binary enables it.
+test-support = ["dconf-write", "dep:tempfile"]
 
 [dependencies]
 app-catalog-core.workspace = true
@@ -21,6 +24,7 @@ better-core.workspace = true
 libc.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+tempfile = { workspace = true, optional = true }
 thiserror.workspace = true
 # The runtime is this crate's own: it blocks on the async dconf call. zbus
 # itself stays on its default async-io flavor — see the root Cargo.toml.

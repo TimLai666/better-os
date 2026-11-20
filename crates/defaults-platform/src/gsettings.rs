@@ -20,13 +20,15 @@
 
 use std::path::PathBuf;
 
-use better_core::defaults::{AdapterId, DefaultsValue, KeyObservation, ObservedValue};
+use better_core::defaults::{
+    AdapterId, DconfDatabase, DefaultsValue, KeyObservation, ObservedValue,
+};
 
-use crate::dconf::{ChangesetSender, DatabaseTarget, Layers, session_sender};
+use crate::dconf::{ChangesetSender, DatabaseTarget, Layers, session_sender, session_with_dirs};
 use crate::dconf_profile::{ProfileError, SessionDatabase};
 use crate::gvariant::{ChangeValue, Changeset};
 use crate::gvdb::{GVariantValue, schema_default};
-use crate::{AdapterRequest, DefaultsAdapter, WriteOutcome, WriteValue, collapse};
+use crate::{AdapterRequest, DefaultsAdapter, VerifyOutcome, WriteOutcome, WriteValue, collapse};
 
 /// The reason a key no schema defines is reported with.
 pub const NO_SUCH_KEY: &str = "gsettings.no_such_key";
@@ -93,17 +95,21 @@ impl Keys {
     /// The session's own database and the ones beneath it, with the
     /// installed schemas.
     fn for_session() -> (Self, Option<Box<dyn ChangesetSender>>) {
-        let database = crate::dconf_profile::session_database();
-        let sender = session_sender(&database);
-        (Self::for_database(database, schema_files()), sender)
+        let (database, dirs) = session_with_dirs();
+        let sender = session_sender(&database, &dirs);
+        (
+            Self::for_database(database, Some(dirs), schema_files()),
+            sender,
+        )
     }
 
     fn for_database(
         database: Result<SessionDatabase, ProfileError>,
+        dirs: Option<(PathBuf, PathBuf)>,
         schemas: Vec<PathBuf>,
     ) -> Self {
         Self {
-            target: DatabaseTarget::session(database),
+            target: DatabaseTarget::session(database, dirs),
             schemas,
         }
     }
@@ -116,14 +122,63 @@ impl Keys {
                 reason: NO_SUCH_KEY.to_string(),
             });
         };
-        Ok(match database.get(key) {
+        Ok(match database.get(key)? {
             Some(value) => Effective::User(value.clone()),
             None => Effective::Default(default),
         })
     }
 
-    fn load(&self) -> Result<Layers, ObservedValue> {
-        self.target.load()
+    /// The databases the request is about: the session's, or the one its
+    /// record names.
+    fn load(&self, request: &AdapterRequest<'_>) -> Result<Layers, ObservedValue> {
+        self.target.for_request(request).load()
+    }
+
+    /// The capture: each key as read when the session's own database holds
+    /// it, and unset when the value shown comes from a database beneath or
+    /// from the schema, so a restore resets the key instead of writing a copy.
+    fn capture(
+        &self,
+        request: &AdapterRequest<'_>,
+        read: impl Fn(&AdapterRequest<'_>) -> ObservedValue,
+    ) -> ObservedValue {
+        let layers = match self.load(request) {
+            Ok(layers) => layers,
+            Err(observed) => return observed,
+        };
+        collapse(
+            request
+                .keys()
+                .iter()
+                .map(|key| KeyObservation {
+                    key: key.clone(),
+                    observed: if layers.top.get(key).is_none() {
+                        ObservedValue::Unset
+                    } else {
+                        match request.narrowed_to(key) {
+                            Some(narrowed) => read(&narrowed),
+                            None => ObservedValue::Unknown {
+                                reason: "gsettings.key_not_declared".to_string(),
+                            },
+                        }
+                    },
+                })
+                .collect(),
+        )
+    }
+}
+
+/// A verify that compares "nothing held" against the capture's own view, so
+/// a key reset in the session's database verifies as unset although the
+/// session still shows the value beneath it.
+fn verify_against(observed: ObservedValue, expected: &ObservedValue) -> VerifyOutcome {
+    if !observed.is_determinate() || !expected.is_determinate() {
+        return VerifyOutcome::Indeterminate { observed };
+    }
+    if &observed == expected {
+        VerifyOutcome::Matches { observed }
+    } else {
+        VerifyOutcome::Differs { observed }
     }
 }
 
@@ -147,8 +202,9 @@ fn send(
     request: &AdapterRequest<'_>,
     changeset: &Changeset,
 ) -> WriteOutcome {
-    if let Some(error) = &keys.target.unavailable {
-        return WriteOutcome::manual(error.reason(), error.to_string());
+    let target = keys.target.for_request(request);
+    if let Some(refusal) = target.write_refusal() {
+        return refusal;
     }
     let Some(sender) = sender.as_mut() else {
         return WriteOutcome::manual(
@@ -159,7 +215,7 @@ fn send(
             ),
         );
     };
-    match sender.send(changeset) {
+    match sender.send_to(target.writer_path(), changeset) {
         Ok(()) => WriteOutcome::Written,
         Err(detail) => WriteOutcome::failed("dconf.write_failed", detail),
     }
@@ -209,14 +265,17 @@ impl LauncherEntryAdapter {
     }
 
     /// A session database decided by the caller, with `schemas`, written
-    /// through `sender` (pointed at that database's writer object).
+    /// through `sender` (pointed at that database's writer object). `dirs`
+    /// (`$XDG_CONFIG_HOME`, `$XDG_RUNTIME_DIR`) is where a database a record
+    /// names is opened.
     pub fn for_database(
         database: Result<SessionDatabase, ProfileError>,
+        dirs: Option<(PathBuf, PathBuf)>,
         schemas: Vec<PathBuf>,
         sender: Option<Box<dyn ChangesetSender>>,
     ) -> Self {
         Self {
-            keys: Keys::for_database(database, schemas),
+            keys: Keys::for_database(database, dirs, schemas),
             sender,
         }
     }
@@ -235,13 +294,30 @@ impl DefaultsAdapter for LauncherEntryAdapter {
         AdapterId::DesktopLauncherEntry
     }
 
+    fn dconf_database(&self) -> Option<DconfDatabase> {
+        self.keys.target.id()
+    }
+
+    fn capture(&self, request: &AdapterRequest<'_>) -> Option<ObservedValue> {
+        Some(self.keys.capture(request, |narrowed| self.read(narrowed)))
+    }
+
+    fn verify(&self, request: &AdapterRequest<'_>, expected: &ObservedValue) -> VerifyOutcome {
+        let observed = if expected == &ObservedValue::Unset {
+            self.keys.capture(request, |narrowed| self.read(narrowed))
+        } else {
+            self.read(request)
+        };
+        verify_against(observed, expected)
+    }
+
     fn read(&self, request: &AdapterRequest<'_>) -> ObservedValue {
         let DefaultsValue::DesktopEntry(entry) = request.desired() else {
             return ObservedValue::Unknown {
                 reason: "gsettings.launcher_entry_needs_a_desktop_entry".to_string(),
             };
         };
-        let database = match self.keys.load() {
+        let database = match self.keys.load(request) {
             Ok(database) => database,
             Err(observed) => return observed,
         };
@@ -266,7 +342,7 @@ impl DefaultsAdapter for LauncherEntryAdapter {
     }
 
     fn write(&mut self, request: &AdapterRequest<'_>, value: &WriteValue) -> WriteOutcome {
-        let database = match self.keys.load() {
+        let database = match self.keys.load(request) {
             Ok(database) => database,
             Err(observed) => {
                 return WriteOutcome::failed(
@@ -377,11 +453,12 @@ impl ToolEntryPointAdapter {
     /// As [`LauncherEntryAdapter::for_database`].
     pub fn for_database(
         database: Result<SessionDatabase, ProfileError>,
+        dirs: Option<(PathBuf, PathBuf)>,
         schemas: Vec<PathBuf>,
         sender: Option<Box<dyn ChangesetSender>>,
     ) -> Self {
         Self {
-            keys: Keys::for_database(database, schemas),
+            keys: Keys::for_database(database, dirs, schemas),
             sender,
         }
     }
@@ -392,8 +469,25 @@ impl DefaultsAdapter for ToolEntryPointAdapter {
         AdapterId::ToolEntryPoint
     }
 
+    fn dconf_database(&self) -> Option<DconfDatabase> {
+        self.keys.target.id()
+    }
+
+    fn capture(&self, request: &AdapterRequest<'_>) -> Option<ObservedValue> {
+        Some(self.keys.capture(request, |narrowed| self.read(narrowed)))
+    }
+
+    fn verify(&self, request: &AdapterRequest<'_>, expected: &ObservedValue) -> VerifyOutcome {
+        let observed = if expected == &ObservedValue::Unset {
+            self.keys.capture(request, |narrowed| self.read(narrowed))
+        } else {
+            self.read(request)
+        };
+        verify_against(observed, expected)
+    }
+
     fn read(&self, request: &AdapterRequest<'_>) -> ObservedValue {
-        let database = match self.keys.load() {
+        let database = match self.keys.load(request) {
             Ok(database) => database,
             Err(observed) => return observed,
         };
@@ -533,6 +627,59 @@ mod tests {
 
     fn list(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| value.to_string()).collect()
+    }
+
+    fn session_over(root: &std::path::Path) -> SessionDatabase {
+        SessionDatabase {
+            name: "betteros".to_string(),
+            path: root.join("config/dconf/betteros"),
+            writer_path: "/ca/desrt/dconf/Writer/betteros".to_string(),
+            beneath: vec![root.join("config/dconf/user")],
+            origin: crate::dconf_profile::ProfileOrigin::BuiltIn,
+            notes: Vec::new(),
+        }
+    }
+
+    // Review finding 6: a damaged database beneath is reported as that, for
+    // the key that needed it.
+    #[test]
+    fn a_damaged_database_beneath_is_reported_for_a_key_that_needs_it() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(directory.path().join("config/dconf")).unwrap();
+        std::fs::write(directory.path().join("config/dconf/user"), b"damaged").unwrap();
+        let adapter = LauncherEntryAdapter::for_database(
+            Ok(session_over(directory.path())),
+            None,
+            vec![SCHEMAS.into()],
+            None,
+        );
+        let declared = launcher(FAVORITES);
+        let ObservedValue::Unknown { reason } =
+            adapter.read(&AdapterRequest::new(&component(), &declared))
+        else {
+            panic!("a value that needs a damaged database is not known");
+        };
+        assert!(
+            reason.starts_with("dconf.database_beneath_unreadable:"),
+            "{reason}"
+        );
+    }
+
+    // Review finding 2: a value the session's own database does not hold is
+    // captured as unset, so a restore resets the key rather than copying the
+    // value shown into the session's database, and that reset verifies.
+    #[test]
+    fn a_value_not_held_by_the_session_s_database_is_captured_as_unset() {
+        let adapter = LauncherEntryAdapter::new(EMPTY_DATABASE, vec![SCHEMAS.into()]);
+        let declared = launcher(FAVORITES);
+        let component = component();
+        let request = AdapterRequest::new(&component, &declared);
+        assert!(matches!(adapter.read(&request), ObservedValue::Set { .. }));
+        assert_eq!(adapter.capture(&request), Some(ObservedValue::Unset));
+        assert!(matches!(
+            adapter.verify(&request, &ObservedValue::Unset),
+            VerifyOutcome::Matches { .. }
+        ));
     }
 
     #[test]
