@@ -35,16 +35,14 @@ use crate::i18n::{copy, shell};
 use crate::model::Page;
 use crate::render::{CARD_GAP, FIRST_CARD_GAP, GROUP_GAP, Row};
 
-/// Keeps a press on a control in a card's header from also opening or
-/// closing the card.
+/// Lays out the controls in a card's header. The kit keeps a press on them
+/// from also opening or closing the card (`settings_card::header_content`).
 fn inside_header(element: impl IntoElement) -> Div {
     div()
         .flex()
         .flex_wrap()
         .items_center()
         .gap(px(8.0))
-        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .child(element)
 }
 

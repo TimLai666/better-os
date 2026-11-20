@@ -34,16 +34,10 @@ use crate::model::{
 use crate::pages;
 use crate::render::{CARD_GAP, FIRST_CARD_GAP, GROUP_GAP, Row};
 
-/// Keeps a press on a control inside a clickable card from also opening
-/// the card's page.
+/// Lays out the controls inside a clickable card. The kit keeps a press on
+/// them from also opening the card's page (`settings_card::header_content`).
 fn inside_card(element: impl IntoElement) -> Div {
-    div()
-        .flex()
-        .items_center()
-        .gap(px(8.0))
-        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .child(element)
+    div().flex().items_center().gap(px(8.0)).child(element)
 }
 
 fn element_id(prefix: &str, id: &ComponentId) -> ElementId {
