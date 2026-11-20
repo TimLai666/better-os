@@ -26,8 +26,6 @@ use app_chooser_gui::{
 use better_ui::fluent::chrome::TitleBar;
 use better_ui::fluent::theme::Appearance;
 use gpui::*;
-use gpui_component::{Icon, IconName};
-use gpui_component_assets::Assets;
 
 /// The standalone window around the reusable chooser: a dialog window,
 /// sized to what the dialog holds.
@@ -95,10 +93,29 @@ impl Render for StandaloneChooser {
             // desktop's top corners (ticket 108).
             .child(
                 TitleBar::new(self.title)
-                    .icon(Icon::new(IconName::ExternalLink).size(px(16.0)))
+                    .icon(better_ui::icon_set::picture(
+                        better_ui::icon_set::Picture::Apps,
+                        16.0,
+                    ))
                     .dialog(),
             )
             .child(div().flex_1().min_h_0().child(self.chooser.clone()))
+    }
+}
+
+/// The icon set before the kit's icons (ticket 147).
+struct Assets;
+
+impl gpui::AssetSource for Assets {
+    fn load(&self, path: &str) -> gpui::Result<Option<std::borrow::Cow<'static, [u8]>>> {
+        if let Some(svg) = better_ui::icon_set::load(path) {
+            return Ok(Some(std::borrow::Cow::Borrowed(svg)));
+        }
+        gpui_component_assets::Assets.load(path)
+    }
+
+    fn list(&self, path: &str) -> gpui::Result<Vec<gpui::SharedString>> {
+        gpui_component_assets::Assets.list(path)
     }
 }
 

@@ -633,7 +633,7 @@ impl AppChooser {
                     row = row.trailing(
                         Button::icon_button(
                             ElementId::named_usize("why", index),
-                            IconName::Info,
+                            better_ui::icon_set::Picture::Properties,
                             c.why,
                         )
                         .checked(explained)
@@ -865,7 +865,7 @@ impl AppChooser {
                                     .map(|name| name.to_string_lossy().into_owned())
                                     .unwrap_or_else(|| path.display().to_string());
                                 ListRow::new(ElementId::named_usize("program", index), name)
-                                    .glyph(IconName::SquareTerminal)
+                                    .glyph(better_ui::icon_set::Picture::Window)
                                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                                         this.choose_executable_path(path.clone(), cx)
                                     }))
