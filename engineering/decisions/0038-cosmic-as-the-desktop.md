@@ -676,6 +676,20 @@ change those decisions; it says which work each option would not use.
 - **A fork Better OS cannot give back.** Upstream refuses machine-written
   code, so the gesture patch stays Better OS's to rebase for as long as
   upstream has no equivalent.
+- **Chinese input has open faults upstream.** Zhuyin through Fcitx 5 was seen
+  working in one Better OS window, but four `pop-os/cosmic-comp` issues were
+  open when read on 2026-11-21 (`gh api repos/pop-os/cosmic-comp/issues/N`):
+  2947, text-input-v3 swallows letter keys and Enter while a Chinese input
+  method is active (opened 2026-10-15, filed as a regression); 2952, Chromium
+  and Electron applications swallow keys the input method does not handle
+  (2026-10-16, a regression); 2702, the input method's keyboard grab is not
+  revoked when the session locks (2026-08-06); 2778, menu bar dropdowns do
+  not open while Fcitx 5 runs (2026-08-25). None was reproduced here, and
+  none names Chewing. The owner types Traditional Chinese every day, on IBus
+  today, so the Better OS session's VM check types Zhuyin into a Better OS
+  window, Firefox, and an Electron application, opens a menu while Fcitx 5
+  runs, and locks and unlocks with a composition open, before the session is
+  offered. This applies to B, C, and D.
 - **A session is a desktop's worth of small duties** (agents, prompts, OSD,
   locking, startup order), each of which GNOME does without being asked; a
   missed one shows up as a dialog that never appears.
