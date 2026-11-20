@@ -48,13 +48,21 @@ fn parse(svg: &str) -> Result<Vec<Element>, String> {
         let mut attributes = BTreeMap::new();
         let mut text = tag[name_end..].trim_start();
         while !text.is_empty() {
-            let eq = text.find('=').ok_or(format!("an attribute without a value in <{tag}>"))?;
+            let eq = text
+                .find('=')
+                .ok_or(format!("an attribute without a value in <{tag}>"))?;
             let key = text[..eq].trim().to_string();
             let value = text[eq + 1..]
                 .strip_prefix('"')
                 .ok_or(format!("an unquoted value in <{tag}>"))?;
-            let close = value.find('"').ok_or(format!("an unclosed value in <{tag}>"))?;
-            if key.is_empty() || attributes.insert(key.clone(), value[..close].to_string()).is_some() {
+            let close = value
+                .find('"')
+                .ok_or(format!("an unclosed value in <{tag}>"))?;
+            if key.is_empty()
+                || attributes
+                    .insert(key.clone(), value[..close].to_string())
+                    .is_some()
+            {
                 return Err(format!("a bad or repeated attribute {key:?} in <{tag}>"));
             }
             text = value[close + 1..].trim_start();
@@ -90,7 +98,10 @@ fn every_picture_is_a_24px_svg_whose_tag_comes_first() {
         let svg = picture.svg();
         let name = picture.name();
         assert!(!svg.trim().is_empty(), "{name} is empty");
-        assert!(svg.starts_with("<svg"), "{name}: something comes before <svg");
+        assert!(
+            svg.starts_with("<svg"),
+            "{name}: something comes before <svg"
+        );
         assert!(svg[..100.min(svg.len())].contains("<svg"), "{name}");
         let parsed = elements(picture);
         let root = &parsed[0];
@@ -115,8 +126,20 @@ fn every_picture_is_a_24px_svg_whose_tag_comes_first() {
 fn no_picture_uses_what_the_renderer_or_the_rules_rule_out() {
     for &picture in Picture::ALL {
         let svg = picture.svg();
-        for forbidden in ["class=", "currentColor", "<filter", "<style", "<image", "<text", "<use"] {
-            assert!(!svg.contains(forbidden), "{} uses {forbidden}", picture.name());
+        for forbidden in [
+            "class=",
+            "currentColor",
+            "<filter",
+            "<style",
+            "<image",
+            "<text",
+            "<use",
+        ] {
+            assert!(
+                !svg.contains(forbidden),
+                "{} uses {forbidden}",
+                picture.name()
+            );
         }
     }
 }
@@ -130,7 +153,14 @@ fn every_gradient_id_is_unique_and_every_reference_resolves() {
             if let Some(id) = element.attributes.get("id") {
                 assert!(ids.insert(id.clone()), "{}: id {id} twice", picture.name());
                 assert!(
-                    id.starts_with(picture.path().rsplit('/').next().unwrap().trim_end_matches(".svg")),
+                    id.starts_with(
+                        picture
+                            .path()
+                            .rsplit('/')
+                            .next()
+                            .unwrap()
+                            .trim_end_matches(".svg")
+                    ),
                     "{}: id {id} is not named after its file",
                     picture.name()
                 );
@@ -140,7 +170,11 @@ fn every_gradient_id_is_unique_and_every_reference_resolves() {
             for value in element.attributes.values() {
                 if let Some(rest) = value.strip_prefix("url(#") {
                     let id = rest.trim_end_matches(')');
-                    assert!(ids.contains(id), "{}: url(#{id}) has no target", picture.name());
+                    assert!(
+                        ids.contains(id),
+                        "{}: url(#{id}) has no target",
+                        picture.name()
+                    );
                 }
             }
         }
@@ -187,7 +221,12 @@ fn action_icons_are_flat_in_one_colour() {
         );
         let colours: BTreeSet<String> = parsed
             .iter()
-            .flat_map(|e| [literal(e.attributes.get("fill")), literal(e.attributes.get("stroke"))])
+            .flat_map(|e| {
+                [
+                    literal(e.attributes.get("fill")),
+                    literal(e.attributes.get("stroke")),
+                ]
+            })
             .flatten()
             .filter(|c| c != "#ffffff" && c != "#fff" && c != "white")
             .collect();

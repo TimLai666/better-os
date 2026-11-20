@@ -37,11 +37,11 @@ use better_ui::fluent::text_box::{NumberBox, NumberModel, TextBox};
 use better_ui::fluent::theme::Appearance;
 use better_ui::fluent::toggle::{CheckBox, CheckState, RadioButtons, RadioOption, ToggleSwitch};
 use better_ui::fluent::words::Locale;
-use better_ui::icon_set::{self, Kind, Picture};
 use better_ui::fluent::{
     BODY, BODY_STRONG, CAPTION, Palette, SUBTITLE, ShownState, TITLE, label, palette, radius,
     spacing,
 };
+use better_ui::icon_set::{self, Kind, Picture};
 use gpui::{
     AnyElement, App, AppContext as _, Context, ElementId, Entity, InteractiveElement, IntoElement,
     MouseButton, ParentElement, Pixels, Point, Render, SharedString, StatefulInteractiveElement,
@@ -2446,24 +2446,33 @@ impl Gallery {
                 .p(spacing::MD)
                 .rounded(radius::SM)
                 .bg(colours.window_background)
-                .children(Picture::ALL.iter().filter(|icon| icon.kind() == kind).map(|&icon| {
-                    div()
-                        .w(px(ICON_CELL))
-                        .flex()
-                        .flex_col()
-                        .gap(spacing::XS)
-                        .child(
+                .children(
+                    Picture::ALL
+                        .iter()
+                        .filter(|icon| icon.kind() == kind)
+                        .map(|&icon| {
                             div()
-                                .h(px(40.0))
+                                .w(px(ICON_CELL))
                                 .flex()
-                                .items_center()
-                                .gap(spacing::MD)
-                                .child(icon_set::picture(icon, 16.0))
-                                .child(icon_set::picture(icon, 20.0))
-                                .child(icon_set::picture(icon, 40.0)),
-                        )
-                        .child(label(icon.name().to_string(), CAPTION, colours.text_secondary))
-                }))
+                                .flex_col()
+                                .gap(spacing::XS)
+                                .child(
+                                    div()
+                                        .h(px(40.0))
+                                        .flex()
+                                        .items_center()
+                                        .gap(spacing::MD)
+                                        .child(icon_set::picture(icon, 16.0))
+                                        .child(icon_set::picture(icon, 20.0))
+                                        .child(icon_set::picture(icon, 40.0)),
+                                )
+                                .child(label(
+                                    icon.name().to_string(),
+                                    CAPTION,
+                                    colours.text_secondary,
+                                ))
+                        }),
+                )
                 .into_any_element()
         };
         let disabled = |dark: bool| {
@@ -2476,8 +2485,13 @@ impl Gallery {
                 .rounded(radius::SM)
                 .bg(colours.window_background)
                 .children(
-                    [Picture::Folder, Picture::Documents, Picture::Copy, Picture::Delete]
-                        .map(|icon| icon_set::picture_disabled(icon, 20.0)),
+                    [
+                        Picture::Folder,
+                        Picture::Documents,
+                        Picture::Copy,
+                        Picture::Delete,
+                    ]
+                    .map(|icon| icon_set::picture_disabled(icon, 20.0)),
                 )
                 .into_any_element()
         };

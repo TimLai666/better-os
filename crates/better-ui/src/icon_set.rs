@@ -60,9 +60,19 @@ mod renderer_tests {
                 .render_single_frame(picture.svg().as_bytes(), 1.0)
                 .unwrap_or_else(|e| panic!("{}: {e}", picture.name()));
             let size = image.size(0);
-            assert_eq!((size.width.0, size.height.0), (48, 48), "{}", picture.name());
+            assert_eq!(
+                (size.width.0, size.height.0),
+                (48, 48),
+                "{}",
+                picture.name()
+            );
             let pixels = image.as_bytes(0).unwrap();
-            let opaque = pixels.chunks_exact(4).filter(|p| p[3] > 128).count();
+            let opaque = pixels
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .filter(|p| p[3] > 128)
+                .count();
             // At least a sixth of the square is drawn: a picture, not a mark.
             if opaque <= 48 * 48 / 6 {
                 thin.push((picture.name(), opaque));
