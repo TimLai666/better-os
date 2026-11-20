@@ -17,6 +17,10 @@ bar must work there too, or a person switching desktops loses it.
   input method, notifications, GNOME's panel), use the COSMIC source ticket
   143's evaluation names, or draw the part as unavailable with the spec's copy
   where COSMIC has none.
+- The XEmbed bridge (ticket 149) notices XWayland through GNOME's
+  `gnome-session-x11-services.target`; on COSMIC use the signal ticket 143's
+  evaluation names for XWayland starting, or show the card's "no XWayland"
+  state where there is none.
 - Whether COSMIC's own panel is turned off while the bar runs, and how it is
   put back, as ticket 143's ADR decides.
 

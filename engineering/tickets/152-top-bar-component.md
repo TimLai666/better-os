@@ -9,7 +9,10 @@ a dock, with every decision in a Rust service. This ticket builds that
 skeleton and everything on the bar that needs no other ticket: the Better OS
 menu, the application name and the actions every window has, the clock's
 place, the shared states, keyboard access, monitors, sizes, and the component
-itself, so tickets 153 and 156–158 each add one part.
+itself, so tickets 156–158 and 149 each add one part. The bar carries no
+application menus (decision D5, owner, 2026-11-21): nothing here registers
+with or serves `com.canonical.AppMenu.Registrar` or exports a menu, and no
+window's own menu row changes.
 
 ## What to build
 
@@ -30,8 +33,13 @@ itself, so tickets 153 and 156–158 each add one part.
   call (logind, GNOME's session manager, `org.gnome.ScreenSaver`,
   `org.freedesktop.Accounts`), the lockdown keys, the failure toast.
 - **Application name and the window actions** (spec section 4), through the
-  relay's `FocusChanged` and `WindowAction`; Better OS windows get About,
-  Settings…, Quit instead.
+  relay's `FocusChanged` and `WindowAction`: new window, full screen,
+  minimize, close, quit, each drawn only when the window allows it, the same
+  for every application, Better OS's own included; the Desktop state with
+  Show All Windows.
+- **The bar's menus** (spec section 5) for the Better OS menu and the
+  application name's menu: `fluent::menu` rows, separators, shortcut text,
+  truncation at 360px, type-to-select. Tray menus reuse them in ticket 156.
 - **States** (spec section 2), including the adapter missing, off, or too old,
   GNOME other than 46, fullscreen, overview, and lock screen.
 - **Keyboard and screen readers** (spec section 7): Ctrl+F2 focus, arrow
@@ -51,8 +59,9 @@ itself, so tickets 153 and 156–158 each add one part.
   `components/manifests/better-top-bar.yaml` with its `paths` for
   `$XDG_STATE_HOME/better-os/top-bar/`, a dependency on `better-shell-adapter`
   at the version that carries the panel relay, Better Manager's Settings ›
-  Top bar card (spec section 12), turning off and removing restoring every
-  entry it applied.
+  Top bar card (spec section 12; its tray rows are ticket 156's and its old
+  X11 icon rows ticket 149's), turning off and removing restoring every entry
+  it applied.
 - The clock item drawn with ticket 146's local-time function (its flyout is
   ticket 158).
 
@@ -69,7 +78,8 @@ itself, so tickets 153 and 156–158 each add one part.
       component off restores GNOME's panel and the key bindings. Screenshots
       light and dark, zh-TW and English, in
       `/home/tim/Developer/better-os-evidence/152/`, compared with
-      `design/top-bar/rest-other-*.html` and `betteros-menu-*.html`.
+      `design/top-bar/rest-other-*.html`, `rest-betteros-*.html`,
+      `app-actions-*.html`, and `betteros-menu-*.html`.
 - [ ] Orca (or `accerciser` reading AT-SPI) in the sandbox names the bar's
       items as the spec's tables say.
 - [ ] fmt, clippy on stable, the crates' tests, `verify-deb.sh`, and the

@@ -182,3 +182,23 @@ new program within seconds of an update.
   will not.
 - **Making the bar only on COSMIC** (ticket 143), where layer-shell exists. The
   owner's desktop is GNOME today.
+
+## Amendment, 2026-11-21: no application menus
+
+Amendment, 2026-11-21, after the owner's decision D5 in
+`design/top-bar-spec.md`: the bar carries no application menus at all, and
+every window keeps its own menu row. The decision above is unchanged. One part
+of what it allows existed only for application menus and is not built: in
+"Report, as a signal, what the shell saw", the focused window's **X11 id** and
+its **GTK bus name and menubar path**. They were there so the bar could find a
+window's menu through `com.canonical.AppMenu.Registrar` and `org.gtk.Menus`,
+which nothing now does. The relay's `FocusChanged` carries the window id,
+application id and name, PID, client type, and what the window allows, and
+nothing else (spec section 9.4); ticket 151's allow-list test holds it there.
+The rest of the relay table, the closed program table, and every sentence this
+record changes in ADR 0018 and AGENTS.md stand as accepted.
+
+The same day the owner decided (D6) that old X11 tray icons are shown in the
+bar through a Better OS bridge (spec section 9.6, ticket 149). The bridge is a
+user unit that talks to XWayland and the session bus; it asks nothing of the
+shell, so it widens nothing here.
