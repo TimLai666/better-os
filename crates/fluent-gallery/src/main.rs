@@ -47,8 +47,8 @@ use gpui::{
     MouseButton, ParentElement, Pixels, Point, Render, SharedString, StatefulInteractiveElement,
     Styled, Window, WindowBounds, div, prelude::FluentBuilder as _, px, size,
 };
+use gpui_component::IconName;
 use gpui_component::input::InputState;
-use gpui_component::{Icon, IconName};
 
 const HELP: &str = "\
 Usage: better-fluent-gallery [--light | --dark] [--zh-TW] [--page NAME] [--compact] [--dialog]
@@ -150,19 +150,19 @@ impl Page {
         }
     }
 
-    fn icon(self) -> IconName {
+    fn icon(self) -> Picture {
         match self {
-            Page::Buttons => IconName::CircleCheck,
-            Page::Text => IconName::ALargeSmall,
-            Page::Selection => IconName::ChevronsUpDown,
-            Page::Time => IconName::Calendar,
-            Page::Status => IconName::Loader,
-            Page::Dialogs => IconName::Inbox,
-            Page::Collections => IconName::LayoutDashboard,
-            Page::Navigation => IconName::Map,
-            Page::Settings => IconName::Settings,
-            Page::Icons => IconName::Palette,
-            Page::Window => IconName::Frame,
+            Page::Buttons => Picture::Click,
+            Page::Text => Picture::Font,
+            Page::Selection => Picture::Checklist,
+            Page::Time => Picture::Calendar,
+            Page::Status => Picture::Health,
+            Page::Dialogs => Picture::About,
+            Page::Collections => Picture::Table,
+            Page::Navigation => Picture::Map,
+            Page::Settings => Picture::Settings,
+            Page::Icons => Picture::Palette,
+            Page::Window => Picture::Window,
         }
     }
 }
@@ -631,11 +631,11 @@ impl Gallery {
             self.t("Icon button", "圖示按鈕"),
             p,
             |s| {
-                Button::icon_button(sid("icon", s), IconName::Settings, "Settings")
+                Button::icon_button(sid("icon", s), Picture::Settings, "Settings")
                     .shown(s)
                     .into_any_element()
             },
-            Button::icon_button("icon-live", IconName::Settings, self.t("Settings", "設定"))
+            Button::icon_button("icon-live", Picture::Settings, self.t("Settings", "設定"))
                 .on_click(Self::note(cx, "icon"))
                 .into_any_element(),
         ));
@@ -644,12 +644,12 @@ impl Gallery {
             p,
             |s| {
                 Button::standard(sid("icon-text", s), self.t("Copy", "複製"))
-                    .icon(IconName::Copy)
+                    .icon(Picture::Copy)
                     .shown(s)
                     .into_any_element()
             },
             Button::standard("icon-text-live", self.t("Copy", "複製"))
-                .icon(IconName::Copy)
+                .icon(Picture::Copy)
                 .on_click(Self::note(cx, "copy"))
                 .into_any_element(),
         ));
@@ -1251,7 +1251,7 @@ impl Gallery {
                 .on_select(Self::note(cx, "cut"))
                 .entry(),
             MenuItem::new(self.t("Copy", "複製"))
-                .icon(IconName::Copy)
+                .icon(Picture::Copy)
                 .shortcut("Ctrl+C")
                 .on_select(Self::note(cx, "copy"))
                 .entry(),
@@ -1276,7 +1276,7 @@ impl Gallery {
             ),
             MenuEntry::Separator,
             MenuItem::new(self.t("Delete", "刪除"))
-                .icon(IconName::Delete)
+                .icon(Picture::Delete)
                 .shortcut("Del")
                 .on_select(Self::note(cx, "delete"))
                 .entry(),
@@ -1408,21 +1408,21 @@ impl Gallery {
                     "menu-states",
                     vec![
                         MenuItem::new(self.t("Rest", "一般"))
-                            .icon(IconName::File)
+                            .icon(Picture::File)
                             .shortcut("Ctrl+N")
                             .shown(ShownState::Rest)
                             .entry(),
                         MenuItem::new(self.t("Pointer over", "指標停留"))
-                            .icon(IconName::Folder)
+                            .icon(Picture::Folder)
                             .shortcut("Ctrl+O")
                             .shown(ShownState::PointerOver)
                             .entry(),
                         MenuItem::new(self.t("Pressed", "按下"))
-                            .icon(IconName::Copy)
+                            .icon(Picture::Copy)
                             .shown(ShownState::Pressed)
                             .entry(),
                         MenuItem::new(self.t("Disabled", "停用"))
-                            .icon(IconName::Delete)
+                            .icon(Picture::Delete)
                             .shortcut("Del")
                             .disabled(true)
                             .entry(),
@@ -1534,33 +1534,33 @@ impl Gallery {
     fn collections_page_base(&self, p: &Palette, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let items = vec![
             ListItem::new(self.t("Rest", "一般"))
-                .icon(IconName::Folder)
+                .icon(Picture::Folder)
                 .caption(self.t("Modified today", "今天修改")),
             ListItem::new(self.t("Selected, focused", "已選取、已聚焦"))
-                .icon(IconName::Folder)
+                .icon(Picture::Folder)
                 .caption(self.t("12 items", "12 個項目")),
             ListItem::new(self.t("Pointer over", "指標停留"))
-                .icon(IconName::File)
+                .icon(Picture::File)
                 .shown(ShownState::PointerOver),
             ListItem::new(self.t("Pressed", "按下"))
-                .icon(IconName::File)
+                .icon(Picture::File)
                 .shown(ShownState::Pressed),
             ListItem::new(self.t("Disabled", "停用"))
-                .icon(IconName::File)
+                .icon(Picture::File)
                 .disabled(true),
         ];
         let live_items = vec![
             ListItem::new("Documents")
-                .icon(IconName::Folder)
+                .icon(Picture::Folder)
                 .caption(self.t("Folder", "資料夾")),
             ListItem::new("Downloads")
-                .icon(IconName::Folder)
+                .icon(Picture::Folder)
                 .caption(self.t("Folder", "資料夾")),
             ListItem::new("notes.txt")
-                .icon(IconName::File)
+                .icon(Picture::File)
                 .caption("2.4 KB"),
             ListItem::new("photo.png")
-                .icon(IconName::File)
+                .icon(Picture::File)
                 .caption("1.1 MB"),
         ];
         let rows: Vec<Vec<SharedString>> = vec![
@@ -1681,19 +1681,19 @@ impl Gallery {
     fn nav_entries(&self) -> Vec<NavEntry> {
         vec![
             NavEntry::Header(self.t("Library", "媒體櫃").into()),
-            NavItem::new(self.t("Home", "首頁"), IconName::LayoutDashboard).entry(),
-            NavItem::new(self.t("Selected", "已選取"), IconName::Folder).entry(),
-            NavItem::new(self.t("Pointer over", "指標停留"), IconName::Star)
+            NavItem::new(self.t("Home", "首頁"), Picture::Dashboard).entry(),
+            NavItem::new(self.t("Selected", "已選取"), Picture::Folder).entry(),
+            NavItem::new(self.t("Pointer over", "指標停留"), Picture::Star)
                 .shown(ShownState::PointerOver)
                 .entry(),
-            NavItem::new(self.t("Pressed", "按下"), IconName::Globe)
+            NavItem::new(self.t("Pressed", "按下"), Picture::Globe)
                 .shown(ShownState::Pressed)
                 .entry(),
-            NavItem::new(self.t("Disabled", "停用"), IconName::HardDrive)
+            NavItem::new(self.t("Disabled", "停用"), Picture::Drive)
                 .disabled(true)
                 .entry(),
             NavEntry::Separator,
-            NavItem::new(self.t("Trash", "資源回收筒"), IconName::Delete).entry(),
+            NavItem::new(self.t("Trash", "資源回收筒"), Picture::Trash).entry(),
         ]
     }
 
@@ -1762,7 +1762,7 @@ impl Gallery {
     }
 
     fn navigation_page(&self, p: &Palette, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let footer = || vec![NavItem::new(self.t("Settings", "設定"), IconName::Settings)];
+        let footer = || vec![NavItem::new(self.t("Settings", "設定"), Picture::Settings)];
         let frame = |compact: bool| {
             div()
                 .w(px(if compact { 240.0 } else { 480.0 }))
@@ -1813,7 +1813,7 @@ impl Gallery {
             .iter()
             .enumerate()
             .map(|(index, title)| {
-                let tab = Tab::new(*title).icon(IconName::File);
+                let tab = Tab::new(*title).icon(Picture::File);
                 if index == 2 {
                     tab.shown(ShownState::PointerOver)
                 } else {
@@ -1822,9 +1822,9 @@ impl Gallery {
             })
             .collect();
         let selector_items = vec![
-            SelectorItem::new(self.t("Recent", "最近")).icon(IconName::Undo),
-            SelectorItem::new(self.t("Shared", "已共用")).icon(IconName::User),
-            SelectorItem::new(self.t("Favorites", "我的最愛")).icon(IconName::Star),
+            SelectorItem::new(self.t("Recent", "最近")).icon(Picture::Recent),
+            SelectorItem::new(self.t("Shared", "已共用")).icon(Picture::User),
+            SelectorItem::new(self.t("Favorites", "我的最愛")).icon(Picture::Star),
             SelectorItem::new(self.t("Unavailable", "無法使用")).disabled(true),
         ];
         let selector_states = vec![
@@ -1839,29 +1839,32 @@ impl Gallery {
             let bar = CommandBar::new(id)
                 .locale(self.locale())
                 .command(
-                    Command::new(self.t("New", "新增"), IconName::Plus)
+                    Command::new(self.t("New", "新增"), Picture::Add)
                         .on_click(Self::note(cx, "new")),
                 )
                 .command(
-                    Command::new(self.t("Copy", "複製"), IconName::Copy)
+                    Command::new(self.t("Copy", "複製"), Picture::Copy)
                         .shown(ShownState::PointerOver),
                 )
                 .command(
-                    Command::new(self.t("Rename", "重新命名"), IconName::Replace)
+                    Command::new(self.t("Rename", "重新命名"), Picture::Rename)
                         .shown(ShownState::Pressed),
                 )
-                .command(Command::new(self.t("Delete", "刪除"), IconName::Delete).disabled(true))
+                .command(Command::new(self.t("Delete", "刪除"), Picture::Delete).disabled(true))
                 .separator()
                 .command(
-                    Command::new(self.t("Details", "詳細資料"), IconName::PanelRight).checked(true),
+                    Command::new(self.t("Details", "詳細資料"), Picture::ShowPane).checked(true),
                 )
                 .command(Command::new(self.t("Sort", "排序"), IconName::SortAscending).icon_only())
                 .secondary(
-                    Command::new(self.t("Select all", "全選"), IconName::Check)
+                    Command::new(self.t("Select all", "全選"), Picture::SelectAll)
                         .shortcut("Ctrl+A")
                         .on_click(Self::note(cx, "select all")),
                 )
-                .secondary(Command::new(self.t("Properties", "內容"), IconName::Info));
+                .secondary(Command::new(
+                    self.t("Properties", "內容"),
+                    Picture::Properties,
+                ));
             if show_overflow {
                 bar.show_overflow()
             } else {
@@ -1870,14 +1873,14 @@ impl Gallery {
         };
         let badged = || {
             vec![
-                NavItem::new(self.t("Home", "首頁"), IconName::LayoutDashboard).entry(),
-                NavItem::new(self.t("Keep awake", "保持清醒"), IconName::Sun)
+                NavItem::new(self.t("Home", "首頁"), Picture::Dashboard).entry(),
+                NavItem::new(self.t("Keep awake", "保持清醒"), Picture::KeepAwake)
                     .badge(Some(InfoBadge::Dot))
                     .entry(),
-                NavItem::new(self.t("Apps", "應用程式"), IconName::Inbox)
+                NavItem::new(self.t("Apps", "應用程式"), Picture::Apps)
                     .badge(InfoBadge::count(2))
                     .entry(),
-                NavItem::new(self.t("Fixes", "修正"), IconName::TriangleAlert)
+                NavItem::new(self.t("Fixes", "修正"), Picture::Fixes)
                     .badge(InfoBadge::count(120))
                     .entry(),
             ]
@@ -2188,7 +2191,7 @@ impl Gallery {
                     self.t("Device banner", "裝置橫幅"),
                     p,
                     div().w(px(640.0)).child(
-                        DeviceBanner::new(IconName::PanelBottom, "ASUS Vivobook S 14 M5406WA")
+                        DeviceBanner::new(Picture::Computer, "ASUS Vivobook S 14 M5406WA")
                             .caption("Zorin OS 18.1 · Better OS 0.2.11")
                             .trailing(label(
                                 self.t("87% · Charging", "87% · 充電中"),
@@ -2301,7 +2304,7 @@ impl Gallery {
                         .child(Chip::new("feature/login").hue(lane_hue(1)))
                         .child(
                             Chip::new("origin/main")
-                                .icon(IconName::Globe)
+                                .icon(Picture::Globe)
                                 .hue(lane_hue(0)),
                         )
                         .child(Chip::new("v1.0")),
@@ -2336,7 +2339,7 @@ impl Gallery {
             .w(px(820.0))
             .child(
                 SettingsCard::new("card-switch", self.t("Bluetooth", "藍牙"))
-                    .icon(IconName::Network)
+                    .icon(Picture::Network)
                     .description(self.t(
                         "Discoverable as \"Tim's laptop\"",
                         "可被搜尋為「Tim 的筆電」",
@@ -2351,7 +2354,7 @@ impl Gallery {
             )
             .child(
                 SettingsCard::new("card-combo", self.t("Choose your mode", "選擇模式"))
-                    .icon(IconName::Palette)
+                    .icon(Picture::Palette)
                     .description(self.t(
                         "Change the colors that appear in Better OS windows",
                         "變更 Better OS 視窗中的色彩",
@@ -2360,7 +2363,7 @@ impl Gallery {
             )
             .child(
                 SettingsCard::new("card-click", self.t("Storage", "儲存空間"))
-                    .icon(IconName::HardDrive)
+                    .icon(Picture::Drive)
                     .description(self.t(
                         "Storage space, drives, configuration rules",
                         "儲存空間、磁碟機、設定規則",
@@ -2369,26 +2372,26 @@ impl Gallery {
             )
             .child(
                 SettingsCard::new("card-hover", self.t("Pointer over", "指標停留"))
-                    .icon(IconName::Bell)
+                    .icon(Picture::Bell)
                     .description(self.t("A card that opens a page", "會開啟另一頁的卡片"))
                     .shown(ShownState::PointerOver)
                     .on_click(|_, _| {}),
             )
             .child(
                 SettingsCard::new("card-pressed", self.t("Pressed", "按下"))
-                    .icon(IconName::Star)
+                    .icon(Picture::Star)
                     .shown(ShownState::Pressed)
                     .on_click(|_, _| {}),
             )
             .child(
                 SettingsCard::new("card-focus", self.t("Focused", "已聚焦"))
-                    .icon(IconName::User)
+                    .icon(Picture::User)
                     .shown(ShownState::Focused)
                     .on_click(|_, _| {}),
             )
             .child(
                 SettingsCard::new("card-disabled", self.t("Disabled", "已停用"))
-                    .icon(IconName::Moon)
+                    .icon(Picture::Moon)
                     .description(self.t("Not available on this device", "此裝置無法使用"))
                     .disabled(true)
                     .content(
@@ -2403,7 +2406,7 @@ impl Gallery {
                     self.t("Sound output", "聲音輸出"),
                     self.expander,
                 )
-                .icon(IconName::Bell)
+                .icon(Picture::Bell)
                 .description(self.t("Choose where to play sound", "選擇播放聲音的位置"))
                 .on_toggle(Self::act_with(cx, |this, open, _, _| this.expander = open))
                 .row(
@@ -2427,7 +2430,7 @@ impl Gallery {
                     self.t("Closed, pointer over", "收合（指標停留）"),
                     false,
                 )
-                .icon(IconName::Settings)
+                .icon(Picture::Settings)
                 .shown(ShownState::PointerOver),
             );
         // Settings cards sit on the page, not on another card.
@@ -2612,11 +2615,7 @@ impl Gallery {
     }
 
     fn window_page(&self, p: &Palette) -> Vec<AnyElement> {
-        let icon = || {
-            Icon::new(IconName::Frame)
-                .size(px(16.0))
-                .text_color(p.accent)
-        };
+        let icon = || icon_set::picture(Picture::Window, 16.0);
         // The header and its buttons are the desktop's (ticket 108): GTK draws
         // them from the current theme. Each sample is drawn in one appearance
         // with a strip of that appearance's window under it.
@@ -2787,9 +2786,9 @@ impl Render for Gallery {
                         self.t("Dark", "深色")
                     },
                     if shown_dark {
-                        IconName::Sun
+                        Picture::Brightness
                     } else {
-                        IconName::Moon
+                        Picture::Moon
                     },
                 )
                 .on_click(Self::act(cx, |this, window, cx| {
@@ -2810,7 +2809,7 @@ impl Render for Gallery {
                     } else {
                         better_ui::fluent::words::Locale::TraditionalChinese
                     }),
-                    IconName::Globe,
+                    Picture::Globe,
                 )
                 .on_click(Self::act(cx, |this, _, _| this.zh = !this.zh)),
             );
@@ -2882,11 +2881,8 @@ impl Render for Gallery {
             // desktop's top corners (ticket 108).
             .text_color(p.text_primary)
             .child(
-                TitleBar::new(self.t("Better Fluent Gallery", "Better Fluent 控制項庫")).icon(
-                    Icon::new(IconName::Palette)
-                        .size(px(16.0))
-                        .text_color(p.accent),
-                ),
+                TitleBar::new(self.t("Better Fluent Gallery", "Better Fluent 控制項庫"))
+                    .icon(icon_set::picture(Picture::Palette, 16.0)),
             )
             .child(div().flex_1().min_h_0().child(nav))
             .children(dialog)

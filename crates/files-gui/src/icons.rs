@@ -46,9 +46,6 @@ impl AssetSource for FilesAssets {
         if let Some(svg) = svg(path) {
             return Ok(Some(Cow::Borrowed(svg.as_bytes())));
         }
-        if let Some(svg) = better_ui::fluent::glyphs::load(path) {
-            return Ok(Some(Cow::Borrowed(svg)));
-        }
         gpui_component_assets::Assets.load(path)
     }
 
@@ -329,13 +326,7 @@ mod tests {
                 "{picture:?}"
             );
         }
-        // The shared ones and the kit's own still come through.
-        assert!(
-            FilesAssets
-                .load(better_ui::fluent::glyphs::REFRESH)
-                .unwrap()
-                .is_some()
-        );
+        // The kit's own still come through.
         assert!(FilesAssets.load("icons/folder.svg").unwrap().is_some());
     }
 }

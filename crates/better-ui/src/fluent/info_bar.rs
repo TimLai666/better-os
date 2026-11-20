@@ -371,7 +371,7 @@ impl RenderOnce for ErrorBar {
                                 super::child_id(&self.id, "copy"),
                                 action(self.locale, Action::CopyDetails),
                             )
-                            .icon(IconName::Copy)
+                            .icon(crate::icon_set::Picture::Copy)
                             .on_click(move |_, cx| {
                                 cx.write_to_clipboard(ClipboardItem::new_string(
                                     details.to_string(),
