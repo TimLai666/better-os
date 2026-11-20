@@ -182,8 +182,8 @@ fn every_id_is_unique_and_every_reference_resolves() {
 }
 
 /// An object icon is a filled picture: something in it has a fill, so it
-/// is never a line drawing, and it uses at most four colours besides its
-/// gradient stops.
+/// is never a line drawing, and it uses at most four colours, fills and
+/// strokes together, besides its gradient stops.
 #[test]
 fn object_icons_are_filled_with_at_most_four_colours() {
     for &picture in Picture::ALL.iter().filter(|p| p.kind() == Kind::Object) {
@@ -195,15 +195,23 @@ fn object_icons_are_filled_with_at_most_four_colours() {
                 && e.attributes.get("fill").is_some_and(|f| f != "none")
         });
         assert!(filled, "{} has no filled shape", picture.name());
-        let fills: BTreeSet<String> = parsed
+        // Every colour the picture paints counts, a stroke's and anything
+        // inside a mask included; only gradient stops do not.
+        let colours: BTreeSet<String> = parsed
             .iter()
-            .filter_map(|e| literal(e.attributes.get("fill")))
+            .flat_map(|e| {
+                [
+                    literal(e.attributes.get("fill")),
+                    literal(e.attributes.get("stroke")),
+                ]
+            })
+            .flatten()
             .collect();
         assert!(
-            fills.len() <= 4,
-            "{} has {} fill colours: {fills:?}",
+            colours.len() <= 4,
+            "{} has {} colours: {colours:?}",
             picture.name(),
-            fills.len()
+            colours.len()
         );
     }
 }

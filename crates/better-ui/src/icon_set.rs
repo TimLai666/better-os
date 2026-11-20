@@ -278,6 +278,52 @@ mod renderer_tests {
             .collect()
     }
 
+    /// Which pixels of a 96px render GPUI's renderer covers for one file.
+    fn covered_at_96(renderer: &SvgRenderer, name: &str, svg: &str) -> Vec<bool> {
+        let image = renderer
+            .render_single_frame(svg.as_bytes(), 2.0)
+            .unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert_eq!(image.size(0).width.0, 96, "{name}");
+        image
+            .as_bytes(0)
+            .unwrap()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|p| p[3] > 128)
+            .collect()
+    }
+
+    /// DESIGN.md: an action's minor part is the lighter layer, never its
+    /// body, and the two layers do not overlap. So in every two-layer action
+    /// the second layer paints less than the first, and no pixel of a 96px
+    /// render is painted by both.
+    #[test]
+    fn an_actions_second_layer_is_the_smaller_and_never_overlaps() {
+        let renderer = SvgRenderer::new(Arc::new(()));
+        let mut faults = Vec::new();
+        for &picture in Picture::ALL {
+            let Some((path, second)) = picture.second_layer() else {
+                continue;
+            };
+            let main = covered_at_96(&renderer, picture.name(), picture.svg());
+            let minor = covered_at_96(&renderer, path, second);
+            let main_area = main.iter().filter(|p| **p).count();
+            let minor_area = minor.iter().filter(|p| **p).count();
+            let both = main.iter().zip(&minor).filter(|(a, b)| **a && **b).count();
+            if minor_area >= main_area {
+                faults.push(format!(
+                    "{}: second layer {minor_area} >= main {main_area}",
+                    picture.name()
+                ));
+            }
+            if both > 0 {
+                faults.push(format!("{}: {both} pixels in both layers", picture.name()));
+            }
+        }
+        assert!(faults.is_empty(), "{faults:#?}");
+    }
+
     /// GPUI's own SVG renderer (usvg and resvg) reads every file and draws
     /// something: no file it would refuse, and none it would draw empty. The
     /// whole icon (an action's two layers together) covers enough of the
