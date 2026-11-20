@@ -278,9 +278,8 @@ impl AwakeApp {
 /// buttons take a toolkit `Icon` before their label, and give the button its
 /// accessible name from the label alone, so a labelled button keeps both by
 /// taking this icon: the action's main file drawn as the mask it is, in the
-/// colour its placement gives it, dimmed when the button is disabled. A
-/// toolkit `Icon` draws one layer, so only an action drawn in one layer goes
-/// here.
+/// colour the button's label is drawn in (see [`icon_colour`]). A toolkit
+/// `Icon` draws one layer, so only an action drawn in one layer goes here.
 pub(crate) fn action_icon(
     picture: better_ui::icon_set::Picture,
     primary: bool,
@@ -297,11 +296,18 @@ pub(crate) fn action_icon(
         .text_color(icon_colour(picture, primary, disabled, cx))
 }
 
-/// The colour an action on one of these buttons is drawn in. A primary
-/// button is filled with gpui-component's own primary colour, not the kit's
-/// accent, so its icon takes that button's own foreground, as its label
-/// does; any other button draws the action beside its words, in the quiet
-/// grey (or the critical colour), at the disabled opacity when disabled.
+/// How opaque gpui-component draws a disabled button's label: its disabled
+/// style is `muted_foreground.opacity(0.5)` for every variant, primary or
+/// not (`ButtonVariant::disabled` in its `button.rs`).
+pub(crate) const DISABLED_LABEL_OPACITY: f32 = 0.5;
+
+/// The colour an action on one of these buttons is drawn in: whatever
+/// gpui-component draws the button's label in, so icon and words stay one.
+/// A disabled button, primary or not, draws its label in
+/// `muted_foreground` at [`DISABLED_LABEL_OPACITY`]; a live primary button is
+/// filled with gpui-component's own primary colour, not the kit's accent, and
+/// its label is `primary_foreground`; any other live button draws the action
+/// beside its words in the quiet grey (or the critical colour).
 fn icon_colour(
     picture: better_ui::icon_set::Picture,
     primary: bool,
@@ -310,46 +316,51 @@ fn icon_colour(
 ) -> gpui::Rgba {
     use gpui_component::ActiveTheme as _;
     let theme = cx.theme();
-    let foreground = if disabled {
-        theme
-            .primary_foreground
-            .opacity(better_ui::icon_set::DISABLED_OPACITY)
-    } else {
-        theme.primary_foreground
-    };
     labelled_icon_colour(
         picture,
-        primary.then_some(foreground.into()),
-        disabled,
+        ButtonInk {
+            primary: primary.then_some(theme.primary_foreground.into()),
+            disabled: disabled.then_some(
+                theme
+                    .muted_foreground
+                    .opacity(DISABLED_LABEL_OPACITY)
+                    .into(),
+            ),
+        },
         better_ui::fluent::palette(cx),
     )
 }
 
-/// [`icon_colour`] without the app: `primary` is the primary button's own
-/// foreground when the button is one.
-pub(crate) fn labelled_icon_colour(
-    picture: better_ui::icon_set::Picture,
-    primary: Option<gpui::Rgba>,
-    disabled: bool,
-    palette: &better_ui::fluent::Palette,
-) -> gpui::Rgba {
-    use better_ui::icon_set::{DISABLED_OPACITY, Placement, action_colours};
-    if let Some(foreground) = primary {
-        return foreground;
-    }
-    let (body, _) = action_colours(picture, Placement::Labelled, palette, disabled);
-    if disabled {
-        better_ui::fluent::with_alpha(body, DISABLED_OPACITY)
-    } else {
-        body
-    }
+/// The label colours of one gpui-component button that decide its icon's:
+/// its primary foreground when it is a primary button, and its disabled
+/// label colour when it is disabled.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct ButtonInk {
+    pub(crate) primary: Option<gpui::Rgba>,
+    pub(crate) disabled: Option<gpui::Rgba>,
 }
 
-/// An action alone on a gpui-component button with no words, at 18px,
-/// dimmed when the button is disabled. On a primary button it is that
-/// button's foreground, one layer as the button's label would be; otherwise
-/// the picture with both layers. The caller makes the button square with
-/// [`square_icon_button`].
+/// [`icon_colour`] without the app.
+pub(crate) fn labelled_icon_colour(
+    picture: better_ui::icon_set::Picture,
+    ink: ButtonInk,
+    palette: &better_ui::fluent::Palette,
+) -> gpui::Rgba {
+    use better_ui::icon_set::{Placement, action_colours};
+    if let Some(label) = ink.disabled {
+        return label;
+    }
+    if let Some(foreground) = ink.primary {
+        return foreground;
+    }
+    action_colours(picture, Placement::Labelled, palette, false).0
+}
+
+/// An action alone on a gpui-component button with no words, at 18px. Live
+/// on an ordinary button it is the picture with both layers; on a primary
+/// button, or on any disabled one, it is one layer in the colour that
+/// button's label would be drawn in (see [`icon_colour`]). The caller makes
+/// the button square with [`square_icon_button`].
 pub(crate) fn action_alone(
     picture: better_ui::icon_set::Picture,
     primary: bool,
@@ -358,18 +369,18 @@ pub(crate) fn action_alone(
 ) -> gpui::AnyElement {
     use better_ui::icon_set::Placement;
     use gpui::{IntoElement as _, Styled as _};
-    if primary {
+    if primary || disabled {
         return gpui_component::Icon::empty()
             .path(picture.path())
             .size(gpui::px(Placement::Alone.size()))
-            .text_color(icon_colour(picture, true, disabled, cx))
+            .text_color(icon_colour(picture, primary, disabled, cx))
             .into_any_element();
     }
     better_ui::icon_set::action(
         picture,
         Placement::Alone,
         better_ui::fluent::palette(cx),
-        disabled,
+        false,
     )
     .into_any_element()
 }
@@ -386,30 +397,41 @@ pub(crate) fn square_icon_button(
 
 #[cfg(test)]
 mod action_button_tests {
-    use better_ui::fluent::{LIGHT, with_alpha};
-    use better_ui::icon_set::{DISABLED_OPACITY, Picture};
+    use better_ui::fluent::LIGHT;
+    use better_ui::icon_set::Picture;
 
-    use super::labelled_icon_colour;
+    use super::{ButtonInk, labelled_icon_colour};
 
-    /// A disabled button's icon is dimmed with it, and a primary button's
-    /// icon is that button's own foreground, never the kit's on-accent
-    /// colour on a fill that is not the kit's accent.
+    /// An icon is drawn in its button's label colour: the quiet grey beside
+    /// an ordinary label, the primary foreground on a primary button, and
+    /// gpui-component's disabled label colour on any disabled button,
+    /// primary or not, never a dimmed copy of the live colour.
     #[test]
     fn a_buttons_icon_follows_the_button() {
-        let live = labelled_icon_colour(Picture::Add, None, false, &LIGHT);
+        let live = labelled_icon_colour(Picture::Add, ButtonInk::default(), &LIGHT);
         assert_eq!(live, LIGHT.icon_quiet);
-        assert_eq!(
-            labelled_icon_colour(Picture::Add, None, true, &LIGHT),
-            with_alpha(LIGHT.icon_quiet, DISABLED_OPACITY)
-        );
-        // A dark primary fill with a light foreground, as gpui-component's
-        // dark theme draws one: the icon is that foreground.
         let foreground = better_ui::fluent::hex(0x123456);
+        let label_disabled = better_ui::fluent::with_alpha(better_ui::fluent::hex(0x737373), 0.5);
+        let primary = ButtonInk {
+            primary: Some(foreground),
+            disabled: None,
+        };
         assert_eq!(
-            labelled_icon_colour(Picture::Add, Some(foreground), false, &LIGHT),
+            labelled_icon_colour(Picture::Add, primary, &LIGHT),
             foreground
         );
         assert_ne!(foreground, LIGHT.text_on_accent);
+        for primary in [None, Some(foreground)] {
+            let ink = ButtonInk {
+                primary,
+                disabled: Some(label_disabled),
+            };
+            assert_eq!(
+                labelled_icon_colour(Picture::Add, ink, &LIGHT),
+                label_disabled
+            );
+        }
+        assert_eq!(super::DISABLED_LABEL_OPACITY, 0.5);
     }
 
     /// Every button with an action icon keeps its words in `label`, where
