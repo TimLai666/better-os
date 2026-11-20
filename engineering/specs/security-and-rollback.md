@@ -58,11 +58,15 @@ check fails the operation, and an install, update, or restore that fails it is
 rolled back, so each rule here says only what Better OS controls.
 
 - **User units.** Every unit the component's package installed under
-  `/usr/lib/systemd/user` (from dpkg's file list) is enabled and running. No
-  unit exits on purpose: a unit that exited, even with status 0, is not
-  running, and the startup pass and Verify (Check again) start it like a
-  stopped one (ticket 131). A unit that systemd records as killed by its stop
-  signal is stopped, not finished.
+  `/usr/lib/systemd/user` (from dpkg's file list) is enabled and running. A
+  unit that exited, even with status 0, is not running, and the startup pass
+  and Verify (Check again) start it like a stopped one (ticket 131). The units
+  that still exit 0 are the Awake tray's and the Monitor tray's Quit and
+  `better-window-attention` when another instance owns its name; none of that
+  is the component being off, which only disabling it in Better Manager or
+  removing it means. A second window-attention instance exits while the first
+  runs, so the unit stays active and nothing restarts in a loop. A unit that
+  systemd records as killed by its stop signal is stopped, not finished.
 - **GNOME Shell extensions.** Every extension the component's package
   installed under `/usr/share/gnome-shell/extensions`, and every extension its
   installed companion packages installed there (ADR 0018), is in the person's

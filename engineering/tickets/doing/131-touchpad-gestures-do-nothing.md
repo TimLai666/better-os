@@ -83,15 +83,26 @@ better-manager-daemon 0.2.16).
   exited unit as healthy; the startup pass and Check again start it.
 - It watches `gestures.json` and the safe mode marker and takes every change
   at once: a gesture turned off in a window stops, a new one works, GNOME's
-  gestures are taken or given back for what now collides. It writes back only
-  verification results, conflict annotations and the switch the automatic
-  disable turns off, onto the file as it is now.
+  gestures are taken or given back for what now collides. A watch that cannot
+  be made (the person's inotify instances used up) costs no gesture: the
+  service keeps working, says so in the journal and in its `Status()`, and
+  tries again every minute; the Touchpad page then says changes reach it only
+  once the watch is back. A deleted and re-created settings directory is
+  watched again.
+- Both windows follow the file too, keeping an edit in progress. The service
+  and the windows write only their own changes onto the file as it is now,
+  through one merge (`touchpad_gestures::merge`) under one `flock` on
+  `gestures.lock` (`GestureStore::save_changes`), so neither writes a stale
+  copy over the other: a window edit after the automatic disable keeps the
+  switch off. Every save re-annotates conflicts, so an edit onto or off three
+  fingers shows its collision at once.
 - It owns `org.betteros.TouchpadGestures1`. The extension takes a suppression
   only from that name's owner, accepted only when its process runs
   `/usr/bin/better-touchpad-gestured`, and restores GNOME's trackers the
   moment the name loses its owner (ADR 0035, proposed, which applies ADR
-  0018's relay rule). The service accepts gesture signals only from the
-  adapter's current unique name.
+  0018's relay rule). The service's match rule names the adapter as sender,
+  so the bus never delivers another process's gesture signal; an owner check
+  stays behind it.
 - On attach the service adopts what the adapter reports, so the suppression
   the 0.2.16 pair left behind is lifted after the upgrade without a logout.
 - GNOME's gestures are suppressed only for a gesture that collides under the
@@ -134,7 +145,16 @@ Mac-style preset (four fingers) is not affected.
 Nobody has made a gesture against the fixed build, and the thresholds
 (`swipe_travel`, `EventScale::swipe_pad_pixels` = 1000, activation 0.6) have
 never been tuned against a hand. The owner also has to accept or reject ADR
-0035. Once the fixed build is installed:
+0035 (proposed).
+
+**Question for the owner.** Better Manager now counts an exited unit as not
+running and starts it again at its next start and on Check again, which is
+AGENTS.md's rule (only disabling or removing a component keeps its units
+off). The Awake tray's and the Monitor tray's **Quit** exit 0, so a quit tray
+now comes back the next time Better Manager starts. Should Quit instead turn
+the component's tray off in Better Manager, only hide the icon, or be renamed
+(for example "Hide until next sign-in")? The trays are unchanged until this
+is decided. Once the fixed build is installed:
 
 1. Log out and back in, so GNOME Shell loads the new extension. Open Better
    Manager once (its startup pass turns `shell-adapter@betteros.org` on;

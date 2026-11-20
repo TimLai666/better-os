@@ -70,15 +70,36 @@ gesture signals only from the adapter's current unique name.
 
 ### What the owner check does and does not stop
 
-The same as in ADR 0018. Without it any program the person runs could take
-`org.betteros.TouchpadGestures1` while the service is not running and turn
-GNOME's gestures off. With it, such a program is never obeyed. It can still
-hold the name, and the real service then exits with "another process already
-owns org.betteros.TouchpadGestures1" until systemd's start limit, which leaves
-gestures off and GNOME's own on: a denial of Better OS gestures by a program
-that already runs as the person, accepted as ADR 0018 accepts its residual
-risk. While a service from a removed or upgraded package still runs, its link
-ends in `(deleted)` and it is refused until the package's postinst restarts it.
+`/proc/<pid>/exe` proves which file a process is running, not what that
+process does. The check therefore stops an owner that is accidental or
+unrelated: another program that happens to take
+`org.betteros.TouchpadGestures1`, a test build run by hand from a working
+tree, a leftover copy somewhere else on disk. Those are never obeyed.
+
+It does not stop hostile code running as the same user. Such code can run the
+genuine `/usr/bin/better-touchpad-gestured` with `LD_PRELOAD`, point the
+genuine binary at another `XDG_CONFIG_HOME` holding a configuration of its
+choosing, bind another file over that path in a mount namespace of its own,
+or simply stop the real service first and take the name. Every one of those
+passes the check.
+
+What such code gains is bounded by what the extension can do with it: the
+worst outcome is GNOME's own swipe gestures turned off until the name's owner
+leaves the bus, which the extension then undoes by itself. The gesture actions
+the extension serves are open to any caller already (ADR 0012), and nothing
+here executes anything. The same user can do that much and more through the
+person's own session already, so the residual risk is accepted, as ADR 0018
+accepts its own. A program holding the name also keeps the real service out:
+it exits with "another process already owns org.betteros.TouchpadGestures1"
+until systemd's start limit, which leaves Better OS gestures off and GNOME's
+own on.
+
+The check runs once, when the name gets a new owner. A service already
+accepted stays accepted after its file is replaced by an upgrade, until it
+leaves the bus; a new owner, or the extension being enabled again (a login, a
+shell restart), is checked again. An owner whose program file was replaced or
+removed before it took the name has a link ending in `(deleted)` and is
+refused.
 
 ### GNOME does not let go reliably
 

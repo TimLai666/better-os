@@ -79,10 +79,14 @@ contract.
   `manager_platform::user_units::UserUnitController`. Units come from dpkg's
   own file list under `/usr/lib/systemd/user`, never from a table by component
   id, and the health check requires an enabled component's units to be enabled
-  and active. No unit exits on purpose: the touchpad gesture service, the one
-  that used to with nothing configured, stays resident and idle (ticket 131),
-  so an exited unit is not running and the startup pass and Check again start
-  it like a stopped one. Update and
+  and active. An exited unit, even one that exited 0, is not running, and the
+  startup pass and Check again start it like a stopped one (ticket 131). Units
+  that still exit 0 are the Awake tray's and the Monitor tray's Quit and
+  `better-window-attention` finding another instance on its name; the trays
+  therefore come back the next time Better Manager starts or on Check again,
+  which is this rule (only disabling or removing keeps a unit off). The
+  touchpad gesture service, which used to exit 0 with nothing configured,
+  stays resident and idle. Update and
   Restore restart a unit that is already running so the new binary runs; Verify
   starts a stopped unit before checking. Tests set
   `BETTER_OS_TEST_SYSTEMCTL_GUARD` so the real runner can never reach the
@@ -440,10 +444,11 @@ GUI or dependency compiles when the relevant command was not executed.
   or the integration turned off by itself it stays resident and idle), and
   ends a SIGTERM by that signal after giving GNOME its gestures back. It
   watches `gestures.json` and the safe mode marker and takes every change at
-  once; it writes back only what it owns (verification results, conflict
-  annotations, and the switch the automatic disable turns off) onto the file
-  as it is now. It accepts gesture signals only from the adapter's current
-  unique name, and on attach it adopts what the adapter reports, so a
+  once, and a watch that cannot be made costs no gesture (it says so and is
+  retried every minute). The service and both windows follow the file and
+  write only their own changes onto it as it is now, through one merge under
+  one lock (`GestureStore::save_changes`). Its match rule names the adapter as
+  the signals' sender, and on attach it adopts what the adapter reports, so a
   suppression an older extension and service left behind is lifted. GNOME's
   own swipe trackers are suppressed only by the service, only for a gesture
   that collides, is on, and verified, and only once a gesture has arrived from

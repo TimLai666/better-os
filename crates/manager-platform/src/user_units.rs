@@ -48,11 +48,15 @@ pub enum UnitActivity {
     Starting,
     /// `inactive` after its main process ran and exited 0 with
     /// `Result=success`. This used to count as a service that finished on
-    /// purpose, and the one service that did, the touchpad gesture service
-    /// with nothing to do, is resident now (ticket 131). No Better OS unit
-    /// exits 0 on purpose any more, so an exited unit is not running, and the
-    /// startup pass and Check again start it like a stopped one. It is kept
-    /// apart from [`Self::Stopped`] only so the words can say what happened.
+    /// purpose, which let the touchpad gesture service on 0.2.16 be dead and
+    /// healthy for a whole session (ticket 131); it is resident now. Units
+    /// still exit 0: the Awake tray's and the Monitor tray's Quit, and
+    /// `better-window-attention` when another instance already owns its
+    /// name. None of that is the component being off, which only disabling
+    /// it in Better Manager or removing it means (AGENTS.md), so an exited
+    /// unit is not satisfied, and the startup pass and Check again start it
+    /// like a stopped one. It is kept apart from [`Self::Stopped`] only so the
+    /// words can say what happened.
     Exited,
     /// `inactive` for any other reason, including never having been started,
     /// and `deactivating`.
@@ -106,8 +110,8 @@ impl UnitState {
     }
 
     /// Enabled and running: what an enabled component's unit has to be. A
-    /// unit that exited, even with success, is not, because every Better OS
-    /// background service runs for as long as its component is on.
+    /// unit that exited, even with success (a tray the person quit), is not,
+    /// because a component's units run for as long as the component is on.
     pub fn is_satisfied(&self) -> bool {
         self.enabled && self.activity == UnitActivity::Running
     }
@@ -1028,8 +1032,9 @@ mod tests {
     /// Ticket 131: the touchpad gesture service on 0.2.16 exited 0 when the
     /// adapter was late, systemd left it `inactive` with `Result=success`, and
     /// this rule read that as finished on purpose, so a dead service was
-    /// healthy for a whole session. No Better OS unit exits 0 on purpose any
-    /// more, and an exited unit is not satisfied. It still parses as
+    /// healthy for a whole session. Units still exit 0 (a tray's Quit, a
+    /// second window-attention instance), and none of that is the component
+    /// being off, so an exited unit is not satisfied. It still parses as
     /// [`UnitActivity::Exited`], told apart from a unit that was never
     /// started (`ExecMainCode=0`). Both shapes are what `systemctl --user
     /// show` printed on this host. This test fails on the old rule.

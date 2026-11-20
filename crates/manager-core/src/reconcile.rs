@@ -136,9 +136,11 @@ impl Manager {
                 .filter(|state| state.masked)
                 .map(|state| state.unit.clone())
                 .collect::<Vec<_>>();
-            // A unit that exited successfully on its own is working as
-            // designed, and one that is still activating is not ours to
-            // interrupt.
+            // A unit that exited, even with success, is not running and is
+            // started: the Awake and Monitor trays' Quit and a second
+            // window-attention instance exit 0, and only disabling the
+            // component or removing it may keep a unit off (ticket 131). One
+            // that is still activating is not ours to interrupt.
             let needing = states
                 .into_iter()
                 .filter(|state| {
