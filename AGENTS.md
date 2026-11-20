@@ -427,7 +427,20 @@ GUI or dependency compiles when the relevant command was not executed.
   pending restore Better Manager finishes at its next start. Better Touchpad's
   puts its captured touchpad settings back. The gesture service's first run puts the Mac-style preset in
   force when no gesture file exists yet. Without both processes the Gestures
-  screen and the `touchpad.gesture_bridge` health check say which is missing.
+  screen and the `touchpad.gesture_bridge` health check say which is missing:
+  the service owns `org.betteros.TouchpadGestures1` while it runs, and an
+  adapter on the bus with that name unowned is "not running", never
+  "connected" (ticket 131). The service waits for the adapter instead of
+  exiting without it (a login starts it a moment before GNOME Shell enables
+  extensions), exits 0 only for safe mode or nothing configured, and ends a
+  SIGTERM by that signal after giving GNOME its gestures back. GNOME's own
+  swipe trackers are suppressed only by the service, only for a gesture that
+  collides, is on, and verified, and only once a gesture has arrived from the
+  adapter; the extension takes that request only from the service name's
+  owner and restores the moment the name loses its owner. A companion
+  package's extension (`shell-adapter@betteros.org` from
+  `better-shell-adapter`, a companion of `better-manager`) is turned on with
+  the component it travels with, read from the companion's own dpkg list.
 - Three rows of the Mac-style preset do not work on GNOME 46 and must not be
   described as if they do. Four fingers down maps to the current application's
   windows and there is no shell facility for it. The two-finger application
@@ -441,6 +454,10 @@ GUI or dependency compiles when the relevant command was not executed.
   shell, because a nested shell with no touchpad produces no gesture events, so
   the swipe and pinch stream is tested only against a Rust fake of the same
   interface. Do not claim the event shape has been observed against a hand.
+  The extension's watch on `org.betteros.TouchpadGestures1` and its refusal
+  of a suppression from anyone else (ticket 131) have not run in a shell
+  either; they are asserted against the file, and the service side against a
+  private bus.
 - `ingest::EventScale::swipe_pad_pixels` is 1000, and it is a recorded starting
   value in the same sense as the thresholds: a compositor reports swipe motion
   in pixels and never says how big the pad is. Nobody has tuned it.
@@ -450,8 +467,13 @@ GUI or dependency compiles when the relevant command was not executed.
   that risk needs an owner and a document, not a paragraph in a pull request.
 - `touchpad_gestures::conflict::GNOME_46_GESTURES` is a static model of GNOME
   46's own swipe trackers, not a probe — the shell compiles them in and exposes
-  nothing to read. Both trackers accept three *and* four contacts, which is why
-  the Mac-style preset collides with four of them. Re-check the model before
+  nothing to read. Both trackers take three contacts and only three
+  (`swipeTracker.js`: `GESTURE_FINGER_COUNT = 3`, read from GNOME Shell 46.0's
+  gresource on 2026-11-21, ticket 131), so the Mac-style preset, which swipes
+  with four, collides with none of them. The model used to say three *and*
+  four, and 0.2.16 took GNOME's three-finger gestures away for nothing; the
+  service now re-detects collisions on every start rather than trusting the
+  annotation a file carries. Re-check the model before
   claiming support for a newer GNOME, and produce the hardware and release
   matrix ADR 0008 asked for; nothing here has been tested against GNOME 47, 48,
   or 49.
