@@ -525,6 +525,86 @@ scroll pass-through's evdev view of the pad (ticket 161's option (a)), the
 same on GNOME and in the session; ticket 225 builds it once the owner answers
 ticket 161's N3.
 
+## Surfaces on layer-shell (ticket 200)
+
+Every session surface opens its windows through `better_ui::layer`:
+`LayerSurfaces` keeps one GPUI window per output (or one, for the launcher
+and the switcher), opens one on an output that appears, drops the one the
+compositor closed when its output went, and changes a surface in place where
+GPUI can (exclusive zone and edge, a fixed size) and by opening a new one
+before closing the old where it cannot (namespace, layer, anchor, margin,
+keyboard mode, and any size change of a surface that fills an axis).
+`apply_input_region` keeps input to what is drawn, and `layer::clock` moves a
+panel inside a fixed surface (slide, follow the fingers, settle on release;
+the settle constants are there and nowhere else). It sets GPUI's quit mode to
+explicit: a surface process outlives its windows. `better_core::desktop`'s
+`CurrentDesktop::is_better_os_session` is the one place a component asks
+whether it runs in the session.
+
+What was seen on `cosmic-comp` 0.1~1795167359 (Pop `noble`, built
+2026-11-20), nested, at scale 1, with GPUI at `ae394f3`: all four layers stack
+as the protocol says around a window; all sixteen anchor combinations land
+where they should; a maximized window leaves the exclusive zone free and is
+reconfigured when the zone changes, in place or by a new surface; keyboard
+`none` never takes focus, `on-demand` takes it when it maps and when clicked
+and gives it up to a clicked window, `exclusive` keeps every key; a popup
+parented to a surface takes the keyboard even from a `none` surface and gives
+it back when it closes; the input region lets clicks through outside it.
+Ticket 200's notes have each one with how it was seen.
+
+**Three GPUI defects at `ae394f3` bear on the surfaces**, all three still in
+Zed's `main` on 2026-11-21 except the second:
+
+1. A surface that fills an axis (size 0, the top bar, the taskbar, the
+   desktop) is killed by a protocol error when the compositor sends its
+   fractional scale before its first configure: GPUI rescales and sends
+   `wp_viewport.set_destination(0, h)` (`gpui_linux` `wayland/window.rs`,
+   `set_size_and_scale`, lines 1286–1290). `cosmic-comp` sent them in that
+   order in every run at 150 % and 200 %, so there a filled surface never
+   showed; sway did it for the second of two surfaces. **This stops every filled surface on a HiDPI output
+   and is with the owner** (ticket 200's Blocked line).
+2. An output removed is never dropped from `App::displays` (`client.rs` line
+   1286, `GlobalRemove` is a TODO), and there is no event for an output
+   added. `LayerSurfaces` polls the list every 500 ms and treats the
+   compositor closing a surface as its output going away. Zed's `main` has
+   both fixed.
+3. On a compositor whose `wl_compositor` is below version 6 (`cosmic-comp`
+   offers 5), entering an output overrides the fractional scale with the
+   output's integer scale (`window.rs` lines 1191–1195), so at 150 % every
+   GPUI window, layer or not, draws at 2 and is scaled down by the
+   compositor: the right size, slightly soft.
+
+### The nested test compositor
+
+`packaging/tests/cosmic-nested.sh` runs System76's released `cosmic-comp`
+without installing it: `fetch` checks `InRelease` against the one fingerprint
+ADR 0038 names, then `Packages.gz` and the `.deb` against its SHA-256 sums, and
+unpacks the `.deb` with `dpkg-deb -x` (every library it links resolves against
+Zorin 18's). `start` runs it nested in a headless sway, both in one scope under
+AGENTS.md's sandbox rules, and `stop` ends it by PID. Its limits:
+
+- `cosmic-comp`'s nested backends (`winit`, `x11`) have exactly one output, so
+  anything about several outputs runs against the headless sway itself
+  (`start --sway-only`, `output add`, `output remove NAME`). Several outputs
+  on `cosmic-comp` itself wait for ticket 201's VM.
+- The scale is set through the `outputs.ron` it reads at start; the mode there
+  must be the winit window's first size, 1280×800, or the whole entry is reset.
+- `cosmic-comp` has no `wlr-screencopy` and no virtual pointer, so `shot` and
+  `click` go through the outer sway, which shows `cosmic-comp`'s window 1:1;
+  `keys` types on `cosmic-comp`'s own virtual keyboard.
+
+```sh
+cargo build -p layer-check                    # better-layer-check, better-wl-probe
+packaging/tests/cosmic-nested.sh fetch        # once
+packaging/tests/cosmic-nested.sh start --scale 2
+packaging/tests/cosmic-nested.sh exec -- target/debug/better-layer-check --popup
+packaging/tests/cosmic-nested.sh click 300 16 # logical pixels of the nested output
+packaging/tests/cosmic-nested.sh keys 'ab{Return}'
+packaging/tests/cosmic-nested.sh shot /tmp/shot.png
+packaging/tests/cosmic-nested.sh stop
+packaging/tests/session-layer-facts.sh OUT_DIR [CASE...]   # ticket 200's facts again
+```
+
 ## Acceptance flows
 
 Each runs in a disposable VM per base (Zorin OS 18 and Ubuntu 24.04), on
@@ -610,8 +690,12 @@ recorded:
   avoided: the line stops and goes back to the owner.
 - **GDM starts the session** — **unverified**; ticket 201. If not, C3 goes back
   to the owner.
-- **GPUI's layer-shell surface works on `cosmic-comp`** — nobody has run a
-  Better OS window as one; ticket 200. If not, every surface ticket stops.
+- **GPUI's layer-shell surface works on `cosmic-comp`** — seen working at
+  100 % in the nested compositor (ticket 200); a surface that fills an axis is
+  killed by a GPUI protocol error above 100 % ("Surfaces on layer-shell",
+  defect 1). Until the owner decides how GPUI gets the fix, the top bar,
+  taskbar, and desktop cannot be built for HiDPI; surfaces of a fixed size can.
+  Several outputs on `cosmic-comp` itself are unseen until ticket 201's VM.
 - **The gesture patch is feasible within budget** — ticket 202. If not, C8 and
   S6 go back to the owner before any surface is built to follow fingers.
 - **Chinese input faults upstream** (issues 2947, 2952, 2702, 2778) —

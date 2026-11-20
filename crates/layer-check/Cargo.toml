@@ -1,0 +1,36 @@
+[package]
+name = "layer-check"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Ticket 200's check of GPUI layer-shell surfaces on cosmic-comp, and the probe the nested test compositor uses for screenshots, keys, and globals. Not packaged."
+
+[lib]
+name = "layer_check"
+path = "src/lib.rs"
+
+[[bin]]
+name = "better-layer-check"
+path = "src/main.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "better-wl-probe"
+path = "src/bin/probe.rs"
+test = false
+bench = false
+
+[dependencies]
+better-ui.workspace = true
+gpui.workspace = true
+gpui-platform.workspace = true
+libc.workspace = true
+image = { version = "0.25", default-features = false, features = ["png"] }
+# Already in the graph through gpui_linux, at these versions.
+wayland-client = "0.31"
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
+wayland-protocols-misc = { version = "0.3", features = ["client"] }
+xkbcommon = { version = "0.8", default-features = false }

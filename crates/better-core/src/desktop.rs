@@ -20,6 +20,14 @@
 /// The identity a session with no readable desktop is recorded under.
 pub const UNKNOWN_DESKTOP: &str = "unknown";
 
+/// The `XDG_CURRENT_DESKTOP` entry the Better OS session declares first
+/// (`BetterOS:COSMIC`, engineering/specs/better-os-session.md).
+pub const BETTER_OS_DESKTOP: &str = "BetterOS";
+
+/// The session file's name, `better-os.desktop`, which is also what
+/// `XDG_SESSION_DESKTOP` and `DESKTOP_SESSION` say in the session.
+pub const BETTER_OS_SESSION_NAME: &str = "better-os";
+
 /// The desktop names a session declares, in the order it declared them and
 /// spelled as it spelled them. Comparisons ignore ASCII case.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -117,6 +125,15 @@ impl CurrentDesktop {
         self.includes("gnome")
     }
 
+    /// Whether this is the Better OS session. Its launcher sets
+    /// `XDG_CURRENT_DESKTOP=BetterOS:COSMIC`, so the entry is `BetterOS`;
+    /// a stock COSMIC session (`COSMIC` alone) is not it. When the list is
+    /// empty and the reading fell back to `DESKTOP_SESSION`, the session file
+    /// is named `better-os` (`better-os.desktop`), which counts too.
+    pub fn is_better_os_session(&self) -> bool {
+        self.includes(BETTER_OS_DESKTOP) || self.includes(BETTER_OS_SESSION_NAME)
+    }
+
     /// A stable lowercase form for a record (`zorin:gnome`), or
     /// [`UNKNOWN_DESKTOP`] when the session named nothing.
     pub fn identity(&self) -> String {
@@ -198,6 +215,52 @@ mod tests {
         let desktop = from(Some(" zorin : : GNOME "), None);
         assert_eq!(desktop.names(), ["zorin", "GNOME"]);
         assert!(!desktop.includes(""));
+    }
+
+    #[test]
+    fn the_better_os_session_is_better_os_and_not_gnome() {
+        let desktop = from(Some("BetterOS:COSMIC"), Some("better-os"));
+        assert!(desktop.is_better_os_session());
+        assert!(!desktop.is_gnome());
+        assert!(desktop.includes("cosmic"));
+        assert_eq!(desktop.identity(), "betteros:cosmic");
+        assert!(from(Some("betteros:cosmic"), None).is_better_os_session());
+    }
+
+    #[test]
+    fn cosmic_alone_is_not_the_better_os_session() {
+        let desktop = from(Some("COSMIC"), Some("cosmic"));
+        assert!(!desktop.is_better_os_session());
+        assert!(!desktop.is_gnome());
+        assert!(desktop.includes("COSMIC"));
+    }
+
+    #[test]
+    fn gnome_sessions_are_not_the_better_os_session() {
+        for (current, session) in [
+            ("zorin:GNOME", "zorin"),
+            ("ubuntu:GNOME", "ubuntu"),
+            ("GNOME", "gnome"),
+            ("GNOME-Classic:GNOME", "gnome-classic"),
+        ] {
+            let desktop = from(Some(current), Some(session));
+            assert!(desktop.is_gnome(), "{current}");
+            assert!(!desktop.is_better_os_session(), "{current}");
+        }
+    }
+
+    #[test]
+    fn the_session_file_name_counts_only_as_the_fallback() {
+        assert!(from(None, Some("better-os")).is_better_os_session());
+        assert!(
+            from(None, Some("/usr/share/wayland-sessions/better-os.desktop"))
+                .is_better_os_session()
+        );
+        // A listed desktop wins over the session file, as for GNOME.
+        assert!(!from(Some("COSMIC"), Some("better-os")).is_better_os_session());
+        assert!(!from(None, None).is_better_os_session());
+        // A name that only contains the word is not the session.
+        assert!(!from(Some("NotBetterOS"), None).is_better_os_session());
     }
 
     #[test]

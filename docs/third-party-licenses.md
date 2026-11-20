@@ -10,11 +10,11 @@ It does not replace the license text supplied by each upstream project.
 ## Review summary
 
 - Root project license: `GPL-3.0-or-later`.
-- Resolved Cargo packages: 979.
-- Packages with an SPDX license expression: 977.
+- Resolved Cargo packages: 981.
+- Packages with an SPDX license expression: 979.
 - Packages with only a license-file field: 0.
 - Packages without package-level license metadata: 2.
-- `Cargo.lock` SHA-256: `b76a38efa93f824827ea260a1085c0427342352913a34627a4204e697286e775`.
+- `Cargo.lock` SHA-256: `1fba181439596f892ac794ead34bcb3d97a3815d70ee211794a8db2f7c344579`.
 
 The 2 package(s) without package-level license metadata are
 listed separately below. Their pinned upstream checkout contains both
@@ -26,9 +26,9 @@ source of truth for those packages.
 | License expression | Package records |
 | --- | ---: |
 | `MIT OR Apache-2.0` | 424 |
-| `MIT` | 202 |
+| `MIT` | 203 |
 | `Apache-2.0 OR MIT` | 79 |
-| `GPL-3.0-or-later` | 68 |
+| `GPL-3.0-or-later` | 69 |
 | `MIT/Apache-2.0` | 41 |
 | `Apache-2.0` | 32 |
 | `Unicode-3.0` | 18 |
@@ -110,6 +110,7 @@ Better OS does not relicense or silently select a different expression.
 | `launcher-core` | `0.2.16` | `GPL-3.0-or-later` | workspace |
 | `launcher-gui` | `0.2.16` | `GPL-3.0-or-later` | workspace |
 | `launcher-platform` | `0.2.16` | `GPL-3.0-or-later` | workspace |
+| `layer-check` | `0.2.16` | `GPL-3.0-or-later` | workspace |
 | `libbz2-rs-sys` | `0.2.5` | `bzip2-1.0.6` | [crates.io](https://crates.io/crates/libbz2-rs-sys/0.2.5) |
 | `libfuzzer-sys` | `0.4.13` | `(MIT OR Apache-2.0) AND NCSA` | [crates.io](https://crates.io/crates/libfuzzer-sys/0.4.13) |
 | `manager-cli` | `0.2.16` | `GPL-3.0-or-later` | workspace |
@@ -550,6 +551,7 @@ keeps its own license.
 | `launcher-core` | `0.2.16` | `GPL-3.0-or-later` | workspace |
 | `launcher-gui` | `0.2.16` | `GPL-3.0-or-later` | workspace |
 | `launcher-platform` | `0.2.16` | `GPL-3.0-or-later` | workspace |
+| `layer-check` | `0.2.16` | `GPL-3.0-or-later` | workspace |
 | `lazy_static` | `1.5.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/lazy_static/1.5.0) |
 | `leak` | `0.1.2` | `Apache-2.0 OR MIT` | [crates.io](https://crates.io/crates/leak/0.1.2) |
 | `leaky-cow` | `0.1.1` | `MIT / Apache-2.0` | [crates.io](https://crates.io/crates/leaky-cow/0.1.1) |
@@ -1007,6 +1009,7 @@ keeps its own license.
 | `wayland-client` | `0.31.15` | `MIT` | [crates.io](https://crates.io/crates/wayland-client/0.31.15) |
 | `wayland-cursor` | `0.31.14` | `MIT` | [crates.io](https://crates.io/crates/wayland-cursor/0.31.14) |
 | `wayland-protocols` | `0.32.13` | `MIT` | [crates.io](https://crates.io/crates/wayland-protocols/0.32.13) |
+| `wayland-protocols-misc` | `0.3.12` | `MIT` | [crates.io](https://crates.io/crates/wayland-protocols-misc/0.3.12) |
 | `wayland-protocols-plasma` | `0.3.12` | `MIT` | [crates.io](https://crates.io/crates/wayland-protocols-plasma/0.3.12) |
 | `wayland-protocols-wlr` | `0.3.12` | `MIT` | [crates.io](https://crates.io/crates/wayland-protocols-wlr/0.3.12) |
 | `wayland-scanner` | `0.31.11` | `MIT` | [crates.io](https://crates.io/crates/wayland-scanner/0.31.11) |

@@ -567,6 +567,16 @@ GUI or dependency compiles when the relevant command was not executed.
   installed, and the catalog is read from the process's own `XDG_DATA_DIRS`, so
   a manager started without the Flatpak paths reports Flatpak applications as
   gone. The choice buttons in the window have not been looked at.
+- Every Better OS session surface opens through `better_ui::layer`
+  (ticket 200); never open a `WindowKind::LayerShell` window directly. At the
+  pinned GPUI a surface that fills an axis (size 0) dies of a
+  `wp_viewport` protocol error on any output above 100 %, the owner's
+  decision in ticket 200; fixed-size surfaces work. GPUI also keeps removed
+  outputs in `App::displays` and draws every window at the integer scale on
+  `cosmic-comp` at 150 %. The spec's "Surfaces on layer-shell" section has
+  all three and `packaging/tests/cosmic-nested.sh`, the nested `cosmic-comp`
+  every session ticket tests in; it has one output, so anything about
+  several outputs runs on its headless sway until ticket 201's VM.
 - The login screen watch (ticket 140, ADR 0033) has run against a real
   systemd, logind, and journal only in CI's container check
   (`packaging/boot-watch/run.sh`, a stand-in `gdm.service` that never opens

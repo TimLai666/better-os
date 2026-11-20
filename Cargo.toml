@@ -29,6 +29,7 @@ members = [
     "crates/launcher-core",
     "crates/launcher-platform",
     "crates/launcher-gui",
+    "crates/layer-check",
     "crates/defaults-core",
     "crates/drive-mounts",
     "crates/defaults-platform",
