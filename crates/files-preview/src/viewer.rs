@@ -944,11 +944,15 @@ mod tests {
 
     #[test]
     fn poppler_renders_and_searches_a_real_pdf_when_installed() {
-        if run("pdftoppm", &["-v".into()], Duration::from_secs(5)).is_none()
-            && Command::new("pdftoppm").arg("-v").output().is_err()
-        {
-            return;
-        }
+        // CI installs `poppler-utils` (ticket 177).
+        test_prerequisites::require!(
+            "pdftoppm (poppler-utils)",
+            Command::new("pdftoppm")
+                .arg("-v")
+                .output()
+                .map(|_| ())
+                .map_err(|error| format!("pdftoppm could not be run: {error}"))
+        );
         let root = tempfile::tempdir().unwrap();
         let pdf = root.path().join("two.pdf");
         fs::write(&pdf, TWO_PAGE_PDF).unwrap();

@@ -14,6 +14,9 @@ serde.workspace = true
 libc.workspace = true
 
 [dev-dependencies]
+# A missing program is a skip on a developer's machine and a failure
+# under CI (ticket 177).
+test-prerequisites.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
 

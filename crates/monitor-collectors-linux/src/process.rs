@@ -1249,11 +1249,9 @@ mod tests {
 
     #[test]
     fn an_unreadable_fd_directory_is_permission_denied_not_a_count_of_zero() {
-        if running_as_root() {
-            // Root can read any descriptor directory, so the distinction this
-            // test exists for cannot be produced here.
-            return;
-        }
+        // Root can read any descriptor directory, so the distinction this
+        // test exists for cannot be produced as root.
+        test_prerequisites::require_that!("a user other than root", !running_as_root());
         let temporary = TempTree::copy_of("synthetic-a");
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(

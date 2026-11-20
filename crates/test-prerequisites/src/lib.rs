@@ -67,14 +67,20 @@ fn held(condition: bool) -> Result<(), &'static str> {
 /// would take for a skip.
 #[track_caller]
 fn decide<T, E: Display>(ci: bool, prerequisite: &str, attempt: Result<T, E>) -> Result<T, String> {
-    attempt.map_err(|reason| {
-        assert!(
-            !ci,
-            "CI must run this test, and it needs {prerequisite}: {reason}. \
-             The CI workflow's install step lists what each test needs."
-        );
-        format!("{SKIP_MARKER} needs {prerequisite}: {reason}")
-    })
+    // The assertion is in this body, not in a closure, so `#[track_caller]`
+    // carries the test's own line into the panic (a closure has no caller
+    // location of its own and would name this file).
+    match attempt {
+        Ok(value) => Ok(value),
+        Err(reason) => {
+            assert!(
+                !ci,
+                "CI must run this test, and it needs {prerequisite}: {reason}. \
+                 The CI workflow's install step lists what each test needs."
+            );
+            Err(format!("{SKIP_MARKER} needs {prerequisite}: {reason}"))
+        }
+    }
 }
 
 /// The value of a `Result`, or a return from the calling test when it is an

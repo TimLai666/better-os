@@ -844,6 +844,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "tempfile",
+ "test-prerequisites",
  "thiserror 2.0.19",
 ]
 
@@ -2278,6 +2279,7 @@ dependencies = [
  "ruzstd",
  "tar",
  "tempfile",
+ "test-prerequisites",
  "thiserror 2.0.19",
  "zip",
 ]
@@ -4834,6 +4836,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "test-prerequisites",
 ]
 
 [[package]]

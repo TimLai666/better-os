@@ -44,12 +44,21 @@ jobs:
         #   which no machine outside a shell has, so no shell typelib is read.
         # - locales and language-pack-gnome-zh-hant-base: files-gui's GVfs
         #   zh_TW host-key test, with the locale generated below.
-        # The runner itself gives the rest: a user other than root and a
-        # temporary directory with sparse files and user extended attributes
-        # (files-gui, files-operations, files-platform).
+        # - gvfs-backends (with gvfs-daemons): files-gui's
+        #   `the_installed_gvfs_is_found_when_there_is_one`.
+        # - poppler-utils (`pdftoppm`): files-preview's
+        #   `poppler_renders_and_searches_a_real_pdf_when_installed`.
+        # - dpkg (`dpkg-query`): better-core's self_update journal test; the
+        #   image ships it.
+        # The ubuntu-24.04 image already ships dbus and locales (and dpkg), so
+        # taking those off this line would not turn CI red; the line names
+        # them so the dependency is written down. The runner itself gives the
+        # rest: a user other than root (files-gui, files-operations,
+        # files-platform, monitor-collectors-linux) and a temporary directory
+        # with sparse files and user extended attributes (files-operations).
         run: |
           for attempt in 1 2 3 4 5; do
-            if sudo apt-get update && sudo apt-get install -y libfontconfig1-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-base gstreamer1.0-plugins-good dbus dconf-service gjs locales language-pack-gnome-zh-hant-base; then
+            if sudo apt-get update && sudo apt-get install -y libfontconfig1-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-base gstreamer1.0-plugins-good dbus dconf-service gjs locales language-pack-gnome-zh-hant-base gvfs-backends poppler-utils; then
               exit 0
             fi
             echo "apt attempt $attempt failed; waiting before the next" >&2

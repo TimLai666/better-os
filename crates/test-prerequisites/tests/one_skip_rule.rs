@@ -50,6 +50,119 @@ fn own_skip(line: &str) -> Option<&'static str> {
     reads_ci.then_some("reads the CI variable itself")
 }
 
+/// Whether a whole file is test code: under a `tests/` directory, or a test
+/// module of its own (`tests.rs`, `first_call_tests.rs`).
+fn is_test_file(path: &Path) -> bool {
+    path.components().any(|part| part.as_os_str() == "tests")
+        || path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .is_some_and(|stem| stem == "tests" || stem.ends_with("_tests"))
+}
+
+/// The words of a guard that probes the machine: a program, the user, a
+/// locale, a kernel or filesystem feature. A test that returns right after
+/// one is a skip, whether or not it says so.
+const PROBES: &[&str] = &[
+    "running_as_root",
+    "geteuid",
+    "getuid",
+    "is_root",
+    "Command::new(",
+    "which",
+    "locale",
+    "xattr",
+    "allocated_blocks",
+    "/proc/",
+    "/sys/",
+    "installed",
+    "available",
+    "supported",
+    "dbus-daemon",
+    "this computer",
+    "this machine",
+];
+
+/// Whether `word` appears in `text` as a word of its own (so `installed`
+/// is found and `uninstalled` is not).
+fn has_word(text: &str, word: &str) -> bool {
+    let boundary = |c: Option<char>| c.is_none_or(|c| !c.is_ascii_alphanumeric());
+    text.match_indices(word).any(|(at, _)| {
+        let before = text[..at].chars().next_back();
+        let after = text[at + word.len()..].chars().next();
+        let starts_word = !word.starts_with(|c: char| c.is_ascii_alphanumeric());
+        let ends_word = !word.ends_with(|c: char| c.is_ascii_alphanumeric());
+        (starts_word || boundary(before)) && (ends_word || boundary(after))
+    })
+}
+
+/// Whether a line leaves the function it is in.
+fn is_return(line: &str) -> bool {
+    let line = line.trim();
+    matches!(line, "return;" | "return," | "return")
+        || line.contains("=> return")
+        || line.contains("else { return")
+}
+
+/// Whether a line starts a function, with its indentation.
+fn function_start(line: &str) -> Option<usize> {
+    let indent = line.len() - line.trim_start().len();
+    let mut rest = line.trim_start();
+    for prefix in ["pub(crate) ", "pub(super) ", "pub ", "async ", "unsafe "] {
+        rest = rest.strip_prefix(prefix).unwrap_or(rest);
+    }
+    rest.strip_prefix("fn ")
+        .filter(|name| name.starts_with(|c: char| c.is_alphabetic() || c == '_'))
+        .map(|_| indent)
+}
+
+/// The returns inside test functions whose guard probes the machine and does
+/// not go through `test_prerequisites`, numbered from 1, with the guard.
+fn silent_skips(text: &str, whole_file_is_test: bool) -> Vec<(usize, String)> {
+    let lines: Vec<&str> = text.lines().collect();
+    let tests_from = if whole_file_is_test {
+        0
+    } else {
+        lines
+            .iter()
+            .enumerate()
+            .position(|(index, line)| {
+                line.trim() == "#[cfg(test)]"
+                    && lines
+                        .get(index + 1)
+                        .is_some_and(|next| next.trim_start().starts_with("mod "))
+            })
+            .unwrap_or(lines.len())
+    };
+    let mut found = Vec::new();
+    let mut current: Option<(usize, usize, bool)> = None;
+    for (index, line) in lines.iter().enumerate() {
+        if let Some(indent) = function_start(line)
+            && current.is_none_or(|(_, outer, _)| indent <= outer)
+        {
+            let attributes = lines[index.saturating_sub(4)..index].join(" ");
+            let is_test = index >= tests_from
+                && (attributes.contains("test]") || attributes.contains("::test"));
+            current = Some((index, indent, is_test));
+            continue;
+        }
+        let Some((start, _, true)) = current else {
+            continue;
+        };
+        if line.trim_start().starts_with("//") || !is_return(line) {
+            continue;
+        }
+        let guard = lines[(start + 1).max(index.saturating_sub(6))..=index].join("\n");
+        if guard.contains("test_prerequisites") {
+            continue;
+        }
+        if PROBES.iter().any(|probe| has_word(&guard, probe)) {
+            found.push((index + 1, line.trim().to_string()));
+        }
+    }
+    found
+}
+
 #[test]
 fn no_test_skips_or_reads_ci_but_through_test_prerequisites() {
     let crates = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -79,6 +192,12 @@ fn no_test_skips_or_reads_ci_but_through_test_prerequisites() {
                         line.trim()
                     ));
                 }
+            }
+            for (number, guard) in silent_skips(&text, is_test_file(&file)) {
+                found.push(format!(
+                    "{}:{number}: returns from a test after a probe, saying nothing: {guard}",
+                    file.display()
+                ));
             }
         }
     }
@@ -118,4 +237,23 @@ fn the_check_sees_the_shapes_it_was_written_for() {
         own_skip(r#"format!("skip: the previous application is no longer installed")"#).is_none()
     );
     assert!(own_skip(r#"#[serde(tag = "skipped", rename_all = "snake_case")]"#).is_none());
+}
+
+#[test]
+fn the_check_sees_a_silent_skip_after_a_probe() {
+    // The shapes ticket 177's review found: root, a program, no word said.
+    let root =
+        "#[test]\nfn a() {\n    if support::running_as_root() {\n        return;\n    }\n}\n";
+    assert_eq!(silent_skips(root, true).len(), 1);
+    let program = "#[cfg(test)]\nmod tests {\n    #[test]\n    fn b() {\n        if Command::new(\"pdftoppm\").arg(\"-v\").output().is_err()\n        {\n            return;\n        }\n    }\n}\n";
+    assert_eq!(silent_skips(program, false).len(), 1);
+    let gvfs = "#[test]\nfn c() {\n    let Ok(trust) = Trust::system() else {\n        // No GVfs on this computer: nothing to find.\n        return;\n    };\n}\n";
+    assert_eq!(silent_skips(gvfs, true).len(), 1);
+    // Through the helper, outside a test, or after no probe: not a skip.
+    let helper = "#[test]\nfn d() {\n    test_prerequisites::require_that!(\"a user other than root\", !running_as_root());\n}\n";
+    assert!(silent_skips(helper, true).is_empty());
+    let production = "fn e() {\n    if running_as_root() {\n        return;\n    }\n}\n";
+    assert!(silent_skips(production, false).is_empty());
+    let unrelated = "#[test]\nfn f() {\n    if let Some(root) = child_root() {\n        restore_after_the_previous_application_was_uninstalled(&root);\n        return;\n    }\n}\n";
+    assert!(silent_skips(unrelated, true).is_empty());
 }

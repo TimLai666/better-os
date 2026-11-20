@@ -69,3 +69,32 @@ on the shell extensions) still skip quietly, because CI does not install
   entry validation when `desktop-file-validate` is missing, and the package
   job does not install `desktop-file-utils`; whether the runner image has it
   anyway was not checked.
+
+### After review (2026-11-21)
+
+- Silent skips that printed nothing moved onto the helper too: the nine
+  `if support::running_as_root() { return; }` in `files-operations/tests/`
+  (conflicts, failure_modes, hard_links, lifecycle, observer), the not-root
+  test in `monitor-collectors-linux/src/process.rs`, files-preview's
+  `pdftoppm` test, files-gui's installed-GVfs test (`gvfs_trust.rs`), and
+  better-core's `dpkg-query` journal test (`self_update.rs`).
+- `one_skip_rule.rs` now also fails on the silent shape: a `return` inside a
+  test function whose guard (the six lines before it) probes a program, the
+  user, a locale, or a kernel or filesystem feature (`running_as_root`,
+  `geteuid`, `Command::new(`, `which`, `locale`, `xattr`, `/proc/`, "installed",
+  "available", …) and does not go through `test_prerequisites`. Its own test
+  holds the three shapes the review found. The patch crates and ticket 147's
+  tests from `main` were scanned with the rest; none returned after a probe.
+- The panic under CI is in `decide`'s body, not a closure, so its location is
+  the test's own line; `tests/panic_location.rs` asserts that.
+- CI installs `gvfs-backends` and `poppler-utils` as well, each named with
+  its test in the install step's comment.
+- What the runner image already has: the ubuntu-24.04 image manifest
+  (actions/runner-images, `images/ubuntu/Ubuntu2404-Readme.md`, Image
+  Version 20261116.376.1, "Installed apt packages") lists `dbus`
+  1.14.10-4ubuntu4.1, `locales` 2.39-0ubuntu8.12, and `dpkg`
+  1.22.6ubuntu6.6, and none of `dconf-service`, `gjs`,
+  `language-pack-gnome-zh-hant-base`, `gvfs-backends`, `gvfs-daemons`, or
+  `poppler-utils`. So "removing a prerequisite from the install step turns
+  CI red" holds for those six; taking `dbus` or `locales` off the line
+  changes nothing, because the image provides them, and the comment says so.
