@@ -1009,6 +1009,88 @@ if ls "${TMPDIR:-/tmp}"/better-os-accounts.* >/dev/null 2>&1; then
 fi
 printf 'Removing Better Manager undid the fix, as the person, and left nothing\n'
 
+printf '== removing Better Files gives the file manager back (ticket 129) ==\n'
+# The same person, whose Default apps page made Better Files the program the
+# session bus starts for "Show in folder": Better OS's activation file in
+# their home, and their own file it kept aside. apt removes Better Files with
+# no Better Manager to run the before-removal program, so its postrm acts for
+# each person. Each check below the removal proves the step ran as uid
+# $FIX_UID: the step touches a file only when its own uid owns it (`test -O`),
+# so a step running as root would have changed nothing.
+FILES_DEB="$(find_package better-files)"
+files_home="$(getent passwd "$FIX_UID" | cut -d: -f6)"
+files_services="$files_home/.local/share/dbus-1/services"
+files_activation="$files_services/org.freedesktop.FileManager1.service"
+files_aside="$files_services/.org.freedesktop.FileManager1.service.before-better-os"
+own_activation='[D-BUS Service]
+Name=org.freedesktop.FileManager1
+Exec=/usr/bin/nautilus --gapplication-service
+'
+mkdir -p "$files_services"
+printf '[D-BUS Service]\nName=org.freedesktop.FileManager1\nExec=/usr/bin/better-files --service\n' > "$files_activation"
+printf '%s' "$own_activation" > "$files_aside"
+chmod 0640 "$files_aside"
+chown -R "$FIX_UID:$FIX_UID" "$files_home/.local"
+timeout -s KILL 300 env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "$FILES_DEB" \
+    > /tmp/files-install.log 2>&1 || {
+    printf 'Installing Better Files failed or did not finish:\n' >&2
+    cat /tmp/files-install.log >&2
+    exit 1
+}
+# An upgrade (here a reinstall, which runs the postrm with "upgrade") leaves
+# the person's files alone.
+timeout -s KILL 300 env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends --reinstall "$FILES_DEB" \
+    > /tmp/files-reinstall.log 2>&1 || {
+    printf 'Reinstalling Better Files failed or did not finish:\n' >&2
+    cat /tmp/files-reinstall.log >&2
+    exit 1
+}
+if ! grep -qx 'Exec=/usr/bin/better-files --service' "$files_activation" || [[ ! -f "$files_aside" ]]; then
+    printf 'An upgrade of Better Files changed the activation files\n' >&2
+    exit 1
+fi
+timeout -s KILL 300 env DEBIAN_FRONTEND=noninteractive apt-get remove -y better-files \
+    > /tmp/files-remove.log 2>&1 || {
+    printf 'Removing Better Files failed or did not finish:\n' >&2
+    cat /tmp/files-remove.log >&2
+    exit 1
+}
+if installer_reports_installed better-files; then
+    printf 'Better Files is still installed after its removal\n' >&2
+    exit 1
+fi
+cmp -s <(printf '%s' "$own_activation") "$files_activation" || {
+    printf 'The person'"'"'s own activation file is not back in place:\n' >&2
+    ls -la "$files_services" >&2 || true
+    cat /tmp/files-remove.log >&2
+    exit 1
+}
+[[ ! -e "$files_aside" ]] || {
+    printf 'The kept-aside file outlived Better Files\n' >&2
+    exit 1
+}
+[[ "$(stat -c '%u %a' "$files_activation")" == "$FIX_UID 640" ]] || {
+    printf 'The person'"'"'s file came back as %s, not owner %s mode 640\n' \
+        "$(stat -c '%u %a' "$files_activation")" "$FIX_UID" >&2
+    exit 1
+}
+files_name="$(getent passwd "$FIX_UID" | cut -d: -f1)"
+grep -qxF "Better OS ($files_name): your own org.freedesktop.FileManager1.service is back in use" /tmp/files-remove.log || {
+    printf 'The removal did not tell the person running apt:\n' >&2
+    cat /tmp/files-remove.log >&2
+    exit 1
+}
+if ls "${TMPDIR:-/tmp}"/better-os-accounts.* >/dev/null 2>&1; then
+    printf 'A maintainer script left its account library behind\n' >&2
+    exit 1
+fi
+audit="$(dpkg --audit)"
+[[ -z "$audit" ]] || {
+    printf 'dpkg is not consistent after removing Better Files:\n%s\n' "$audit" >&2
+    exit 1
+}
+printf 'Removing Better Files put the person'"'"'s file manager back, as the person\n'
+
 "$INSTALLER" --uninstall
 for package_name in better-manager better-manager-daemon better-shell-adapter; do
     if installer_reports_installed "$package_name"; then

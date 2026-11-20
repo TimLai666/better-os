@@ -122,14 +122,19 @@ What was read on this machine (Zorin OS 18, GNOME 46), read-only:
     bus) it changes nothing and exits 4; Better Manager finishes it at its
     next start in that person's session.
   - `apt remove`, Software and unattended removals never run that program.
-    The package's postrm removes the file from every account in the login
-    range when it is byte for byte ours (as the account, never following a
-    link, like Better Touchpad's autostart overrides), and asks each
-    logged-in person's bus to reload.
+    The package's postrm acts for every account through the shared account
+    library (`packaging/maintainer/accounts.sh`, ticket 90: accounts from
+    `getent` in the login range, a home the mount table says is reachable,
+    30 seconds per person and 120 in all). Root only checks that the home is
+    the account's own; the account itself, in a new session, removes the
+    file when it is a regular file it owns and byte for byte ours (never
+    opening a link, FIFO or device), renames the person's own file Better
+    OS kept aside back when nothing is in its place, and asks its bus to
+    reload. Nothing runs on upgrade.
   - Better Manager's start in a person's session finishes a deferred
-    put-back and removes an activation file of ours when Better Files is not
-    installed, for an account the postrm could not reach (a custom
-    `XDG_DATA_HOME`).
+    put-back and removes an activation file of ours, and renames a
+    kept-aside file back, when Better Files is not installed, for an
+    account the postrm could not reach (a custom `XDG_DATA_HOME`).
   Removal never fails because of any of them.
 - **Turning Better Files off gives the default back; turning it on takes it
   again.** The same program ships as `/usr/lib/better-os/on-disable/better-files`;

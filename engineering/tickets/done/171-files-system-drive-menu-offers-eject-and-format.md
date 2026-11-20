@@ -92,6 +92,8 @@ Eject and Format.
   for every crate changed and those depending on them (1901 passed, 0
   failed). Nothing this round changed what the menus draw, so the first
   round's screenshots stand.
-- The maintainer-script unification in ticket 129 (waiting for ticket 90's
-  `accounts.sh`) is the one thing outstanding across the two tickets; this
-  ticket's own work does not depend on it.
+- 2026-11-21: the maintainer-script work that was waiting for ticket 90
+  belonged to ticket 129 and is done there; nothing of this ticket is left.
+  After merging `main` (ticket 147's pictures), the sidebar's eject button
+  keeps this ticket's rule (`shell.rs`: no eject action on a drive that holds
+  the running system) with the new `Picture::Drive` and `Picture::Eject`.

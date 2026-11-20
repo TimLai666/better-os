@@ -571,9 +571,10 @@ for package_name in \
                 printf 'The Better Files postrm does not parse as sh\n' >&2
                 exit 1
             }
+            verify_account_block "Better Files postrm" "$control/postrm"
             grep -qxF "better_os_activation_name='org.freedesktop.FileManager1'" "$control/postrm" &&
                 grep -qxF "better_os_activation_exec='/usr/bin/better-files --service'" "$control/postrm" &&
-                grep -qxF 'better_os_forget_activation_files "$1" || true' "$control/postrm" || {
+                grep -qF '&& better_os_forget_activation_files "$1"; } || true' "$control/postrm" || {
                 printf 'The Better Files postrm does not remove its activation file\n' >&2
                 exit 1
             }

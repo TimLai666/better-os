@@ -247,21 +247,15 @@ PACKAGE_ACTIVATION_EXEC=""
 # package is removed: nothing a component added outlives it (ADR 0041).
 write_activation_postrm() {
     local staging_dir="$1"
-    {
-        printf '#!/bin/sh\nset -e\n\n'
-        printf "better_os_passwd_file='/etc/passwd'\n"
-        printf "better_os_login_defs='/etc/login.defs'\n"
-        printf "better_os_override_mark=''\n"
-        printf "better_os_override_files=''\n"
-        printf "better_os_run_user_root='/run/user'\n"
+    local header
+    header="$(
         printf "better_os_activation_name='%s'\n" "$PACKAGE_ACTIVATION_NAME"
-        printf "better_os_activation_exec='%s'\n\n" "$PACKAGE_ACTIVATION_EXEC"
-        cat "$ROOT_DIR/packaging/maintainer/autostart-overrides.sh"
-        printf '\n'
-        cat "$ROOT_DIR/packaging/maintainer/files-activation.sh"
-        printf '\n'
+        printf "better_os_activation_exec='%s'" "$PACKAGE_ACTIVATION_EXEC"
+    )"
+    {
+        printf '#!/bin/sh\nset -e\n'
         # shellcheck disable=SC2016 # expanded by the maintainer script
-        printf 'better_os_forget_activation_files "$1" || true\n'
+        account_block files-activation "$header" 'better_os_forget_activation_files "$1"' 'remove | purge'
     } > "$staging_dir/DEBIAN/postrm"
     chmod 0755 "$staging_dir/DEBIAN/postrm"
 }

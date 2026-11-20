@@ -177,13 +177,15 @@ pub fn remove_own_files(
         let ours = std::fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.is_file())
             && std::fs::read_to_string(&path)
                 .is_ok_and(|content| content == service_file(name, &activation.exec));
-        if ours && std::fs::remove_file(&path).is_ok() {
-            // The person's own file Better OS's stood in front of comes back
-            // into use, as it was.
-            let aside = kept_aside(&path);
-            if std::fs::symlink_metadata(&aside).is_ok_and(|metadata| metadata.is_file()) {
-                let _ = std::fs::rename(&aside, &path);
-            }
+        let took_ours = ours && std::fs::remove_file(&path).is_ok();
+        // The person's own file Better OS's stood in front of comes back
+        // into use, as it was, whenever nothing is in its place: the same
+        // rule as the package's postrm (packaging/maintainer/files-activation.sh).
+        let aside = kept_aside(&path);
+        let gave_back = std::fs::symlink_metadata(&path).is_err()
+            && std::fs::symlink_metadata(&aside).is_ok_and(|metadata| metadata.is_file())
+            && std::fs::rename(&aside, &path).is_ok();
+        if took_ours || gave_back {
             remove_empty_parents(services);
             removed.push(name.to_string());
         }
@@ -715,5 +717,34 @@ mod tests {
         let mode = std::fs::metadata(&file).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
         assert_eq!(std::fs::read_dir(&services).unwrap().count(), 1);
+    }
+
+    /// A kept-aside file with nothing in its place (the person deleted
+    /// Better OS's file by hand) comes back too; one behind the person's own
+    /// newer file stays where it is.
+    #[test]
+    fn a_kept_aside_file_comes_back_only_to_an_empty_place() {
+        let directory = tempfile::tempdir().unwrap();
+        let services = directory.path().join("dbus-1/services");
+        std::fs::create_dir_all(&services).unwrap();
+        let file = services.join("org.freedesktop.FileManager1.service");
+        let aside = kept_aside(&file);
+        let theirs = "[D-BUS Service]\nName=org.freedesktop.FileManager1\nExec=/opt/x\n";
+        std::fs::write(&aside, theirs).unwrap();
+        std::fs::write(&file, "newer\n").unwrap();
+        let bus = FakeBus::default();
+        assert!(
+            remove_own_files(&services, "better-files", production_activation, &bus).is_empty()
+        );
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "newer\n");
+        assert!(aside.exists(), "the kept-aside file stays behind theirs");
+        std::fs::remove_file(&file).unwrap();
+        assert_eq!(
+            remove_own_files(&services, "better-files", production_activation, &bus),
+            ["org.freedesktop.FileManager1"]
+        );
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), theirs);
+        assert!(!aside.exists());
+        assert_eq!(*bus.reloads.lock().unwrap(), 1);
     }
 }

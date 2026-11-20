@@ -8,65 +8,83 @@
 # this is for every removal that never ran it, and for every account, logged
 # in or not.
 #
-# It reads the helpers of packaging/maintainer/autostart-overrides.sh, which
-# the generated postrm carries before it: the login range, a directory that
-# is the account's own, and running the last check and the removal as that
-# account. Header variables set by the generated script, besides those:
+# Who is a person, the time limit on each person's step and on the whole
+# walk, and the account switch are accounts.sh's and account-step.sh's, which
+# the generated postrm puts in the same library (build-deb.sh account_block).
+#
+# Header variables set by the generated script, besides accounts.sh's:
 #   better_os_activation_name  the bus name (org.freedesktop.FileManager1)
 #   better_os_activation_exec  the exact Exec= line Better Defaults writes
-#   better_os_run_user_root    /run/user, where a logged-in person's bus is
 #
-# Only a regular file owned by the account and byte for byte the one Better
-# Defaults writes is removed: a file the person wrote is theirs and stays.
-# Afterwards each logged-in person's bus is asked to read its service
-# directories again. Nothing here fails the removal.
+# Root checks only that the home is the account's own directory
+# (better_os_usable_home). Everything inside the home is looked at, read and
+# changed by the account itself, in a new session with standard input from
+# /dev/null and a cleared environment, so whatever is swapped in between two
+# checks can only lead to what the account could do anyway. As that account:
+#
+#   - every directory from ~/.local to ~/.local/share/dbus-1/services must be
+#     a real directory, not a link;
+#   - the activation file is read only when it is a regular file the account
+#     owns; a link, a FIFO, a device, or anything else is never opened, and
+#     the step's time limit bounds a swap between the test and the read;
+#   - it is deleted only when it is byte for byte the one Better Defaults
+#     writes; a file the person wrote is theirs and stays;
+#   - the person's own file Better Defaults kept aside
+#     (.<name>.service.before-better-os) is renamed back when nothing is left
+#     in its place, as Better Manager's own leftover pass does
+#     (defaults_platform::bus_activation::remove_own_files);
+#   - directories the removal left empty go, and a running session bus is
+#     asked to read its service directories again.
+#
+# Nothing here runs on upgrade, and nothing here fails the removal.
 
-better_os_expected_activation() {
-    printf '[D-BUS Service]\nName=%s\nExec=%s\n' \
-        "$better_os_activation_name" "$better_os_activation_exec"
+better_os_activation_step() {
+    # $1 name, $2 uid, $3 gid, $4 home; runs in its own timed shell.
+    name="$1"
+    uid="$2"
+    gid="$3"
+    home="$4"
+    better_os_usable_home "$home" "$uid" || return 0
+    # shellcheck disable=SC2016 # expanded by the account's own shell, not this one
+    better_os_as_account "$uid" "$gid" setsid env -i PATH=/usr/bin:/bin LC_ALL=C sh -c '
+        home="$1"
+        name="$2"
+        exec_line="$3"
+        bus="$4"
+        services="$home/.local/share/dbus-1/services"
+        for dir in "$home/.local" "$home/.local/share" "$home/.local/share/dbus-1" "$services"; do
+            if [ ! -d "$dir" ] || [ -L "$dir" ]; then
+                exit 0
+            fi
+        done
+        file="$services/$name.service"
+        aside="$services/.$name.service.before-better-os"
+        changed=no
+        if [ -f "$file" ] && [ ! -L "$file" ] && [ -O "$file" ] &&
+            printf "[D-BUS Service]\nName=%s\nExec=%s\n" "$name" "$exec_line" | cmp -s - "$file"; then
+            rm -f -- "$file" && changed=yes
+        fi
+        if [ ! -e "$file" ] && [ ! -L "$file" ] &&
+            [ -f "$aside" ] && [ ! -L "$aside" ] && [ -O "$aside" ]; then
+            mv -f -- "$aside" "$file" && changed=yes && echo "your own $name.service is back in use"
+        fi
+        [ "$changed" = yes ] || exit 0
+        rmdir -- "$services" 2>/dev/null && rmdir -- "${services%/*}" 2>/dev/null
+        if [ -S "$bus" ]; then
+            dbus-send --bus="unix:path=$bus" --type=method_call \
+                --dest=org.freedesktop.DBus / org.freedesktop.DBus.ReloadConfig \
+                > /dev/null 2>&1
+        fi
+        exit 0
+    ' better-os-activation "$home" "$better_os_activation_name" "$better_os_activation_exec" \
+        "${better_os_session_root:-/run/user}/$uid/bus" < /dev/null 2>&1 |
+        better_os_prefix_lines "$name" || true
+    return 0
 }
 
 better_os_forget_activation_files() {
     case "${1:-}" in
-        remove | purge) ;;
-        *) return 0 ;;
+        remove | purge) better_os_for_each_account better_os_activation_step ;;
     esac
-    [ -r "$better_os_passwd_file" ] || return 0
-    uid_min="$(better_os_login_range_value UID_MIN 1000)"
-    uid_max="$(better_os_login_range_value UID_MAX 60000)"
-    while IFS=: read -r _name _pw uid _gid _gecos home _shell; do
-        case "$uid" in
-            '' | *[!0-9]*) continue ;;
-        esac
-        # shellcheck disable=SC2015 # both tests pass or the account is skipped
-        [ "$uid" -ge "$uid_min" ] && [ "$uid" -le "$uid_max" ] || continue
-        case "$home" in
-            /*) ;;
-            *) continue ;;
-        esac
-        [ -n "$(printf '%s' "$home" | tr -d /)" ] || continue
-        services="$home/.local/share/dbus-1/services"
-        better_os_owned_real_dir "$home/.local" "$uid" || continue
-        better_os_owned_real_dir "$home/.local/share" "$uid" || continue
-        better_os_owned_real_dir "$home/.local/share/dbus-1" "$uid" || continue
-        better_os_owned_real_dir "$services" "$uid" || continue
-        path="$services/$better_os_activation_name.service"
-        # shellcheck disable=SC2015 # both tests pass or the path is skipped
-        [ -f "$path" ] && [ ! -L "$path" ] || continue
-        [ "$(stat -c %u -- "$path" 2>/dev/null)" = "$uid" ] || continue
-        better_os_expected_activation | cmp -s - "$path" || continue
-        # shellcheck disable=SC2016 # expanded by the inner shell, not this one
-        better_os_as_account "$uid" "$_gid" sh -c \
-            '[ -f "$1" ] && [ ! -L "$1" ] && printf "[D-BUS Service]\nName=%s\nExec=%s\n" "$2" "$3" | cmp -s - "$1" && rm -f -- "$1" && rmdir -- "${1%/*}" 2>/dev/null; true' \
-            better-os-activation "$path" "$better_os_activation_name" \
-            "$better_os_activation_exec" || true
-        bus="$better_os_run_user_root/$uid/bus"
-        if [ -S "$bus" ]; then
-            better_os_as_account "$uid" "$_gid" dbus-send \
-                --bus="unix:path=$bus" --type=method_call \
-                --dest=org.freedesktop.DBus / org.freedesktop.DBus.ReloadConfig \
-                >/dev/null 2>&1 || true
-        fi
-    done < "$better_os_passwd_file"
     return 0
 }

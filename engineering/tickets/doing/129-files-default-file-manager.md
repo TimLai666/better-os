@@ -107,14 +107,41 @@ Nautilus activates and Better Files already serves when no one else owns it.
   better-core, files-gui, manager-gui, manager-cli and touchpad-platform
   (1901 passed, 0 failed, 8 ignored); `bash
   packaging/tests/files-activation.test.sh`.
+- 2026-11-21, after ticket 90 landed: Better Files' postrm goes through the
+  shared account library (`account_block files-activation`, so
+  `better_os_for_each_account` with its `getent` login range, name check,
+  mount-table test, 30 s per person and 120 s in all); no copy of a helper
+  is left in `files-activation.sh`. Root checks only that the home is the
+  account's own; the account, under `setsid` with a cleared environment and
+  no terminal, removes the file only when it is a regular file it owns and
+  byte for byte ours (a link, FIFO or device is never opened), renames the
+  person's kept-aside file back when nothing is in its place (and so does
+  `remove_own_files` now, the same rule), removes empty directories, and
+  asks its bus to reload. Nothing runs on upgrade, and nothing can fail
+  dpkg. `files-activation.test.sh` drives the library and build-deb.sh's own
+  postrm (hostile names through a stand-in `getent`, a FIFO in place of the
+  file, a step cut off at its time limit, `TMPDIR=/nonexistent`, upgrade);
+  CI already lints and runs it beside the account tests.
+  `packaging/test-daemon-e2e.sh` installs `better-files` in the container
+  (its GStreamer Depends are now in the image), reinstalls it (nothing
+  changes), removes it under a time limit, and asserts Better OS's file is
+  gone, the person's file is back with uid 1000 and mode 640, and that the
+  step ran as that uid (it only touches files its own uid owns).
+- Checks run on this tree (main merged, ticket 90 and 147 in): `cargo fmt
+  --all --check`; `cargo +stable clippy -D warnings --all-targets` and
+  `cargo test --no-fail-fast` for storage-platform, drive-mounts,
+  storage-service, manager-daemon, defaults-platform, defaults-core,
+  manager-platform, manager-core, better-core, files-gui, manager-gui,
+  manager-cli and touchpad-platform (1926 passed, 0 failed, 8 ignored);
+  `files-activation`, `account-scripts`, `before-removal-accounts` and
+  `autostart-overrides` shell tests; `sh -n` and `bash -n` on every changed
+  script; `generate-third-party-notices.sh --check`. Not run here:
+  `shellcheck` (not installed; read by hand, CI runs it), `build-deb.sh` and
+  `verify-deb.sh` (no package built), and the container check (no usable
+  Docker here): its Better Files part has never run, and its first run is
+  CI's.
 - **Left:**
-  - The maintainer scripts wait for ticket 90's
-    `packaging/maintainer/accounts.sh` (`better_os_usable_home`) to land on
-    `main`: `files-activation.sh`, `write_activation_postrm` and
-    `files-activation.test.sh` then take each account's home from it, drop
-    root's own `cmp`, refuse a file that is not regular without opening it
-    (a FIFO), and the postrm renames a kept-aside foreign file back, as
-    Better Manager's leftover pass already does.
+  - The container check's Better Files removal has its first run in CI.
   - The `dbus-broker` check: on a session whose bus is `dbus-broker` (in
     Ubuntu 24.04's `universe`, not the default), prove that it searches
     `$XDG_DATA_HOME/dbus-1/services` before `/usr/share/dbus-1/services` and
@@ -129,6 +156,6 @@ Nautilus activates and Better Files already serves when no one else owns it.
     giving the name up: the owner's, on the machine, once a build with this
     is installed.
 
-**Blocked:** the maintainer-script change above waits for ticket 90's
-`accounts.sh` on `main`; the two checks after it need a `dbus-broker`
-session and the owner's own desktop.
+**Blocked:** the container check's first run is CI's (no usable Docker
+here); the owner's own "Show in folder" on their GNOME desktop; a
+`dbus-broker` session for the search-order check.
