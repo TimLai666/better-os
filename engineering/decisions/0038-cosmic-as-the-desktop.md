@@ -2,10 +2,12 @@
 
 ## Status
 
-Proposed on 2026-11-21 for ticket 143, for the owner to decide, and revised
-the same day for the owner's fourth option and the gesture requirement added
-to the ticket. Nothing it describes is built until the owner chooses an
-option; the tickets it names are written after that choice.
+Decided by the owner on 2026-11-21: **option D**, a Better OS session on
+COSMIC's compositor, beside GNOME. It was proposed that day for ticket 143 and
+revised the same day for the owner's fourth option and the gesture
+requirement. Decisions C2 to C9 below are not answered yet; until each is,
+the work that depends on it is not built. The tickets for option D are
+written from this record.
 
 ## The owner's decisions
 
