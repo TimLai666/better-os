@@ -23,7 +23,7 @@ pub mod corners;
 pub mod gtk;
 pub mod service;
 
-pub use corners::{CornerRadii, Cut, Rect, WindowShape, input_region, window_corner_radii};
+pub use corners::{CornerRadii, Rect, WindowShape, input_region, window_corner_radii};
 
 #[cfg(test)]
 mod tests;
@@ -1058,6 +1058,10 @@ pub struct FallbackLook {
     pub text: Color,
     /// `window.csd`'s `0 0 0 1px` outline shadow.
     pub border: Color,
+    /// `window.csd`'s `outline: 1px solid rgba(255, 255, 255, 0.07)` at
+    /// `outline-offset: -1px`, drawn over the window's content, light and
+    /// dark alike.
+    pub outline: Color,
     /// The button's box (24px wide plus 5px padding each side).
     pub button_size: f32,
     /// The round image inside it: the button's 24px content box.
@@ -1091,6 +1095,7 @@ pub const ADWAITA_LIGHT: FallbackLook = FallbackLook {
     header_shade: Color::rgb(0x000000).alpha(0.12),
     text: Color::rgb(0x000000).alpha(0.8),
     border: Color::rgb(0x000000).alpha(0.05),
+    outline: Color::rgb(0xffffff).alpha(0.07),
     button_size: 34.0,
     button_image: 24.0,
     button_spacing: 3.0,
@@ -1108,6 +1113,7 @@ pub const ADWAITA_DARK: FallbackLook = FallbackLook {
     header_shade: Color::rgb(0x000000).alpha(0.36),
     text: Color::rgb(0xffffff),
     border: Color::rgb(0x000000).alpha(0.05),
+    outline: Color::rgb(0xffffff).alpha(0.07),
     button_size: 34.0,
     button_image: 24.0,
     button_spacing: 3.0,

@@ -723,8 +723,12 @@ impl RenderOnce for MenuPanel {
                         // right edge stays on screen.
                         element = element.child(
                             div().absolute().top(px(-2.0)).left(relative(1.0)).child(
-                                deferred(anchored().snap_to_window_with_margin(px(8.0)).child(sub))
-                                    .with_priority(2),
+                                deferred(
+                                    anchored()
+                                        .snap_to_window_with_margin(px(8.0))
+                                        .child(super::window_frame::inside_window(sub)),
+                                )
+                                .with_priority(2),
                             ),
                         );
                     }
@@ -929,7 +933,9 @@ impl RenderOnce for ContextMenu {
             anchored()
                 .position(self.position)
                 .snap_to_window_with_margin(px(8.0))
-                .child(panel),
+                // Inside the window's rounded shape, not the shadow around
+                // it (ticket 141).
+                .child(super::window_frame::inside_window(panel)),
         )
         .with_priority(1)
     }

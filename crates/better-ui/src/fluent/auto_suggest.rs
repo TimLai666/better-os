@@ -335,11 +335,9 @@ impl RenderOnce for AutoSuggestBox {
                     );
                 }
                 div().absolute().top(relative(1.0)).left_0().child(
-                    deferred(
-                        anchored()
-                            .snap_to_window_with_margin(px(8.0))
-                            .child(div().mt(px(4.0)).child(list)),
-                    )
+                    deferred(anchored().snap_to_window_with_margin(px(8.0)).child(
+                        super::window_frame::inside_window(div().mt(px(4.0)).child(list)),
+                    ))
                     .with_priority(1),
                 )
             });

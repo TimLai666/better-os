@@ -432,18 +432,23 @@ pub struct Tooltip {
 impl Render for Tooltip {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(cx);
-        text(div(), CAPTION)
-            .max_w(px(320.0))
-            .pt(px(6.0))
-            .pb(px(8.0))
-            .px(px(9.0))
-            .bg(p.flyout)
-            .border_1()
-            .border_color(p.flyout_stroke)
-            .rounded(radius::SM)
-            .shadow_md()
-            .text_color(p.text_primary)
-            .child(self.text.clone())
+        // GPUI places a tooltip anywhere in the surface, the window's shadow
+        // included: it is moved inside the window's rounded shape (ticket
+        // 141).
+        super::window_frame::inside_window(
+            text(div(), CAPTION)
+                .max_w(px(320.0))
+                .pt(px(6.0))
+                .pb(px(8.0))
+                .px(px(9.0))
+                .bg(p.flyout)
+                .border_1()
+                .border_color(p.flyout_stroke)
+                .rounded(radius::SM)
+                .shadow_md()
+                .text_color(p.text_primary)
+                .child(self.text.clone()),
+        )
     }
 }
 

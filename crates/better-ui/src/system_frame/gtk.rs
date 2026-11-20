@@ -109,6 +109,7 @@ symbols! {
     gtk_style_context_set_scale: fn(Ptr, c_int);
     gtk_render_background: fn(Ptr, Ptr, c_double, c_double, c_double, c_double);
     gtk_render_frame: fn(Ptr, Ptr, c_double, c_double, c_double, c_double);
+    gtk_snapshot_render_focus: fn(Ptr, Ptr, c_double, c_double, c_double, c_double);
     gtk_css_provider_new: fn() -> Ptr;
     gtk_css_provider_load_from_data: fn(Ptr, *const c_char, isize);
     gtk_settings_get_default: fn() -> Ptr;
@@ -186,6 +187,13 @@ pub struct Rendered {
     /// The frame images are `4 * frame` pixels square, the window's content
     /// edge `frame` pixels in from each side. `[focused, backdrop]`.
     pub frame: [Bitmap; 2],
+    /// The window's CSS `outline`, which GTK draws over the window's own
+    /// content (libadwaita's 1px inner line, `outline-offset: -1px`), on the
+    /// same canvas as `frame`, `[focused, backdrop]`. Transparent for a theme
+    /// with `outline: none` (Zorin's) and for a maximized or tiled window.
+    pub outline: [Bitmap; 2],
+    /// Whether `outline` has a pixel to paint.
+    pub has_outline: bool,
     pub frame_px: u32,
     /// How far the drawn frame reaches past the window, logical pixels.
     pub thickness: Insets,
@@ -244,7 +252,9 @@ impl Rendered {
         Rendered {
             key,
             scale,
-            frame: [frame.clone(), frame],
+            frame: [frame.clone(), frame.clone()],
+            outline: [frame.clone(), frame],
+            has_outline: false,
             frame_px,
             thickness: Insets::uniform(40.0),
             corner_radius: 12.0,
@@ -688,6 +698,35 @@ impl Renderer {
         })
     }
 
+    /// The window's CSS outline on the same canvas as [`Self::frame`]:
+    /// `gtk_snapshot_render_focus` draws a box's `outline-*` properties
+    /// (`gtk_css_style_snapshot_outline`, what GTK 4 paints over a window's
+    /// children); `gtk_render_focus` draws the border instead in GTK 4.14
+    /// (`gtk/deprecated/gtkrender.c`). Ticket 141.
+    fn outline(&self, key: &FrameKey, focused: bool, scale: u32) -> Bitmap {
+        let window = self.node(None, &Self::window_selector(key, focused), scale);
+        let pad = self.padding(&window);
+        let border = self.border(&window);
+        let f = MAX_FRAME as f64;
+        let x = f - (pad.left + border.left) as f64;
+        let y = f - (pad.top + border.top) as f64;
+        let w = 2.0 * f + (pad.left + pad.right + border.left + border.right) as f64;
+        let h = 2.0 * f + (pad.top + pad.bottom + border.top + border.bottom) as f64;
+        let size = 4 * MAX_FRAME * scale;
+        let ctx = self.context(&window);
+        self.draw(size, size, |cr| unsafe {
+            let g = &self.gtk;
+            (g.cairo_scale)(cr, scale as f64, scale as f64);
+            let snapshot = (g.gtk_snapshot_new)();
+            (g.gtk_snapshot_render_focus)(snapshot, ctx, x, y, w, h);
+            let node = (g.gtk_snapshot_free_to_node)(snapshot);
+            if !node.is_null() {
+                (g.gsk_render_node_draw)(node, cr);
+                (g.gsk_render_node_unref)(node);
+            }
+        })
+    }
+
     /// The top corner radius, measured from an opaque sample as Chromium
     /// does (`ComputeTopCornerRadius`): GTK 4 does not report CSS values.
     fn corner_radius(&self, key: &FrameKey) -> u32 {
@@ -973,6 +1012,13 @@ impl Renderer {
         self.apply(key);
         let scale = key.scale.max(1);
         let frame = [self.frame(key, true, scale), self.frame(key, false, scale)];
+        let outline = [
+            self.outline(key, true, scale),
+            self.outline(key, false, scale),
+        ];
+        let has_outline = outline
+            .iter()
+            .any(|image| image.rgba.chunks(4).any(|pixel| pixel[3] > 0));
         let thickness = super::frame_thickness(&frame[0], MAX_FRAME * scale);
         let thickness = Insets {
             top: thickness.top / scale as f32,
@@ -1047,6 +1093,8 @@ impl Renderer {
             key: key.clone(),
             scale,
             frame,
+            outline,
+            has_outline,
             frame_px: MAX_FRAME * scale,
             thickness,
             corner_radius: radius as f32,
@@ -1093,16 +1141,19 @@ mod on_this_desktop {
                 let floating = WindowState::new(Some(Tiled::default()), false, false, true);
                 let rendered = renderer.render(&floating.key(&settings, dark, scale));
                 println!(
-                    "theme {:?} dark {dark} scale {scale}: {} top {} bottom {} thickness {:?}",
+                    "theme {:?} dark {dark} scale {scale}: {} radius top {} bottom {} \
+                     outline {} thickness {:?}",
                     settings.gtk_theme,
                     rendered.drawn_by,
                     rendered.corner_radius,
                     rendered.bottom_corner_radius,
+                    rendered.has_outline,
                     rendered.thickness
                 );
-                // Every theme this was compared on rounds all four alike.
-                assert_eq!(rendered.corner_radius, rendered.bottom_corner_radius);
+                // A theme may round the top and the bottom differently; the
+                // frame takes each as measured. A floating window is round.
                 assert!(rendered.corner_radius > 0.0);
+                assert!(rendered.bottom_corner_radius > 0.0);
                 let left = Tiled {
                     left: true,
                     ..Tiled::default()
@@ -1115,6 +1166,8 @@ mod on_this_desktop {
                     let square = renderer.render(&state.key(&settings, dark, scale));
                     assert_eq!(square.corner_radius, 0.0, "{state:?}");
                     assert_eq!(square.bottom_corner_radius, 0.0, "{state:?}");
+                    // libadwaita and Zorin draw no outline maximized or tiled.
+                    assert!(!square.has_outline, "{state:?}");
                 }
             }
         }

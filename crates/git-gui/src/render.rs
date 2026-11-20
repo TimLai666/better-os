@@ -44,7 +44,7 @@ use crate::remote::SyncAction;
 use crate::session::{DiffContent, DiffKey, Page, Problem, Repo, Tab};
 use crate::{Appearance, publish};
 use better_ui::pane_edge::PANE_EDGE_HIT_WIDTH;
-use better_ui::window_chrome::{self, Cut};
+use better_ui::window_chrome;
 
 const TOOLBAR_HEIGHT: Pixels = px(56.0);
 const ROW_HEIGHT: Pixels = px(36.0);
@@ -1635,8 +1635,9 @@ impl GitApp {
             .h_full()
             .relative()
             // The pane reaches the window's bottom leading corner: its fill
-            // and edge follow the corner, and its contents stay inside it
-            // (ticket 141). The edge's width stays in the layout.
+            // and edge follow the corner (ticket 141); what sits at its
+            // bottom (the commit box, the history's hint) is padded clear of
+            // the curve. The edge's width stays in the layout.
             .border_r_1()
             .border_color(gpui::transparent_black())
             .child(window_chrome::corner_fill(p.layer).border(
@@ -1689,7 +1690,7 @@ impl GitApp {
                 (Tab::History, _) => self.history_pane(repo, p, c, cx).into_any_element(),
                 (Tab::Graph, _) => self.graph_pane(repo, p, c, window, cx).into_any_element(),
             });
-        let pane = pane.child(window_chrome::corner_clip(Cut::Inset, pane_contents));
+        let pane = pane.child(pane_contents);
         let follow = cx.listener(move |this, event: &DragMoveEvent<EdgeDrag>, window, cx| {
             if this.edge_cancelled {
                 return;
@@ -1731,10 +1732,12 @@ impl GitApp {
             .w_full()
             .child(probe)
             .child(pane)
-            // A diff's lines run its whole width: the strip given up at the
-            // window's corner is along the bottom.
+            // A diff's lines run its whole width, so while they scroll past
+            // the window's bottom trailing corner they stop the corner's
+            // radius above its edge; the list ends with as much padding, so
+            // its last line scrolls fully into view (ticket 141).
             .child(window_chrome::corner_clip(
-                Cut::Vertical,
+                px(0.0),
                 self.detail_pane(repo, p, c, window, cx),
             ))
             .on_drag_move(follow)
@@ -3155,6 +3158,9 @@ impl GitApp {
                 .collect()
         })
         .track_scroll(&self.diff_scroll)
+        // The last line scrolls fully above the window's bottom trailing
+        // corner (ticket 141).
+        .pb(window_chrome::corner_depth(px(0.0), window, cx))
         .size_full();
         // Measures the diff's width as it is laid out; a change (a drag of
         // the pane edge, a resized window) lays the rows out again.

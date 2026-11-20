@@ -434,7 +434,7 @@ pub fn toast_layer(host: &Entity<ToastHost>, locale: Locale, cx: &App) -> Option
     // (ticket 141).
     Some(
         deferred(super::window_frame::corner_clip(
-            crate::system_frame::Cut::Inset,
+            px(TOAST_MARGIN),
             div().absolute().top_0().left_0().size_full().child(
                 div()
                     .absolute()

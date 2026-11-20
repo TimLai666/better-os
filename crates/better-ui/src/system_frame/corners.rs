@@ -5,12 +5,28 @@
 //! theme's `border-radius` and clip their content to that shape; a maximized,
 //! fullscreen, or tiled window (on any edge: `window.csd.tiled-*` sets
 //! `border-radius: 0` in libadwaita 1.5 and in the Zorin themes) has square
-//! corners. GPUI clips content to rectangles only, so the kit keeps content
-//! inside the curve itself: a container that reaches a window corner paints
-//! its fill with the corner rounded ([`WindowShape::fill_radii`]) and paints
-//! whatever may scroll or float into the corner inside a rectangle that stays
-//! clear of the curve ([`WindowShape::clip`]). Everything here is plain
-//! geometry in logical pixels, so it is tested without GPUI.
+//! corners.
+//!
+//! GPUI clips content to rectangles only: `ContentMask` is a rectangle at the
+//! locked revision (`ae394f3`, `crates/gpui/src/window.rs`) and on Zed's `main`
+//! of 2026-11-20 (`0a514d7`), and the wgpu shaders discard by the distance to
+//! that rectangle (`clip_to_mask`). So the kit keeps content inside the curve
+//! by one rule, which costs no width and hides nothing for good:
+//!
+//! - Every surface that reaches a corner paints its own fill into it, with the
+//!   radius that keeps it inside ([`WindowShape::fill_radii`]): the surface's
+//!   colour runs to the curve and there is never a band of another colour.
+//! - Nothing is inset along a side: content keeps the window's full width.
+//! - What scrolls past a bottom corner is painted inside a rectangle whose
+//!   bottom is raised by the curve's depth at the content's own side inset
+//!   ([`WindowShape::clip`], [`curve_depth`]): rows `inset` in from the side
+//!   cross the curve only within that depth. Content padded at least the
+//!   radius from the side gives up nothing. The same depth is bottom padding
+//!   inside the scroll extent ([`WindowShape::corner_depth`]), so the last
+//!   row scrolls fully above the curve and stays clickable, and a scrollbar's
+//!   track ends above it.
+//!
+//! Everything here is plain geometry in logical pixels, tested without GPUI.
 
 use super::{Edge, Insets, RESIZE_HANDLE, WindowState};
 
@@ -195,23 +211,6 @@ impl Rect {
     }
 }
 
-/// How a rectangle that would reach outside a rounded corner is kept clear
-/// of it. Each keeps the rectangle whole away from the corner; they differ in
-/// which strip along the window's edge they give up.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Cut {
-    /// Raise the edge along the window's top or bottom: for a list that
-    /// scrolls into the corner, whose rows run the whole width.
-    Vertical,
-    /// Move the edge along the window's side in: for a bar along the bottom
-    /// whose contents are padded away from its ends.
-    Horizontal,
-    /// Move both in to the curve's 45° point, about 30% of the radius: for
-    /// contents inset from both edges, such as floating cards and their
-    /// shadows.
-    Inset,
-}
-
 /// The window's visible shape: its rectangle in the surface and its corners.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct WindowShape {
@@ -319,55 +318,91 @@ impl WindowShape {
         radii
     }
 
-    /// The part of `element` its contents are painted in so that none of it
-    /// lies outside the window's rounded corners: `element` inside the
-    /// window, with the strip `cut` names given up at every rounded corner
-    /// it would otherwise reach past. Edges move only inward, to whole device
+    /// How far from the window's bottom edge (and top edge, for the top
+    /// corners) content `inset` in from a side can cross a rounded corner:
+    /// the deeper of the two bottom corners' [`curve_depth`], rounded up to a
+    /// whole device pixel at `scale`. 0 when the corners are square or the
+    /// inset is at least the radius. A scrolling surface that reaches a bottom
+    /// corner takes this as bottom padding inside its scroll extent.
+    pub fn corner_depth(&self, inset: f32, scale: f32) -> f32 {
+        let depth = curve_depth(self.radii.bottom_left, inset)
+            .max(curve_depth(self.radii.bottom_right, inset));
+        snap_up(depth, scale)
+    }
+
+    /// The part of `element` its contents are painted in so that content
+    /// `inset` or more in from the element's sides never crosses the window's
+    /// rounded corners: `element` inside the window, with its bottom (or top)
+    /// raised by the curve's depth at that inset wherever it reaches a rounded
+    /// corner. Its sides never move. Edges move only inward, to whole device
     /// pixels at `scale`.
-    pub fn clip(&self, element: Rect, cut: Cut, scale: f32) -> Rect {
-        let scale = if scale.is_finite() && scale > 0.0 {
-            scale
-        } else {
-            1.0
-        };
-        let snap = |v: f32| (v * scale - 1e-3).ceil() / scale;
+    pub fn clip(&self, element: Rect, inset: f32, scale: f32) -> Rect {
         let mut v = element.intersect(&self.rect);
+        let inset = inset.max(0.0);
         for corner in Corner::ALL {
             let r = self.radii.get(corner);
             if r <= 0.0 || v.is_empty() {
                 continue;
             }
-            let (x, y) = element_corner(&v, corner);
-            let (ox, oy) = offsets(&self.rect, corner, x, y);
-            if needed_radius(r, ox, oy) <= 0.0 {
+            // How far the content's nearest column is from the window's side
+            // at this corner.
+            let (x, _) = element_corner(&v, corner);
+            let (ox, _) = offsets(&self.rect, corner, x, v.y);
+            let depth = snap_up(curve_depth(r, ox.max(0.0) + inset), scale);
+            if depth <= 0.0 {
                 continue;
             }
-            let diagonal = r * (1.0 - std::f32::consts::FRAC_1_SQRT_2);
-            let (new_ox, new_oy) = match cut {
-                Cut::Vertical => (ox, snap(curve_depth(r, ox))),
-                Cut::Horizontal => (snap(curve_depth(r, oy)), oy),
-                Cut::Inset if ox >= diagonal => (ox, snap(curve_depth(r, ox))),
-                Cut::Inset if oy >= diagonal => (snap(curve_depth(r, oy)), oy),
-                Cut::Inset => (snap(diagonal), snap(diagonal)),
-            };
-            let (new_ox, new_oy) = (new_ox.max(ox), new_oy.max(oy));
-            let mut left = v.x;
-            let mut right = v.right();
-            let mut top = v.y;
-            let mut bottom = v.bottom();
-            if corner.is_left() {
-                left = left.max(self.rect.x + new_ox);
-            } else {
-                right = right.min(self.rect.right() - new_ox);
-            }
             if corner.is_top() {
-                top = top.max(self.rect.y + new_oy);
+                let top = v.y.max(self.rect.y + depth);
+                v = Rect::new(v.x, top, v.width, (v.bottom() - top).max(0.0));
             } else {
-                bottom = bottom.min(self.rect.bottom() - new_oy);
+                let bottom = v.bottom().min(self.rect.bottom() - depth);
+                v = Rect::new(v.x, v.y, v.width, (bottom - v.y).max(0.0));
             }
-            v = Rect::new(left, top, (right - left).max(0.0), (bottom - top).max(0.0));
         }
         v
+    }
+
+    /// Where a floating box (a tooltip, a menu, a panel) may lie so that
+    /// none of it crosses the window's edge or a rounded corner: the window's
+    /// rectangle less, on every side, the distance at which a square corner
+    /// meets the curve (`r (1 - 1/√2)`, 4.4px for 15px), and never less than
+    /// 4px.
+    pub fn overlay_area(&self) -> Rect {
+        let m = self
+            .radii
+            .all()
+            .iter()
+            .map(|r| (r * (1.0 - std::f32::consts::FRAC_1_SQRT_2)).ceil())
+            .fold(4.0f32, f32::max);
+        let r = &self.rect;
+        Rect::new(
+            r.x + m,
+            r.y + m,
+            (r.width - 2.0 * m).max(0.0),
+            (r.height - 2.0 * m).max(0.0),
+        )
+    }
+
+    /// How far to move a floating box so it lies in [`Self::overlay_area`]:
+    /// as little as possible, and where it is larger than the area its
+    /// leading and top edges win.
+    pub fn shift_inside(&self, b: Rect) -> (f32, f32) {
+        let area = self.overlay_area();
+        let along = |start: f32, len: f32, lo: f32, hi: f32| {
+            let mut d = 0.0;
+            if start + len > hi {
+                d = hi - (start + len);
+            }
+            if start + d < lo {
+                d = lo - start;
+            }
+            d
+        };
+        (
+            along(b.x, b.width, area.x, area.right()),
+            along(b.y, b.height, area.y, area.bottom()),
+        )
     }
 
     /// The parts of the window's rectangle outside its rounded corners, one
@@ -418,6 +453,20 @@ impl WindowShape {
             let (dx, dy) = offsets(r, *corner, x, y);
             radius > 0.0 && dx < radius && dy < radius
         })
+    }
+}
+
+/// `value` rounded up to a whole device pixel at `scale`.
+fn snap_up(value: f32, scale: f32) -> f32 {
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
+    if value <= 0.0 {
+        0.0
+    } else {
+        (value * scale - 1e-3).ceil() / scale
     }
 }
 
@@ -509,7 +558,7 @@ pub fn input_region(
 #[cfg(test)]
 mod tests {
     use super::{
-        Corner, CornerRadii, Cut, Rect, WindowShape, curve_depth, input_region, needed_radius,
+        Corner, CornerRadii, Rect, WindowShape, curve_depth, input_region, needed_radius,
         rounded_spans, window_corner_radii,
     };
     use crate::system_frame::{Insets, Tiled, WindowState};
@@ -518,20 +567,6 @@ mod tests {
 
     fn shape() -> WindowShape {
         WindowShape::new(Rect::new(40.0, 40.0, 800.0, 600.0), CornerRadii::uniform(R))
-    }
-
-    /// Every pixel centre of `rect` at `scale` lies inside the shape.
-    fn inside(shape: &WindowShape, rect: Rect, scale: f32) -> bool {
-        let cols = (rect.width * scale).round() as i32;
-        let rows = (rect.height * scale).round() as i32;
-        (0..rows).all(|j| {
-            (0..cols).all(|i| {
-                shape.contains(
-                    rect.x + (i as f32 + 0.5) / scale,
-                    rect.y + (j as f32 + 0.5) / scale,
-                )
-            })
-        })
     }
 
     #[test]
@@ -659,61 +694,134 @@ mod tests {
         }
     }
 
+    /// Every pixel centre of `rect` at `scale` that is at least `inset` in
+    /// from the sides of `content` lies inside the shape.
+    fn inside_from(shape: &WindowShape, rect: Rect, content: Rect, inset: f32, scale: f32) -> bool {
+        let cols = (rect.width * scale).round() as i32;
+        let rows = (rect.height * scale).round() as i32;
+        (0..rows).all(|j| {
+            (0..cols).all(|i| {
+                let x = rect.x + (i as f32 + 0.5) / scale;
+                let y = rect.y + (j as f32 + 0.5) / scale;
+                x < content.x + inset || x > content.right() - inset || shape.contains(x, y)
+            })
+        })
+    }
+
     #[test]
-    fn a_clipped_rect_never_reaches_outside_the_curve() {
-        let s = shape();
-        let rects = [
-            s.rect,
-            Rect::new(40.0, 100.0, 280.0, 540.0),
-            Rect::new(320.0, 100.0, 520.0, 540.0),
-            Rect::new(40.0, 608.0, 800.0, 32.0),
-            Rect::new(44.0, 620.0, 100.0, 40.0),
-            Rect::new(0.0, 0.0, 1000.0, 1000.0),
-        ];
-        for scale in [1.0, 1.25, 2.0] {
-            for rect in rects {
-                for cut in [Cut::Vertical, Cut::Horizontal, Cut::Inset] {
-                    let clipped = s.clip(rect, cut, scale);
-                    assert!(
-                        inside(&s, clipped, scale),
-                        "{rect:?} {cut:?} at {scale}: {clipped:?}"
-                    );
-                    // Never larger than the element or the window.
-                    let bound = rect.intersect(&s.rect);
-                    assert!(clipped.x >= bound.x && clipped.y >= bound.y);
-                    assert!(clipped.right() <= bound.right());
-                    assert!(clipped.bottom() <= bound.bottom());
+    fn content_clipped_at_its_inset_never_crosses_the_curve() {
+        for radius in [12.0, 15.0] {
+            let s = WindowShape::new(
+                Rect::new(40.0, 40.0, 800.0, 600.0),
+                CornerRadii::uniform(radius),
+            );
+            let rects = [
+                s.rect,
+                // A pane down the left edge, a page beside it, a bar along the
+                // bottom, a list inset from the side.
+                Rect::new(40.0, 100.0, 280.0, 540.0),
+                Rect::new(320.0, 100.0, 520.0, 540.0),
+                Rect::new(40.0, 608.0, 800.0, 32.0),
+                Rect::new(44.0, 620.0, 100.0, 40.0),
+                Rect::new(0.0, 0.0, 1000.0, 1000.0),
+            ];
+            for scale in [1.0, 1.25, 2.0] {
+                for rect in rects {
+                    for inset in [0.0, 2.0, 4.0, 8.0, 12.0, 16.0, 24.0] {
+                        let clipped = s.clip(rect, inset, scale);
+                        let bound = rect.intersect(&s.rect);
+                        assert!(
+                            inside_from(&s, clipped, bound, inset, scale),
+                            "r {radius} {rect:?} inset {inset} at {scale}: {clipped:?}"
+                        );
+                        // The sides never move: content keeps its full width.
+                        assert_eq!(clipped.x, bound.x);
+                        assert_eq!(clipped.width, bound.width);
+                        assert!(clipped.y >= bound.y && clipped.bottom() <= bound.bottom());
+                    }
                 }
             }
         }
     }
 
     #[test]
-    fn each_cut_gives_up_its_own_strip() {
-        let s = shape();
-        let all = s.rect;
-        let vertical = s.clip(all, Cut::Vertical, 1.0);
-        assert_eq!(vertical, Rect::new(40.0, 52.0, 800.0, 576.0));
-        let horizontal = s.clip(all, Cut::Horizontal, 1.0);
-        assert_eq!(horizontal, Rect::new(52.0, 40.0, 776.0, 600.0));
-        let inset = s.clip(all, Cut::Inset, 1.0);
-        assert_eq!(inset, Rect::new(44.0, 44.0, 792.0, 592.0));
-        // At scale 2 the 45° point, 3.51px in, still rounds in to 4px.
-        let inset = s.clip(all, Cut::Inset, 2.0);
-        assert_eq!(inset, Rect::new(44.0, 44.0, 792.0, 592.0));
-        // A bar along the bottom, padded: only its ends move in.
-        let bar = Rect::new(40.0, 608.0, 800.0, 32.0);
-        assert_eq!(
-            s.clip(bar, Cut::Horizontal, 1.0),
-            Rect::new(52.0, 608.0, 776.0, 32.0)
+    fn the_band_is_the_curves_depth_at_the_contents_inset() {
+        let s = WindowShape::new(
+            Rect::new(40.0, 40.0, 800.0, 600.0),
+            CornerRadii::uniform(15.0),
         );
-        // Contents already clear of the curve are not cut.
-        let clear = Rect::new(60.0, 100.0, 760.0, 520.0);
-        for cut in [Cut::Vertical, Cut::Horizontal, Cut::Inset] {
-            assert_eq!(s.clip(clear, cut, 1.0), clear);
+        // A full-width list: the whole radius, top and bottom.
+        assert_eq!(
+            s.clip(s.rect, 0.0, 1.0),
+            Rect::new(40.0, 55.0, 800.0, 570.0)
+        );
+        // Rows 4px in from the side cross the curve only in its last 4.8px:
+        // 15 - sqrt(15² - 11²) = 4.80, five whole pixels at scale 1 and ten
+        // device pixels at scale 2.
+        let page = Rect::new(320.0, 100.0, 520.0, 540.0);
+        assert_eq!(
+            s.clip(page, 4.0, 1.0),
+            Rect::new(320.0, 100.0, 520.0, 535.0)
+        );
+        assert_eq!(
+            s.clip(page, 4.0, 2.0),
+            Rect::new(320.0, 100.0, 520.0, 535.0)
+        );
+        // 12px in: 15 - sqrt(225 - 9) = 0.30, one pixel.
+        assert_eq!(s.clip(page, 12.0, 1.0).bottom(), 639.0);
+        // A page padded the radius or more gives up nothing.
+        assert_eq!(s.clip(page, 24.0, 1.0), page);
+        assert_eq!(s.clip(page, 15.0, 1.0), page);
+        // An element whose side is away from the window's side counts that
+        // distance too: a pane 20px in gives up nothing.
+        let away = Rect::new(60.0, 100.0, 200.0, 540.0);
+        assert_eq!(s.clip(away, 0.0, 1.0), away);
+        // Adwaita's 12px corner, 4px in: 12 - sqrt(144 - 64) = 3.06, four
+        // pixels at scale 1, 3.5 at scale 2.
+        let adw = WindowShape::new(s.rect, CornerRadii::uniform(12.0));
+        assert_eq!(adw.corner_depth(4.0, 1.0), 4.0);
+        assert_eq!(adw.corner_depth(4.0, 2.0), 3.5);
+        assert_eq!(s.corner_depth(4.0, 1.0), 5.0);
+        assert_eq!(s.corner_depth(0.0, 1.0), 15.0);
+        assert_eq!(s.corner_depth(24.0, 1.0), 0.0);
+        // Square corners give up nothing.
+        let square = WindowShape::new(s.rect, CornerRadii::SQUARE);
+        assert_eq!(square.clip(s.rect, 0.0, 1.0), s.rect);
+        assert_eq!(square.corner_depth(0.0, 1.0), 0.0);
+    }
+
+    #[test]
+    fn a_floating_box_is_moved_inside_the_window_and_clear_of_its_curves() {
+        let s = WindowShape::new(
+            Rect::new(40.0, 40.0, 800.0, 600.0),
+            CornerRadii::uniform(15.0),
+        );
+        // 15 (1 - 1/√2) = 4.39: five pixels in on every side.
+        assert_eq!(s.overlay_area(), Rect::new(45.0, 45.0, 790.0, 590.0));
+        // A tooltip under the pointer at the bottom right, reaching into the
+        // shadow: moved up and left until its square corner is inside.
+        let tip = Rect::new(800.0, 630.0, 120.0, 30.0);
+        let (dx, dy) = s.shift_inside(tip);
+        assert_eq!((dx, dy), (-85.0, -25.0));
+        let moved = Rect::new(tip.x + dx, tip.y + dy, tip.width, tip.height);
+        for (x, y) in [
+            (moved.x, moved.y),
+            (moved.right(), moved.y),
+            (moved.x, moved.bottom()),
+            (moved.right(), moved.bottom()),
+        ] {
+            assert!(s.contains(x, y), "({x}, {y})");
         }
-        let square = WindowShape::new(all, CornerRadii::SQUARE);
-        assert_eq!(square.clip(all, Cut::Vertical, 1.0), all);
+        // One already inside does not move; one wider than the window keeps
+        // its leading edge.
+        assert_eq!(
+            s.shift_inside(Rect::new(100.0, 100.0, 50.0, 20.0)),
+            (0.0, 0.0)
+        );
+        assert_eq!(s.shift_inside(Rect::new(0.0, 100.0, 900.0, 20.0)).0, 45.0);
+        // A square window keeps 4px.
+        let square = WindowShape::new(s.rect, CornerRadii::SQUARE);
+        assert_eq!(square.overlay_area(), Rect::new(44.0, 44.0, 792.0, 592.0));
     }
 
     #[test]

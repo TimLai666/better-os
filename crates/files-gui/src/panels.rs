@@ -116,10 +116,9 @@ impl FilesApp {
             })
             .children(finished.into_iter().map(|row| self.finished_card(row, cx)));
         panel
-            .child(better_ui::window_chrome::corner_clip(
-                better_ui::window_chrome::Cut::Inset,
-                list,
-            ))
+            // Its cards keep 12px from the sides and the list's own 12px
+            // padding ends its scroll extent above the curve.
+            .child(better_ui::window_chrome::corner_clip(px(12.0), list))
             .child(edge)
             .into_any_element()
     }
@@ -576,10 +575,9 @@ impl FilesApp {
                     p.divider,
                 ),
             )
-            .child(better_ui::window_chrome::corner_clip(
-                better_ui::window_chrome::Cut::Inset,
-                inner,
-            ))
+            // Both columns keep 16px from the sides and end their scroll
+            // extent with 16px of padding.
+            .child(better_ui::window_chrome::corner_clip(px(16.0), inner))
             .child(edge)
             .into_any_element()
     }

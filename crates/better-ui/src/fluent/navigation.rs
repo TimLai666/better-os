@@ -47,14 +47,14 @@ use gpui_component::{Icon, IconName};
 use super::badge::{Badge, InfoBadge};
 use super::button::{Button, ButtonKind};
 use super::hit_area::{ROW_GROUP, RowInset, hit_row};
-use super::window_frame::{corner_clip, corner_fill};
+use super::window_frame::{corner_clip, corner_depth, corner_fill};
 use super::words::Locale;
 use super::{
     BODY, BODY_STRONG, Interaction, Key, Palette, ShownState, keyed_focus, palette, radius,
     shows_focus, size, step_index, text, with_alpha, with_focus_ring,
 };
 use super::{Handler, ValueHandler};
-use crate::system_frame::{CornerRadii, Cut};
+use crate::system_frame::CornerRadii;
 
 /// One line of the pane.
 #[derive(Clone)]
@@ -327,8 +327,6 @@ pub struct NavigationView {
     open_width: Option<Pixels>,
     edge: Option<AnyElement>,
     decorate: Option<RowDecorator>,
-    /// How the content is kept inside the window's bottom trailing corner.
-    content_clip: Option<Cut>,
 }
 
 /// Adds behaviour to an item's row (by its index in the pane), such as
@@ -362,20 +360,7 @@ impl NavigationView {
             open_width: None,
             edge: None,
             decorate: None,
-            content_clip: Some(Cut::Inset),
         }
-    }
-
-    /// How the content is kept inside the window's bottom trailing corner
-    /// (ticket 141). By default it gives up the curve's 45° depth along its
-    /// bottom and trailing edges, where the layer shows instead; a page whose
-    /// own panels reach that corner draws them with
-    /// [`super::window_frame::corner_fill`] and
-    /// [`super::window_frame::corner_clip`] and passes `None`, so their fills
-    /// reach the curve.
-    pub fn content_clip(mut self, cut: Option<Cut>) -> Self {
-        self.content_clip = cut;
-        self
     }
 
     /// Adds behaviour to every item's row: `decorate(index, row)`.
@@ -774,6 +759,14 @@ impl RenderOnce for NavigationView {
             _ => None,
         };
 
+        // Where the list reaches the window's bottom leading corner (nothing
+        // under it), its scroll extent ends with the curve's depth at the
+        // rows' 4px inset, and so does the scrollbar's track.
+        let list_end = if self.footer.is_empty() {
+            corner_depth(px(4.0), window, cx)
+        } else {
+            px(0.0)
+        };
         let mut list = div()
             .id(super::child_id(&self.id, "items"))
             .flex()
@@ -785,6 +778,11 @@ impl RenderOnce for NavigationView {
             // trailing action or badge. Kept whether or not the pane
             // overflows, so nothing moves when it starts to.
             .pr(px(4.0))
+            // With nothing under it the list reaches the window's bottom
+            // leading corner: the curve's depth at the rows' 4px inset is
+            // padding at its end, so the last row scrolls fully above the
+            // curve (ticket 141).
+            .pb(list_end)
             .overflow_y_scroll();
         // A pane taller than the window scrolls, with a scrollbar that stays
         // in sight while there is more below (a compact pane at 960×720
@@ -854,15 +852,15 @@ impl RenderOnce for NavigationView {
                     .flex_col()
                     .flex_1()
                     .min_h_0()
-                    // Rows scrolled to the window's bottom edge (a pane with
-                    // no footer) stop short of its rounded corner.
-                    .child(corner_clip(Cut::Vertical, list))
+                    // Rows scrolled past the window's bottom leading corner
+                    // stop the curve's depth at their inset above it.
+                    .child(corner_clip(px(4.0), list))
                     .child(
                         div()
                             .absolute()
                             .top_0()
                             .right_0()
-                            .bottom_0()
+                            .bottom(list_end)
                             .w(px(8.0))
                             .child(
                                 gpui_component::scroll::Scrollbar::vertical(&scroll)
@@ -984,18 +982,10 @@ impl RenderOnce for NavigationView {
             .border_l_1()
             .border_color(gpui::transparent_black())
             .overflow_hidden()
-            // Whatever the page draws (a list scrolled under the bottom edge,
-            // a bar along it, a scrollbar) stays inside the window's bottom
-            // trailing corner: the page gives up the curve's 45° depth, 4px
-            // for a 12px corner, along its bottom and trailing edges, where
-            // the layer's fill shows instead.
-            .child({
-                let page = div().size_full().children(self.content);
-                match self.content_clip {
-                    Some(cut) => corner_clip(cut, page).into_any_element(),
-                    None => page.into_any_element(),
-                }
-            });
+            // A page keeps its own side padding away from the corner; one
+            // whose list or panel reaches it uses the same rule as the pane
+            // (`corner_clip`, `corner_depth`, `corner_fill`).
+            .children(self.content);
         div()
             .relative()
             .flex()

@@ -116,24 +116,27 @@ impl TouchpadApp {
                 ),
             );
         // The sidebar reaches the window's bottom leading corner: its fill
-        // and edge follow the corner and its contents stay inside it
-        // (ticket 141).
-        better_ui::window_chrome::corner_panel(
-            better_ui::window_chrome::corner_fill(cx.theme().tokens.sidebar).border(
-                gpui::Edges {
-                    right: px(1.0),
-                    ..gpui::Edges::default()
-                },
-                cx.theme().sidebar_border,
-            ),
-            better_ui::window_chrome::Cut::Inset,
-            sidebar
-                .bg(transparent_black())
-                .border_color(transparent_black()),
-        )
-        .h_full()
-        .flex_none()
-        .into_any_element()
+        // and edge follow the corner (ticket 141); its rows and footer keep
+        // 12px from its sides, clear of the curve.
+        div()
+            .relative()
+            .child(
+                better_ui::window_chrome::corner_fill(cx.theme().tokens.sidebar).border(
+                    gpui::Edges {
+                        right: px(1.0),
+                        ..gpui::Edges::default()
+                    },
+                    cx.theme().sidebar_border,
+                ),
+            )
+            .child(
+                sidebar
+                    .bg(transparent_black())
+                    .border_color(transparent_black()),
+            )
+            .h_full()
+            .flex_none()
+            .into_any_element()
     }
 
     fn top_bar(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -956,6 +959,10 @@ impl TouchpadApp {
 
 impl Render for TouchpadApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let page_scroll = window
+            .use_keyed_state("page-scroll", cx, |_, _| ScrollHandle::new())
+            .read(cx)
+            .clone();
         let c = copy(self.model.locale());
         let compact = window.viewport_size().width < px(COMPACT_VIEWPORT_WIDTH);
         let banner = self.model.result_banner();
@@ -977,14 +984,15 @@ impl Render for TouchpadApp {
                         .size_full()
                         .min_w_0()
                         // The body's fill follows the window's bottom corners
-                        // and the page stays inside them (ticket 141).
+                        // (ticket 141).
                         .relative()
                         .child(better_ui::window_chrome::corner_fill(cx.theme().secondary))
                         .child(self.sidebar(compact, cx))
-                        // Its rows and cards run its whole width: the strip
-                        // given up is along the bottom.
+                        // The page keeps 20px from its sides, clear of the
+                        // window's bottom trailing corner; its scrollbar's
+                        // track ends above the curve (ticket 141).
                         .child(better_ui::window_chrome::corner_clip(
-                            better_ui::window_chrome::Cut::Vertical,
+                            px(20.0),
                             v_flex()
                                 .h_full()
                                 .flex_1()
@@ -1020,13 +1028,31 @@ impl Render for TouchpadApp {
                                     )
                                 })
                                 .child(
-                                    div().flex_1().min_h_0().overflow_y_scrollbar().p_5().child(
-                                        div()
-                                            .w_full()
-                                            .flex()
-                                            .justify_center()
-                                            .child(div().w_full().max_w(px(1160.0)).child(page)),
-                                    ),
+                                    div()
+                                        .relative()
+                                        .flex_1()
+                                        .min_h_0()
+                                        .child(
+                                            div()
+                                                .id("page-scroll")
+                                                .size_full()
+                                                .overflow_y_scroll()
+                                                .track_scroll(&page_scroll)
+                                                .p_5()
+                                                .child(
+                                                    div().w_full().flex().justify_center().child(
+                                                        div()
+                                                            .w_full()
+                                                            .max_w(px(1160.0))
+                                                            .child(page),
+                                                    ),
+                                                ),
+                                        )
+                                        .child(better_ui::window_chrome::corner_scrollbar(
+                                            &page_scroll,
+                                            window,
+                                            cx,
+                                        )),
                                 ),
                         )),
                 ),

@@ -2,7 +2,7 @@
 //! could decide; this file routes and lays out.
 
 use gpui::*;
-use gpui_component::{ActiveTheme, scroll::ScrollableElement, *};
+use gpui_component::{ActiveTheme, *};
 
 use crate::{
     app::AwakeApp, i18n::copy, layout::COMPACT_VIEWPORT_WIDTH, model::Section, shell::actions,
@@ -25,6 +25,10 @@ impl AwakeApp {
 
 impl Render for AwakeApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let page_scroll = window
+            .use_keyed_state("page-scroll", cx, |_, _| ScrollHandle::new())
+            .read(cx)
+            .clone();
         let compact = window.viewport_size().width < px(COMPACT_VIEWPORT_WIDTH);
         let section = self.render_section(window, cx);
 
@@ -76,27 +80,46 @@ impl Render for AwakeApp {
                         .size_full()
                         .min_w_0()
                         // The body's fill follows the window's bottom corners
-                        // and the page stays inside them (ticket 141).
+                        // (ticket 141).
                         .relative()
                         .child(better_ui::window_chrome::corner_fill(cx.theme().secondary))
                         .child(self.sidebar(compact, cx))
-                        // Its rows and cards run its whole width: the strip
-                        // given up is along the bottom.
+                        // The page keeps 20px from its sides, clear of the
+                        // window's bottom trailing corner; its scrollbar's
+                        // track ends above the curve (ticket 141).
                         .child(better_ui::window_chrome::corner_clip(
-                            better_ui::window_chrome::Cut::Vertical,
+                            px(20.0),
                             v_flex()
                                 .h_full()
                                 .flex_1()
                                 .min_w_0()
                                 .child(self.top_bar(cx))
                                 .child(
-                                    div().flex_1().min_h_0().overflow_y_scrollbar().p_5().child(
-                                        div()
-                                            .w_full()
-                                            .flex()
-                                            .justify_center()
-                                            .child(div().w_full().max_w(px(1320.0)).child(section)),
-                                    ),
+                                    div()
+                                        .relative()
+                                        .flex_1()
+                                        .min_h_0()
+                                        .child(
+                                            div()
+                                                .id("page-scroll")
+                                                .size_full()
+                                                .overflow_y_scroll()
+                                                .track_scroll(&page_scroll)
+                                                .p_5()
+                                                .child(
+                                                    div().w_full().flex().justify_center().child(
+                                                        div()
+                                                            .w_full()
+                                                            .max_w(px(1320.0))
+                                                            .child(section),
+                                                    ),
+                                                ),
+                                        )
+                                        .child(better_ui::window_chrome::corner_scrollbar(
+                                            &page_scroll,
+                                            window,
+                                            cx,
+                                        )),
                                 ),
                         )),
                 ),
