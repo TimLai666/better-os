@@ -264,6 +264,59 @@ pub fn search_slot(has_search: bool, compact: bool) -> SearchSlot {
     }
 }
 
+/// How a window draws its pane at its current width.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PaneLayout {
+    /// 48px, icons only.
+    pub compact: bool,
+    /// When open, the pane floats over the content instead of pushing it.
+    pub overlay: bool,
+}
+
+/// The person's own choice about a window's pane, kept apart for a wide
+/// and a narrow window: closed with ☰ while wide, opened while narrow.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct PaneChoice {
+    pub wide_collapsed: bool,
+    pub narrow_open: bool,
+}
+
+impl PaneChoice {
+    /// The pane in a window that is `narrow` or not. A wide window's pane is
+    /// open unless the person closed it; a narrow window's is compact unless
+    /// the person opened it, and then it floats so the content keeps its
+    /// width, as WinUI's `NavigationView` does in its compact mode.
+    pub fn layout(self, narrow: bool) -> PaneLayout {
+        if narrow {
+            PaneLayout {
+                compact: !self.narrow_open,
+                overlay: true,
+            }
+        } else {
+            PaneLayout {
+                compact: self.wide_collapsed,
+                overlay: false,
+            }
+        }
+    }
+
+    /// Takes the pane's own ☰: `compact` is what it asks for, in a window
+    /// that is `narrow` or not.
+    pub fn toggle(&mut self, compact: bool, narrow: bool) {
+        if narrow {
+            self.narrow_open = !compact;
+        } else {
+            self.wide_collapsed = compact;
+        }
+    }
+
+    /// A narrow window's open pane closes once a page is chosen, as WinUI's
+    /// overlay pane does.
+    pub fn page_chosen(&mut self) {
+        self.narrow_open = false;
+    }
+}
+
 /// Whether an open pane floats over the content rather than pushing it:
 /// only in a window the pane would otherwise crowd, and only while open.
 pub fn floats_over_content(compact: bool, overlay: bool) -> bool {
