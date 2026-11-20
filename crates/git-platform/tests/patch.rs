@@ -903,3 +903,56 @@ fn a_rename_with_a_mode_change_is_one_row_and_a_copy_is_an_added_file() {
     assert_eq!(files[0].kind, git_core::ChangeKind::Added);
     assert_eq!(files[0].original_path, None);
 }
+
+/// Ticket 173's review: a submodule's row reached Discard, which copied the
+/// whole submodule, `.git` included, into the trash and reset its commit.
+/// The parent's Discard now refuses a submodule and changes nothing.
+#[test]
+fn discard_refuses_a_submodule_and_changes_nothing() {
+    let s = sandbox();
+    s.commit_file("r.txt", "root\n", "root");
+    let inner = s.tmp.path().join("inner");
+    std::fs::create_dir_all(&inner).unwrap();
+    harness::git_in(&inner, &["init", "-q", "-b", "main"]);
+    std::fs::write(inner.join("a.txt"), "a\n").unwrap();
+    harness::git_in(&inner, &["add", "a.txt"]);
+    harness::git_in(&inner, &["commit", "-q", "-m", "inner"]);
+    s.git(&[
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        "-q",
+        inner.to_str().unwrap(),
+        "sub",
+    ]);
+    s.git(&["commit", "-q", "-m", "add the submodule"]);
+    s.write("sub/a.txt", "changed in the submodule\n");
+
+    let status = SystemGit.status(&s.repo).unwrap();
+    assert!(
+        status
+            .changes
+            .iter()
+            .any(|change| change.path == Path::new("sub")),
+        "the submodule shows as a change of the parent: {:?}",
+        status.changes
+    );
+    let error = SystemGit
+        .discard_files(&s.repo, &[FileSelection::whole("sub")])
+        .unwrap_err();
+    assert_eq!(error, GitError::Submodule(PathBuf::from("sub")));
+    assert!(trashed(&s).is_empty(), "nothing went to the trash");
+    assert_eq!(s.read("sub/a.txt"), "changed in the submodule\n");
+
+    // A selection with a submodule in it refuses as a whole.
+    s.write("r.txt", "edited\n");
+    let error = SystemGit
+        .discard_files(
+            &s.repo,
+            &[FileSelection::whole("r.txt"), FileSelection::whole("sub")],
+        )
+        .unwrap_err();
+    assert_eq!(error, GitError::Submodule(PathBuf::from("sub")));
+    assert_eq!(s.read("r.txt"), "edited\n");
+}

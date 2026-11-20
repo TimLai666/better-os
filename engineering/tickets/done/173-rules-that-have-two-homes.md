@@ -105,3 +105,59 @@ tickets 134 and 146 found these and left them as out of scope:
   `no_packaging_script_reads_os_release` fails when a script under
   `packaging/` names os-release outside a comment. `install.sh` keeps its
   copy by design, as before.
+
+### After review (2026-11-21)
+
+- No home trash and no free name are failures of their own now
+  (`TrashError::NoHomeTrash`, `TrashError::NoFreeName`), and a discard's
+  trash failure reaches Better Git as `GitError::Trash { reason, detail }`:
+  the window says a sentence per reason in English and zh-TW ("Nothing was
+  discarded: …") with the system's words as the detail
+  (`git-gui` `every_git_failure_is_said_in_the_windows_language_…`).
+- A move from another drive falls back to the home copy only when the
+  drive's trash itself cannot be used (its folders, its record, a free name,
+  or a full or read-only trash). An item that cannot be read or moved fails
+  as itself. When the original cannot be deleted after the home copy, the
+  copy and its record are removed again, so nothing says it was trashed
+  (`a_move_whose_original_cannot_be_deleted_leaves_no_copy_or_record_behind`).
+- A copy refuses anything that is not a regular file, a folder, or a link,
+  before anything is written (`TrashError::NotCopyable`; a named pipe would
+  block `fs::copy` for ever), and the cleanup of a failed copy makes each
+  folder it wrote writable again first, so a 0555 folder no longer leaves an
+  orphan under `files/` with no record.
+- Two copy-into-trash functions remain, on purpose: `copy_to_trash`
+  (`copy_tree`) for a caller with no job, and `files-operations`'
+  `copy_into_trash`, which copies through the job engine (progress,
+  cancellation, hard links kept, verification before the original goes) and
+  then trashes the staged copy through `move_to_trash`. The job engine
+  depends on files-platform, so files-platform cannot call it. Either way
+  the record is written by `put_in_trash`.
+  `one_trash_writer.rs`' `only_the_two_known_functions_copy_into_a_trash`
+  fails on a third.
+- Submodules: a scratch repository with a submodule (built inside the test,
+  never one of the owner's) shows the submodule as a change row of the
+  parent, so Better Git offered Discard on it, and that copied the whole
+  submodule worktree into the trash and reset its commit. Discard (whole
+  files and lines) now refuses a submodule before anything is changed, with
+  a sentence that says to open it as its own repository
+  (`git-platform/tests/patch.rs`'
+  `discard_refuses_a_submodule_and_changes_nothing`). GitHub Desktop's own
+  behaviour was not checked; this is the refusal the review allowed.
+- vfat/exFAT: when `mkdir .Trash-$uid` works and `chmod` says EPERM or
+  EOPNOTSUPP (a filesystem that keeps no mode), the directory is used when
+  it is owned by this user, which is what every later trashing does with the
+  same directory, so the first item no longer goes home while the rest stay
+  on the drive. Any other `chmod` failure removes the directory it just made
+  before falling back. Tested with the device-number seam and an injected
+  `chmod` error (`a_drive_that_holds_no_mode_keeps_every_item_in_its_own_trash`,
+  `a_drive_trash_that_cannot_be_made_private_is_not_left_behind`); no real
+  FAT drive was used.
+- `TryExec`: Better Monitor's autostart list resolved it with its own PATH
+  search; it now asks `app_catalog_core::try_exec_found` with the catalog's
+  `HostProbe`. The rules agreed for absolute paths, names on PATH, and
+  relative paths with a slash (refused); `HostProbe` also ignores relative
+  PATH entries, which Better Monitor searched. `one_visibility_rule.rs`'
+  `no_crate_but_the_catalog_reads_try_exec` fails on another reader, with
+  `files-preview/src/thumbnails.rs` the one recorded exception: it parses a
+  thumbnailer file's `TryExec` and resolves nothing (so a thumbnailer whose
+  program is missing is not filtered out, which is a separate defect).

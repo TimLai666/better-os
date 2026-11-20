@@ -15,6 +15,8 @@ bench = false
 # The desktop-entry `OnlyShowIn`/`NotShowIn` rule, the catalog's own (ticket
 # 173), for the autostart list.
 app-catalog-core.workspace = true
+# The catalog's host probe, for an autostart entry's `TryExec` (ticket 173).
+app-catalog-platform.workspace = true
 better-ui.workspace = true
 monitor-core.workspace = true
 monitor-views.workspace = true

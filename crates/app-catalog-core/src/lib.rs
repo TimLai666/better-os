@@ -35,4 +35,5 @@ pub use record::{
     ApplicationRecord, CapabilityFlags, DesktopAction, DesktopEnvironments, DesktopId, EntryScope,
     EntrySource, EntryWarning, ExclusionReason, ExecutableProbe, ExecutableStatus, IconReference,
     MimeType, NoCanonicalExecutable, NoProbe, SourceKind, Visibility, VisibilityRules,
+    try_exec_found,
 };

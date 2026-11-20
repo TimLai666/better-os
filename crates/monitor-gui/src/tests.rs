@@ -1818,10 +1818,25 @@ fn an_entry_whose_program_is_gone_is_shown_as_not_installed() {
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
     let path = std::ffi::OsString::from(bin.as_os_str());
-    assert!(startup::program_installed("tool", Some(&path)));
-    assert!(startup::program_installed(tool.to_str().unwrap(), None));
-    assert!(!startup::program_installed("missing-tool", Some(&path)));
-    assert!(!startup::program_installed("/nowhere/tool", Some(&path)));
+    let with =
+        |try_exec: &str| DesktopEntry::parse(&format!("[Desktop Entry]\nTryExec={try_exec}\n"));
+    assert!(startup::try_exec_installed(&with("tool"), Some(&path)));
+    assert!(startup::try_exec_installed(
+        &with(tool.to_str().unwrap()),
+        None
+    ));
+    assert!(!startup::try_exec_installed(
+        &with("missing-tool"),
+        Some(&path)
+    ));
+    assert!(!startup::try_exec_installed(
+        &with("/nowhere/tool"),
+        Some(&path)
+    ));
+    assert!(startup::try_exec_installed(
+        &DesktopEntry::parse("[Desktop Entry]\nName=A\n"),
+        Some(&path)
+    ));
     let dirs = AutostartDirs {
         user: root.join("autostart"),
         system: vec![],

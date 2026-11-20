@@ -14,8 +14,8 @@ use git_core::{
 };
 
 use crate::{
-    DiffOptions, DiffSide, GitError, Run, empty_tree, failed, has_commit, io_error, is_tracked,
-    refused,
+    DiffOptions, DiffSide, GitError, Run, TrashReason, empty_tree, failed, has_commit, io_error,
+    is_tracked, refused,
 };
 
 /// Which changed lines of a file are ticked, with the fingerprint of the
@@ -315,6 +315,16 @@ fn partial_patch(
 ///   index and moved to the trash.
 pub fn discard_files(repository: &Path, files: &[FileSelection]) -> Result<(), GitError> {
     let committed = has_commit(repository)?;
+    // A submodule is refused before anything is discarded, so a selection
+    // with one in it changes nothing: copying its worktree, `.git` and all,
+    // into the trash and resetting its commit is not what Discard promises.
+    for file in files {
+        for path in file.paths() {
+            if is_submodule(repository, path, committed)? {
+                return Err(GitError::Submodule(path.to_path_buf()));
+            }
+        }
+    }
     for file in files {
         for path in file.paths() {
             let full = repository.join(path);
@@ -348,6 +358,9 @@ pub fn discard_lines(repository: &Path, file: &FileSelection) -> Result<(), GitE
     let Some(lines) = &file.lines else {
         return discard_files(repository, std::slice::from_ref(file));
     };
+    if is_submodule(repository, &file.path, has_commit(repository)?)? {
+        return Err(GitError::Submodule(file.path.clone()));
+    }
     let Some(patch) = partial_patch(repository, file, lines, PatchMode::Discard)? else {
         return Ok(());
     };
@@ -450,51 +463,105 @@ fn trash(path: &Path, take: bool) -> Result<(), GitError> {
         .map_err(trash_failure)
 }
 
-/// A trash failure as the system's own words about the file, the way the
-/// I/O error this replaced read: Better Git shows `GitError::Io`'s text as
-/// it is, and a `files.trash.error.…` key must not reach its window
-/// (ticket 172).
+/// A trash failure as a reason the window says in a sentence of its own,
+/// with the system's words about the file as the detail; a
+/// `files.trash.error.…` key never reaches Better Git's window (ticket 172).
 fn trash_failure(error: TrashError) -> GitError {
-    GitError::Io(match error {
-        TrashError::Io { path, reason } | TrashError::Unusable { path, reason } => {
-            format!("{}: {reason}", path.display())
+    let (reason, detail) = match error {
+        TrashError::NoHomeTrash => (TrashReason::NoHome, String::new()),
+        TrashError::NoFreeName { path } => (TrashReason::NoFreeName, path.display().to_string()),
+        TrashError::NotCopyable { path } => (TrashReason::NotCopyable, path.display().to_string()),
+        TrashError::Unusable { path, reason } => (
+            TrashReason::Unusable,
+            format!("{}: {reason}", path.display()),
+        ),
+        TrashError::Io { path, reason } => {
+            (TrashReason::Io, format!("{}: {reason}", path.display()))
         }
-        TrashError::NotFound { path } => format!("{}: not found", path.display()),
-        TrashError::CrossDevice { path } => {
-            format!("{}: the trash is on another device", path.display())
+        TrashError::NotFound { path } => {
+            (TrashReason::Io, format!("{}: not found", path.display()))
         }
+        TrashError::CrossDevice { path } => (
+            TrashReason::Io,
+            format!("{}: the trash is on another device", path.display()),
+        ),
         TrashError::DestinationOccupied { path } | TrashError::OriginalParentMissing { path } => {
-            path.display().to_string()
+            (TrashReason::Io, path.display().to_string())
         }
-        TrashError::NoRecord { item } => item,
-    })
+        TrashError::NoRecord { item } => (TrashReason::Io, item),
+    };
+    GitError::Trash { reason, detail }
+}
+
+/// Whether `path` is a submodule (a gitlink, mode 160000) in the index or
+/// in HEAD.
+fn is_submodule(repository: &Path, path: &Path, committed: bool) -> Result<bool, GitError> {
+    let gitlink = |out: Vec<u8>| out.starts_with(b"160000 ");
+    let staged = Run::new(repository, ["ls-files", "--stage"])
+        .paths([path])
+        .output()?;
+    if gitlink(staged) {
+        return Ok(true);
+    }
+    if !committed {
+        return Ok(false);
+    }
+    let head = Run::new(repository, ["ls-tree", "HEAD"])
+        .paths([path])
+        .output()?;
+    Ok(gitlink(head))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{GitError, TrashError, trash_failure};
+    use super::{GitError, TrashError, TrashReason, trash_failure};
     use std::path::PathBuf;
 
     #[test]
-    fn a_trash_failure_reaches_the_window_as_words_about_the_file_not_a_key() {
+    fn a_trash_failure_reaches_the_window_as_a_reason_and_words_about_the_file() {
         let path = PathBuf::from("/work/repo/notes.txt");
-        for error in [
-            TrashError::Io {
-                path: path.clone(),
-                reason: "permission denied".into(),
-            },
-            TrashError::Unusable {
-                path: path.clone(),
-                reason: "symlink".into(),
-            },
-            TrashError::NotFound { path: path.clone() },
-            TrashError::CrossDevice { path: path.clone() },
+        for (error, expected) in [
+            (
+                TrashError::Io {
+                    path: path.clone(),
+                    reason: "permission denied".into(),
+                },
+                TrashReason::Io,
+            ),
+            (
+                TrashError::Unusable {
+                    path: path.clone(),
+                    reason: "symlink".into(),
+                },
+                TrashReason::Unusable,
+            ),
+            (
+                TrashError::NoFreeName { path: path.clone() },
+                TrashReason::NoFreeName,
+            ),
+            (
+                TrashError::NotCopyable { path: path.clone() },
+                TrashReason::NotCopyable,
+            ),
+            (TrashError::NotFound { path: path.clone() }, TrashReason::Io),
+            (
+                TrashError::CrossDevice { path: path.clone() },
+                TrashReason::Io,
+            ),
         ] {
-            let GitError::Io(text) = trash_failure(error) else {
-                panic!("a trash failure is an I/O failure");
+            let GitError::Trash { reason, detail } = trash_failure(error) else {
+                panic!("a trash failure is a trash failure");
             };
-            assert!(text.starts_with("/work/repo/notes.txt"), "{text}");
-            assert!(!text.contains("files.trash"), "{text}");
+            assert_eq!(reason, expected);
+            assert!(detail.starts_with("/work/repo/notes.txt"), "{detail}");
+            assert!(!detail.contains("files.trash"), "{detail}");
         }
+        assert_eq!(
+            trash_failure(TrashError::NoHomeTrash),
+            GitError::Trash {
+                reason: TrashReason::NoHome,
+                detail: String::new()
+            }
+        );
     }
 }

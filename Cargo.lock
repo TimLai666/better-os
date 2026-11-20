@@ -4865,6 +4865,7 @@ name = "monitor-gui"
 version = "0.2.16"
 dependencies = [
  "app-catalog-core",
+ "app-catalog-platform",
  "better-ui",
  "gpui",
  "gpui-component",

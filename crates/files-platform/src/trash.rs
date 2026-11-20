@@ -468,6 +468,18 @@ pub enum TrashError {
     Unusable { path: PathBuf, reason: String },
     #[error("files.trash.error.io:{}:{reason}", .path.to_string_lossy())]
     Io { path: PathBuf, reason: String },
+    /// Neither `$XDG_DATA_HOME` (absolute) nor `$HOME` is set, so there is no
+    /// home trash to use.
+    #[error("files.trash.error.no_home")]
+    NoHomeTrash,
+    /// Every candidate name for the item is taken in this trash.
+    #[error("files.trash.error.no_free_name:{}", .path.to_string_lossy())]
+    NoFreeName { path: PathBuf },
+    /// The item is something a trash cannot hold a copy of: a named pipe, a
+    /// socket, or a device node. Copying a pipe would wait for a writer
+    /// forever.
+    #[error("files.trash.error.not_copyable:{}", .path.to_string_lossy())]
+    NotCopyable { path: PathBuf },
 }
 
 impl TrashError {
@@ -535,17 +547,50 @@ pub fn put_in_trash(
     source: &Path,
     put: Put,
 ) -> Result<TrashedItem, TrashError> {
-    let metadata = fs::symlink_metadata(source).map_err(|error| {
-        if error.kind() == std::io::ErrorKind::NotFound {
-            TrashError::NotFound {
-                path: source.to_path_buf(),
+    put_in_trash_staged(trash, source, put).map_err(|(_, error)| error)
+}
+
+/// Which side of a trashing failed: the trash (its folders, its record, a
+/// free name), or the item itself (reading it, moving it, copying it).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Side {
+    Trash,
+    Item,
+}
+
+fn put_in_trash_staged(
+    trash: &TrashDirectory,
+    source: &Path,
+    put: Put,
+) -> Result<TrashedItem, (Side, TrashError)> {
+    let item = |error| (Side::Item, error);
+    let in_trash = |error| (Side::Trash, error);
+    if put == Put::Copy {
+        copyable(source).map_err(item)?;
+    }
+    put_in_trash_checked(trash, source, put, item, in_trash)
+}
+
+fn put_in_trash_checked(
+    trash: &TrashDirectory,
+    source: &Path,
+    put: Put,
+    item: impl Fn(TrashError) -> (Side, TrashError),
+    in_trash: impl Fn(TrashError) -> (Side, TrashError),
+) -> Result<TrashedItem, (Side, TrashError)> {
+    let metadata = fs::symlink_metadata(source)
+        .map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                TrashError::NotFound {
+                    path: source.to_path_buf(),
+                }
+            } else {
+                TrashError::io(source, &error)
             }
-        } else {
-            TrashError::io(source, &error)
-        }
-    })?;
+        })
+        .map_err(&item)?;
     let _ = metadata;
-    ensure_trash(trash)?;
+    ensure_trash(trash).map_err(&in_trash)?;
 
     let original = absolute(source);
     let base = source
@@ -574,11 +619,11 @@ pub fn put_in_trash(
         {
             Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(TrashError::io(&info_path, &error)),
+            Err(error) => return Err(in_trash(TrashError::io(&info_path, &error))),
         };
         if let Err(error) = file.write_all(record.as_bytes()) {
             let _ = fs::remove_file(&info_path);
-            return Err(TrashError::io(&info_path, &error));
+            return Err(in_trash(TrashError::io(&info_path, &error)));
         }
         drop(file);
 
@@ -588,7 +633,7 @@ pub fn put_in_trash(
         let placed = match put {
             Put::Move => fs::rename(source, &stored_path),
             Put::Copy => copy_tree(source, &stored_path).inspect_err(|_| {
-                let _ = fs::remove_dir_all(&stored_path).or_else(|_| fs::remove_file(&stored_path));
+                remove_written(&stored_path);
             }),
         };
         match placed {
@@ -604,36 +649,109 @@ pub fn put_in_trash(
             Err(error) => {
                 // The record must not outlive the failure that stopped the move.
                 let _ = fs::remove_file(&info_path);
-                return Err(match error.raw_os_error() {
+                // A full or read-only trash is the trash's failure, wherever
+                // in the copy it showed.
+                let side: &dyn Fn(TrashError) -> (Side, TrashError) =
+                    if matches!(error.raw_os_error(), Some(28) | Some(30) | Some(122)) {
+                        &in_trash
+                    } else {
+                        &item
+                    };
+                return Err(side(match error.raw_os_error() {
                     Some(EXDEV) => TrashError::CrossDevice {
                         path: source.to_path_buf(),
                     },
+                    _ if error.kind() == std::io::ErrorKind::InvalidInput => {
+                        TrashError::NotCopyable {
+                            path: source.to_path_buf(),
+                        }
+                    }
                     _ => TrashError::io(source, &error),
-                });
+                }));
             }
         }
     }
-    Err(TrashError::Io {
+    Err(in_trash(TrashError::NoFreeName {
         path: source.to_path_buf(),
-        reason: "no_free_trash_name".to_string(),
-    })
+    }))
+}
+
+/// Whether everything at `source` can be copied into a trash: regular
+/// files, directories, and symbolic links only, checked before anything is
+/// written. A named pipe would block the copy for ever, and a socket or a
+/// device node has no contents a trash could give back.
+fn copyable(source: &Path) -> Result<(), TrashError> {
+    let refuse = |path: &Path| TrashError::NotCopyable {
+        path: path.to_path_buf(),
+    };
+    let metadata = match fs::symlink_metadata(source) {
+        Ok(metadata) => metadata,
+        // The trashing itself reports a missing or unreadable item.
+        Err(_) => return Ok(()),
+    };
+    let kind = metadata.file_type();
+    if kind.is_symlink() || kind.is_file() {
+        return Ok(());
+    }
+    if !kind.is_dir() {
+        return Err(refuse(source));
+    }
+    let entries = fs::read_dir(source).map_err(|error| TrashError::io(source, &error))?;
+    for entry in entries {
+        let entry = entry.map_err(|error| TrashError::io(source, &error))?;
+        copyable(&entry.path())?;
+    }
+    Ok(())
 }
 
 /// A copy of a file, a symbolic link (as the link), or a directory and
-/// everything in it, at `to`, which must not exist yet.
+/// everything in it, at `to`, which must not exist yet. Anything else is
+/// refused with `InvalidInput`, which [`copyable`] has already checked.
 fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
     let metadata = fs::symlink_metadata(from)?;
-    if metadata.file_type().is_symlink() {
+    let kind = metadata.file_type();
+    if kind.is_symlink() {
         std::os::unix::fs::symlink(fs::read_link(from)?, to)
-    } else if metadata.is_dir() {
+    } else if kind.is_dir() {
         fs::create_dir(to)?;
         for entry in fs::read_dir(from)? {
             let entry = entry?;
             copy_tree(&entry.path(), &to.join(entry.file_name()))?;
         }
         fs::set_permissions(to, metadata.permissions())
-    } else {
+    } else if kind.is_file() {
         fs::copy(from, to).map(|_| ())
+    } else {
+        Err(std::io::Error::from(std::io::ErrorKind::InvalidInput))
+    }
+}
+
+/// Removes what a copy wrote at `path`, a read-only folder in it included:
+/// each folder is made writable by its owner again before it is emptied.
+fn remove_written(path: &Path) {
+    fn writable(path: &Path) {
+        let Ok(metadata) = fs::symlink_metadata(path) else {
+            return;
+        };
+        if !metadata.is_dir() {
+            return;
+        }
+        let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o700));
+        if let Ok(entries) = fs::read_dir(path) {
+            for entry in entries.flatten() {
+                writable(&entry.path());
+            }
+        }
+    }
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_dir() => {
+            writable(path);
+            let _ = fs::remove_dir_all(path);
+        }
+        Ok(_) => {
+            let _ = fs::remove_file(path);
+        }
+        Err(_) => {}
     }
 }
 
@@ -691,10 +809,7 @@ pub fn own_device_trash(source: &Path, uid: Option<u32>, devices: &dyn DevicePro
 /// trash cannot be used is copied into the home trash, then, for
 /// [`Put::Move`], removed.
 pub fn trash_path(source: &Path, put: Put) -> Result<TrashedItem, TrashError> {
-    let home = TrashDirectory::home_from_env().ok_or_else(|| TrashError::Io {
-        path: source.to_path_buf(),
-        reason: "no_home_trash".to_string(),
-    })?;
+    let home = TrashDirectory::home_from_env().ok_or(TrashError::NoHomeTrash)?;
     trash_path_with(&home, source, put, current_uid(), &HostDevices)
 }
 
@@ -716,10 +831,12 @@ pub fn trash_path_with(
         other => other,
     };
     if let TrashTarget::Volume(volume) = &target {
-        match put_in_trash(&volume.directory, source, put) {
-            Err(TrashError::NotFound { path }) => return Err(TrashError::NotFound { path }),
-            Err(_) => {}
-            done => return done,
+        match put_in_trash_staged(&volume.directory, source, put) {
+            // Only a device trash that cannot be used sends the item home;
+            // an item that cannot be moved or copied fails as itself.
+            Err((Side::Trash, _)) => {}
+            Err((Side::Item, error)) => return Err(error),
+            Ok(done) => return Ok(done),
         }
     }
     let item = copy_to_trash(home, source)?;
@@ -729,7 +846,13 @@ pub fn trash_path_with(
         } else {
             fs::remove_file(source)
         };
-        removed.map_err(|error| TrashError::io(source, &error))?;
+        if let Err(error) = removed {
+            // The item is still where it was, so nothing may say it was
+            // trashed: the copy and its record go again.
+            remove_written(&item.stored_path);
+            let _ = fs::remove_file(&item.info_path);
+            return Err(TrashError::io(source, &error));
+        }
     }
     Ok(item)
 }
@@ -1003,8 +1126,27 @@ fn ensure_private_directory(path: &Path, uid: u32) -> Result<(), TrashError> {
                 Ok(()) => {
                     // The umask can only have removed bits, but it could have
                     // removed the owner's own; the mode is set, not hoped for.
-                    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
-                        .map_err(|error| TrashError::io(path, &error))
+                    match set_private_mode(path) {
+                        Ok(()) => Ok(()),
+                        // vfat and exFAT hold no mode at all: `mkdir` works
+                        // and `chmod` says EPERM. The directory is the same
+                        // one the next trashing finds and uses (it is owned
+                        // by this user), so it is used now too rather than
+                        // sending the first item home and the rest here.
+                        Err(error) if mode_not_held(&error) => {
+                            let metadata = fs::symlink_metadata(path)
+                                .map_err(|error| TrashError::io(path, &error))?;
+                            check_private_directory(path, &metadata, uid).inspect_err(|_| {
+                                let _ = fs::remove_dir(path);
+                            })
+                        }
+                        // Anything else: the directory this made goes again,
+                        // so a fallback leaves nothing on the drive.
+                        Err(error) => {
+                            let _ = fs::remove_dir(path);
+                            Err(TrashError::io(path, &error))
+                        }
+                    }
                 }
                 // Somebody else created it in between: check what they made.
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -1017,6 +1159,32 @@ fn ensure_private_directory(path: &Path, uid: u32) -> Result<(), TrashError> {
         }
         Err(error) => Err(TrashError::io(path, &error)),
     }
+}
+
+/// EPERM or EOPNOTSUPP from `chmod`: the filesystem keeps no mode.
+fn mode_not_held(error: &std::io::Error) -> bool {
+    matches!(error.raw_os_error(), Some(1) | Some(95))
+}
+
+/// Sets a per-user trash directory's mode to 0700.
+#[cfg(not(test))]
+fn set_private_mode(path: &Path) -> std::io::Result<()> {
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The `chmod` failure a test makes this thread's next private-mode
+    /// call return, as a vfat drive would (EPERM), or as a failing disk would.
+    static CHMOD_FAILS_WITH: std::cell::Cell<Option<i32>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+fn set_private_mode(path: &Path) -> std::io::Result<()> {
+    if let Some(errno) = CHMOD_FAILS_WITH.with(std::cell::Cell::get) {
+        return Err(std::io::Error::from_raw_os_error(errno));
+    }
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
 }
 
 fn check_private_directory(
@@ -1711,6 +1879,198 @@ mod tests {
         );
         assert!(!file.exists());
         assert!(!home.root().exists(), "nothing went to the home trash");
+    }
+
+    /// A home trash and a "drive" on its own device number, both real
+    /// folders, for the per-volume tests below.
+    fn home_and_drive() -> (
+        tempfile::TempDir,
+        tempfile::TempDir,
+        TrashDirectory,
+        PathBuf,
+        FakeDevices,
+    ) {
+        let home_root = tempfile::tempdir().unwrap();
+        let drive = tempfile::tempdir().unwrap();
+        let top = fs::canonicalize(drive.path()).unwrap();
+        let home = TrashDirectory::new(home_root.path().join("Trash"));
+        let devices = FakeDevices::new(&[(Path::new("/"), 1), (&top, 7)]);
+        (home_root, drive, home, top, devices)
+    }
+
+    fn names_in(directory: &Path) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(directory)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn a_move_whose_original_cannot_be_deleted_leaves_no_copy_or_record_behind() {
+        test_prerequisites::require_that!("a user other than root", uid() != 0);
+        let (_home_root, _drive, home, top, devices) = home_and_drive();
+        let folder = top.join("locked");
+        fs::create_dir(&folder).unwrap();
+        let file = folder.join("notes.txt");
+        fs::write(&file, b"kept").unwrap();
+        fs::set_permissions(&folder, fs::Permissions::from_mode(0o555)).unwrap();
+
+        // No uid: the drive has no trash this user may use, so the item is
+        // copied home and the original must then go, which it cannot.
+        let error = trash_path_with(&home, &file, Put::Move, None, &devices).unwrap_err();
+        fs::set_permissions(&folder, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(matches!(error, TrashError::Io { .. }), "{error:?}");
+        assert_eq!(fs::read(&file).unwrap(), b"kept");
+        assert!(
+            names_in(&home.files_dir()).is_empty(),
+            "a copy says it was trashed"
+        );
+        assert!(
+            names_in(&home.info_dir()).is_empty(),
+            "a record says it was trashed"
+        );
+    }
+
+    #[test]
+    fn an_item_that_cannot_be_read_fails_as_itself_and_is_not_sent_home() {
+        test_prerequisites::require_that!("a user other than root", uid() != 0);
+        let (_home_root, _drive, home, top, devices) = home_and_drive();
+        let file = top.join("secret.txt");
+        fs::write(&file, b"x").unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o000)).unwrap();
+
+        let error = trash_path_with(&home, &file, Put::Copy, Some(uid()), &devices).unwrap_err();
+        assert!(matches!(error, TrashError::Io { .. }), "{error:?}");
+        assert!(
+            !home.root().exists(),
+            "the home trash was used for an unreadable item"
+        );
+        let volume = top.join(format!(".Trash-{}", uid()));
+        assert!(names_in(&volume.join("files")).is_empty());
+        assert!(names_in(&volume.join("info")).is_empty());
+    }
+
+    #[test]
+    fn a_special_file_is_refused_before_anything_is_written() {
+        // A socket stands for every file a trash cannot hold a copy of (a
+        // named pipe, whose copy would block for ever, is refused by the same
+        // check); std can make a socket without running a program, which this
+        // crate's operation path must never do.
+        let (root, trash) = fixture();
+        let tree = root.path().join("tree");
+        fs::create_dir(&tree).unwrap();
+        fs::write(tree.join("a.txt"), b"a").unwrap();
+        let _socket = std::os::unix::net::UnixListener::bind(tree.join("socket")).unwrap();
+
+        let error = copy_to_trash(&trash, &tree).unwrap_err();
+        assert!(matches!(error, TrashError::NotCopyable { .. }), "{error:?}");
+        assert!(
+            error
+                .to_string()
+                .starts_with("files.trash.error.not_copyable:")
+        );
+        assert!(names_in(&trash.files_dir()).is_empty());
+        assert!(names_in(&trash.info_dir()).is_empty());
+        assert!(matches!(
+            copy_to_trash(&trash, &tree.join("socket")),
+            Err(TrashError::NotCopyable { .. })
+        ));
+        // Moving one is still a rename, which a trash can hold.
+        assert!(move_to_trash(&trash, &tree.join("socket")).is_ok());
+    }
+
+    #[test]
+    fn what_a_failed_copy_wrote_goes_again_read_only_folders_included() {
+        let root = tempfile::tempdir().unwrap();
+        let written = root.path().join("written");
+        fs::create_dir_all(written.join("ro/inner")).unwrap();
+        fs::write(written.join("ro/inner/file"), b"x").unwrap();
+        fs::set_permissions(written.join("ro/inner"), fs::Permissions::from_mode(0o555)).unwrap();
+        fs::set_permissions(written.join("ro"), fs::Permissions::from_mode(0o555)).unwrap();
+        remove_written(&written);
+        assert!(!written.exists());
+    }
+
+    #[test]
+    fn a_failed_copy_of_a_tree_leaves_no_orphan_in_the_trash() {
+        test_prerequisites::require_that!("a user other than root", uid() != 0);
+        let (root, trash) = fixture();
+        let tree = root.path().join("tree");
+        fs::create_dir_all(tree.join("ro")).unwrap();
+        fs::write(tree.join("ro/kept"), b"k").unwrap();
+        fs::set_permissions(tree.join("ro"), fs::Permissions::from_mode(0o555)).unwrap();
+        fs::write(tree.join("unreadable"), b"u").unwrap();
+        fs::set_permissions(tree.join("unreadable"), fs::Permissions::from_mode(0o000)).unwrap();
+
+        let error = copy_to_trash(&trash, &tree).unwrap_err();
+        fs::set_permissions(tree.join("ro"), fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(matches!(error, TrashError::Io { .. }), "{error:?}");
+        assert!(
+            names_in(&trash.files_dir()).is_empty(),
+            "an orphan stayed under files/"
+        );
+        assert!(names_in(&trash.info_dir()).is_empty());
+    }
+
+    #[test]
+    fn no_home_and_no_free_name_are_failures_of_their_own() {
+        assert_eq!(
+            TrashError::NoHomeTrash.to_string(),
+            "files.trash.error.no_home"
+        );
+        assert_eq!(
+            TrashError::NoFreeName {
+                path: PathBuf::from("/a/b")
+            }
+            .to_string(),
+            "files.trash.error.no_free_name:/a/b"
+        );
+    }
+
+    /// A vfat or exFAT drive: `mkdir` works, `chmod` says EPERM. The first
+    /// item and every later one go to the drive's own trash.
+    #[test]
+    fn a_drive_that_holds_no_mode_keeps_every_item_in_its_own_trash() {
+        let (_home_root, _drive, home, top, devices) = home_and_drive();
+        CHMOD_FAILS_WITH.with(|fails| fails.set(Some(1)));
+        let first = top.join("one.txt");
+        let second = top.join("two.txt");
+        fs::write(&first, b"1").unwrap();
+        fs::write(&second, b"2").unwrap();
+        let one = trash_path_with(&home, &first, Put::Move, Some(uid()), &devices);
+        let two = trash_path_with(&home, &second, Put::Move, Some(uid()), &devices);
+        CHMOD_FAILS_WITH.with(|fails| fails.set(None));
+        let volume = top.join(format!(".Trash-{}", uid()));
+        for item in [one.unwrap(), two.unwrap()] {
+            assert!(
+                item.info_path.starts_with(&volume),
+                "{}",
+                item.info_path.display()
+            );
+        }
+        assert!(!home.root().exists());
+    }
+
+    /// Any other `chmod` failure sends the item home and leaves no empty
+    /// trash folder on the drive.
+    #[test]
+    fn a_drive_trash_that_cannot_be_made_private_is_not_left_behind() {
+        let (_home_root, _drive, home, top, devices) = home_and_drive();
+        CHMOD_FAILS_WITH.with(|fails| fails.set(Some(5)));
+        let file = top.join("one.txt");
+        fs::write(&file, b"1").unwrap();
+        let item = trash_path_with(&home, &file, Put::Move, Some(uid()), &devices);
+        CHMOD_FAILS_WITH.with(|fails| fails.set(None));
+        let item = item.unwrap();
+        assert!(item.info_path.starts_with(home.info_dir()));
+        assert!(!file.exists());
+        assert!(!top.join(format!(".Trash-{}", uid())).exists());
     }
 
     #[test]

@@ -107,3 +107,52 @@ fn the_check_sees_the_copy_it_was_written_for() {
     ));
     assert!(!names_a_show_in_key("    // `OnlyShowIn` in a comment"));
 }
+
+/// The `TryExec` half of the same question (ticket 173's review): Better
+/// Monitor's autostart list resolved it with a PATH search of its own. Every
+/// `TryExec` is now read through `app_catalog_core::try_exec_found`.
+/// `files-preview`'s thumbnailer reader parses the key of a `.thumbnailer`
+/// file and resolves nothing, so it is the one exception.
+const TRY_EXEC_EXCEPTIONS: &[&str] = &["files-preview/src/thumbnails.rs"];
+
+#[test]
+fn no_crate_but_the_catalog_reads_try_exec() {
+    let crates = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("crates directory")
+        .to_path_buf();
+    let mut found = Vec::new();
+    for member in std::fs::read_dir(&crates).unwrap().flatten() {
+        if member.file_name() == "app-catalog-core" {
+            continue;
+        }
+        let mut files = Vec::new();
+        rust_files(&member.path().join("src"), &mut files);
+        for file in files {
+            let relative = file.strip_prefix(&crates).unwrap_or(&file).to_path_buf();
+            if is_test_file(&file)
+                || TRY_EXEC_EXCEPTIONS
+                    .iter()
+                    .any(|allowed| relative == Path::new(allowed))
+            {
+                continue;
+            }
+            let text = std::fs::read_to_string(&file).unwrap();
+            for (number, line) in production_lines(&text) {
+                if line
+                    .split('"')
+                    .skip(1)
+                    .step_by(2)
+                    .any(|literal| literal.contains("TryExec"))
+                {
+                    found.push(format!("{}:{number}: {}", file.display(), line.trim()));
+                }
+            }
+        }
+    }
+    assert!(
+        found.is_empty(),
+        "TryExec is resolved by app_catalog_core::try_exec_found alone:\n{}",
+        found.join("\n")
+    );
+}

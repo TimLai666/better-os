@@ -645,6 +645,17 @@ fn detect_source_kind(group: &Group, exec: Option<&ExecLine>) -> SourceKind {
     SourceKind::Native
 }
 
+/// The desktop-entry specification's `TryExec` rule, the catalog's own
+/// (ticket 173), for an entry read some other way than this crate's parser
+/// (Better Monitor's autostart list): `None` when the entry names no
+/// `TryExec`, otherwise whether `probe` finds the program.
+pub fn try_exec_found<'a>(
+    value: impl Fn(&str) -> Option<&'a str>,
+    probe: &dyn ExecutableProbe,
+) -> Option<bool> {
+    value("TryExec").map(|program| resolve_program(program.trim(), probe).is_some())
+}
+
 fn resolve_program(program: &str, probe: &dyn ExecutableProbe) -> Option<PathBuf> {
     if program.is_empty() {
         return None;

@@ -109,3 +109,57 @@ fn the_check_sees_the_copy_it_was_written_for() {
         "    // a `.trashinfo` named in a comment"
     ));
 }
+
+/// Two functions copy an item into a trash, and only two (ticket 173's
+/// review): `files_platform::trash`'s `copy_to_trash` (through
+/// `copy_tree`), for a caller with no job, and `files-operations`'
+/// `copy_into_trash`, which copies with the job engine so a large tree
+/// reports progress, can be cancelled, keeps its hard links, and is verified
+/// before the original goes, then trashes the staged copy through
+/// `move_to_trash`. The job engine depends on this crate, so this crate
+/// cannot call it; the record is written here either way.
+const TRASH_COPIERS: &[&str] = &[
+    "files-platform/src/trash.rs",
+    "files-operations/src/exec.rs",
+];
+
+#[test]
+fn only_the_two_known_functions_copy_into_a_trash() {
+    let crates = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("crates directory")
+        .to_path_buf();
+    let mut found = Vec::new();
+    for member in std::fs::read_dir(&crates).unwrap().flatten() {
+        let mut files = Vec::new();
+        rust_files(&member.path().join("src"), &mut files);
+        for file in files {
+            let relative = file.strip_prefix(&crates).unwrap_or(&file).to_path_buf();
+            if is_test_file(&file)
+                || TRASH_COPIERS
+                    .iter()
+                    .any(|allowed| relative == Path::new(allowed))
+            {
+                continue;
+            }
+            let text = std::fs::read_to_string(&file).unwrap();
+            for (number, line) in production_lines(&text) {
+                let Some(at) = line.find("fn ") else {
+                    continue;
+                };
+                let name: String = line[at + 3..]
+                    .chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_')
+                    .collect();
+                if name.contains("copy") && name.contains("trash") {
+                    found.push(format!("{}:{number}: {}", file.display(), line.trim()));
+                }
+            }
+        }
+    }
+    assert!(
+        found.is_empty(),
+        "a third copy-into-trash function:\n{}",
+        found.join("\n")
+    );
+}
