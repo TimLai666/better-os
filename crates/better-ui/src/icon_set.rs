@@ -617,8 +617,14 @@ mod renderer_tests {
     #[test]
     fn an_object_is_rasterised_at_least_twice_the_size_it_is_drawn_at() {
         let renderer = SvgRenderer::new(Arc::new(()));
+        let objects: Vec<Picture> = Picture::ALL
+            .iter()
+            .copied()
+            .filter(|p| p.kind() == Kind::Object)
+            .collect();
+        assert_eq!(objects.len(), 86);
         for size in [12.0, 16.0, 20.0, 24.0, 32.0, 40.0, 48.0, 64.0_f32] {
-            for picture in [Picture::Folder, Picture::Computer, Picture::Disc] {
+            for &picture in &objects {
                 let path = picture.path_for(size);
                 let bytes = super::load(path).expect(path);
                 let image = renderer.render_single_frame(bytes, 1.0).unwrap();

@@ -136,6 +136,40 @@ fn every_file_is_a_24px_svg_whose_tag_comes_first() {
     }
 }
 
+/// The large copy of an object is made by replacing its declared size, the
+/// text `width="24" height="24"`, so every object file must open with
+/// exactly the header that text sits in: a file with the attributes in
+/// another order or spelled differently would stay 24px and blur when
+/// drawn large. And the swap must have happened in every large copy.
+#[test]
+fn every_object_opens_with_the_header_its_large_copy_needs() {
+    const HEADER: &str =
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">"#;
+    let objects: Vec<Picture> = Picture::ALL
+        .iter()
+        .copied()
+        .filter(|p| p.kind() == Kind::Object)
+        .collect();
+    assert_eq!(objects.len(), 86);
+    for picture in objects {
+        assert!(
+            picture.svg().starts_with(HEADER),
+            "{} does not open with {HEADER}",
+            picture.name()
+        );
+        let large = picture.large_svg();
+        assert!(
+            large.starts_with(&HEADER.replace(r#""24" height="24""#, r#""64" height="64""#)),
+            "{}'s large copy is not 64px",
+            picture.name()
+        );
+        assert_eq!(
+            large.matches(r#"width="24""#).count(),
+            picture.svg().matches(r#"width="24""#).count() - 1
+        );
+    }
+}
+
 /// usvg draws none of these the way a browser would, or at all: a class
 /// needs a stylesheet, `currentColor` has no text colour behind an `img`,
 /// and a filter is a glow or a shadow the rules forbid anyway.
