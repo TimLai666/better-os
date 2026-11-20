@@ -460,6 +460,17 @@ for package_name in \
                 printf 'The Better Manager prerm does not stop and disable the window attention service\n' >&2
                 exit 1
             }
+            # ADR 0034: removing Better Manager gives the keyboard back to
+            # its firmware and forgets the colour, whether or not the
+            # privileged service package stays.
+            grep -qF '/usr/libexec/better-manager-daemon --release-keyboard-lighting || true' "$control/prerm" || {
+                printf 'The Better Manager prerm does not give the keyboard back to its firmware\n' >&2
+                exit 1
+            }
+            sh -n "$control/prerm" || {
+                printf 'The Better Manager prerm does not parse as sh\n' >&2
+                exit 1
+            }
             # ADR 0028: the handoff for a privileged service too old to
             # install its own successor. The postinst starts it, and it hands
             # over only the exact packages this build made beside it.

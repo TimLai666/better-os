@@ -73,9 +73,9 @@ fn lamp_helper() -> Arc<FakeLampHelper> {
     let helper = FakeLampHelper::new("hidraw1", M5406WA);
     if keyboard() == "white" {
         let mut device = helper.device.lock().unwrap();
-        device.levels.red = 1;
-        device.levels.green = 1;
-        device.levels.blue = 1;
+        device.levels.red = 0;
+        device.levels.green = 0;
+        device.levels.blue = 0;
     }
     Arc::new(helper)
 }
@@ -105,7 +105,7 @@ async fn main() {
             let parsed: zbus::Address = address.parse().unwrap();
             let builder = zbus::connection::Builder::address(parsed).unwrap();
             let sys = SysRoot::at(root.path());
-            let lighting = root.path().join("keyboard-lighting.json");
+            let lighting = manager_daemon::keyboard_lighting::LightingPaths::under(root.path());
             eprintln!("stand-in sysfs root: {}", root.path().display());
             let _daemon = match auth {
                 "grant" => builder
@@ -118,7 +118,7 @@ async fn main() {
                             gate,
                         )
                         .with_lamp_helper(lamp_helper())
-                        .with_lighting_state(lighting.clone()),
+                        .with_lighting_paths(lighting.clone()),
                     )
                     .unwrap(),
                 "deny" => builder
@@ -131,7 +131,7 @@ async fn main() {
                             gate,
                         )
                         .with_lamp_helper(lamp_helper())
-                        .with_lighting_state(lighting.clone()),
+                        .with_lighting_paths(lighting.clone()),
                     )
                     .unwrap(),
                 _ => builder
@@ -144,7 +144,7 @@ async fn main() {
                             gate,
                         )
                         .with_lamp_helper(lamp_helper())
-                        .with_lighting_state(lighting.clone()),
+                        .with_lighting_paths(lighting.clone()),
                     )
                     .unwrap(),
             }

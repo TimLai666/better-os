@@ -19,7 +19,7 @@ use manager_daemon::authorize::{
     KEYBOARD_LIGHTING_ACTION,
 };
 use manager_daemon::hardware::{DirectWriter, HardwareService};
-use manager_daemon::keyboard_lighting::FakeLampHelper;
+use manager_daemon::keyboard_lighting::{FakeLampHelper, LightingPaths};
 use manager_daemon::service::{CallGate, OBJECT_PATH};
 
 const M5406WA: &[u8] = include_bytes!("../../hardware-core/tests/fixtures/m5406wa-ite5570.rdesc");
@@ -106,7 +106,10 @@ async fn serve<A: Authorizer + 'static>(
         Arc::new(CallGate::default()),
     )
     .with_lamp_helper(helper)
-    .with_lighting_state(machine.state());
+    .with_lighting_paths(LightingPaths {
+        state: machine.state(),
+        firmware_marker: machine.dir.path().join("run/keyboard-lighting-firmware"),
+    });
     zbus::connection::Builder::address(address)
         .unwrap()
         .serve_at(OBJECT_PATH, service)
@@ -164,8 +167,15 @@ async fn the_window_describes_sets_and_gives_back_the_owners_keyboard() {
     let (outcome, reply) = set(&bus, red()).await;
     assert_eq!(outcome, WriteOutcome::Done);
     assert_eq!(reply.unwrap().stored, Some(red()));
-    // 60% of 255 levels (0 to 254) is 152.
-    assert_eq!(helper.device.lock().unwrap().shown, Some([254, 0, 0, 152]));
+    // A level count of 255 is off and 255 levels (HID Usage Tables 1.4,
+    // 26.9): 60% of it is 153.
+    assert_eq!(helper.device.lock().unwrap().shown, Some([255, 0, 0, 153]));
+    // The saved choice names its keyboard: bus, vendor, product.
+    let saved = std::fs::read_to_string(machine.state()).unwrap();
+    assert!(
+        saved.contains(r#""bus":24,"vendor":2821,"product":21872"#),
+        "{saved}"
+    );
     assert!(machine.state().exists());
     assert_eq!(describe(&bus).await.unwrap().stored, Some(red()));
 
@@ -279,4 +289,73 @@ async fn no_keyboard_is_absent_and_no_daemon_is_no_service() {
         "{outcome:?}"
     );
     assert_eq!(reply, None);
+}
+
+/// A daemon older than the window answers without these methods: the card
+/// says it needs updating, not that it is missing (review finding 12).
+#[tokio::test(flavor = "multi_thread")]
+async fn an_older_daemon_is_outdated_not_missing() {
+    struct Older;
+    #[zbus::interface(name = "org.betteros.Hardware1")]
+    impl Older {
+        fn set_charge_limit(&self, percent: u8) -> u8 {
+            percent
+        }
+    }
+    let bus = bus_or_skip!();
+    let address: zbus::Address = bus.address.parse().unwrap();
+    let _server = zbus::connection::Builder::address(address)
+        .unwrap()
+        .serve_at(OBJECT_PATH, Older)
+        .unwrap()
+        .name(privileged::BUS_NAME)
+        .unwrap()
+        .build()
+        .await
+        .unwrap();
+    assert_eq!(describe(&bus).await, Err(Access::Outdated));
+}
+
+/// A caller in a loop (review finding 8): calls coalesce, the newest is
+/// what the keyboard shows, and far fewer helpers run than calls were made.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_burst_of_changes_writes_the_newest_and_coalesces_the_rest() {
+    let bus = bus_or_skip!();
+    let machine = Machine::owners();
+    let helper = Arc::new(FakeLampHelper::new("hidraw1", M5406WA));
+    let _server = serve(&bus, &machine, FakeAuthorizer(true), helper.clone()).await;
+    // Read once so the description is cached.
+    describe(&bus).await.unwrap();
+    let before = helper.runs.load(std::sync::atomic::Ordering::SeqCst);
+    let mut calls = Vec::new();
+    for red_level in 1..=8u8 {
+        let system = client(&bus);
+        calls.push(tokio::task::spawn_blocking(move || {
+            privileged::set_keyboard_lighting(
+                &system,
+                &LightingChoice {
+                    colour: Rgb::new(red_level, 0, 0),
+                    ..red()
+                },
+            )
+        }));
+    }
+    let mut done = 0;
+    for call in calls {
+        let (outcome, _) = call.await.unwrap();
+        if outcome == WriteOutcome::Done {
+            done += 1;
+        }
+    }
+    assert_eq!(done, 8, "every caller got an answer");
+    let writes = helper.runs.load(std::sync::atomic::Ordering::SeqCst) - before;
+    assert!(writes < 8, "{writes} helper runs for 8 calls");
+    // Whatever was written last is what is saved.
+    let shown = helper.device.lock().unwrap().shown.unwrap();
+    let saved: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(machine.state()).unwrap()).unwrap();
+    assert_eq!(
+        saved["choice"]["colour"]["red"].as_u64().unwrap(),
+        u64::from(shown[0])
+    );
 }

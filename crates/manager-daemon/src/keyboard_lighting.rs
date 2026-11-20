@@ -15,11 +15,12 @@ use std::os::unix::fs::{FileTypeExt as _, OpenOptionsExt as _};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use hardware_core::lamparray::{self, Description, FeatureDevice, LampArrayKind, Layout};
+use hardware_core::lamparray::{self, Description, FeatureDevice, Layout};
 use hardware_core::lighting::{
-    self, Effect, Interface, LightingChoice, LightingReply, Rgb, asus_wmi,
+    self, Effect, Interface, LightingChoice, LightingDevice, LightingReply, Rgb, StoredLighting,
+    asus_wmi,
 };
-use hardware_platform::sysfs::{self, SysRoot};
+use hardware_platform::sysfs::{self, LampArrayNode, SysRoot};
 
 use crate::DaemonError;
 use crate::hardware::AttributeWriter;
@@ -78,26 +79,23 @@ pub trait LampHelper: Send + Sync {
     fn run(&self, node: &str, command: LampCommand) -> Result<Option<Description>, DaemonError>;
 }
 
-/// The transient helper unit's properties: the device cgroup allows the one
-/// node; `/sys` is an empty read-only tmpfs; no capabilities, no network,
-/// nothing writable.
+/// The account the helper runs as once the node is open.
+pub const HELPER_UID: libc::uid_t = 65534;
+pub const HELPER_GID: libc::gid_t = 65534;
+
+/// The transient helper unit's properties: ADR 0029's shared helper
+/// sandbox (`hardware::helper_sandbox`), a private `/dev` holding the
+/// pseudo-devices and this one node, a device cgroup that allows only it,
+/// and of all capabilities only the two that let the helper drop to
+/// `nobody` once the node is open (`drop_to_nobody`).
 pub fn lamp_helper_properties(node: &str) -> Vec<String> {
-    vec![
-        "DevicePolicy=closed".to_string(),
+    let mut properties = crate::hardware::helper_sandbox();
+    properties.extend([
+        format!("BindPaths=/dev/{node}"),
         format!("DeviceAllow=/dev/{node} rw"),
-        "TemporaryFileSystem=/sys:ro".to_string(),
-        "MountAPIVFS=no".to_string(),
-        "ProtectSystem=strict".to_string(),
-        "ProtectHome=yes".to_string(),
-        "PrivateTmp=yes".to_string(),
-        "PrivateNetwork=yes".to_string(),
-        "NoNewPrivileges=yes".to_string(),
-        "CapabilityBoundingSet=".to_string(),
-        "RestrictAddressFamilies=AF_UNIX".to_string(),
-        "RestrictNamespaces=yes".to_string(),
-        "LockPersonality=yes".to_string(),
-        "SystemCallArchitectures=native".to_string(),
-    ]
+        "CapabilityBoundingSet=CAP_SETUID CAP_SETGID".to_string(),
+    ]);
+    properties
 }
 
 /// Starts this program's `--lamp-array` in a transient unit and waits.
@@ -235,9 +233,11 @@ mod hidraw {
             if unsafe { libc::ioctl(fd, HIDIOCGRDESCSIZE as _, &mut size) } < 0 {
                 return Err(errno("HIDIOCGRDESCSIZE"));
             }
+            // The kernel refuses HIDIOCGRDESC for a size of
+            // HID_MAX_DESCRIPTOR_SIZE (4096) or more (`hidraw_ioctl`).
             let size = usize::try_from(size)
                 .ok()
-                .filter(|s| (1..=4096).contains(s))
+                .filter(|s| (1..=4095).contains(s))
                 .ok_or_else(|| format!("descriptor size {size}"))?;
             let mut descriptor = Box::new(ReportDescriptor {
                 size: size as u32,
@@ -305,6 +305,33 @@ mod hidraw {
     }
 }
 
+/// Gives up root for good: no supplementary groups, then `nobody`'s group
+/// and user, real, effective, and saved. Root's capabilities go with the
+/// user ID (no `PR_SET_KEEPCAPS`). Fails closed: a helper that is still
+/// root afterwards stops.
+fn drop_to_nobody() -> Result<(), DaemonError> {
+    let failed = |what: &str| {
+        DaemonError::WriteFailed(format!("{what}: {}", std::io::Error::last_os_error()))
+    };
+    // SAFETY: plain system calls with no pointers but a null list of zero
+    // groups.
+    unsafe {
+        if libc::setgroups(0, std::ptr::null()) != 0 {
+            return Err(failed("setgroups"));
+        }
+        if libc::setresgid(HELPER_GID, HELPER_GID, HELPER_GID) != 0 {
+            return Err(failed("setresgid"));
+        }
+        if libc::setresuid(HELPER_UID, HELPER_UID, HELPER_UID) != 0 {
+            return Err(failed("setresuid"));
+        }
+        if libc::getuid() != HELPER_UID || libc::geteuid() != HELPER_UID || libc::setuid(0) == 0 {
+            return Err(DaemonError::WriteFailed("still root".to_string()));
+        }
+    }
+    Ok(())
+}
+
 /// `--lamp-array NODE COMMAND...`, inside the helper's sandbox: opens
 /// `/dev/NODE`, reads its descriptor from the kernel, and runs the command.
 /// Prints a description as JSON, or `ok`.
@@ -334,6 +361,9 @@ pub fn lamp_helper_main(node: &str, args: &[String]) -> Result<String, DaemonErr
     let descriptor = device
         .descriptor()
         .map_err(|e| DaemonError::WriteFailed(format!("{}: {e}", path.display())))?;
+    // Root was needed to open the node, and nothing after. Everything the
+    // device answers is parsed as `nobody`, with no capability.
+    drop_to_nobody()?;
     match run_on(&mut device, &descriptor, command)? {
         Some(description) => {
             serde_json::to_string(&description).map_err(|e| DaemonError::WriteFailed(e.to_string()))
@@ -342,30 +372,82 @@ pub fn lamp_helper_main(node: &str, args: &[String]) -> Result<String, DaemonErr
     }
 }
 
-/// Whether a LampArray is the built-in keyboard: it says it is a keyboard,
-/// or says nothing (or "undefined") and sits on the I2C bus, where a
-/// laptop's keyboard is. A LampArray mouse or a light strip is never taken.
-pub fn is_keyboard(kind: Option<LampArrayKind>, bus: Option<u16>) -> bool {
-    match kind {
-        Some(LampArrayKind::Keyboard) => true,
-        None | Some(LampArrayKind::Undefined) => bus == Some(sysfs::BUS_I2C),
-        Some(_) => false,
-    }
-}
-
 /// Descriptions already read, by node and descriptor: a LampArray's
 /// attributes do not change while it is plugged in.
 #[derive(Default)]
 pub struct LampCache(Mutex<Vec<(String, Vec<u8>, Description)>>);
 
-/// The built-in keyboard's LampArray: its node and description.
+/// The keyboard the System page sets (ADR 0034): the laptop's own, never
+/// one plugged in by USB or Bluetooth.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Keyboard {
+    /// A built-in (I2C) LampArray that says it is a keyboard, or says
+    /// nothing.
+    LampArray {
+        node: LampArrayNode,
+        description: Description,
+    },
+    /// asus-wmi's `kbd_rgb_mode`, at its real path under `/sys/devices`.
+    AsusWmi(PathBuf),
+    /// A built-in LampArray that says it is something else (chassis,
+    /// peripheral, ...). Reported as found; never driven.
+    NotAKeyboard {
+        node: LampArrayNode,
+        description: Description,
+    },
+}
+
+impl Keyboard {
+    pub fn device(&self) -> LightingDevice {
+        match self {
+            Keyboard::LampArray { node, .. } | Keyboard::NotAKeyboard { node, .. } => node.device(),
+            Keyboard::AsusWmi(_) => LightingDevice::ASUS_WMI,
+        }
+    }
+}
+
+/// The journal line a LampArray's description gets the first time the
+/// daemon reads it: what the owner's check wants to know, with no root
+/// command (lamp count, kind, levels).
+pub fn description_line(node: &LampArrayNode, description: &Description) -> String {
+    let l = description.levels;
+    format!(
+        "keyboard lighting: /dev/{} ({}): {} lamps, kind {}, levels red {} green {} blue {} intensity {}, programmable {}, update interval {}",
+        node.node,
+        node.device().label(),
+        description.lamps,
+        description
+            .kind
+            .map(|k| format!("{k:?}"))
+            .unwrap_or_else(|| "not reported".to_string()),
+        l.red,
+        l.green,
+        l.blue,
+        l.intensity,
+        if description.programmable {
+            "yes"
+        } else {
+            "no"
+        },
+        description
+            .min_update_interval_us
+            .map(|us| format!("{us} µs"))
+            .unwrap_or_else(|| "not reported".to_string()),
+    )
+}
+
+/// The built-in keyboard: a built-in LampArray that is a keyboard first,
+/// then `kbd_rgb_mode`, then a built-in lighting device that is not a
+/// keyboard (so the page can say what it found). External LampArrays are
+/// never read.
 pub fn find_keyboard(
     root: &SysRoot,
     helper: &dyn LampHelper,
     cache: &LampCache,
-) -> Result<Option<(String, Description)>, DaemonError> {
+) -> Result<Option<Keyboard>, DaemonError> {
     let mut last_error = None;
-    for candidate in sysfs::lamp_array_nodes(root) {
+    let mut not_keyboard = None;
+    for candidate in sysfs::built_in_lamp_arrays(root) {
         let Some(descriptor) = sysfs::report_descriptor(root, &candidate.node) else {
             continue;
         };
@@ -380,6 +462,10 @@ pub fn find_keyboard(
             Some(description) => description,
             None => match helper.run(&candidate.node, LampCommand::Describe) {
                 Ok(Some(description)) => {
+                    eprintln!(
+                        "better-manager-daemon: {}",
+                        description_line(&candidate, &description)
+                    );
                     let mut entries = cache
                         .0
                         .lock()
@@ -395,9 +481,22 @@ pub fn find_keyboard(
                 }
             },
         };
-        if is_keyboard(description.kind, candidate.bus) {
-            return Ok(Some((candidate.node, description)));
+        if lamparray::is_keyboard_kind(description.kind) {
+            return Ok(Some(Keyboard::LampArray {
+                node: candidate,
+                description,
+            }));
         }
+        not_keyboard.get_or_insert(Keyboard::NotAKeyboard {
+            node: candidate,
+            description,
+        });
+    }
+    if let Some(path) = sysfs::keyboard_rgb_mode_attribute(root) {
+        return Ok(Some(Keyboard::AsusWmi(real(path))));
+    }
+    if let Some(found) = not_keyboard {
+        return Ok(Some(found));
     }
     match last_error {
         Some(error) => Err(error),
@@ -405,58 +504,141 @@ pub fn find_keyboard(
     }
 }
 
-/// The stored choice, or `None` when Better OS has set nothing.
-pub fn load(state: &Path) -> Result<Option<LightingChoice>, DaemonError> {
+/// Where the daemon keeps the keyboard's colour.
+#[derive(Clone, Debug)]
+pub struct LightingPaths {
+    /// The choice and its keyboard, for the boot-time restore
+    /// (`/var/lib/better-os/keyboard-lighting.json`).
+    pub state: PathBuf,
+    /// Present while the keyboard's own lighting was chosen on
+    /// `kbd_rgb_mode` and the PC has not started again
+    /// (`/run/better-os/keyboard-lighting-firmware`); `/run` is emptied at
+    /// boot, which is exactly when the firmware's own setting returns.
+    pub firmware_marker: PathBuf,
+}
+
+impl LightingPaths {
+    pub fn system() -> LightingPaths {
+        LightingPaths {
+            state: PathBuf::from(crate::LIGHTING_STATE),
+            firmware_marker: PathBuf::from(crate::LIGHTING_FIRMWARE_MARKER),
+        }
+    }
+
+    /// Both under one directory, for tests.
+    pub fn under(dir: &Path) -> LightingPaths {
+        LightingPaths {
+            state: dir.join("keyboard-lighting.json"),
+            firmware_marker: dir.join("keyboard-lighting-firmware"),
+        }
+    }
+}
+
+/// The stored choice, or `None` when Better OS has set nothing. A file that
+/// is empty or does not parse (power lost before an older write reached the
+/// disk, say) is nothing saved, with a journal line, never a failure that
+/// would fail the boot-time restore every time.
+pub fn load(state: &Path) -> Result<Option<StoredLighting>, DaemonError> {
     match std::fs::read_to_string(state) {
-        Ok(text) => serde_json::from_str(&text)
-            .map(Some)
-            .map_err(|e| DaemonError::Storage(e.to_string())),
+        Ok(text) => match serde_json::from_str(&text) {
+            Ok(stored) => Ok(Some(stored)),
+            Err(error) => {
+                eprintln!(
+                    "better-manager-daemon: keyboard lighting: {} is not a saved choice ({error}); nothing is restored",
+                    state.display()
+                );
+                Ok(None)
+            }
+        },
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(DaemonError::Storage(error.to_string())),
     }
 }
 
-/// Keeps a choice for the boot-time restore. The keyboard's own default is
-/// no choice at all: the file goes, so nothing is written at boot.
-pub fn store(state: &Path, choice: &LightingChoice) -> Result<(), DaemonError> {
-    if choice.effect == Effect::Firmware {
-        return match std::fs::remove_file(state) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(DaemonError::Storage(error.to_string())),
-        };
+fn remove(path: &Path) -> Result<(), DaemonError> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(DaemonError::Storage(error.to_string())),
     }
-    if let Some(parent) = state.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| DaemonError::Storage(e.to_string()))?;
-    }
-    let text = serde_json::to_string(choice).map_err(|e| DaemonError::Storage(e.to_string()))?;
-    let temporary = state.with_extension("json.tmp");
-    std::fs::write(&temporary, text).map_err(|e| DaemonError::Storage(e.to_string()))?;
-    std::fs::rename(&temporary, state).map_err(|e| DaemonError::Storage(e.to_string()))
 }
 
-/// What the machine offers and what Better OS set.
+/// Writes `text` to `path` whole or not at all: a temporary file, synced,
+/// renamed over the old one, and the directory synced, so a power loss
+/// leaves the old file or the new one and never an empty one.
+fn write_durably(path: &Path, text: &str) -> Result<(), DaemonError> {
+    use std::io::Write as _;
+    let storage = |e: std::io::Error| DaemonError::Storage(e.to_string());
+    let parent = path
+        .parent()
+        .ok_or_else(|| DaemonError::Storage("no directory".into()))?;
+    std::fs::create_dir_all(parent).map_err(storage)?;
+    let temporary = path.with_extension("json.tmp");
+    let mut file = std::fs::File::create(&temporary).map_err(storage)?;
+    file.write_all(text.as_bytes()).map_err(storage)?;
+    file.sync_all().map_err(storage)?;
+    drop(file);
+    std::fs::rename(&temporary, path).map_err(storage)?;
+    std::fs::File::open(parent)
+        .and_then(|dir| dir.sync_all())
+        .map_err(storage)
+}
+
+/// Keeps a choice for the boot-time restore, with the keyboard it is for.
+/// The keyboard's own lighting is no choice at all: the file goes, so
+/// nothing is written at boot; on `kbd_rgb_mode` the marker says the
+/// firmware's own setting returns at the next start.
+pub fn store(
+    paths: &LightingPaths,
+    device: LightingDevice,
+    choice: &LightingChoice,
+) -> Result<(), DaemonError> {
+    if choice.effect == Effect::Firmware {
+        remove(&paths.state)?;
+        if device.interface == Interface::AsusWmi {
+            write_durably(&paths.firmware_marker, "")?;
+        }
+        return Ok(());
+    }
+    remove(&paths.firmware_marker)?;
+    let stored = StoredLighting {
+        device,
+        choice: *choice,
+    };
+    let text = serde_json::to_string(&stored).map_err(|e| DaemonError::Storage(e.to_string()))?;
+    write_durably(&paths.state, &text)
+}
+
+/// What the machine offers and what Better OS set on that keyboard.
 pub fn describe(
     root: &SysRoot,
     helper: &dyn LampHelper,
     cache: &LampCache,
-    stored: Option<LightingChoice>,
+    paths: &LightingPaths,
 ) -> Result<LightingReply, DaemonError> {
-    if let Some((_, description)) = find_keyboard(root, helper, cache)? {
-        return Ok(LightingReply {
-            interface: Interface::LampArray,
-            lamp_array: Some(description),
-            stored,
-        });
-    }
-    if sysfs::keyboard_rgb_mode_attribute(root).is_some() {
-        return Ok(LightingReply {
+    let keyboard = find_keyboard(root, helper, cache)?.ok_or(DaemonError::HardwareAbsent)?;
+    let device = keyboard.device();
+    let stored = load(&paths.state)?
+        .filter(|stored| stored.device == device)
+        .map(|stored| stored.choice);
+    Ok(match keyboard {
+        Keyboard::LampArray { description, .. } | Keyboard::NotAKeyboard { description, .. } => {
+            LightingReply {
+                interface: Interface::LampArray,
+                device,
+                lamp_array: Some(description),
+                stored,
+                firmware_at_next_start: false,
+            }
+        }
+        Keyboard::AsusWmi(_) => LightingReply {
             interface: Interface::AsusWmi,
+            device,
             lamp_array: None,
             stored,
-        });
-    }
-    Err(DaemonError::HardwareAbsent)
+            firmware_at_next_start: paths.firmware_marker.exists(),
+        },
+    })
 }
 
 /// The attribute's real path, the class link resolved to the device.
@@ -464,88 +646,135 @@ fn real(path: PathBuf) -> PathBuf {
     std::fs::canonicalize(&path).unwrap_or(path)
 }
 
-/// Shows `choice` on the keyboard. A choice the interface does not take
-/// touches nothing.
+/// Shows `choice` on `keyboard`. A choice the interface does not take
+/// touches nothing. The keyboard's own lighting on `kbd_rgb_mode` writes
+/// nothing: there is no write that brings the firmware's saved setting back
+/// before the next start (cmd 0 never saved over it).
+pub fn apply_to(
+    keyboard: &Keyboard,
+    helper: &dyn LampHelper,
+    writer: &dyn AttributeWriter,
+    choice: &LightingChoice,
+) -> Result<LightingDevice, DaemonError> {
+    match keyboard {
+        Keyboard::LampArray { node, .. } => {
+            if !lighting::accepts(Interface::LampArray, choice) {
+                return Err(DaemonError::InvalidArgument("effect".to_string()));
+            }
+            let command = match choice.effect {
+                Effect::Firmware => LampCommand::GiveBack,
+                _ => LampCommand::Set {
+                    colour: choice.colour,
+                    intensity: choice.intensity,
+                },
+            };
+            helper.run(&node.node, command)?;
+        }
+        Keyboard::AsusWmi(path) => {
+            if !lighting::accepts(Interface::AsusWmi, choice) {
+                return Err(DaemonError::InvalidArgument("effect".to_string()));
+            }
+            if let Some(value) = asus_wmi::value(choice) {
+                writer.write(path, &value)?;
+            }
+        }
+        Keyboard::NotAKeyboard { .. } => return Err(DaemonError::HardwareAbsent),
+    }
+    Ok(keyboard.device())
+}
+
+/// Finds the keyboard and shows `choice` on it.
 pub fn apply(
     root: &SysRoot,
     helper: &dyn LampHelper,
     writer: &dyn AttributeWriter,
     cache: &LampCache,
     choice: &LightingChoice,
-) -> Result<Interface, DaemonError> {
-    if let Some((node, _)) = find_keyboard(root, helper, cache)? {
-        if !lighting::accepts(Interface::LampArray, choice) {
-            return Err(DaemonError::InvalidArgument("effect".to_string()));
-        }
-        let command = match choice.effect {
-            Effect::Firmware => LampCommand::GiveBack,
-            _ => LampCommand::Set {
-                colour: choice.colour,
-                intensity: choice.intensity,
-            },
-        };
-        helper.run(&node, command)?;
-        return Ok(Interface::LampArray);
-    }
-    if let Some(path) = sysfs::keyboard_rgb_mode_attribute(root) {
-        if !lighting::accepts(Interface::AsusWmi, choice) {
-            return Err(DaemonError::InvalidArgument("effect".to_string()));
-        }
-        let value = asus_wmi::value(choice)
-            .ok_or_else(|| DaemonError::InvalidArgument("effect".to_string()))?;
-        writer.write(&real(path), &value)?;
-        return Ok(Interface::AsusWmi);
-    }
-    Err(DaemonError::HardwareAbsent)
+) -> Result<LightingDevice, DaemonError> {
+    let keyboard = find_keyboard(root, helper, cache)?.ok_or(DaemonError::HardwareAbsent)?;
+    apply_to(&keyboard, helper, writer, choice)
 }
 
 /// What `--restore-hardware` did for the keyboard.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RestoredLighting {
     NothingStored,
-    Written(Interface),
+    Written(LightingDevice),
+    /// The keyboard the choice was made for is not here (yet): an I2C
+    /// keyboard can bind late, so the restore asks again for a while, then
+    /// skips with a journal line. Never a failed unit.
+    DeviceAbsent(LightingDevice),
+    /// The choice no longer fits its keyboard; skipped with a journal line.
+    Skipped(String),
 }
 
-/// Shows the stored choice again at boot.
+/// Shows the stored choice again at boot, on the keyboard it was made for
+/// and no other.
 pub fn restore(
     root: &SysRoot,
     helper: &dyn LampHelper,
     writer: &dyn AttributeWriter,
     state: &Path,
 ) -> Result<RestoredLighting, DaemonError> {
-    let Some(choice) = load(state)? else {
+    let Some(stored) = load(state)? else {
         return Ok(RestoredLighting::NothingStored);
     };
-    apply(root, helper, writer, &LampCache::default(), &choice).map(RestoredLighting::Written)
+    let keyboard = match find_keyboard(root, helper, &LampCache::default())? {
+        Some(keyboard) if keyboard.device() == stored.device => keyboard,
+        _ => return Ok(RestoredLighting::DeviceAbsent(stored.device)),
+    };
+    match apply_to(&keyboard, helper, writer, &stored.choice) {
+        Ok(device) => Ok(RestoredLighting::Written(device)),
+        Err(DaemonError::InvalidArgument(_)) | Err(DaemonError::HardwareAbsent) => {
+            Ok(RestoredLighting::Skipped(format!(
+                "the saved {} does not fit {}",
+                stored.choice.effect.wire(),
+                stored.device.label()
+            )))
+        }
+        Err(error) => Err(error),
+    }
 }
 
-/// The package's prerm on removal: a keyboard Better OS took over goes back
-/// to its firmware. `kbd_rgb_mode` needs nothing: Better OS never saved to
-/// the firmware, whose own setting comes back at the next start. Returns
-/// what could not be done; it never fails the removal.
-pub fn release(root: &SysRoot, helper: &dyn LampHelper, state: &Path) -> Vec<String> {
-    // Nothing stored: Better OS never took the keyboard. A file that cannot
-    // be read is no proof of that, so the keyboard is given back then too.
-    if let Ok(None) = load(state) {
-        return Vec::new();
-    }
-    match find_keyboard(root, helper, &LampCache::default()) {
-        Ok(Some((node, _))) => match helper.run(&node, LampCommand::GiveBack) {
-            Ok(_) => Vec::new(),
-            Err(error) => vec![format!("/dev/{node}: {error}")],
+/// Gives the keyboard back to its firmware and forgets the choice: the
+/// daemon package's prerm on removal, and Better Manager's own prerm (the
+/// page that set it is going). A LampArray Better OS set is put back in
+/// autonomous mode; `kbd_rgb_mode` needs no write, because Better OS never
+/// saved to the firmware, whose own setting returns at the next start.
+/// Nothing is touched when nothing was set. Returns what could not be done;
+/// it never fails a removal.
+pub fn release(root: &SysRoot, helper: &dyn LampHelper, paths: &LightingPaths) -> Vec<String> {
+    let mut problems = Vec::new();
+    match load(&paths.state) {
+        Ok(None) => {}
+        Ok(Some(stored)) => match find_keyboard(root, helper, &LampCache::default()) {
+            Ok(Some(Keyboard::LampArray { node, .. })) if node.device() == stored.device => {
+                if let Err(error) = helper.run(&node.node, LampCommand::GiveBack) {
+                    problems.push(format!("/dev/{}: {error}", node.node));
+                }
+            }
+            Ok(_) => {}
+            Err(error) => problems.push(error.to_string()),
         },
-        Ok(None) => Vec::new(),
-        Err(error) => vec![error.to_string()],
+        Err(error) => problems.push(error.to_string()),
     }
+    for path in [&paths.state, &paths.firmware_marker] {
+        if let Err(error) = remove(path) {
+            problems.push(format!("{}: {error}", path.display()));
+        }
+    }
+    problems
 }
 
-/// A helper that drives an in-memory LampArray: tests and sandbox
-/// stand-ins. Never in the shipped daemon.
+/// A helper that drives in-memory LampArrays: tests and sandbox stand-ins.
+/// Never in the shipped daemon. `device` is the one at `node`; `others`
+/// are more nodes, each its own LampArray.
 #[cfg(any(test, feature = "test-support"))]
 pub struct FakeLampHelper {
     pub node: String,
     pub descriptor: Vec<u8>,
     pub device: Mutex<lamparray::fake::FakeLampArray>,
+    pub others: Mutex<Vec<(String, lamparray::fake::FakeLampArray)>>,
     /// How many times the helper ran.
     pub runs: std::sync::atomic::AtomicUsize,
 }
@@ -557,8 +786,20 @@ impl FakeLampHelper {
             node: node.to_string(),
             descriptor: descriptor.to_vec(),
             device: Mutex::new(lamparray::fake::FakeLampArray::one_zone(descriptor)),
+            others: Mutex::new(Vec::new()),
             runs: Default::default(),
         }
+    }
+
+    /// Another LampArray at `node`, of `kind`.
+    pub fn add(&self, node: &str, kind: u32) {
+        let mut device = lamparray::fake::FakeLampArray::one_zone(&self.descriptor);
+        device.kind = kind;
+        self.others.lock().unwrap().push((node.to_string(), device));
+    }
+
+    pub fn runs(&self) -> usize {
+        self.runs.load(std::sync::atomic::Ordering::SeqCst)
     }
 }
 
@@ -566,14 +807,18 @@ impl FakeLampHelper {
 impl LampHelper for FakeLampHelper {
     fn run(&self, node: &str, command: LampCommand) -> Result<Option<Description>, DaemonError> {
         self.runs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        if node != self.node {
-            return Err(DaemonError::WriteFailed(format!("/dev/{node}: ENOENT")));
-        }
         // The helper is a separate process: it sees only its argument list.
         let parsed = LampCommand::parse(&command.args())
             .ok_or_else(|| DaemonError::InvalidArgument("lamp command".into()))?;
-        let mut device = self.device.lock().unwrap();
-        run_on(&mut *device, &self.descriptor, parsed)
+        if node == self.node {
+            let mut device = self.device.lock().unwrap();
+            return run_on(&mut *device, &self.descriptor, parsed);
+        }
+        let mut others = self.others.lock().unwrap();
+        match others.iter_mut().find(|(n, _)| n == node) {
+            Some((_, device)) => run_on(device, &self.descriptor, parsed),
+            None => Err(DaemonError::WriteFailed(format!("/dev/{node}: ENOENT"))),
+        }
     }
 }
 
@@ -581,22 +826,54 @@ impl LampHelper for FakeLampHelper {
 mod tests {
     use super::*;
     use crate::hardware::DirectWriter;
+    use hardware_core::lighting::Speed;
 
     const M5406WA: &[u8] =
         include_bytes!("../../hardware-core/tests/fixtures/m5406wa-ite5570.rdesc");
 
-    fn machine(dir: &Path, bus: &str) {
-        let device = dir.join("sys/class/hidraw/hidraw1/device");
+    const OWNERS: LightingDevice = LightingDevice {
+        interface: Interface::LampArray,
+        bus: Some(0x18),
+        vendor: Some(0x0B05),
+        product: Some(0x5570),
+    };
+
+    /// A hidraw node with the real descriptor, on `bus`.
+    fn lamp_node(dir: &Path, node: &str, bus: &str, product: &str) {
+        let device = dir.join("sys/class/hidraw").join(node).join("device");
         std::fs::create_dir_all(&device).unwrap();
         std::fs::write(device.join("report_descriptor"), M5406WA).unwrap();
         std::fs::write(
             device.join("uevent"),
-            format!("HID_ID={bus}:00000B05:00005570\n"),
+            format!("HID_ID={bus}:00000B05:0000{product}\n"),
         )
         .unwrap();
+    }
+
+    fn backlight(dir: &Path, rgb: bool) -> PathBuf {
         let led = dir.join("sys/class/leds/asus::kbd_backlight");
         std::fs::create_dir_all(&led).unwrap();
         std::fs::write(led.join("max_brightness"), "3\n").unwrap();
+        let attribute = led.join("kbd_rgb_mode");
+        if rgb {
+            std::fs::write(&attribute, "").unwrap();
+        }
+        attribute
+    }
+
+    /// The owner's machine: the I2C LampArray at hidraw1 and a backlight.
+    fn owners(dir: &Path) {
+        lamp_node(dir, "hidraw1", "0018", "5570");
+        backlight(dir, false);
+    }
+
+    fn red() -> LightingChoice {
+        LightingChoice {
+            effect: Effect::Static,
+            colour: Rgb::new(255, 0, 0),
+            intensity: 100,
+            speed: Speed::Normal,
+        }
     }
 
     #[test]
@@ -631,23 +908,36 @@ mod tests {
         refuse(&["give-back", "now"]);
     }
 
+    /// The review's finding 1: the helper's sandbox, asserted property by
+    /// property. Untested on a real system manager (see ADR 0034).
     #[test]
-    fn the_helper_unit_can_open_only_its_one_node() {
+    fn the_lamp_helper_sees_one_node_and_drops_to_nobody() {
         let properties = lamp_helper_properties("hidraw1");
-        assert!(properties.contains(&"DevicePolicy=closed".to_string()));
+        let has = |p: &str| properties.iter().any(|q| q == p);
+        // The shared sandbox, in full.
+        for shared in crate::hardware::helper_sandbox() {
+            assert!(has(&shared), "{shared}");
+        }
+        // /dev is private: the pseudo-devices and this node, bound in, and
+        // the device cgroup allows only it.
+        assert!(has("PrivateDevices=yes"));
+        assert!(has("BindPaths=/dev/hidraw1"));
         assert_eq!(
             properties
                 .iter()
-                .filter(|p| p.starts_with("DeviceAllow="))
+                .filter(|p| p.starts_with("DeviceAllow=") || p.starts_with("BindPaths="))
                 .collect::<Vec<_>>(),
-            vec!["DeviceAllow=/dev/hidraw1 rw"]
+            vec!["BindPaths=/dev/hidraw1", "DeviceAllow=/dev/hidraw1 rw"]
         );
-        assert!(properties.contains(&"TemporaryFileSystem=/sys:ro".to_string()));
-        assert!(properties.contains(&"CapabilityBoundingSet=".to_string()));
-        assert!(properties.contains(&"NoNewPrivileges=yes".to_string()));
-        assert!(properties.contains(&"PrivateNetwork=yes".to_string()));
-        assert!(!properties.iter().any(|p| p.starts_with("BindPaths")));
-        assert!(!properties.iter().any(|p| p.starts_with("PrivateDevices")));
+        // Only the two capabilities the drop to nobody needs.
+        assert_eq!(
+            properties
+                .iter()
+                .filter(|p| p.starts_with("CapabilityBoundingSet="))
+                .collect::<Vec<_>>(),
+            vec!["CapabilityBoundingSet=CAP_SETUID CAP_SETGID"]
+        );
+        assert_eq!((HELPER_UID, HELPER_GID), (65534, 65534));
     }
 
     #[test]
@@ -675,66 +965,71 @@ mod tests {
     #[test]
     fn the_owners_keyboard_is_found_set_stored_restored_and_released() {
         let dir = tempfile::tempdir().unwrap();
-        machine(dir.path(), "0018");
+        owners(dir.path());
         let root = SysRoot::at(dir.path());
         let helper = FakeLampHelper::new("hidraw1", M5406WA);
         let cache = LampCache::default();
-        let state = dir.path().join("var/keyboard-lighting.json");
+        let paths = LightingPaths::under(&dir.path().join("var"));
 
-        let reply = describe(&root, &helper, &cache, None).unwrap();
+        let reply = describe(&root, &helper, &cache, &paths).unwrap();
         assert_eq!(reply.interface, Interface::LampArray);
+        assert_eq!(reply.device, OWNERS);
         assert_eq!(reply.lamp_array.as_ref().unwrap().lamps, 1);
         // The description is read once.
-        describe(&root, &helper, &cache, None).unwrap();
-        assert_eq!(helper.runs.load(std::sync::atomic::Ordering::SeqCst), 1);
+        describe(&root, &helper, &cache, &paths).unwrap();
+        assert_eq!(helper.runs(), 1);
 
-        let choice = LightingChoice {
-            effect: Effect::Static,
-            colour: Rgb::new(255, 0, 0),
-            intensity: 100,
-            speed: lighting::Speed::Normal,
-        };
         assert_eq!(
-            apply(&root, &helper, &DirectWriter, &cache, &choice),
-            Ok(Interface::LampArray)
+            apply(&root, &helper, &DirectWriter, &cache, &red()),
+            Ok(OWNERS)
         );
-        assert_eq!(helper.device.lock().unwrap().shown, Some([254, 0, 0, 254]));
+        assert_eq!(helper.device.lock().unwrap().shown, Some([255, 0, 0, 255]));
         assert!(!helper.device.lock().unwrap().autonomous);
-        store(&state, &choice).unwrap();
-        assert_eq!(load(&state).unwrap(), Some(choice));
+        store(&paths, OWNERS, &red()).unwrap();
+        assert_eq!(
+            load(&paths.state).unwrap(),
+            Some(StoredLighting {
+                device: OWNERS,
+                choice: red()
+            })
+        );
+        assert_eq!(
+            describe(&root, &helper, &cache, &paths).unwrap().stored,
+            Some(red())
+        );
 
         // Boot: the firmware is back in control; the restore takes it again.
         helper.device.lock().unwrap().autonomous = true;
         assert_eq!(
-            restore(&root, &helper, &DirectWriter, &state),
-            Ok(RestoredLighting::Written(Interface::LampArray))
+            restore(&root, &helper, &DirectWriter, &paths.state),
+            Ok(RestoredLighting::Written(OWNERS))
         );
         assert!(!helper.device.lock().unwrap().autonomous);
 
-        // Removal gives the keyboard back.
-        assert!(release(&root, &helper, &state).is_empty());
+        // Removal gives the keyboard back and forgets the choice.
+        assert!(release(&root, &helper, &paths).is_empty());
         assert!(helper.device.lock().unwrap().autonomous);
+        assert!(!paths.state.exists());
 
         // The keyboard's own default stores nothing.
-        store(&state, &LightingChoice::starting(Effect::Firmware)).unwrap();
-        assert!(!state.exists());
+        store(&paths, OWNERS, &red()).unwrap();
+        store(&paths, OWNERS, &LightingChoice::starting(Effect::Firmware)).unwrap();
+        assert!(!paths.state.exists());
+        assert!(!paths.firmware_marker.exists(), "no marker on a LampArray");
         assert_eq!(
-            restore(&root, &helper, &DirectWriter, &state),
+            restore(&root, &helper, &DirectWriter, &paths.state),
             Ok(RestoredLighting::NothingStored)
         );
-        let before = helper.runs.load(std::sync::atomic::Ordering::SeqCst);
-        assert!(release(&root, &helper, &state).is_empty());
+        let before = helper.runs();
+        assert!(release(&root, &helper, &paths).is_empty());
         // With nothing stored, removal never touches the keyboard.
-        assert_eq!(
-            helper.runs.load(std::sync::atomic::Ordering::SeqCst),
-            before
-        );
+        assert_eq!(helper.runs(), before);
     }
 
     #[test]
     fn an_effect_a_lamp_array_cannot_do_touches_nothing() {
         let dir = tempfile::tempdir().unwrap();
-        machine(dir.path(), "0018");
+        owners(dir.path());
         let root = SysRoot::at(dir.path());
         let helper = FakeLampHelper::new("hidraw1", M5406WA);
         let cache = LampCache::default();
@@ -756,86 +1051,221 @@ mod tests {
         assert!(device.autonomous);
     }
 
+    /// The review's finding 3: a USB Dynamic Lighting keyboard is never
+    /// the keyboard, beside a built-in one or alone.
     #[test]
-    fn a_lamp_array_that_is_not_a_keyboard_is_left_alone() {
+    fn an_external_lamp_array_is_never_the_keyboard() {
+        // A TUF laptop with a USB LampArray keyboard plugged in: the card
+        // is for kbd_rgb_mode, and the USB keyboard is not even read.
         let dir = tempfile::tempdir().unwrap();
-        // A USB LampArray that says it is a mouse.
-        machine(dir.path(), "0003");
+        lamp_node(dir.path(), "hidraw0", "0003", "1234");
+        let attribute = backlight(dir.path(), true);
+        let root = SysRoot::at(dir.path());
+        let helper = FakeLampHelper::new("hidraw0", M5406WA);
+        let cache = LampCache::default();
+        let reply = describe(&root, &helper, &cache, &LightingPaths::under(dir.path())).unwrap();
+        assert_eq!(reply.interface, Interface::AsusWmi);
+        assert_eq!(reply.device, LightingDevice::ASUS_WMI);
+        assert_eq!(helper.runs(), 0, "the USB keyboard is never opened");
+        let breathing = LightingChoice {
+            effect: Effect::Breathing,
+            ..red()
+        };
+        assert_eq!(
+            apply(&root, &helper, &DirectWriter, &cache, &breathing),
+            Ok(LightingDevice::ASUS_WMI)
+        );
+        assert_eq!(
+            std::fs::read_to_string(&attribute).unwrap(),
+            "0 1 255 0 0 1"
+        );
+
+        // The M5406WA with a USB LampArray keyboard that sorts first: the
+        // built-in one is still the one set.
+        let dir = tempfile::tempdir().unwrap();
+        lamp_node(dir.path(), "hidraw0", "0003", "1234");
+        owners(dir.path());
         let root = SysRoot::at(dir.path());
         let helper = FakeLampHelper::new("hidraw1", M5406WA);
-        helper.device.lock().unwrap().kind = 2;
+        helper.add("hidraw0", 1);
         assert_eq!(
-            describe(&root, &helper, &LampCache::default(), None),
+            apply(&root, &helper, &DirectWriter, &LampCache::default(), &red()),
+            Ok(OWNERS)
+        );
+        assert!(helper.others.lock().unwrap()[0].1.sent.is_empty());
+
+        // A USB LampArray alone: no keyboard at all.
+        let dir = tempfile::tempdir().unwrap();
+        lamp_node(dir.path(), "hidraw0", "0003", "1234");
+        let helper = FakeLampHelper::new("hidraw0", M5406WA);
+        assert_eq!(
+            describe(
+                &SysRoot::at(dir.path()),
+                &helper,
+                &LampCache::default(),
+                &LightingPaths::under(dir.path())
+            ),
             Err(DaemonError::HardwareAbsent)
         );
-        // Kind undefined: a keyboard only on the built-in bus.
-        helper.device.lock().unwrap().kind = 0;
-        assert_eq!(
-            describe(&root, &helper, &LampCache::default(), None),
-            Err(DaemonError::HardwareAbsent)
-        );
-        assert!(is_keyboard(Some(LampArrayKind::Undefined), Some(0x18)));
-        assert!(is_keyboard(None, Some(0x18)));
-        assert!(!is_keyboard(Some(LampArrayKind::Mouse), Some(0x18)));
-        assert!(is_keyboard(Some(LampArrayKind::Keyboard), Some(0x03)));
     }
 
+    /// The review's finding 4: a built-in lighting device that says it is
+    /// not a keyboard is described for what it is and never driven.
     #[test]
-    fn kbd_rgb_mode_gets_the_effect_through_the_attribute_helper() {
+    fn a_built_in_lamp_array_that_is_not_a_keyboard_is_described_and_left_alone() {
         let dir = tempfile::tempdir().unwrap();
-        let led = dir.path().join("sys/class/leds/asus::kbd_backlight");
-        std::fs::create_dir_all(&led).unwrap();
-        let attribute = led.join("kbd_rgb_mode");
-        std::fs::write(&attribute, "").unwrap();
+        owners(dir.path());
+        let root = SysRoot::at(dir.path());
+        let helper = FakeLampHelper::new("hidraw1", M5406WA);
+        // Chassis.
+        helper.device.lock().unwrap().kind = 7;
+        let reply = describe(
+            &root,
+            &helper,
+            &LampCache::default(),
+            &LightingPaths::under(dir.path()),
+        )
+        .unwrap();
+        assert_eq!(
+            reply.lamp_array.unwrap().kind,
+            Some(lamparray::LampArrayKind::Chassis)
+        );
+        assert_eq!(
+            apply(&root, &helper, &DirectWriter, &LampCache::default(), &red()),
+            Err(DaemonError::HardwareAbsent)
+        );
+        assert!(helper.device.lock().unwrap().autonomous);
+        // Undefined, on the built-in bus, is taken as the keyboard.
+        helper.device.lock().unwrap().kind = 0;
+        assert_eq!(
+            apply(&root, &helper, &DirectWriter, &LampCache::default(), &red()),
+            Ok(OWNERS)
+        );
+    }
+
+    /// The review's finding 3: a saved choice goes back to its own keyboard
+    /// only, and a missing keyboard is a skip, not a failed unit.
+    #[test]
+    fn a_restore_writes_only_to_the_keyboard_it_was_saved_for() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = LightingPaths::under(&dir.path().join("var"));
+        // Breathing saved on a TUF keyboard...
+        let breathing = LightingChoice {
+            effect: Effect::Breathing,
+            ..red()
+        };
+        store(&paths, LightingDevice::ASUS_WMI, &breathing).unwrap();
+        // ...restored on a machine whose keyboard is a LampArray.
+        owners(dir.path());
+        let root = SysRoot::at(dir.path());
+        let helper = FakeLampHelper::new("hidraw1", M5406WA);
+        assert_eq!(
+            restore(&root, &helper, &DirectWriter, &paths.state),
+            Ok(RestoredLighting::DeviceAbsent(LightingDevice::ASUS_WMI))
+        );
+        assert!(
+            helper
+                .device
+                .lock()
+                .unwrap()
+                .sent
+                .iter()
+                .all(|r| r[0] == 0x42)
+        );
+        // Saved on the LampArray, which is not there at boot (yet).
+        store(&paths, OWNERS, &red()).unwrap();
+        let empty = tempfile::tempdir().unwrap();
+        assert_eq!(
+            restore(
+                &SysRoot::at(empty.path()),
+                &helper,
+                &DirectWriter,
+                &paths.state
+            ),
+            Ok(RestoredLighting::DeviceAbsent(OWNERS))
+        );
+        // An empty or broken file (power lost mid-write) is nothing saved.
+        std::fs::write(&paths.state, "").unwrap();
+        assert_eq!(
+            restore(&root, &helper, &DirectWriter, &paths.state),
+            Ok(RestoredLighting::NothingStored)
+        );
+        std::fs::write(&paths.state, r#"{"effect":"static","report":"5f00"}"#).unwrap();
+        assert_eq!(load(&paths.state), Ok(None));
+    }
+
+    /// The review's finding 2: on kbd_rgb_mode the keyboard's own lighting
+    /// is the way back, in one action.
+    #[test]
+    fn the_keyboards_own_lighting_on_kbd_rgb_mode_forgets_the_choice() {
+        let dir = tempfile::tempdir().unwrap();
+        let attribute = backlight(dir.path(), true);
         let root = SysRoot::at(dir.path());
         let helper = FakeLampHelper::new("hidraw9", M5406WA);
         let cache = LampCache::default();
-        assert_eq!(
-            describe(&root, &helper, &cache, None).unwrap().interface,
-            Interface::AsusWmi
-        );
-        let choice = LightingChoice {
-            effect: Effect::Breathing,
-            colour: Rgb::new(0, 128, 255),
-            intensity: 100,
-            speed: lighting::Speed::Slow,
+        let paths = LightingPaths::under(&dir.path().join("var"));
+        let strobe = LightingChoice {
+            effect: Effect::Strobe,
+            ..red()
         };
+        apply(&root, &helper, &DirectWriter, &cache, &strobe).unwrap();
+        store(&paths, LightingDevice::ASUS_WMI, &strobe).unwrap();
+        let firmware = LightingChoice::starting(Effect::Firmware);
         assert_eq!(
-            apply(&root, &helper, &DirectWriter, &cache, &choice),
-            Ok(Interface::AsusWmi)
+            apply(&root, &helper, &DirectWriter, &cache, &firmware),
+            Ok(LightingDevice::ASUS_WMI)
         );
-        assert_eq!(
-            std::fs::read_to_string(&attribute).unwrap(),
-            "0 1 0 128 255 0"
-        );
-        assert_eq!(
-            apply(
-                &root,
-                &helper,
-                &DirectWriter,
-                &cache,
-                &LightingChoice::starting(Effect::Firmware)
-            ),
-            Err(DaemonError::InvalidArgument("effect".into()))
-        );
+        // No write: the strobe stays until the next start.
         assert_eq!(
             std::fs::read_to_string(&attribute).unwrap(),
-            "0 1 0 128 255 0"
+            "0 10 255 0 0 1"
         );
-        // No keyboard at all.
-        let empty = tempfile::tempdir().unwrap();
+        store(&paths, LightingDevice::ASUS_WMI, &firmware).unwrap();
+        assert!(!paths.state.exists(), "nothing is restored at boot");
+        let reply = describe(&root, &helper, &cache, &paths).unwrap();
+        assert_eq!(reply.stored, None);
+        assert!(reply.firmware_at_next_start);
         assert_eq!(
-            describe(&SysRoot::at(empty.path()), &helper, &cache, None),
-            Err(DaemonError::HardwareAbsent)
+            restore(&root, &helper, &DirectWriter, &paths.state),
+            Ok(RestoredLighting::NothingStored)
         );
+        // A colour set again clears the marker.
+        store(&paths, LightingDevice::ASUS_WMI, &strobe).unwrap();
+        assert!(!paths.firmware_marker.exists());
     }
 
     #[test]
-    fn a_stored_file_that_is_not_a_choice_is_refused() {
+    fn the_saved_choice_is_written_whole() {
         let dir = tempfile::tempdir().unwrap();
-        let state = dir.path().join("keyboard-lighting.json");
-        std::fs::write(&state, r#"{"effect":"static","report":"5f00"}"#).unwrap();
-        assert!(matches!(load(&state), Err(DaemonError::Storage(_))));
+        let paths = LightingPaths::under(&dir.path().join("deep/var"));
+        store(&paths, OWNERS, &red()).unwrap();
+        assert!(!paths.state.with_extension("json.tmp").exists());
+        let text = std::fs::read_to_string(&paths.state).unwrap();
+        assert!(serde_json::from_str::<StoredLighting>(&text).is_ok());
+    }
+
+    #[test]
+    fn the_journal_line_names_what_the_owners_check_wants() {
+        let node = LampArrayNode {
+            node: "hidraw1".into(),
+            bus: Some(0x18),
+            vendor: Some(0x0B05),
+            product: Some(0x5570),
+        };
+        let mut device = lamparray::fake::FakeLampArray::one_zone(M5406WA);
+        let layout = device.layout.clone();
+        let description = lamparray::describe(&mut device, &layout).unwrap();
+        let line = description_line(&node, &description);
+        for part in [
+            "/dev/hidraw1",
+            "0018:0B05:5570",
+            "1 lamps",
+            "kind Keyboard",
+            "levels red 255 green 255 blue 255 intensity 255",
+            "programmable yes",
+        ] {
+            assert!(line.contains(part), "{part}: {line}");
+        }
     }
 
     #[test]

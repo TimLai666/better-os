@@ -220,11 +220,15 @@ pub enum Interface {
 pub fn effects(interface: Interface) -> &'static [Effect] {
     match interface {
         Interface::LampArray => &[Effect::Static, Effect::Firmware],
+        // The keyboard's own lighting is the way back on `kbd_rgb_mode` too:
+        // Better OS forgets its choice and the firmware's own saved setting
+        // returns at the next start (`asus_wmi`: cmd 0 never saves).
         Interface::AsusWmi => &[
             Effect::Static,
             Effect::Breathing,
             Effect::Cycle,
             Effect::Strobe,
+            Effect::Firmware,
         ],
     }
 }
@@ -302,15 +306,65 @@ pub mod asus_wmi {
     }
 }
 
+/// Which keyboard a choice belongs to: the interface, and for a LampArray
+/// the HID bus, vendor, and product of the device it was set on. A restore
+/// writes a choice back only to that device (ADR 0034).
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LightingDevice {
+    pub interface: Interface,
+    pub bus: Option<u16>,
+    pub vendor: Option<u16>,
+    pub product: Option<u16>,
+}
+
+impl LightingDevice {
+    /// asus-wmi's `kbd_rgb_mode`: the platform's own keyboard, one per
+    /// machine.
+    pub const ASUS_WMI: LightingDevice = LightingDevice {
+        interface: Interface::AsusWmi,
+        bus: None,
+        vendor: None,
+        product: None,
+    };
+
+    /// `0018:0B05:5570`, or `asus-wmi`.
+    pub fn label(&self) -> String {
+        match (self.interface, self.bus, self.vendor, self.product) {
+            (Interface::LampArray, Some(bus), Some(vendor), Some(product)) => {
+                format!("{bus:04X}:{vendor:04X}:{product:04X}")
+            }
+            (Interface::LampArray, ..) => "LampArray".to_string(),
+            (Interface::AsusWmi, ..) => "asus-wmi".to_string(),
+        }
+    }
+}
+
+/// `/var/lib/better-os/keyboard-lighting.json`: a choice and the keyboard
+/// it was made for.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StoredLighting {
+    pub device: LightingDevice,
+    pub choice: LightingChoice,
+}
+
 /// What the daemon answers to `KeyboardLighting`.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct LightingReply {
     pub interface: Interface,
+    /// The keyboard the card is for.
+    pub device: LightingDevice,
     /// The LampArray's own description; `None` for `kbd_rgb_mode`.
     pub lamp_array: Option<lamparray::Description>,
-    /// What Better OS last set and sets again at boot; `None` when it has
-    /// set nothing (the firmware's own lighting).
+    /// What Better OS last set on this keyboard and sets again at boot;
+    /// `None` when it has set nothing.
     pub stored: Option<LightingChoice>,
+    /// On `kbd_rgb_mode`, the keyboard's own lighting was chosen since the
+    /// PC started: the colour set before stays until the next start, when
+    /// the firmware's own setting returns.
+    #[serde(default)]
+    pub firmware_at_next_start: bool,
 }
 
 /// Which colour interface sysfs shows, read without privilege.
@@ -336,10 +390,13 @@ pub struct LightingHint {
 pub enum Access {
     /// The daemon is not installed or not answering.
     NoService,
+    /// The daemon answers but has no such method: it is older than the
+    /// window.
+    Outdated,
     NotAllowed,
     Cancelled,
-    /// It answered that the machine has no such keyboard (a LampArray that
-    /// is not a keyboard, for one).
+    /// It found no built-in keyboard with a colour interface, although sysfs
+    /// showed one when the page was read (the device went away).
     Absent,
     Failed(String),
 }
@@ -347,8 +404,14 @@ pub enum Access {
 /// The card, as the page draws it.
 #[derive(Clone, Debug, PartialEq)]
 pub enum LightingView {
-    /// "This keyboard has one colour."
+    /// A backlight, and no colour interface found for it. Not a fact about
+    /// the keyboard: only that Better OS knows no way to set its colour.
+    NoColourInterface,
+    /// The keyboard itself says it has no colour channels.
     OneColour,
+    /// The built-in lighting device says it is not a keyboard: the card
+    /// says what it found instead of calling it the keyboard.
+    NotAKeyboard(Option<lamparray::LampArrayKind>),
     /// The daemon has not answered yet.
     Pending,
     Unavailable(Access),
@@ -367,6 +430,8 @@ pub struct LiveLighting {
     /// The intensity slider is drawn.
     pub intensity: bool,
     pub lamps: Option<u16>,
+    /// See [`LightingReply::firmware_at_next_start`].
+    pub firmware_at_next_start: bool,
 }
 
 impl LiveLighting {
@@ -379,19 +444,12 @@ impl LiveLighting {
 /// The card for what sysfs showed and what the daemon answered (`None`
 /// while it has not).
 pub fn view(hint: &LightingHint, reply: Option<&Result<LightingReply, Access>>) -> LightingView {
-    let one_colour_or_unavailable = |access: Access| {
-        if access == Access::Absent {
-            LightingView::OneColour
-        } else {
-            LightingView::Unavailable(access)
-        }
-    };
     if hint.interface.is_none() {
-        return LightingView::OneColour;
+        return LightingView::NoColourInterface;
     }
     let reply = match reply {
         None => return LightingView::Pending,
-        Some(Err(access)) => return one_colour_or_unavailable(access.clone()),
+        Some(Err(access)) => return LightingView::Unavailable(access.clone()),
         Some(Ok(reply)) => reply,
     };
     match reply.interface {
@@ -401,6 +459,9 @@ pub fn view(hint: &LightingHint, reply: Option<&Result<LightingReply, Access>>) 
                     "the daemon did not describe the LampArray".to_string(),
                 ));
             };
+            if !lamparray::is_keyboard_kind(description.kind) {
+                return LightingView::NotAKeyboard(description.kind);
+            }
             if !description.levels.has_colour() {
                 return LightingView::OneColour;
             }
@@ -410,6 +471,10 @@ pub fn view(hint: &LightingHint, reply: Option<&Result<LightingReply, Access>>) 
             LightingView::Live(LiveLighting {
                 interface: Interface::LampArray,
                 effects: effects(Interface::LampArray),
+                // Nothing stored: autonomous mode, the firmware's own
+                // lighting, which is also a LampArray's state at power-on
+                // (HID Usage Tables 1.4, AutonomousMode: "Default value is
+                // enabled").
                 choice: Some(
                     reply
                         .stored
@@ -417,14 +482,21 @@ pub fn view(hint: &LightingHint, reply: Option<&Result<LightingReply, Access>>) 
                 ),
                 intensity: description.levels.has_intensity(),
                 lamps: Some(description.lamps),
+                firmware_at_next_start: false,
             })
         }
         Interface::AsusWmi => LightingView::Live(LiveLighting {
             interface: Interface::AsusWmi,
             effects: effects(Interface::AsusWmi),
-            choice: reply.stored,
+            choice: match (reply.stored, reply.firmware_at_next_start) {
+                (Some(choice), _) => Some(choice),
+                (None, true) => Some(LightingChoice::starting(Effect::Firmware)),
+                // Write-only: what the keyboard shows cannot be read.
+                (None, false) => None,
+            },
             intensity: false,
             lamps: None,
+            firmware_at_next_start: reply.stored.is_none() && reply.firmware_at_next_start,
         }),
     }
 }
@@ -439,17 +511,34 @@ mod tests {
     use super::*;
     use crate::lamparray::{Description, LampArrayKind, Levels};
 
+    const OWNERS: LightingDevice = LightingDevice {
+        interface: Interface::LampArray,
+        bus: Some(0x18),
+        vendor: Some(0x0B05),
+        product: Some(0x5570),
+    };
+
     fn lamp_reply(levels: Levels, programmable: bool) -> LightingReply {
+        kind_reply(Some(LampArrayKind::Keyboard), levels, programmable)
+    }
+
+    fn kind_reply(
+        kind: Option<LampArrayKind>,
+        levels: Levels,
+        programmable: bool,
+    ) -> LightingReply {
         LightingReply {
             interface: Interface::LampArray,
+            device: OWNERS,
             lamp_array: Some(Description {
                 lamps: 1,
-                kind: Some(LampArrayKind::Keyboard),
+                kind,
                 min_update_interval_us: None,
                 levels,
                 programmable,
             }),
             stored: None,
+            firmware_at_next_start: false,
         }
     }
 
@@ -494,8 +583,10 @@ mod tests {
             assert!(!accepts(Interface::LampArray, &choice), "{effect:?}");
             assert!(accepts(Interface::AsusWmi, &choice), "{effect:?}");
         }
+        // The keyboard's own lighting is the way back on both.
         choice.effect = Effect::Firmware;
-        assert!(!accepts(Interface::AsusWmi, &choice));
+        assert!(accepts(Interface::AsusWmi, &choice));
+        assert!(accepts(Interface::LampArray, &choice));
         choice = LightingChoice::starting(Effect::Static);
         choice.intensity = 101;
         assert!(!accepts(Interface::LampArray, &choice));
@@ -595,7 +686,8 @@ mod tests {
             backlight: true,
         };
         assert!(drawn(&white));
-        assert_eq!(view(&white, None), LightingView::OneColour);
+        // No interface found is not "one colour": it is only that.
+        assert_eq!(view(&white, None), LightingView::NoColourInterface);
         assert!(!drawn(&LightingHint {
             interface: None,
             backlight: false
@@ -609,13 +701,18 @@ mod tests {
         );
         assert_eq!(
             view(&hint, Some(&Err(Access::Absent))),
-            LightingView::OneColour
+            LightingView::Unavailable(Access::Absent)
         );
-        // A LampArray with one level of colour is a one-colour keyboard.
+        assert_eq!(
+            view(&hint, Some(&Err(Access::Outdated))),
+            LightingView::Unavailable(Access::Outdated)
+        );
+        // A LampArray with no colour channel is a one-colour keyboard, on
+        // its own word.
         let white_lamp = Levels {
-            red: 1,
-            green: 1,
-            blue: 1,
+            red: 0,
+            green: 0,
+            blue: 0,
             intensity: 4,
         };
         assert_eq!(
@@ -640,15 +737,79 @@ mod tests {
         };
         let reply = LightingReply {
             interface: Interface::AsusWmi,
+            device: LightingDevice::ASUS_WMI,
             lamp_array: None,
             stored: None,
+            firmware_at_next_start: false,
         };
-        let LightingView::Live(live) = view(&asus, Some(&Ok(reply))) else {
+        let LightingView::Live(live) = view(&asus, Some(&Ok(reply.clone()))) else {
             panic!("live");
         };
         // Write-only: with nothing stored, nothing is selected.
         assert_eq!(live.effect(), None);
         assert!(!live.intensity);
-        assert_eq!(live.effects.len(), 4);
+        assert_eq!(live.effects.len(), 5);
+        assert!(!live.firmware_at_next_start);
+        // The keyboard's own lighting chosen: selected, until the next start.
+        let LightingView::Live(live) = view(
+            &asus,
+            Some(&Ok(LightingReply {
+                firmware_at_next_start: true,
+                ..reply
+            })),
+        ) else {
+            panic!("live");
+        };
+        assert_eq!(live.effect(), Some(Effect::Firmware));
+        assert!(live.firmware_at_next_start);
+    }
+
+    /// The review's case: on this very machine the LampArray's kind is
+    /// unknown until the owner reads it. A kind that is not a keyboard is
+    /// said as found, never as "one colour".
+    #[test]
+    fn a_built_in_lighting_device_that_is_not_a_keyboard_is_named_not_called_one_colour() {
+        let hint = lamp_hint();
+        for kind in [
+            LampArrayKind::Chassis,
+            LampArrayKind::Peripheral,
+            LampArrayKind::Mouse,
+            LampArrayKind::Other,
+        ] {
+            assert_eq!(
+                view(&hint, Some(&Ok(kind_reply(Some(kind), FULL, true)))),
+                LightingView::NotAKeyboard(Some(kind))
+            );
+        }
+        for kind in [
+            None,
+            Some(LampArrayKind::Undefined),
+            Some(LampArrayKind::Keyboard),
+        ] {
+            assert!(matches!(
+                view(&hint, Some(&Ok(kind_reply(kind, FULL, true)))),
+                LightingView::Live(_)
+            ));
+        }
+    }
+
+    #[test]
+    fn the_stored_file_names_its_keyboard_and_refuses_anything_else() {
+        let stored = StoredLighting {
+            device: OWNERS,
+            choice: LightingChoice::starting(Effect::Static),
+        };
+        let text = serde_json::to_string(&stored).unwrap();
+        assert_eq!(
+            serde_json::from_str::<StoredLighting>(&text).unwrap(),
+            stored
+        );
+        // The first draft's file, a bare choice, is not a stored lighting.
+        assert!(
+            serde_json::from_str::<StoredLighting>(&serde_json::to_string(&stored.choice).unwrap())
+                .is_err()
+        );
+        assert_eq!(OWNERS.label(), "0018:0B05:5570");
+        assert_eq!(LightingDevice::ASUS_WMI.label(), "asus-wmi");
     }
 }

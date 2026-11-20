@@ -30,7 +30,7 @@ use crate::DaemonError;
 use crate::authorize::{
     Authorization, Authorizer, CHARGE_LIMIT_ACTION, FAN_MODE_ACTION, KEYBOARD_LIGHTING_ACTION,
 };
-use crate::keyboard_lighting::{self, LampCache, LampHelper};
+use crate::keyboard_lighting::{self, LampCache, LampHelper, LightingPaths};
 use crate::service::{CallGate, refuse};
 use hardware_core::lighting::{Effect, LightingChoice, Rgb, Speed, asus_wmi};
 
@@ -97,27 +97,63 @@ pub fn escape_bind_path(path: &Path) -> String {
         .replace(':', "\\:")
 }
 
-/// The transient helper unit's properties: `/sys` is an empty read-only
-/// tmpfs with the one file bound in, no capabilities, no network, nothing
-/// else writable.
-pub fn helper_properties(path: &Path) -> Vec<String> {
+/// The sandbox every hardware helper unit runs in (ADR 0029, narrowed by
+/// ADR 0034's security review): `/sys` an empty read-only tmpfs, a private
+/// `/dev` of pseudo-devices, `/proc/sys` read-only, no network, nothing
+/// writable, a system-call allow-list, no realtime, no new privileges, and
+/// ten seconds to finish (a hung I2C ioctl would otherwise hold the
+/// keyboard's lock, and a removal's prerm, for ever). Each helper adds the
+/// one file or node it needs and its capability bounding set.
+///
+/// Three hardening options are deliberately absent: `ProtectKernelTunables=`,
+/// `ProtectControlGroups=`, and `ProtectProc=` each bring the API file
+/// systems back (`MountAPIVFS=`), and with them the whole of `/sys` over the
+/// one-file tmpfs. Seen on systemd 255 (transient units in a user manager,
+/// 2026-11-21: `ls /sys` lists 11 entries with any of them, 1 without), the
+/// same duplicate-mount rule ADR 0029 found. What they protect is covered
+/// otherwise: `/proc/sys` and `/proc/sysrq-trigger` are bound read-only, the
+/// cgroup tree lives under the empty `/sys`, and the LampArray helper runs
+/// as `nobody` once its node is open.
+pub fn helper_sandbox() -> Vec<String> {
     [
-        "TemporaryFileSystem=/sys:ro".to_string(),
-        format!("BindPaths={}", escape_bind_path(path)),
-        "MountAPIVFS=no".to_string(),
-        "ProtectSystem=strict".to_string(),
-        "ProtectHome=yes".to_string(),
-        "PrivateTmp=yes".to_string(),
-        "PrivateNetwork=yes".to_string(),
-        "PrivateDevices=yes".to_string(),
-        "NoNewPrivileges=yes".to_string(),
-        "CapabilityBoundingSet=".to_string(),
-        "RestrictAddressFamilies=AF_UNIX".to_string(),
-        "RestrictNamespaces=yes".to_string(),
-        "LockPersonality=yes".to_string(),
-        "SystemCallArchitectures=native".to_string(),
+        "TemporaryFileSystem=/sys:ro",
+        "MountAPIVFS=no",
+        "ProtectSystem=strict",
+        "ProtectHome=yes",
+        "PrivateTmp=yes",
+        "PrivateNetwork=yes",
+        "PrivateDevices=yes",
+        "ReadOnlyPaths=/proc/sys",
+        "ReadOnlyPaths=/proc/sysrq-trigger",
+        "ProtectKernelModules=yes",
+        "ProtectKernelLogs=yes",
+        "ProtectClock=yes",
+        "ProtectHostname=yes",
+        "NoNewPrivileges=yes",
+        "RestrictSUIDSGID=yes",
+        "RestrictRealtime=yes",
+        "RestrictAddressFamilies=AF_UNIX",
+        "RestrictNamespaces=yes",
+        "LockPersonality=yes",
+        "MemoryDenyWriteExecute=yes",
+        "SystemCallArchitectures=native",
+        "SystemCallFilter=@system-service",
+        "RuntimeMaxSec=10s",
     ]
-    .to_vec()
+    .iter()
+    .map(|p| p.to_string())
+    .collect()
+}
+
+/// The attribute helper's properties: the shared sandbox with exactly the
+/// one attribute file bound writable, and no capability at all. It stays
+/// uid 0, which owns the file; its only input is its two arguments, checked
+/// against closed sets, not a device's replies.
+pub fn helper_properties(path: &Path) -> Vec<String> {
+    let mut properties = helper_sandbox();
+    properties.insert(1, format!("BindPaths={}", escape_bind_path(path)));
+    properties.push("CapabilityBoundingSet=".to_string());
+    properties
 }
 
 /// Starts this program's `--write-attribute` in a transient unit and waits.
@@ -185,11 +221,11 @@ pub struct HardwareService<A: Authorizer + 'static> {
     /// LampArray.
     lamp_helper: Option<Arc<dyn LampHelper>>,
     /// Where the keyboard's colour is kept for `--restore-hardware`.
-    lighting_state: Option<PathBuf>,
+    lighting_paths: Option<LightingPaths>,
     lamp_cache: Arc<LampCache>,
-    /// One keyboard change at a time: two helpers never talk to the device
-    /// at once.
-    lighting_lock: Arc<std::sync::Mutex<()>>,
+    /// One keyboard change at a time, the newest only, at most ten a
+    /// second (ADR 0034).
+    lighting: Arc<Coalescer<LightingChoice>>,
 }
 
 impl<A: Authorizer + 'static> HardwareService<A> {
@@ -209,9 +245,9 @@ impl<A: Authorizer + 'static> HardwareService<A> {
             gate,
             runtime: tokio::runtime::Handle::current(),
             lamp_helper: None,
-            lighting_state: None,
+            lighting_paths: None,
             lamp_cache: Arc::new(LampCache::default()),
-            lighting_lock: Arc::new(std::sync::Mutex::new(())),
+            lighting: Arc::new(Coalescer::new(LIGHTING_WAITERS, LIGHTING_INTERVAL)),
         }
     }
 
@@ -220,9 +256,17 @@ impl<A: Authorizer + 'static> HardwareService<A> {
         self
     }
 
-    pub fn with_lighting_state(mut self, path: impl Into<PathBuf>) -> Self {
-        self.lighting_state = Some(path.into());
+    pub fn with_lighting_paths(mut self, paths: LightingPaths) -> Self {
+        self.lighting_paths = Some(paths);
         self
+    }
+
+    /// Where the keyboard's choice is read when no paths were given: a path
+    /// that holds nothing, so nothing is ever read as stored.
+    fn lighting_paths(&self) -> LightingPaths {
+        self.lighting_paths.clone().unwrap_or_else(|| {
+            LightingPaths::under(std::path::Path::new("/nonexistent/better-os-keyboard"))
+        })
     }
 
     pub fn with_state_file(mut self, path: impl Into<PathBuf>) -> Self {
@@ -397,21 +441,15 @@ impl<A: Authorizer + 'static> HardwareService<A> {
     ) -> Result<String, fdo::Error> {
         let _call = self.gate.enter().map_err(refuse)?;
         self.authorize(&header, KEYBOARD_LIGHTING_ACTION).await?;
+        // In line behind any change, so a helper never meets another one.
+        let _turn = self.lighting.queue().await;
         let root = self.root.clone();
         let helper = self.lamp_helper.clone();
         let cache = self.lamp_cache.clone();
-        let state = self.lighting_state.clone();
-        let lock = self.lighting_lock.clone();
+        let paths = self.lighting_paths();
         self.blocking(move || {
-            let _one = lock
-                .lock()
-                .map_err(|_| DaemonError::WriteFailed("lock".into()))?;
             let helper = helper_or_none(helper.as_deref());
-            let stored = match &state {
-                Some(path) => keyboard_lighting::load(path).unwrap_or(None),
-                None => None,
-            };
-            let reply = keyboard_lighting::describe(&root, helper, &cache, stored)?;
+            let reply = keyboard_lighting::describe(&root, helper, &cache, &paths)?;
             serde_json::to_string(&reply).map_err(|e| DaemonError::WriteFailed(e.to_string()))
         })
         .await
@@ -421,6 +459,10 @@ impl<A: Authorizer + 'static> HardwareService<A> {
     /// `cycle`, `strobe`), colour, intensity (0-100), and speed (0-2), and
     /// returns what `KeyboardLighting` then answers. An effect the keyboard
     /// does not do itself is refused before anything is touched.
+    ///
+    /// A caller in a loop is coalesced: calls wait their turn without a
+    /// thread each, only the newest choice waiting is written, at most one
+    /// write every 100 ms, and past eight waiting a call is refused as busy.
     #[allow(clippy::too_many_arguments)]
     async fn set_keyboard_lighting(
         &self,
@@ -452,26 +494,36 @@ impl<A: Authorizer + 'static> HardwareService<A> {
             speed,
         };
         self.authorize(&header, KEYBOARD_LIGHTING_ACTION).await?;
+        let turn = self.lighting.submit(choice).await.map_err(refuse)?;
         let root = self.root.clone();
         let helper = self.lamp_helper.clone();
         let writer = self.writer.clone();
         let cache = self.lamp_cache.clone();
-        let state = self.lighting_state.clone();
-        let lock = self.lighting_lock.clone();
-        self.blocking(move || {
-            let _one = lock
-                .lock()
-                .map_err(|_| DaemonError::WriteFailed("lock".into()))?;
-            let helper = helper_or_none(helper.as_deref());
-            keyboard_lighting::apply(&root, helper, writer.as_ref(), &cache, &choice)?;
-            if let Some(path) = &state {
-                keyboard_lighting::store(path, &choice)?;
-            }
-            let stored = (choice.effect != Effect::Firmware).then_some(choice);
-            let reply = keyboard_lighting::describe(&root, helper, &cache, stored)?;
-            serde_json::to_string(&reply).map_err(|e| DaemonError::WriteFailed(e.to_string()))
-        })
-        .await
+        let paths = self.lighting_paths.clone();
+        let read_paths = self.lighting_paths();
+        let newest = turn.value;
+        let wait = turn.wait;
+        let reply = self
+            .blocking(move || {
+                let helper = helper_or_none(helper.as_deref());
+                // A newer choice than this call's may be the one written:
+                // every caller waiting gets the newest one's answer.
+                if let Some(choice) = newest {
+                    std::thread::sleep(wait);
+                    let device =
+                        keyboard_lighting::apply(&root, helper, writer.as_ref(), &cache, &choice)?;
+                    if let Some(paths) = &paths {
+                        keyboard_lighting::store(paths, device, &choice)?;
+                    }
+                }
+                let reply = keyboard_lighting::describe(&root, helper, &cache, &read_paths)?;
+                serde_json::to_string(&reply).map_err(|e| DaemonError::WriteFailed(e.to_string()))
+            })
+            .await;
+        if newest.is_some() {
+            turn.written();
+        }
+        reply
     }
 
     /// Sets the fan mode to `auto` or `full` and returns what it reads back:
@@ -491,6 +543,88 @@ impl<A: Authorizer + 'static> HardwareService<A> {
         let writer = self.writer.clone();
         self.blocking(move || apply_fan_mode(&root, writer.as_ref(), mode))
             .await
+    }
+}
+
+/// How many keyboard changes may wait for their turn before a call is
+/// refused as busy.
+pub const LIGHTING_WAITERS: usize = 8;
+
+/// The shortest time between two keyboard writes.
+pub const LIGHTING_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// Keeps only the newest value waiting and spaces the work out (ADR 0034's
+/// review, finding 8). Callers wait on an async lock, so a caller in a loop
+/// costs no thread per call; the first caller through the lock takes the
+/// newest value submitted so far, and a caller that finds nothing left
+/// (a later one's value was already taken) has nothing to write. The lock is
+/// `tokio::sync::Mutex`, which needs no runtime to poll, so it is safe on
+/// zbus's own executor.
+pub struct Coalescer<T> {
+    latest: std::sync::Mutex<Option<T>>,
+    waiting: std::sync::atomic::AtomicUsize,
+    gate: tokio::sync::Mutex<Option<std::time::Instant>>,
+    limit: usize,
+    interval: std::time::Duration,
+}
+
+/// A caller's turn: the value to write, if any is left, and how long to
+/// wait first so writes stay `interval` apart. Holding it holds the lock.
+pub struct Turn<'a, T> {
+    pub value: Option<T>,
+    pub wait: std::time::Duration,
+    guard: tokio::sync::MutexGuard<'a, Option<std::time::Instant>>,
+}
+
+impl<T> Turn<'_, T> {
+    /// The value was written now.
+    pub fn written(mut self) {
+        *self.guard = Some(std::time::Instant::now());
+    }
+}
+
+struct Waiting<'a>(&'a std::sync::atomic::AtomicUsize);
+
+impl Drop for Waiting<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+impl<T> Coalescer<T> {
+    pub fn new(limit: usize, interval: std::time::Duration) -> Coalescer<T> {
+        Coalescer {
+            latest: std::sync::Mutex::new(None),
+            waiting: std::sync::atomic::AtomicUsize::new(0),
+            gate: tokio::sync::Mutex::new(None),
+            limit,
+            interval,
+        }
+    }
+
+    /// Hands `value` in as the newest and waits for a turn.
+    pub async fn submit(&self, value: T) -> Result<Turn<'_, T>, DaemonError> {
+        let before = self
+            .waiting
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let _waiting = Waiting(&self.waiting);
+        if before >= self.limit {
+            return Err(DaemonError::Busy);
+        }
+        if let Ok(mut latest) = self.latest.lock() {
+            *latest = Some(value);
+        }
+        let guard = self.gate.lock().await;
+        let value = self.latest.lock().ok().and_then(|mut latest| latest.take());
+        let wait = guard
+            .map(|last| self.interval.saturating_sub(last.elapsed()))
+            .unwrap_or_default();
+        Ok(Turn { value, wait, guard })
+    }
+
+    /// Waits for a turn without a value: a read in line behind the writes.
+    pub async fn queue(&self) -> tokio::sync::MutexGuard<'_, Option<std::time::Instant>> {
+        self.gate.lock().await
     }
 }
 
@@ -599,6 +733,33 @@ mod tests {
         assert!(properties.contains(&"CapabilityBoundingSet=".to_string()));
         assert!(properties.contains(&"NoNewPrivileges=yes".to_string()));
         assert!(!properties.iter().any(|p| p.starts_with("ReadWritePaths")));
+        // ADR 0034's review: the shared hardening, every line of it.
+        for wanted in [
+            "PrivateDevices=yes",
+            "ReadOnlyPaths=/proc/sys",
+            "ReadOnlyPaths=/proc/sysrq-trigger",
+            "ProtectKernelModules=yes",
+            "ProtectKernelLogs=yes",
+            "ProtectClock=yes",
+            "RestrictSUIDSGID=yes",
+            "SystemCallFilter=@system-service",
+            "MemoryDenyWriteExecute=yes",
+            "RuntimeMaxSec=10s",
+        ] {
+            assert!(properties.contains(&wanted.to_string()), "{wanted}");
+        }
+        // These would bring the whole of /sys back over the one-file tmpfs.
+        for refused in [
+            "ProtectKernelTunables",
+            "ProtectControlGroups",
+            "ProtectProc",
+            "MountAPIVFS=yes",
+        ] {
+            assert!(
+                !properties.iter().any(|p| p.starts_with(refused)),
+                "{refused}"
+            );
+        }
     }
 
     #[test]
@@ -632,5 +793,57 @@ mod tests {
             restore(&root, &DirectWriter, &state),
             Err(DaemonError::Storage(_))
         ));
+    }
+
+    /// ADR 0034's review, finding 8: a caller in a loop writes the newest
+    /// value only, spaced out, and too many waiting are refused.
+    #[test]
+    fn the_newest_change_is_written_and_the_rest_are_coalesced() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let coalescer =
+                std::sync::Arc::new(Coalescer::new(3, std::time::Duration::from_millis(100)));
+            let first = coalescer.submit(1).await.unwrap();
+            assert_eq!(first.value, Some(1));
+            assert_eq!(first.wait, std::time::Duration::ZERO);
+            // Three more arrive while the first is being written.
+            let mut waiting = Vec::new();
+            for value in [2, 3, 4] {
+                let c = coalescer.clone();
+                waiting.push(tokio::spawn(async move {
+                    let turn = c.submit(value).await;
+                    turn.map(|t| {
+                        let value = t.value;
+                        let wait = t.wait;
+                        if value.is_some() {
+                            t.written();
+                        }
+                        (value, wait)
+                    })
+                }));
+            }
+            for _ in 0..10 {
+                tokio::task::yield_now().await;
+            }
+            // A fourth waiting is one too many.
+            assert!(matches!(
+                coalescer.submit(5).await.map(|t| t.value),
+                Err(DaemonError::Busy)
+            ));
+            first.written();
+            let mut written = Vec::new();
+            for handle in waiting {
+                let (value, wait) = handle.await.unwrap().unwrap();
+                if let Some(value) = value {
+                    written.push(value);
+                    assert!(wait > std::time::Duration::from_millis(50), "{wait:?}");
+                }
+            }
+            // Only the newest of the three was written.
+            assert_eq!(written, vec![4]);
+        });
     }
 }

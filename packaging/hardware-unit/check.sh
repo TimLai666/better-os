@@ -91,13 +91,28 @@ sandboxed t86-restore-direct /bin/sh -c "'echo 60 > $bat/charge_control_end_thre
     || fail "the restore unit's sandbox wrote /sys itself"
 echo "PASS restore sandbox: cannot write /sys itself"
 
-# 3. The helper itself: its one file and nothing else.
+# 3. The helper itself: its one file and nothing else. These are exactly
+# manager_daemon::hardware::helper_sandbox() and the attribute helper's own
+# two lines (ADR 0029, narrowed by ADR 0034's review); keep them in step.
 props=(-p TemporaryFileSystem=/sys:ro -p "BindPaths=$chip/pwm1_enable" -p MountAPIVFS=no
-       -p ProtectSystem=strict -p NoNewPrivileges=yes -p CapabilityBoundingSet=)
+       -p ProtectSystem=strict -p ProtectHome=yes -p PrivateTmp=yes -p PrivateNetwork=yes
+       -p PrivateDevices=yes -p ReadOnlyPaths=/proc/sys -p ReadOnlyPaths=/proc/sysrq-trigger
+       -p ProtectKernelModules=yes -p ProtectKernelLogs=yes -p ProtectClock=yes
+       -p ProtectHostname=yes -p NoNewPrivileges=yes -p RestrictSUIDSGID=yes
+       -p RestrictRealtime=yes -p RestrictAddressFamilies=AF_UNIX -p RestrictNamespaces=yes
+       -p LockPersonality=yes -p MemoryDenyWriteExecute=yes -p SystemCallArchitectures=native
+       -p SystemCallFilter=@system-service -p RuntimeMaxSec=10s -p CapabilityBoundingSet=)
 out="$(systemd-run --quiet --wait --pipe --collect "${props[@]}" /bin/sh -c \
-    "echo $real_value > $real && echo WROTE-REAL; echo 1 > $bat/charge_control_end_threshold && echo WROTE-OTHER; touch /sys/new && echo CREATED; true" 2>/dev/null || true)"
-[[ "$out" != *WROTE-REAL* && "$out" != *WROTE-OTHER* && "$out" != *CREATED* ]] || fail "the helper wrote outside its file: $out"
-echo "PASS helper sandbox: no other sysfs file, no other attribute, nothing new under /sys"
+    "echo $real_value > $real && echo WROTE-REAL; echo 1 > $bat/charge_control_end_threshold && echo WROTE-OTHER; touch /sys/new && echo CREATED; echo '|/bin/false' > /proc/sys/kernel/core_pattern && echo WROTE-CORE; echo /bin/false > /proc/sys/kernel/modprobe && echo WROTE-MODPROBE; mknod /dev/better-os-probe c 1 3 && echo MADE-NODE; touch /dev/better-os-probe-file && echo MADE-FILE; [ \"\$(ls /sys | wc -l)\" -gt 1 ] && echo WHOLE-SYS; true" 2>/dev/null || true)"
+for marker in WROTE-REAL WROTE-OTHER CREATED WROTE-CORE WROTE-MODPROBE MADE-NODE MADE-FILE WHOLE-SYS; do
+    [[ "$out" != *"$marker"* ]] || fail "the helper sandbox let through $marker: $out"
+done
+echo "PASS helper sandbox: no other sysfs file or attribute, nothing new under /sys or /dev, /proc/sys read-only, /sys is one file"
+# The same sandbox still writes the one file it binds (no property above
+# takes the bound file away).
+out="$(systemd-run --quiet --wait --pipe --collect "${props[@]}" /bin/sh -c "echo 2 > $chip/pwm1_enable && echo WROTE-OWN" 2>&1 || true)"
+[[ "$out" == *WROTE-OWN* && "$(cat "$chip/pwm1_enable")" == "2" ]] || fail "the hardened helper could not write its own file: $out"
+echo "PASS helper sandbox: its own file is still written"
 out="$(systemd-run --quiet --wait --pipe --collect /usr/libexec/better-manager-daemon --write-via-helper "$real" "$real_value" 2>&1 || true)"
 [[ "$out" == *invalid_argument* ]] || fail "the helper accepted $real: $out"
 echo "PASS helper refuses any file but the two attributes"

@@ -437,9 +437,10 @@ collection is explicitly configured to include them.
   cannot write `/sys` itself (`BindReadOnlyPaths=/sys`); each write is a
   transient helper unit that sees only the one attribute file (ADR 0029). The
   keyboard's colour (ticket 136, ADR 0034) is the third: `KeyboardLighting`
-  and `SetKeyboardLighting` on the same interface. A HID LampArray is driven
-  by a helper unit whose device cgroup allows its one hidraw node, running
-  `--lamp-array`; the protocol (descriptor parser, report layout, scaling) is
+  and `SetKeyboardLighting` on the same interface, for the built-in keyboard
+  only. A HID LampArray is driven by a helper unit whose private `/dev` holds
+  its one hidraw node and which drops to `nobody` once the node is open,
+  running `--lamp-array`; both helpers share `hardware::helper_sandbox()`; the protocol (descriptor parser, report layout, scaling) is
   `hardware_core::lamparray`, with no I/O, and the hidraw ioctls are in
   `manager_daemon::keyboard_lighting` alone. asus-wmi's `kbd_rgb_mode` goes
   through the attribute helper. No session process opens a hidraw node.

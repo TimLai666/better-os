@@ -5,6 +5,7 @@
 
 use better_ui::fluent::selection::{ComboBox, ComboItem, Slider, SliderModel};
 use better_ui::fluent::settings_card::{SettingsCard, SettingsExpander, SettingsRow};
+use better_ui::fluent::swatch::ColorSwatch;
 use better_ui::fluent::toggle::{RadioButtons, RadioOption};
 use better_ui::fluent::{BODY, label, palette};
 use gpui::*;
@@ -190,7 +191,7 @@ impl ManagerApp {
         let live = match &view {
             LightingView::Live(live) => live.clone(),
             other => {
-                let line = words::state_line(other, c).unwrap_or_default().to_string();
+                let line = words::state_line(other, c).unwrap_or_default();
                 let unavailable = matches!(other, LightingView::Unavailable(_));
                 let mut card_ = plain(line, unavailable);
                 if let LightingView::Unavailable(Access::Failed(details)) = other {
@@ -204,6 +205,18 @@ impl ManagerApp {
             card::LIGHTING,
             self.lighting_expander(&live, cx),
         )]
+    }
+
+    /// What the daemon said the keyboard is, for the details row.
+    fn lighting_device_line(&self) -> Option<String> {
+        let Some(Ok(reply)) = &self.system.lighting.reply else {
+            return None;
+        };
+        Some(words::device_line(
+            &reply.device,
+            reply.lamp_array.as_ref(),
+            copy(self.locale),
+        ))
     }
 
     fn lighting_expander(&self, live: &LiveLighting, cx: &mut Context<Self>) -> SettingsExpander {
@@ -227,25 +240,19 @@ impl ManagerApp {
                 .icon(IconName::Palette)
                 .description(description)
                 .content(
-                    // A press on the list is the list's: it does not also
-                    // open or close the expander under it.
-                    div()
-                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        .child(
-                            ComboBox::new("system-lighting-effect", items, selected)
-                                .min_width(px(SLIDER_WIDTH + 52.0))
-                                .placeholder(c.choose_effect)
-                                .on_select(Self::act_with(cx, move |this, index: usize, _, cx| {
-                                    if let Some(effect) = effects.get(index).copied()
-                                        && Some(effect) != this.lighting_effect()
-                                    {
-                                        this.system.lighting.open = effect.uses_colour()
-                                            || effect.uses_speed()
-                                            || this.system.lighting.open;
-                                        this.set_lighting(LightingChoice { effect, ..base }, cx);
-                                    }
-                                })),
-                        ),
+                    ComboBox::new("system-lighting-effect", items, selected)
+                        .min_width(px(SLIDER_WIDTH + 52.0))
+                        .placeholder(c.choose_effect)
+                        .on_select(Self::act_with(cx, move |this, index: usize, _, cx| {
+                            if let Some(effect) = effects.get(index).copied()
+                                && Some(effect) != this.lighting_effect()
+                            {
+                                this.system.lighting.open = effect.uses_colour()
+                                    || effect.uses_speed()
+                                    || this.system.lighting.open;
+                                this.set_lighting(LightingChoice { effect, ..base }, cx);
+                            }
+                        })),
                 )
                 .on_toggle(Self::act_with(cx, |this, open: bool, _, cx| {
                     this.system.lighting.open = open;
@@ -340,14 +347,25 @@ impl ManagerApp {
                 ),
             );
         }
-        let note = super::decide::sentences(self.locale, &[words::note(live, c), c.at_startup]);
-        expander.row(
+        let note = words::note(live, c);
+        let note = super::decide::sentences(self.locale, &[note.as_str(), c.at_startup]);
+        expander = expander.row(
             SettingsRow::new(c.about_effects).content(div().max_w(px(420.0)).child(label(
                 note,
                 BODY,
                 p.text_secondary,
             ))),
-        )
+        );
+        if let Some(line) = self.lighting_device_line() {
+            expander = expander.row(
+                SettingsRow::new(c.device).content(div().max_w(px(420.0)).child(label(
+                    line,
+                    BODY,
+                    p.text_secondary,
+                ))),
+            );
+        }
+        expander
     }
 
     fn lighting_current(&self) -> Option<LightingChoice> {
@@ -377,44 +395,33 @@ impl ManagerApp {
             .unwrap_or(Rgb::WHITE)
     }
 
-    /// The colour picker's swatches, in the Fluent `ColorPicker` palette's
-    /// shape: small rounded squares, the chosen one ringed in the accent.
+    /// The colour picker's swatches, the kit's `ColorSwatch`: each a tab
+    /// stop, chosen with a click, Enter, or Space, and named by its tooltip
+    /// in the window's language.
     fn swatches(&self, choice: LightingChoice, cx: &mut Context<Self>) -> impl IntoElement {
-        let p = palette(cx);
+        let c = copy(self.locale);
         let mut row = div()
             .flex()
             .flex_wrap()
             .gap(px(6.0))
             .max_w(px(SLIDER_WIDTH + 52.0));
         for (index, swatch) in SWATCHES.iter().copied().enumerate() {
-            let chosen = swatch == choice.colour;
-            let on_click = Self::act(cx, move |this, _, cx| {
-                this.set_lighting(
-                    LightingChoice {
-                        colour: swatch,
-                        ..choice
-                    },
-                    cx,
-                );
-            });
             row = row.child(
-                div()
-                    .id(ElementId::named_usize("system-lighting-swatch", index))
-                    .size(px(28.0))
-                    .rounded(px(4.0))
-                    .border_2()
-                    .border_color(if chosen { p.accent } else { p.card })
-                    .p(px(2.0))
-                    .cursor_pointer()
-                    .on_click(move |_, window, cx| on_click(window, cx))
-                    .child(
-                        div()
-                            .size_full()
-                            .rounded(px(2.0))
-                            .border_1()
-                            .border_color(p.card_stroke)
-                            .bg(rgb(swatch.packed())),
-                    ),
+                ColorSwatch::new(
+                    ElementId::named_usize("system-lighting-swatch", index),
+                    swatch.packed(),
+                    words::swatch_name(index, c),
+                )
+                .selected(swatch == choice.colour)
+                .on_click(Self::act(cx, move |this, _, cx| {
+                    this.set_lighting(
+                        LightingChoice {
+                            colour: swatch,
+                            ..choice
+                        },
+                        cx,
+                    );
+                })),
             );
         }
         row

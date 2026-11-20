@@ -74,3 +74,29 @@ it, every sysfs write from the unit failed, `ProtectKernelTunables=` and
   but it trades one protection for another and breaks again the moment any
   option that implies the API mounts is added.
 - A permanent helper service: nothing needs to run between two writes.
+
+## Amendment (2026-11-21, ADR 0034's security review)
+
+The helper's sandbox listed above held less than it should: the unit ran
+as uid 0 with no `ProtectKernelTunables=`, so a compromised helper could
+write `/proc/sys/kernel/core_pattern` or `kernel/modprobe`, and nothing
+else bounded its system calls or its run time. Both hardware helpers now
+share one property list, `manager_daemon::hardware::helper_sandbox()`,
+which ADR 0034 states in full: `/proc/sys` and `/proc/sysrq-trigger`
+read-only, `PrivateDevices=yes`, `ProtectKernelModules=`,
+`ProtectKernelLogs=`, `ProtectClock=`, `ProtectHostname=`,
+`RestrictSUIDSGID=`, `RestrictRealtime=`, `MemoryDenyWriteExecute=`,
+`SystemCallFilter=@system-service`, and `RuntimeMaxSec=10s`, beside the
+ones above. This helper keeps its one bound attribute file writable and an
+empty capability set, and stays uid 0, which owns the file.
+
+`ProtectKernelTunables=` itself is not taken, and neither are
+`ProtectControlGroups=` or `ProtectProc=`: each brings back the API file
+systems and with them the whole of `/sys` over the one-file tmpfs, the
+same duplicate-mount rule this record's context describes (seen with
+transient units in a user manager, systemd 255). `/proc/sys` is protected
+by a read-only bind instead. `packaging/hardware-unit/check.sh` checks the
+full list in a VM, including that `/proc/sys` and `/dev` cannot be written
+and that the bound file still can. No real system manager has run the new
+list yet.
+

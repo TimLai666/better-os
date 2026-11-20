@@ -192,6 +192,26 @@ pub struct LampArrayNode {
     pub node: String,
     /// The HID bus type from the device's `uevent` (`0x18` is I2C).
     pub bus: Option<u16>,
+    pub vendor: Option<u16>,
+    pub product: Option<u16>,
+}
+
+impl LampArrayNode {
+    /// On the I2C bus: a laptop's own keyboard, not one plugged in by USB
+    /// or Bluetooth.
+    pub fn built_in(&self) -> bool {
+        self.bus == Some(BUS_I2C)
+    }
+
+    /// The identity a stored choice is tied to (ADR 0034).
+    pub fn device(&self) -> hardware_core::lighting::LightingDevice {
+        hardware_core::lighting::LightingDevice {
+            interface: hardware_core::lighting::Interface::LampArray,
+            bus: self.bus,
+            vendor: self.vendor,
+            product: self.product,
+        }
+    }
 }
 
 /// HID's bus type for I2C, where a laptop's built-in keyboard sits.
@@ -214,10 +234,19 @@ pub fn read_bounded(path: &Path, limit: usize) -> Option<Vec<u8>> {
     (bytes.len() <= limit).then_some(bytes)
 }
 
-/// The bus type in a HID `uevent`'s `HID_ID=0018:00000B05:00005570`.
-fn hid_bus(uevent: &str) -> Option<u16> {
-    let id = uevent.lines().find_map(|l| l.strip_prefix("HID_ID="))?;
-    u16::from_str_radix(id.split(':').next()?, 16).ok()
+/// Bus, vendor, and product from a HID `uevent`'s
+/// `HID_ID=0018:00000B05:00005570`; each `None` when it does not read.
+fn hid_id(uevent: &str) -> (Option<u16>, Option<u16>, Option<u16>) {
+    let Some(id) = uevent.lines().find_map(|l| l.strip_prefix("HID_ID=")) else {
+        return (None, None, None);
+    };
+    let mut parts = id.split(':').map(|part| {
+        u32::from_str_radix(part.trim(), 16)
+            .ok()
+            .and_then(|v| u16::try_from(v).ok())
+    });
+    let mut next = || parts.next().flatten();
+    (next(), next(), next())
 }
 
 /// A hidraw node's report descriptor, read from sysfs.
@@ -234,24 +263,40 @@ pub fn report_descriptor(root: &SysRoot, node: &str) -> Option<Vec<u8>> {
     )
 }
 
-/// Every LampArray, built-in ones (I2C) first, then by number.
+/// Every LampArray, built-in ones (I2C) first, then by number. Only
+/// [`built_in_lamp_arrays`] are ever the keyboard the System page sets.
 pub fn lamp_array_nodes(root: &SysRoot) -> Vec<LampArrayNode> {
     let mut nodes: Vec<LampArrayNode> = sorted_entries(&root.path("sys/class/hidraw"))
         .into_iter()
         .filter_map(|dir| {
             let node = dir.file_name()?.to_str()?.to_string();
             let descriptor = report_descriptor(root, &node)?;
-            hardware_core::lamparray::is_lamp_array(&descriptor).then(|| LampArrayNode {
-                bus: std::fs::read_to_string(dir.join("device/uevent"))
-                    .ok()
-                    .as_deref()
-                    .and_then(hid_bus),
+            if !hardware_core::lamparray::is_lamp_array(&descriptor) {
+                return None;
+            }
+            let (bus, vendor, product) = std::fs::read_to_string(dir.join("device/uevent"))
+                .map(|text| hid_id(&text))
+                .unwrap_or((None, None, None));
+            Some(LampArrayNode {
                 node,
+                bus,
+                vendor,
+                product,
             })
         })
         .collect();
     nodes.sort_by_key(|n| (n.bus != Some(BUS_I2C), n.node.len(), n.node.clone()));
     nodes
+}
+
+/// The built-in LampArrays (I2C), by number. A Dynamic Lighting keyboard
+/// plugged in by USB or Bluetooth is never one of them: the System page
+/// sets the laptop's own keyboard (ADR 0034).
+pub fn built_in_lamp_arrays(root: &SysRoot) -> Vec<LampArrayNode> {
+    lamp_array_nodes(root)
+        .into_iter()
+        .filter(LampArrayNode::built_in)
+        .collect()
 }
 
 /// asus-wmi's `kbd_rgb_mode` on the keyboard backlight LED, on the TUF and
@@ -261,10 +306,11 @@ pub fn keyboard_rgb_mode_attribute(root: &SysRoot) -> Option<PathBuf> {
     path.exists().then_some(path)
 }
 
-/// What sysfs says about the keyboard's colour: a LampArray first, then
-/// `kbd_rgb_mode`, and whether there is a backlight at all.
+/// What sysfs says about the built-in keyboard's colour: a built-in
+/// LampArray first, then `kbd_rgb_mode`, and whether there is a backlight
+/// at all. External LampArrays play no part.
 pub fn lighting_hint(root: &SysRoot) -> Presence<LightingHint> {
-    let interface = match lamp_array_nodes(root).into_iter().next() {
+    let interface = match built_in_lamp_arrays(root).into_iter().next() {
         Some(lamp) => Some(HintInterface::LampArray { node: lamp.node }),
         None => keyboard_rgb_mode_attribute(root).map(|_| HintInterface::AsusWmi),
     };

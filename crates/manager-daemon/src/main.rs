@@ -61,19 +61,50 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("{out}");
         return Ok(());
     }
-    // The package's prerm on removal (ADR 0034): a keyboard Better OS took
-    // over goes back to its firmware. Never fails the removal.
+    // The prerm on removal of this package and of better-manager (ADR
+    // 0034): a keyboard Better OS took over goes back to its firmware, and
+    // the choice is forgotten, so neither outlives the page that set it.
+    // Never fails the removal.
     if arguments.first().map(String::as_str) == Some("--release-keyboard-lighting") {
+        if arguments.len() > 1 {
+            return Err("--release-keyboard-lighting takes no value".into());
+        }
         let helper = manager_daemon::keyboard_lighting::SandboxedLampHelper {
             program: std::env::current_exe()?,
         };
         for problem in manager_daemon::keyboard_lighting::release(
             &hardware_platform::sysfs::SysRoot::system(),
             &helper,
-            std::path::Path::new(manager_daemon::LIGHTING_STATE),
+            &manager_daemon::keyboard_lighting::LightingPaths::system(),
         ) {
             eprintln!("better-manager-daemon: keyboard lighting: {problem}");
         }
+        return Ok(());
+    }
+    // The LampArray helper started from here, as the daemon starts it, for
+    // the packaged build's own diagnostics: `describe` prints what the
+    // keyboard says about itself (the owner's check, ticket 136). Root only,
+    // and only the read: no colour can be set this way.
+    if arguments.first().map(String::as_str) == Some("--lamp-array-via-helper") {
+        let (Some(node), Some(command), None) =
+            (arguments.get(1), arguments.get(2), arguments.get(3))
+        else {
+            return Err("--lamp-array-via-helper takes a node and describe".into());
+        };
+        if command != "describe" {
+            return Err("--lamp-array-via-helper only describes".into());
+        }
+        use manager_daemon::keyboard_lighting::LampHelper as _;
+        let helper = manager_daemon::keyboard_lighting::SandboxedLampHelper {
+            program: std::env::current_exe()?,
+        };
+        let description = helper
+            .run(
+                node,
+                manager_daemon::keyboard_lighting::LampCommand::Describe,
+            )
+            .map_err(|error| error.to_string())?;
+        println!("{}", serde_json::to_string_pretty(&description)?);
         return Ok(());
     }
     // The same helper started from here, as the daemon starts it: used by
@@ -141,8 +172,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 std::thread::sleep(std::time::Duration::from_millis(500));
                 result = manager_daemon::hardware::restore(&root, &writer, state);
             }
-            // The keyboard's colour (ADR 0034). An I2C keyboard can bind
-            // after this unit starts too: the same wait.
+            // The keyboard's colour (ADR 0034), on the keyboard it was set
+            // for and no other. An I2C keyboard can bind after this unit
+            // starts: the same wait. A keyboard still absent after it is a
+            // skip with this line, not a failed unit.
+            use manager_daemon::keyboard_lighting::RestoredLighting;
             let helper = manager_daemon::keyboard_lighting::SandboxedLampHelper {
                 program: std::env::current_exe()?,
             };
@@ -151,13 +185,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 || manager_daemon::keyboard_lighting::restore(&root, &helper, &writer, lighting);
             let mut lit = restore_lighting();
             for _ in 0..30 {
-                if lit != Err(manager_daemon::DaemonError::HardwareAbsent) {
+                if !matches!(lit, Ok(RestoredLighting::DeviceAbsent(_))) {
                     break;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(500));
                 lit = restore_lighting();
             }
             match &lit {
+                Ok(RestoredLighting::DeviceAbsent(device)) => eprintln!(
+                    "better-manager-daemon: keyboard restore: skipped, {} is not here",
+                    device.label()
+                ),
                 Ok(restored) => eprintln!("better-manager-daemon: keyboard restore: {restored:?}"),
                 Err(error) => eprintln!("better-manager-daemon: keyboard restore: {error}"),
             }
@@ -170,7 +208,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
         }
         return Err(format!(
-            "better-manager-daemon takes no argument but --restore-hardware, --watch-login-screen, --remove-drive-entries, --release-keyboard-lighting, --write-attribute, --lamp-array, or --write-via-helper; got {argument:?}"
+            "better-manager-daemon takes no argument but --restore-hardware, --watch-login-screen, --remove-drive-entries, --release-keyboard-lighting, --write-attribute, --lamp-array, --lamp-array-via-helper, or --write-via-helper; got {argument:?}"
         )
         .into());
     }
@@ -223,7 +261,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             program: std::env::current_exe()?,
         },
     ))
-    .with_lighting_state(manager_daemon::LIGHTING_STATE);
+    .with_lighting_paths(manager_daemon::keyboard_lighting::LightingPaths::system());
     let udisks = zbus::blocking::Connection::system()?;
     let drives = manager_daemon::drives::DrivesService::new(
         PolkitAuthorizer::new(zbus::connection::Builder::system()?.build().await?),

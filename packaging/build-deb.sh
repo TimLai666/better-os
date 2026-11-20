@@ -198,6 +198,12 @@ PACKAGE_SYSTEM_FRAGMENT=""
 #                      adapter packages built beside it, and its postinst
 #                      starts the handoff
 PACKAGE_DAEMON_HANDOFF=0
+#   PACKAGE_RELEASES_KEYBOARD  1 for better-manager: its prerm on removal
+#                      gives a keyboard whose colour the System page set back
+#                      to its firmware and forgets the choice (ADR 0034), so
+#                      neither outlives the page; the daemon package, which
+#                      Better Manager only recommends, may well stay
+PACKAGE_RELEASES_KEYBOARD=0
 #   PACKAGE_HANDOFF_RETRY  1 for better-shell-adapter: its postinst starts the
 #                      handoff Better Manager installed, which is how a failed
 #                      handoff is retried once Better Manager is current
@@ -213,7 +219,24 @@ reset_package_inputs() {
     PACKAGE_AUTOSTART_OVERRIDES=""
     PACKAGE_SYSTEM_FRAGMENT=""
     PACKAGE_DAEMON_HANDOFF=0
+    PACKAGE_RELEASES_KEYBOARD=0
     PACKAGE_HANDOFF_RETRY=0
+}
+
+# The prerm lines that give the keyboard back when the page that set its
+# colour is removed (ADR 0034). The privileged service does the work: it is
+# root under dpkg, and the same code runs at its own removal.
+add_keyboard_release() {
+    local staging_dir="$1"
+    if [[ ! -f "$staging_dir/DEBIAN/prerm" ]]; then
+        printf '#!/bin/sh\nset -e\n' > "$staging_dir/DEBIAN/prerm"
+        chmod 0755 "$staging_dir/DEBIAN/prerm"
+    fi
+    {
+        printf '\n# ADR 0034: the keyboard goes back to its firmware with the page that set it.\n'
+        # shellcheck disable=SC2016 # expanded by the maintainer script
+        printf 'if [ "$1" = remove ] && [ -x /usr/libexec/better-manager-daemon ]; then\n    /usr/libexec/better-manager-daemon --release-keyboard-lighting || true\nfi\n'
+    } >> "$staging_dir/DEBIAN/prerm"
 }
 
 # The GPUI toolkit dlopens fontconfig and the Wayland client libraries, so they
@@ -485,6 +508,9 @@ make_package() {
 
     if ((PACKAGE_DAEMON_HANDOFF == 1)); then
         add_daemon_handoff "$staging_dir"
+    fi
+    if ((PACKAGE_RELEASES_KEYBOARD == 1)); then
+        add_keyboard_release "$staging_dir"
     fi
     if ((PACKAGE_HANDOFF_RETRY == 1)); then
         add_handoff_hook "$staging_dir"
@@ -827,6 +853,7 @@ PACKAGE_RECOMMENDS="better-manager-daemon (= $VERSION), better-shell-adapter (= 
 # it stops and disables it, so nothing it started outlives it.
 PACKAGE_ALWAYS_ON_UNITS="better-window-attention.service"
 PACKAGE_DAEMON_HANDOFF=1
+PACKAGE_RELEASES_KEYBOARD=1
 make_package better-manager \
     'Better OS manager desktop application' \
     'Better OS desktop application built with the shared manager and monitor contracts.'

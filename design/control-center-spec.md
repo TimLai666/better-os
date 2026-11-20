@@ -307,16 +307,32 @@ Changes are sent while dragging, at most every 50 ms, and the slider follows
 
 **Keyboard colour** (ticket 136, ADR 0034) — drawn under the keyboard
 backlight wherever the machine has a keyboard backlight or a colour
-interface. With a HID LampArray keyboard (the M5406WA's) or asus-wmi's
-`kbd_rgb_mode` (TUF and ROG), a `SettingsExpander` whose header holds a
-`ComboBox` of the effects the keyboard runs itself, and whose rows hold the
-colour picker (swatches, hue, saturation), the colour brightness when the
-lamps have an intensity channel, and the speed for breathing and colour
-cycle on `kbd_rgb_mode`. A LampArray offers a steady colour and the
-keyboard's own lighting only, and says why: the usage tables have no effect,
-and an effect would be Better OS rewriting colours on a timer, which it never
-does. Every change goes through `manager-daemon`; the active local session is
-not asked for a password.
+interface for its **built-in** keyboard: a HID LampArray on the I2C bus
+(the M5406WA's) or asus-wmi's `kbd_rgb_mode` (TUF and ROG). External
+Dynamic Lighting devices (a keyboard, mouse, or light strip on USB or
+Bluetooth) are out of scope: the page never reads, sets, or names one, and
+never presents one as "the keyboard". The card is a `SettingsExpander`
+whose header holds a `ComboBox` of the effects the keyboard runs itself,
+and whose rows hold the colour picker (the kit's `ColorSwatch` swatches,
+each a named tab stop, then hue and saturation), the colour brightness when
+the lamps have an intensity channel, the speed for breathing and colour
+cycle on `kbd_rgb_mode`, a note on the effects, and a details row with what
+the keyboard reported (device ID, zones, kind, colour and brightness
+levels). A LampArray offers a steady colour and the keyboard's own lighting
+only, and says why: the usage tables have no effect, and an effect would be
+Better OS rewriting colours on a timer, which it never does. `kbd_rgb_mode`
+offers its four firmware effects and the keyboard's own lighting, which
+forgets Better OS's choice; the keyboard's own setting returns at the next
+start, and the card says so. Every change goes through `manager-daemon`; the
+active local session is not asked for a password.
+
+States, each said as what is known and no more: no colour control found
+("Better OS found no way…; as far as this PC reports, it has one colour");
+the keyboard reports no colour channel ("This keyboard has one colour.");
+the built-in lighting device names another kind ("…says it is a {kind},
+not a keyboard…"); not programmable; reading; the service not answering,
+older than the window ("needs updating"), not allowed, cancelled, the device
+gone, an error.
 
 | | zh-TW | English |
 | --- | --- | --- |
@@ -325,6 +341,8 @@ not asked for a password.
 | Effects | 固定顏色 / 鍵盤內建燈光 / 呼吸 / 色彩循環 / 閃爍 | Steady colour / The keyboard's own lighting / Breathing / Colour cycle / Strobe |
 | LampArray note | 這個鍵盤只能設定一種固定顏色。這裡沒有呼吸和色彩循環：鍵盤本身做不到，Better OS 也不會用每秒改好幾次顏色的方式假裝。 | This keyboard takes one steady colour. Breathing and colour cycle aren't offered: the keyboard can't run them itself, and Better OS doesn't fake them by changing the colour many times a second. |
 | No daemon | Better Manager 的系統服務沒有回應，所以無法變更顏色。 | Better Manager's system service isn't answering, so the colour can't be changed. |
+| Older daemon | Better Manager 的系統服務比這個視窗舊，請先更新才能設定鍵盤顏色。 | Better Manager's system service is older than this window. Update it to set the keyboard's colour. |
+| No colour control | Better OS 找不到設定這個鍵盤顏色的方法。就這台電腦回報的資訊來看，它只有一種顏色。 | Better OS found no way to set this keyboard's colour. As far as this PC reports, it has one colour. |
 | Not allowed | 這個帳號不能變更鍵盤顏色。 | This account isn't allowed to change the keyboard colour. |
 | Startup | 每次開機時，Better OS 會重新套用。 | Better OS sets it again each time the PC starts. |
 
@@ -776,10 +794,13 @@ per method. Nothing crosses as free text or a path:
   read method; both answer the same JSON (the interface, the LampArray's
   description, the stored choice). The effect is checked against the closed
   set and against what the interface offers before polkit is asked. The
-  choice is kept in `/var/lib/better-os/keyboard-lighting.json` and written
-  back at boot by `better-hardware-restore.service`; the keyboard's own
-  default deletes it. The daemon package's removal gives a LampArray back to
-  its firmware and deletes the file.
+  choice is kept in `/var/lib/better-os/keyboard-lighting.json` with the
+  keyboard it was made for, and written back at boot by
+  `better-hardware-restore.service` to that keyboard only (absent: a skip
+  with a journal line); the keyboard's own lighting deletes it. Removing the
+  daemon package or Better Manager gives a LampArray back to its firmware
+  and deletes the file. Calls are coalesced: the newest waiting is written,
+  at most ten a second.
 
 The unit keeps `ProtectKernelTunables=yes`, which makes `/sys` read-only, and
 adds `ReadWritePaths=` for the two attribute files' real paths under

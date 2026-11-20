@@ -503,21 +503,28 @@ GUI or dependency compiles when the relevant command was not executed.
   Smooth scrolling stays unavailable, because it is each application's drawing
   decision and not an input setting.
 - The keyboard's colour (ticket 136, ADR 0034) is set through
-  `manager-daemon`: a HID LampArray by a helper unit whose device cgroup
-  allows its one hidraw node (`--lamp-array`), asus-wmi's `kbd_rgb_mode` by
-  ADR 0029's attribute helper. No session process opens a hidraw node and
-  no udev rule grants one; `hardware_core::lamparray` is the only parser of
-  report descriptors and `manager_daemon::keyboard_lighting` the only code
-  with hidraw ioctls. The vendor report 0x5F and the 0xFF59 copy are never
-  written. Nothing has run against the real keyboard: the lamp count,
-  `LampArrayKind`, and level counts of the owner's M5406WA, whether its
-  intensity and the WMI backlight levels 0–3 multiply or override each
-  other, whether the colour survives suspend, and that autonomous mode is
-  what it shows at power-on are unread, and the reading of "N levels" as
-  values 0 to N−1 is the usage tables', not observed. Ticket 136's notes
-  hold the owner's check. No LampArray effect is offered, by design; only
-  `kbd_rgb_mode`'s four firmware effects are, and that path has run against
-  fixture sysfs only.
+  `manager-daemon`, for the built-in keyboard only (an I2C LampArray, or
+  asus-wmi's `kbd_rgb_mode`; USB and Bluetooth LampArrays are out of
+  scope): a LampArray by a helper unit whose private `/dev` holds its one
+  hidraw node and which drops to `nobody` once it is open (`--lamp-array`),
+  `kbd_rgb_mode` by ADR 0029's attribute helper. Both helpers share
+  `hardware::helper_sandbox()`; `ProtectKernelTunables=`,
+  `ProtectControlGroups=`, and `ProtectProc=` are left out on purpose,
+  because each brings the whole of `/sys` back (ADR 0034). No session
+  process opens a hidraw node and no udev rule grants one;
+  `hardware_core::lamparray` is the only parser of report descriptors and
+  `manager_daemon::keyboard_lighting` the only code with hidraw ioctls. The
+  vendor report 0x5F and the 0xFF59 copy are never written. Nothing has run
+  against the real keyboard or a real system manager: the helper sandbox
+  is asserted as a property list and probed in a user manager only; the
+  lamp count, `LampArrayKind`, and level counts of the owner's M5406WA,
+  whether its intensity and the WMI backlight levels 0–3 multiply or
+  override each other, and whether the colour survives suspend are unread.
+  Level counts follow HID Usage Tables 1.4 section 26.9 (N is off plus N
+  levels). Ticket 136's notes hold the owner's check, done on a released
+  build through Better Manager. No LampArray effect is offered, by design;
+  only `kbd_rgb_mode`'s four firmware effects are, and that path has run
+  against fixture sysfs only.
 - Restore checks the shared application catalog and writes nothing for an
   application that is gone; the person chooses another or clears the default.
   Two limits: an entry whose `TryExec` program is missing still counts as

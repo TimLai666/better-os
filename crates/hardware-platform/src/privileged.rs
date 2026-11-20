@@ -65,17 +65,19 @@ pub fn lighting_access(error: &zbus::Error) -> Access {
                 keys::AUTH_CANCELLED => Access::Cancelled,
                 keys::UNAUTHORIZED => Access::NotAllowed,
                 keys::HARDWARE_ABSENT => Access::Absent,
-                _ if [
-                    "ServiceUnknown",
-                    "NameHasNoOwner",
-                    "UnknownMethod",
-                    "UnknownInterface",
-                    "UnknownObject",
-                ]
-                .iter()
-                .any(|n| name.as_str().ends_with(n)) =>
+                _ if ["ServiceUnknown", "NameHasNoOwner"]
+                    .iter()
+                    .any(|n| name.as_str().ends_with(n)) =>
                 {
                     Access::NoService
+                }
+                // A daemon that answers without these methods is older than
+                // the window: it needs updating, it is not missing.
+                _ if ["UnknownMethod", "UnknownInterface", "UnknownObject"]
+                    .iter()
+                    .any(|n| name.as_str().ends_with(n)) =>
+                {
+                    Access::Outdated
                 }
                 _ => Access::Failed(format!("{}: {message}", name.as_str())),
             }

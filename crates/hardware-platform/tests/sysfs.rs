@@ -163,8 +163,12 @@ fn the_owners_keyboard_is_found_as_a_lamp_array_by_its_descriptor() {
         vec![sysfs::LampArrayNode {
             node: "hidraw1".into(),
             bus: Some(sysfs::BUS_I2C),
+            vendor: Some(0x0B05),
+            product: Some(0x5570),
         }]
     );
+    assert!(nodes[0].built_in());
+    assert_eq!(nodes[0].device().label(), "0018:0B05:5570");
     assert_eq!(sysfs::keyboard_rgb_mode_attribute(&root), None);
     assert_eq!(
         sysfs::lighting_hint(&root),
@@ -251,6 +255,20 @@ fn hidraw_nodes_are_judged_by_name_size_and_descriptor_never_trusted() {
             ("hidraw2".to_string(), Some(0x18)),
             ("hidraw7".to_string(), Some(0x03))
         ]
+    );
+    // Only the built-in one is ever the keyboard: a USB Dynamic Lighting
+    // keyboard is not, even alone.
+    let built_in: Vec<String> = sysfs::built_in_lamp_arrays(&SysRoot::at(dir.path()))
+        .into_iter()
+        .map(|n| n.node)
+        .collect();
+    assert_eq!(built_in, vec!["hidraw2".to_string()]);
+    std::fs::remove_dir_all(class.join("hidraw2")).unwrap();
+    assert!(sysfs::built_in_lamp_arrays(&SysRoot::at(dir.path())).is_empty());
+    assert_eq!(
+        sysfs::lighting_hint(&SysRoot::at(dir.path())),
+        Presence::Absent,
+        "a USB LampArray alone gives the page no keyboard colour card"
     );
     assert!(sysfs::is_hidraw_name("hidraw0"));
     assert!(!sysfs::is_hidraw_name("hidraw"));

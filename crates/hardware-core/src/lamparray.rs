@@ -688,6 +688,16 @@ impl LampArrayKind {
     }
 }
 
+/// Whether a built-in LampArray's kind lets it be called the keyboard: it
+/// says keyboard, or says nothing (undefined, or no such field). Anything
+/// else is reported for what it is (ADR 0034).
+pub fn is_keyboard_kind(kind: Option<LampArrayKind>) -> bool {
+    matches!(
+        kind,
+        None | Some(LampArrayKind::Keyboard) | Some(LampArrayKind::Undefined)
+    )
+}
+
 /// How many levels each channel has, for the whole array: the fewest any
 /// lamp reports, so a colour every lamp can show.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -699,9 +709,10 @@ pub struct Levels {
 }
 
 impl Levels {
-    /// Every colour channel has more than one level.
+    /// Every colour channel can be set: a count of zero is a channel the
+    /// lamp does not have (HID Usage Tables 1.4, section 26.9).
     pub fn has_colour(&self) -> bool {
-        self.red > 1 && self.green > 1 && self.blue > 1
+        self.red > 0 && self.green > 0 && self.blue > 0
     }
 
     /// Intensity can be set separately from colour.
@@ -862,25 +873,28 @@ pub fn describe(device: &mut dyn FeatureDevice, layout: &Layout) -> Result<Descr
     })
 }
 
-/// An 8-bit channel scaled to a lamp's `count` levels (0 to `count - 1`).
-/// A channel with one level or none carries the field's own maximum, which
-/// is what "fully on" means for a lamp that cannot be dimmed.
-pub fn scale(value: u8, count: u32, field: u32) -> u32 {
-    if count >= 2 {
-        let top = (count - 1) as f64;
-        ((f64::from(value) * top) / 255.0).round() as u32
-    } else {
-        field
-    }
+/// An 8-bit channel scaled to a lamp's level count.
+///
+/// HID Usage Tables 1.4, section 26.9 (the LampAttributesResponseReport's
+/// colour attributes): a count of zero means the channel is not supported,
+/// one means fully on or off, and a count N means N levels "in addition to
+/// being turned off", the highest being full brightness. So a count N takes
+/// the values 0 (off) to N, not 0 to N−1. Microsoft's LampArray sample
+/// (github.com/microsoft/ArduinoHidForWindows, `examples/LampArray`) reports
+/// 0xFF and uses the 8-bit channel as it comes, which is the same reading.
+pub fn scale(value: u8, count: u32) -> u32 {
+    ((f64::from(value) * f64::from(count)) / 255.0).round() as u32
 }
 
-/// The intensity channel's value for a percentage.
+/// The intensity channel's value for a percentage: 0 (off) to the count,
+/// the count being unity gain (section 26.9). A lamp that gives no count
+/// is sent the field's own maximum, so it is never switched off by it.
 pub fn scale_percent(percent: u8, count: u32, field: u32) -> u32 {
     let percent = percent.min(100);
-    if count >= 2 {
-        ((f64::from(percent) * (count - 1) as f64) / 100.0).round() as u32
-    } else {
+    if count == 0 {
         field
+    } else {
+        ((f64::from(percent) * f64::from(count)) / 100.0).round() as u32
     }
 }
 
@@ -904,6 +918,7 @@ pub fn set_all(
     let report = &layout.range_update;
     let channel = |usage: u16| report.field(usage).map(|l| field_max(&l)).unwrap_or(0);
     let levels = description.levels;
+    // `build` clamps each value to what its field carries.
     let update = build(
         report,
         &[
@@ -911,18 +926,9 @@ pub fn set_all(
             (usage::UPDATE_FLAGS, 1),
             (usage::LAMP_ID_START, 0),
             (usage::LAMP_ID_END, u32::from(description.lamps - 1)),
-            (
-                usage::RED_CHANNEL,
-                scale(colour.red, levels.red, channel(usage::RED_CHANNEL)),
-            ),
-            (
-                usage::GREEN_CHANNEL,
-                scale(colour.green, levels.green, channel(usage::GREEN_CHANNEL)),
-            ),
-            (
-                usage::BLUE_CHANNEL,
-                scale(colour.blue, levels.blue, channel(usage::BLUE_CHANNEL)),
-            ),
+            (usage::RED_CHANNEL, scale(colour.red, levels.red)),
+            (usage::GREEN_CHANNEL, scale(colour.green, levels.green)),
+            (usage::BLUE_CHANNEL, scale(colour.blue, levels.blue)),
             (
                 usage::INTENSITY_CHANNEL,
                 scale_percent(
@@ -933,7 +939,14 @@ pub fn set_all(
             ),
         ],
     );
-    device.set_feature(&update).map_err(LampError::Device)
+    if let Err(error) = device.set_feature(&update) {
+        // Autonomous mode is off and no colour landed: the lamps would stay
+        // on whatever they last showed. Give them back to the firmware once,
+        // and report what failed first.
+        let _ = give_back(device, layout);
+        return Err(LampError::Device(error));
+    }
+    Ok(())
 }
 
 /// Turns autonomous mode on: the firmware draws its own lighting again.
@@ -969,6 +982,8 @@ pub mod fake {
         pub answer_lamp: Option<u32>,
         /// Every call fails with this.
         pub fail: Option<String>,
+        /// Only the LampRangeUpdate report fails, with this.
+        pub fail_range_update: Option<String>,
     }
 
     impl FakeLampArray {
@@ -993,6 +1008,7 @@ pub mod fake {
                 truncate_replies: None,
                 answer_lamp: None,
                 fail: None,
+                fail_range_update: None,
             }
         }
     }
@@ -1053,6 +1069,9 @@ pub mod fake {
             } else if id == layout.control.id && report.len() == layout.control.len {
                 self.autonomous = field(&layout.control, usage::AUTONOMOUS_MODE) != 0;
             } else if id == layout.range_update.id && report.len() == layout.range_update.len {
+                if let Some(error) = &self.fail_range_update {
+                    return Err(error.clone());
+                }
                 if !self.autonomous {
                     let r = &layout.range_update;
                     self.shown = Some([
@@ -1162,14 +1181,14 @@ mod tests {
         )
         .unwrap();
         assert!(!device.autonomous);
-        // 255 levels are 0 to 254.
-        assert_eq!(device.shown, Some([254, 127, 0, 254]));
+        // A count of 255 is 255 levels and off: 0 to 255.
+        assert_eq!(device.shown, Some([255, 128, 0, 255]));
         // Exactly: request, control off, range update.
         let ids: Vec<u8> = device.sent.iter().map(|r| r[0]).collect();
         assert_eq!(ids, vec![0x42, 0x46, 0x45]);
         assert_eq!(
             device.sent[2],
-            vec![0x45, 0x01, 0x00, 0x00, 0x00, 0x00, 0xFE, 0x7F, 0x00, 0xFE]
+            vec![0x45, 0x01, 0x00, 0x00, 0x00, 0x00, 0xFF, 0x80, 0x00, 0xFF]
         );
         give_back(&mut device, &layout).unwrap();
         assert!(device.autonomous);
@@ -1178,25 +1197,32 @@ mod tests {
 
     #[test]
     fn levels_are_scaled_to_what_the_lamps_have() {
-        assert_eq!(scale(255, 256, 255), 255);
-        assert_eq!(scale(255, 2, 255), 1);
-        assert_eq!(scale(127, 2, 255), 0);
-        assert_eq!(scale(128, 2, 255), 1);
-        assert_eq!(scale(255, 16, 255), 15);
-        assert_eq!(scale(0, 16, 255), 0);
-        assert_eq!(scale(200, 1, 255), 255);
-        assert_eq!(scale_percent(100, 4, 255), 3);
+        // HID Usage Tables 1.4, section 26.9: a count N is off plus N levels.
+        assert_eq!(scale(255, 255), 255);
+        assert_eq!(scale(128, 255), 128);
+        assert_eq!(scale(255, 1), 1);
+        assert_eq!(scale(127, 1), 0);
+        assert_eq!(scale(128, 1), 1);
+        assert_eq!(scale(255, 10), 10);
+        assert_eq!(scale(0, 10), 0);
+        // No such channel: nothing to send.
+        assert_eq!(scale(200, 0), 0);
+        assert_eq!(scale_percent(100, 4, 255), 4);
         assert_eq!(scale_percent(0, 4, 255), 0);
         assert_eq!(scale_percent(50, 4, 255), 2);
-        assert_eq!(scale_percent(250, 4, 255), 3);
-        assert_eq!(scale_percent(40, 1, 255), 255);
+        assert_eq!(scale_percent(250, 4, 255), 4);
+        // One level is on or off.
+        assert_eq!(scale_percent(40, 1, 255), 0);
+        assert_eq!(scale_percent(60, 1, 255), 1);
+        // No count given: full, never off.
+        assert_eq!(scale_percent(40, 0, 255), 255);
 
         let mut device = FakeLampArray::one_zone(M5406WA);
         device.levels = Levels {
             red: 4,
             green: 4,
             blue: 4,
-            intensity: 1,
+            intensity: 0,
         };
         let layout = device.layout.clone();
         let description = describe(&mut device, &layout).unwrap();
@@ -1208,7 +1234,39 @@ mod tests {
             10,
         )
         .unwrap();
-        assert_eq!(device.shown, Some([3, 0, 2, 255]));
+        assert_eq!(device.shown, Some([4, 0, 3, 255]));
+    }
+
+    #[test]
+    fn a_failed_colour_gives_the_lamps_back_and_reports_the_first_error() {
+        let mut device = FakeLampArray::one_zone(M5406WA);
+        let layout = device.layout.clone();
+        let description = describe(&mut device, &layout).unwrap();
+        device.fail_range_update = Some("EIO".into());
+        assert_eq!(
+            set_all(&mut device, &layout, &description, Rgb::new(1, 2, 3), 50),
+            Err(LampError::Device("EIO".into()))
+        );
+        assert!(device.autonomous, "control went back to the firmware");
+        let ids: Vec<u8> = device.sent.iter().map(|r| r[0]).collect();
+        // The range update was tried and failed, then control went back.
+        assert_eq!(ids, vec![0x42, 0x46, 0x45, 0x46]);
+        assert_eq!(device.sent.last().unwrap(), &vec![0x46, 0x01]);
+    }
+
+    #[test]
+    fn colour_needs_every_channel_and_intensity_more_than_on_and_off() {
+        let levels = |red, green, blue, intensity| Levels {
+            red,
+            green,
+            blue,
+            intensity,
+        };
+        assert!(levels(1, 1, 1, 0).has_colour());
+        assert!(!levels(255, 255, 0, 1).has_colour());
+        assert!(!levels(0, 0, 0, 255).has_colour());
+        assert!(levels(0, 0, 0, 2).has_intensity());
+        assert!(!levels(255, 255, 255, 1).has_intensity());
     }
 
     #[test]

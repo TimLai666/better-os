@@ -32,8 +32,8 @@ effects (breathing, colour cycle and so on) as ASUS's own software does.
 
 ## Notes
 
-**Blocked:** the check on the real keyboard needs the owner (root, or the
-released daemon); everything else is built.
+**Blocked:** the check on the real keyboard needs the owner, on a released
+build installed through Better Manager; everything else is built.
 
 ### What the keyboard is (read without privilege, 2026-11-21)
 
@@ -88,28 +88,66 @@ released daemon); everything else is built.
 - The kernel's ABI document does not list `kbd_rgb_mode`'s modes; the
   numbers come from the driver's own clamp and OpenRGB.
 
-### The owner's check (needs root; on a build of this branch)
+### After the security review (2026-11-21)
 
-1. Read the keyboard: `sudo target/debug/better-manager-daemon --lamp-array
-   hidraw1 describe`. Record `lamps`, `kind`, `min_update_interval_us`, and
-   `levels` (red, green, blue, intensity). `kind` should be `keyboard`; if
-   it is `undefined` the daemon still takes it (I2C), anything else and the
-   page shows one colour.
-2. Set a colour: `... --lamp-array hidraw1 set ff0000 100`. The keyboard
-   should go red. Then `set 00ff00 100`, `set 0000ff 100`, `set ffffff 100`.
-3. Brightness levels and intensity: with red at 100, step the backlight
-   through levels 0-3 (Fn key or the System page's slider) and note what
-   each does to the colour. Then at level 3 run `set ff0000 50` and
-   `set ff0000 0`, and repeat at level 1. Record whether they multiply, one
-   overrides the other, or level 0 still turns it off.
-4. Give it back: `... --lamp-array hidraw1 give-back`. The firmware's own
-   lighting should return.
-5. Set a colour, suspend, resume: does it stay? Reboot with nothing stored:
-   is the firmware's lighting what it shows?
+- Both hardware helpers share one sandbox (`hardware::helper_sandbox`);
+  the LampArray helper has a private `/dev` with its one node and drops to
+  `nobody` before it reads the device. ADR 0034 and an amendment to ADR
+  0029 say what holds and why three options are left out.
+- The card is for the built-in keyboard only; a saved choice names its
+  keyboard and is restored to it alone; a missing keyboard or a broken
+  file is a skip, not a failed unit; the file is written durably.
+- "The keyboard's own lighting" is offered on `kbd_rgb_mode` too.
+- No false "one colour": no interface found, the keyboard's own report of
+  no colour, and a lighting device of another kind are three states.
+- Level counts follow HID Usage Tables 1.4 section 26.9 (N is off plus N
+  levels, values 0 to N); a failed colour gives the lamps back.
+- Calls are coalesced and rate-limited; an older daemon reads "needs
+  updating"; the swatches are the kit's focusable, named `ColorSwatch`;
+  the kit's settings cards keep a press on a header control from toggling
+  the card (the three per-page workarounds are gone).
+- Removing Better Manager gives the keyboard back too (it only recommends
+  the daemon package, which may stay).
+
+### The owner's check (on the next release, installed through Better Manager)
+
+No unreleased build is run as root on the host (AGENTS.md). Everything
+below goes through the released page and daemon, so it exercises the real
+transient helper unit and its sandbox, which nothing else has run on a
+real system manager (ADR 0034, Consequences).
+
+1. **What the keyboard says about itself, without root.** Open System, then
+   Keyboard colour, and read the **Device** row: device ID, zones (lamp
+   count), kind, colour levels, brightness levels. The same line is in the
+   journal the first time the daemon reads the keyboard:
+   `journalctl -u better-manager-daemon -g 'keyboard lighting'`. If the
+   card instead says the built-in lighting device "says it is a … not a
+   keyboard", record that kind: the daemon does not drive it.
+2. **Set a colour on the page** (Steady colour, then red, green, blue,
+   white). The keyboard should change each time. Read the helper units'
+   journal: `journalctl -t systemd -g 'Better OS keyboard lighting'` and
+   `journalctl -b -g 'keyboard lighting'`; a failure names the property or
+   system call that refused it (the sandbox list is in ADR 0034).
+3. **Brightness levels and intensity:** with red at 100%, step the backlight
+   through levels 0-3 (Fn key or the Keyboard backlight slider) and note
+   what each does to the colour; then set Colour brightness to 50% and 0%
+   (drawn only when the keyboard reports more than one brightness level) at
+   level 3 and at level 1. Record whether they multiply, one overrides the
+   other, or level 0 still turns it off.
+4. **Restart** with a colour set: the colour should be back once the
+   desktop is up (`journalctl -b -u better-hardware-restore` says
+   `Written` or why it skipped).
+5. **Suspend and resume** with a colour set: does it stay? (If not, a
+   resume hook is owed.)
+6. **"The keyboard's own lighting"** on the page: the firmware's lighting
+   should return at once, and stay after a restart (nothing is restored).
+7. **Remove** the `better-manager-daemon` package (or Better Manager): the
+   keyboard should go back to its firmware lighting, and
+   `/var/lib/better-os/keyboard-lighting.json` should be gone.
 
 Each answer either confirms the follow-up in AGENTS.md or changes the
-code: a level count read wrong, a kind the daemon refuses, a colour lost on
-resume (that would need a resume hook).
+code: a level count read wrong, a kind the daemon refuses, a sandbox
+property the real systemd rejects, a colour lost on resume.
 
 Screenshots of the page states, taken in a headless sway sandbox against
 `hardware_standin` (the real descriptor, a fake device behind it), are in
