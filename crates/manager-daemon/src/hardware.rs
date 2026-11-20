@@ -1,5 +1,6 @@
-//! `org.betteros.Hardware1`: the two hardware writes that need root (ADR
-//! 0017, spec 11.2).
+//! `org.betteros.Hardware1`: the hardware writes that need root (ADR 0017,
+//! spec 11.2): the charge limit, the fan mode, and the keyboard's colour
+//! (ADR 0034, `keyboard_lighting`).
 //!
 //! One method per control and one polkit action per method. Nothing crosses
 //! as free text or a path: the argument is checked against its closed set
@@ -26,8 +27,12 @@ use zbus::message::Header;
 use zbus::{fdo, interface};
 
 use crate::DaemonError;
-use crate::authorize::{Authorization, Authorizer, CHARGE_LIMIT_ACTION, FAN_MODE_ACTION};
+use crate::authorize::{
+    Authorization, Authorizer, CHARGE_LIMIT_ACTION, FAN_MODE_ACTION, KEYBOARD_LIGHTING_ACTION,
+};
+use crate::keyboard_lighting::{self, LampCache, LampHelper};
 use crate::service::{CallGate, refuse};
+use hardware_core::lighting::{Effect, LightingChoice, Rgb, Speed, asus_wmi};
 
 pub const INTERFACE: &str = "org.betteros.Hardware1";
 
@@ -74,6 +79,9 @@ pub fn helper_accepts(path: &Path, value: &str) -> bool {
         "pwm1_enable" => FanMode::ALL
             .iter()
             .any(|m| m.pwm_enable().to_string() == value),
+        // asus-wmi's keyboard colour (ADR 0034): only a value the closed set
+        // produces, `cmd` 0 (never saved to the firmware).
+        asus_wmi::ATTRIBUTE => asus_wmi::accepts_value(value),
         _ => false,
     };
     under_devices && value_ok
@@ -173,6 +181,15 @@ pub struct HardwareService<A: Authorizer + 'static> {
     gate: Arc<CallGate>,
     /// See `ManagerService::runtime`: zbus polls this on its own executor.
     runtime: tokio::runtime::Handle,
+    /// The keyboard's LampArray helper (ADR 0034); `None` drives no
+    /// LampArray.
+    lamp_helper: Option<Arc<dyn LampHelper>>,
+    /// Where the keyboard's colour is kept for `--restore-hardware`.
+    lighting_state: Option<PathBuf>,
+    lamp_cache: Arc<LampCache>,
+    /// One keyboard change at a time: two helpers never talk to the device
+    /// at once.
+    lighting_lock: Arc<std::sync::Mutex<()>>,
 }
 
 impl<A: Authorizer + 'static> HardwareService<A> {
@@ -191,7 +208,21 @@ impl<A: Authorizer + 'static> HardwareService<A> {
             state_file: None,
             gate,
             runtime: tokio::runtime::Handle::current(),
+            lamp_helper: None,
+            lighting_state: None,
+            lamp_cache: Arc::new(LampCache::default()),
+            lighting_lock: Arc::new(std::sync::Mutex::new(())),
         }
+    }
+
+    pub fn with_lamp_helper(mut self, helper: Arc<dyn LampHelper>) -> Self {
+        self.lamp_helper = Some(helper);
+        self
+    }
+
+    pub fn with_lighting_state(mut self, path: impl Into<PathBuf>) -> Self {
+        self.lighting_state = Some(path.into());
+        self
     }
 
     pub fn with_state_file(mut self, path: impl Into<PathBuf>) -> Self {
@@ -224,6 +255,9 @@ impl<A: Authorizer + 'static> HardwareService<A> {
 /// one) and reads it back. Opened with `O_TRUNC`, as a shell's `>` does:
 /// sysfs ignores it, and a plain file in a test is replaced whole.
 pub fn write_attribute(path: &Path, value: &str) -> Result<String, DaemonError> {
+    // `kbd_rgb_mode` is write-only (`DEVICE_ATTR_WO`): there is nothing to
+    // read back, and the write's own success is the answer.
+    let write_only = path.file_name().and_then(|n| n.to_str()) == Some(asus_wmi::ATTRIBUTE);
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .truncate(true)
@@ -232,6 +266,9 @@ pub fn write_attribute(path: &Path, value: &str) -> Result<String, DaemonError> 
     file.write_all(value.as_bytes())
         .map_err(|error| DaemonError::WriteFailed(format!("{}: {error}", path.display())))?;
     drop(file);
+    if write_only {
+        return Ok(value.to_string());
+    }
     std::fs::read_to_string(path)
         .map(|text| text.trim().to_string())
         .map_err(|error| DaemonError::WriteFailed(format!("{}: {error}", path.display())))
@@ -351,6 +388,92 @@ impl<A: Authorizer + 'static> HardwareService<A> {
         .await
     }
 
+    /// What the keyboard's colour interface is, what its lamps can show, and
+    /// what Better OS set, as JSON (`hardware_core::lighting::LightingReply`).
+    /// Reading a LampArray opens the device, so it is asked for like a write.
+    async fn keyboard_lighting(
+        &self,
+        #[zbus(header)] header: Header<'_>,
+    ) -> Result<String, fdo::Error> {
+        let _call = self.gate.enter().map_err(refuse)?;
+        self.authorize(&header, KEYBOARD_LIGHTING_ACTION).await?;
+        let root = self.root.clone();
+        let helper = self.lamp_helper.clone();
+        let cache = self.lamp_cache.clone();
+        let state = self.lighting_state.clone();
+        let lock = self.lighting_lock.clone();
+        self.blocking(move || {
+            let _one = lock
+                .lock()
+                .map_err(|_| DaemonError::WriteFailed("lock".into()))?;
+            let helper = helper_or_none(helper.as_deref());
+            let stored = match &state {
+                Some(path) => keyboard_lighting::load(path).unwrap_or(None),
+                None => None,
+            };
+            let reply = keyboard_lighting::describe(&root, helper, &cache, stored)?;
+            serde_json::to_string(&reply).map_err(|e| DaemonError::WriteFailed(e.to_string()))
+        })
+        .await
+    }
+
+    /// Sets the keyboard's effect (`firmware`, `static`, `breathing`,
+    /// `cycle`, `strobe`), colour, intensity (0-100), and speed (0-2), and
+    /// returns what `KeyboardLighting` then answers. An effect the keyboard
+    /// does not do itself is refused before anything is touched.
+    #[allow(clippy::too_many_arguments)]
+    async fn set_keyboard_lighting(
+        &self,
+        #[zbus(header)] header: Header<'_>,
+        effect: &str,
+        red: u8,
+        green: u8,
+        blue: u8,
+        intensity: u8,
+        speed: u8,
+    ) -> Result<String, fdo::Error> {
+        let _call = self.gate.enter().map_err(refuse)?;
+        // Neither is echoed: they are the caller's.
+        let Some(effect) = Effect::from_wire(effect) else {
+            return Err(refuse(DaemonError::InvalidArgument("effect".to_string())));
+        };
+        let Some(speed) = Speed::from_wire(speed) else {
+            return Err(refuse(DaemonError::InvalidArgument("speed".to_string())));
+        };
+        if intensity > 100 {
+            return Err(refuse(DaemonError::InvalidArgument(
+                "intensity".to_string(),
+            )));
+        }
+        let choice = LightingChoice {
+            effect,
+            colour: Rgb::new(red, green, blue),
+            intensity,
+            speed,
+        };
+        self.authorize(&header, KEYBOARD_LIGHTING_ACTION).await?;
+        let root = self.root.clone();
+        let helper = self.lamp_helper.clone();
+        let writer = self.writer.clone();
+        let cache = self.lamp_cache.clone();
+        let state = self.lighting_state.clone();
+        let lock = self.lighting_lock.clone();
+        self.blocking(move || {
+            let _one = lock
+                .lock()
+                .map_err(|_| DaemonError::WriteFailed("lock".into()))?;
+            let helper = helper_or_none(helper.as_deref());
+            keyboard_lighting::apply(&root, helper, writer.as_ref(), &cache, &choice)?;
+            if let Some(path) = &state {
+                keyboard_lighting::store(path, &choice)?;
+            }
+            let stored = (choice.effect != Effect::Firmware).then_some(choice);
+            let reply = keyboard_lighting::describe(&root, helper, &cache, stored)?;
+            serde_json::to_string(&reply).map_err(|e| DaemonError::WriteFailed(e.to_string()))
+        })
+        .await
+    }
+
     /// Sets the fan mode to `auto` or `full` and returns what it reads back:
     /// `auto`, `full`, or the raw value when it is neither.
     async fn set_fan_mode(
@@ -369,6 +492,25 @@ impl<A: Authorizer + 'static> HardwareService<A> {
         self.blocking(move || apply_fan_mode(&root, writer.as_ref(), mode))
             .await
     }
+}
+
+/// A service built without a LampArray helper finds none to drive.
+struct NoLampHelper;
+
+impl LampHelper for NoLampHelper {
+    fn run(
+        &self,
+        _node: &str,
+        _command: keyboard_lighting::LampCommand,
+    ) -> Result<Option<hardware_core::lamparray::Description>, DaemonError> {
+        Err(DaemonError::WriteFailed(
+            "this daemon was built without the keyboard helper".to_string(),
+        ))
+    }
+}
+
+fn helper_or_none(helper: Option<&dyn LampHelper>) -> &dyn LampHelper {
+    helper.unwrap_or(&NoLampHelper)
 }
 
 #[cfg(test)]
@@ -411,6 +553,19 @@ mod tests {
         assert!(helper_accepts(limit, "60"));
         assert!(!helper_accepts(limit, "75"));
         assert!(!helper_accepts(limit, "80\n"));
+        let rgb =
+            Path::new("/sys/devices/platform/asus-nb-wmi/leds/asus::kbd_backlight/kbd_rgb_mode");
+        assert!(helper_accepts(rgb, "0 1 255 0 0 2"));
+        assert!(!helper_accepts(rgb, "1 1 255 0 0 2"));
+        assert!(!helper_accepts(rgb, "0 4 255 0 0 2"));
+        assert!(!helper_accepts(
+            Path::new("/sys/kernel/kbd_rgb_mode"),
+            "0 0 1 2 3 1"
+        ));
+        assert!(!helper_accepts(
+            Path::new("/sys/devices/platform/asus-nb-wmi/leds/asus::kbd_backlight/kbd_rgb_state"),
+            "0 1 1 1 1"
+        ));
         assert!(helper_accepts(fan, "0"));
         assert!(helper_accepts(fan, "2"));
         assert!(!helper_accepts(fan, "1"));

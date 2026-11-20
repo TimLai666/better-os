@@ -694,6 +694,9 @@ PRERM
 if [ "$1" = "remove" ]; then
     if [ -x /usr/libexec/better-manager-daemon ]; then
         /usr/libexec/better-manager-daemon --remove-drive-entries || true
+        # ADR 0034: a keyboard whose colour Better OS set goes back to its
+        # firmware's own lighting. Nothing is touched when nothing was set.
+        /usr/libexec/better-manager-daemon --release-keyboard-lighting || true
     fi
     if command -v deb-systemd-helper >/dev/null 2>&1; then
         deb-systemd-helper disable better-hardware-restore.service >/dev/null 2>&1 || true
@@ -714,6 +717,9 @@ set -e
 # and the person ticked nothing to keep them.
 if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
     rm -rf /var/lib/better-os/boot-watch
+    # The keyboard colour (ADR 0034): the prerm gave the keyboard back to
+    # its firmware, so the choice it described goes too.
+    rm -f /var/lib/better-os/keyboard-lighting.json
 fi
 
 if [ "$1" = "purge" ]; then

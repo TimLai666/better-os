@@ -48,6 +48,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("{read}");
         return Ok(());
     }
+    // The keyboard's LampArray helper (ADR 0034): started by the daemon or
+    // the restore in a transient unit whose device cgroup allows this one
+    // hidraw node. It reads the node's descriptor, refuses anything that is
+    // not a LampArray, runs the one command, and prints JSON or `ok`.
+    if arguments.first().map(String::as_str) == Some("--lamp-array") {
+        let Some(node) = arguments.get(1) else {
+            return Err("--lamp-array takes a node and a command".into());
+        };
+        let out = manager_daemon::keyboard_lighting::lamp_helper_main(node, &arguments[2..])
+            .map_err(|error| error.to_string())?;
+        println!("{out}");
+        return Ok(());
+    }
+    // The package's prerm on removal (ADR 0034): a keyboard Better OS took
+    // over goes back to its firmware. Never fails the removal.
+    if arguments.first().map(String::as_str) == Some("--release-keyboard-lighting") {
+        let helper = manager_daemon::keyboard_lighting::SandboxedLampHelper {
+            program: std::env::current_exe()?,
+        };
+        for problem in manager_daemon::keyboard_lighting::release(
+            &hardware_platform::sysfs::SysRoot::system(),
+            &helper,
+            std::path::Path::new(manager_daemon::LIGHTING_STATE),
+        ) {
+            eprintln!("better-manager-daemon: keyboard lighting: {problem}");
+        }
+        return Ok(());
+    }
     // The same helper started from here, as the daemon starts it: used by
     // packaging/hardware-unit/check.sh to show the path works from inside the
     // daemon's own sandbox. Root only, and the same checks as the helper.
@@ -113,16 +141,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 std::thread::sleep(std::time::Duration::from_millis(500));
                 result = manager_daemon::hardware::restore(&root, &writer, state);
             }
-            return match result {
-                Ok(restored) => {
+            // The keyboard's colour (ADR 0034). An I2C keyboard can bind
+            // after this unit starts too: the same wait.
+            let helper = manager_daemon::keyboard_lighting::SandboxedLampHelper {
+                program: std::env::current_exe()?,
+            };
+            let lighting = std::path::Path::new(manager_daemon::LIGHTING_STATE);
+            let restore_lighting =
+                || manager_daemon::keyboard_lighting::restore(&root, &helper, &writer, lighting);
+            let mut lit = restore_lighting();
+            for _ in 0..30 {
+                if lit != Err(manager_daemon::DaemonError::HardwareAbsent) {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                lit = restore_lighting();
+            }
+            match &lit {
+                Ok(restored) => eprintln!("better-manager-daemon: keyboard restore: {restored:?}"),
+                Err(error) => eprintln!("better-manager-daemon: keyboard restore: {error}"),
+            }
+            return match (result, lit) {
+                (Ok(restored), Ok(_)) => {
                     eprintln!("better-manager-daemon: hardware restore: {restored:?}");
                     Ok(())
                 }
-                Err(error) => Err(error.into()),
+                (Err(error), _) | (_, Err(error)) => Err(error.into()),
             };
         }
         return Err(format!(
-            "better-manager-daemon takes no argument but --restore-hardware, --watch-login-screen, --remove-drive-entries, --write-attribute, or --write-via-helper; got {argument:?}"
+            "better-manager-daemon takes no argument but --restore-hardware, --watch-login-screen, --remove-drive-entries, --release-keyboard-lighting, --write-attribute, --lamp-array, or --write-via-helper; got {argument:?}"
         )
         .into());
     }
@@ -169,7 +217,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         hardware_platform::sysfs::SysRoot::system(),
         gate.clone(),
     )
-    .with_state_file(manager_daemon::HARDWARE_STATE);
+    .with_state_file(manager_daemon::HARDWARE_STATE)
+    .with_lamp_helper(Arc::new(
+        manager_daemon::keyboard_lighting::SandboxedLampHelper {
+            program: std::env::current_exe()?,
+        },
+    ))
+    .with_lighting_state(manager_daemon::LIGHTING_STATE);
     let udisks = zbus::blocking::Connection::system()?;
     let drives = manager_daemon::drives::DrivesService::new(
         PolkitAuthorizer::new(zbus::connection::Builder::system()?.build().await?),

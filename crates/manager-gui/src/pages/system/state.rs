@@ -68,6 +68,8 @@ pub(crate) struct SystemState {
     pub(crate) following: bool,
     /// The Drives section (ticket 127).
     pub(crate) drives: super::drives::DrivesState,
+    /// The keyboard colour card (ticket 136).
+    pub(crate) lighting: super::lighting_card::LightingState,
     again: bool,
     task: Option<Task<()>>,
     sensor_task: Option<Task<()>>,
@@ -91,7 +93,7 @@ impl SystemState {
 
     /// A password prompt or a write is open: an update restart waits for it.
     pub(crate) fn blocks_restart(&self) -> bool {
-        self.writing.is_some() || self.drives.blocks_restart()
+        self.writing.is_some() || self.drives.blocks_restart() || self.lighting.blocks_restart()
     }
 }
 
@@ -167,6 +169,7 @@ impl ManagerApp {
             card::SENSORS => self.system.sensors_open = true,
             card::ABOUT => self.system.about_open = true,
             card::FOLLOW => self.system.follow_open = true,
+            card::LIGHTING => self.system.lighting.open = true,
             _ => {}
         }
     }
@@ -216,6 +219,7 @@ impl ManagerApp {
                 app.system.facts = Some(facts);
                 app.system.follow = follow;
                 app.system.about = about;
+                app.ensure_lighting(cx);
                 if std::mem::take(&mut app.system.again) {
                     app.refresh_system(cx);
                 }

@@ -28,6 +28,7 @@ pub mod executor;
 pub mod hardware;
 pub mod health;
 pub mod host;
+pub mod keyboard_lighting;
 pub mod revalidate;
 pub mod service;
 pub mod store;
@@ -52,6 +53,10 @@ pub const BOOT_WATCH_DIR: &str = manager_ipc::boot_watch::DIR;
 
 /// The charge limit the person chose, for `--restore-hardware` at boot.
 pub const HARDWARE_STATE: &str = "/var/lib/better-os/hardware.json";
+
+/// The keyboard colour the person chose (ADR 0034), for `--restore-hardware`
+/// at boot. Absent while the keyboard shows its own default.
+pub const LIGHTING_STATE: &str = "/var/lib/better-os/keyboard-lighting.json";
 
 /// The only component names this daemon will ever act on, regardless of what
 /// any catalog says.

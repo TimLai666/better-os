@@ -1034,6 +1034,37 @@ dpkg-deb --ctrl-tarfile "$daemon_path" | tar -xO ./prerm \
     printf "The daemon's prerm does not remove the drive entries it wrote\n" >&2
     exit 1
 }
+# Ticket 136 (ADR 0034): the keyboard colour has its own polkit action, the
+# boot-time restore starts for a stored colour as well as a stored limit, and
+# removal gives the keyboard back to its firmware and deletes the choice.
+grep -q 'org.betteros.manager.keyboard-lighting' \
+    "$daemon_extract/usr/share/polkit-1/actions/org.betteros.manager.policy" || {
+    printf 'The polkit policy does not declare org.betteros.manager.keyboard-lighting\n' >&2
+    exit 1
+}
+for condition in hardware.json keyboard-lighting.json; do
+    grep -qx "ConditionPathExists=|/var/lib/better-os/$condition" \
+        "$daemon_extract/usr/lib/systemd/system/better-hardware-restore.service" || {
+        printf 'The restore unit does not start for a stored %s\n' "$condition" >&2
+        exit 1
+    }
+done
+dpkg-deb --ctrl-tarfile "$daemon_path" | tar -xO ./prerm \
+    | grep -q -- '/usr/libexec/better-manager-daemon --release-keyboard-lighting' || {
+    printf "The daemon's prerm does not give the keyboard back to its firmware\n" >&2
+    exit 1
+}
+dpkg-deb --ctrl-tarfile "$daemon_path" | tar -xO ./postrm \
+    | grep -q -- 'rm -f /var/lib/better-os/keyboard-lighting.json' || {
+    printf "The daemon's postrm does not delete the keyboard colour it kept\n" >&2
+    exit 1
+}
+# No udev rule hands a hidraw node to anyone (ADR 0034: the daemon's helper
+# opens it, never the session).
+if find "$daemon_extract" -path '*/udev/rules.d/*' -type f -print -quit | grep -q .; then
+    printf 'The daemon package ships a udev rule; ADR 0034 grants no hidraw access\n' >&2
+    exit 1
+fi
 for unit in better-manager-daemon.service better-hardware-restore.service better-greeter-watch.service; do
     unit_file="$daemon_extract/usr/lib/systemd/system/$unit"
     if ! grep -qx 'BindReadOnlyPaths=/sys' "$unit_file" \

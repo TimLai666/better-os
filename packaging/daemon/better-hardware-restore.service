@@ -1,9 +1,13 @@
 [Unit]
-Description=Better OS battery charge limit at startup
+Description=Better OS battery charge limit and keyboard colour at startup
 Documentation=https://github.com/TimLai666/better-os/blob/main/engineering/decisions/0017-one-control-center.md
-# Only a limit the person chose in Better Manager is ever written, and only
-# that: the fan mode is never restored and always starts on automatic.
-ConditionPathExists=/var/lib/better-os/hardware.json
+Documentation=https://github.com/TimLai666/better-os/blob/main/engineering/decisions/0034-keyboard-lighting-through-the-daemon.md
+# Only a limit or a keyboard colour the person chose in Better Manager is
+# ever written, and only those: the fan mode is never restored and always
+# starts on automatic. Either stored choice starts the unit (the `|` makes
+# the two conditions an or).
+ConditionPathExists=|/var/lib/better-os/hardware.json
+ConditionPathExists=|/var/lib/better-os/keyboard-lighting.json
 After=systemd-udev-settle.service systemd-modules-load.service dbus.service
 Wants=dbus.service
 
@@ -13,7 +17,8 @@ ExecStart=/usr/libexec/better-manager-daemon --restore-hardware
 
 # The daemon's hardening. /sys is read-only here too (ADR 0029): the limit is
 # written by the same transient helper unit the daemon uses, which sees only
-# the battery's one attribute file.
+# the battery's one attribute file, and the keyboard's colour by the helper
+# whose device cgroup allows only the keyboard's hidraw node (ADR 0034).
 ProtectHome=yes
 PrivateTmp=yes
 PrivateNetwork=yes

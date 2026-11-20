@@ -305,6 +305,32 @@ Changes are sent while dragging, at most every 50 ms, and the slider follows
 | Description | {levels} 段亮度，0 是關閉。 | {levels} levels; 0 is off. |
 | Value | 關閉 / 第 {n} 段 | Off / Level {n} |
 
+**Keyboard colour** (ticket 136, ADR 0034) — drawn under the keyboard
+backlight wherever the machine has a keyboard backlight or a colour
+interface. With a HID LampArray keyboard (the M5406WA's) or asus-wmi's
+`kbd_rgb_mode` (TUF and ROG), a `SettingsExpander` whose header holds a
+`ComboBox` of the effects the keyboard runs itself, and whose rows hold the
+colour picker (swatches, hue, saturation), the colour brightness when the
+lamps have an intensity channel, and the speed for breathing and colour
+cycle on `kbd_rgb_mode`. A LampArray offers a steady colour and the
+keyboard's own lighting only, and says why: the usage tables have no effect,
+and an effect would be Better OS rewriting colours on a timer, which it never
+does. Every change goes through `manager-daemon`; the active local session is
+not asked for a password.
+
+| | zh-TW | English |
+| --- | --- | --- |
+| Header | 鍵盤顏色 | Keyboard colour |
+| No colour | 這個鍵盤只有一種顏色。 | This keyboard has one colour. |
+| Effects | 固定顏色 / 鍵盤內建燈光 / 呼吸 / 色彩循環 / 閃爍 | Steady colour / The keyboard's own lighting / Breathing / Colour cycle / Strobe |
+| LampArray note | 這個鍵盤只能設定一種固定顏色。這裡沒有呼吸和色彩循環：鍵盤本身做不到，Better OS 也不會用每秒改好幾次顏色的方式假裝。 | This keyboard takes one steady colour. Breathing and colour cycle aren't offered: the keyboard can't run them itself, and Better OS doesn't fake them by changing the colour many times a second. |
+| No daemon | Better Manager 的系統服務沒有回應，所以無法變更顏色。 | Better Manager's system service isn't answering, so the colour can't be changed. |
+| Not allowed | 這個帳號不能變更鍵盤顏色。 | This account isn't allowed to change the keyboard colour. |
+| Startup | 每次開機時，Better OS 會重新套用。 | Better OS sets it again each time the PC starts. |
+
+`kbd_rgb_mode` is write-only, so with nothing set by Better OS no effect is
+selected and the card says the keyboard cannot report what it shows.
+
 ### Group: 散熱 / Cooling
 
 **Fan mode** — `RadioButtons`, horizontal, privileged.
@@ -705,6 +731,7 @@ today's Settings (`mock_lifecycle_detail`, audit M7) is not carried.
 | Battery facts | same battery | `capacity`, `status`, `charge_full`, `charge_full_design` (or `energy_*`), `cycle_count`, `model_name` | — | none |
 | Brightness | `org.gnome.SettingsDaemon.Power` on the session bus exposes `org.gnome.SettingsDaemon.Power.Screen` | its `Brightness` (0–100) | set `Brightness` | none (the desktop's own path) |
 | Keyboard backlight | `org.gnome.SettingsDaemon.Power.Keyboard` (GNOME) or `org.freedesktop.UPower` `/org/freedesktop/UPower/KbdBacklight` | `Brightness` and `Steps`, or `GetBrightness` and `GetMaxBrightness` | set `Brightness`, or `SetBrightness(i)` | none |
+| Keyboard colour | a hidraw node whose sysfs `report_descriptor` declares a HID LampArray (page 0x59) and that says it is a keyboard, or says nothing on I2C; otherwise `*::kbd_backlight/kbd_rgb_mode` | the LampArray's feature reports 0x41/0x43 through the daemon (`KeyboardLighting`), and the stored choice; `kbd_rgb_mode` is write-only | `manager-daemon` `org.betteros.Hardware1.SetKeyboardLighting(syyyyy)` | root, polkit `org.betteros.manager.keyboard-lighting`, `allow_active=yes` |
 | Fan mode | a hwmon directory has `pwm1_enable` and no writable `pwm1` | `pwm1_enable` | `manager-daemon` `org.betteros.Hardware1.SetFanMode(s)` with `auto` or `full` | root, polkit `org.betteros.manager.set-fan-mode`, `auth_admin_keep` |
 | Temperatures, fan speeds | any hwmon `tempN_input`, `fanN_input` | those files | — | none |
 
@@ -741,8 +768,18 @@ per method. Nothing crosses as free text or a path:
 - `SetFanMode(mode: s)` — accepts exactly `auto` or `full`; the daemon finds
   the hwmon directory whose `pwm1_enable` exists under a platform device it
   recognises (`asus-nb-wmi` first), writes, reads back, and returns it.
-- No read method: reading is unprivileged and the window reads sysfs itself
-  (AGENTS.md allows read-only host queries).
+- No read method for those two: reading them is unprivileged and the window
+  reads sysfs itself (AGENTS.md allows read-only host queries).
+- `KeyboardLighting() → s` and `SetKeyboardLighting(effect: s, red: y,
+  green: y, blue: y, intensity: y, speed: y) → s` (ticket 136, ADR 0034).
+  Reading a LampArray opens its hidraw node, which needs root, so it has a
+  read method; both answer the same JSON (the interface, the LampArray's
+  description, the stored choice). The effect is checked against the closed
+  set and against what the interface offers before polkit is asked. The
+  choice is kept in `/var/lib/better-os/keyboard-lighting.json` and written
+  back at boot by `better-hardware-restore.service`; the keyboard's own
+  default deletes it. The daemon package's removal gives a LampArray back to
+  its firmware and deletes the file.
 
 The unit keeps `ProtectKernelTunables=yes`, which makes `/sys` read-only, and
 adds `ReadWritePaths=` for the two attribute files' real paths under
