@@ -275,6 +275,12 @@ async fn an_authorized_write_is_read_back_and_the_limit_is_kept_for_boot() {
     assert_eq!(set_limit(&client, 80).await, Ok(80));
     assert_eq!(Machine::read(&machine.limit), "80");
     assert_eq!(Machine::read(&machine.state()), r#"{"charge_limit":80}"#);
+    // What the battery had before Better OS, for removal to give back; a
+    // second write keeps the first record.
+    let before = manager_daemon::hardware::before_file(&machine.state());
+    assert_eq!(Machine::read(&before), r#"{"charge_limit":100}"#);
+    assert_eq!(set_limit(&client, 60).await, Ok(60));
+    assert_eq!(Machine::read(&before), r#"{"charge_limit":100}"#);
     assert_eq!(set_fan(&client, "full").await, Ok("full".to_string()));
     assert_eq!(Machine::read(&machine.fan), "0");
     assert_eq!(set_fan(&client, "auto").await, Ok("auto".to_string()));
@@ -301,4 +307,41 @@ async fn a_machine_without_the_hardware_says_absent() {
             .unwrap_err()
             .contains("daemon.error.hardware_absent")
     );
+}
+
+/// `--helper-properties` prints exactly the lists the daemon gives
+/// systemd-run, which `packaging/hardware-unit/check.sh` starts its probes
+/// with on a real systemd: the check cannot drift from the code.
+#[test]
+fn the_printed_helper_properties_are_the_daemons_own() {
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_better-manager-daemon"))
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let lines = |out: std::process::Output| -> Vec<String> {
+        assert!(out.status.success(), "{out:?}");
+        String::from_utf8(out.stdout)
+            .unwrap()
+            .lines()
+            .map(str::to_string)
+            .collect()
+    };
+    let path = "/sys/devices/platform/asus-nb-wmi/hwmon/hwmon8/pwm1_enable";
+    assert_eq!(
+        lines(run(&["--helper-properties", "attribute", path])),
+        manager_daemon::hardware::helper_properties(Path::new(path))
+    );
+    assert_eq!(
+        lines(run(&["--helper-properties", "lamp-array", "hidraw1"])),
+        manager_daemon::keyboard_lighting::lamp_helper_properties("hidraw1")
+    );
+    for refused in [
+        &["--helper-properties", "lamp-array", "../sda"][..],
+        &["--helper-properties", "lamp-array"][..],
+        &["--helper-properties", "other", "x"][..],
+    ] {
+        assert!(!run(refused).status.success(), "{refused:?}");
+    }
 }

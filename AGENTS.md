@@ -561,6 +561,39 @@ GUI or dependency compiles when the relevant command was not executed.
   `packaging/tests/touchpad-scroll-hardware-check.sh` is the owner's check.
   Smooth scrolling stays unavailable, because it is each application's drawing
   decision and not an input setting.
+- The keyboard's colour (ticket 136, ADR 0034) is set through
+  `manager-daemon`, for the built-in keyboard only (an I2C LampArray, or
+  asus-wmi's `kbd_rgb_mode`; USB and Bluetooth LampArrays are out of
+  scope): a LampArray by a helper unit whose private `/dev` holds its one
+  hidraw node and which drops to `nobody` once it is open (`--lamp-array`),
+  `kbd_rgb_mode` by ADR 0029's attribute helper. Both helpers share
+  `hardware::helper_sandbox()`; `ProtectKernelTunables=`,
+  `ProtectControlGroups=`, `ProtectProc=`, and `PrivateNetwork=` are left
+  out on purpose, because each brings the whole of `/sys` back (ADR 0034;
+  `IPAddressDeny=any` closes the network instead). No session
+  process opens a hidraw node and no udev rule grants one;
+  `hardware_core::lamparray` is the only parser of report descriptors and
+  `manager_daemon::keyboard_lighting` the only code with hidraw ioctls. The
+  vendor report 0x5F and the 0xFF59 copy are never written. CI's
+  `packaging/hardware-unit/check.sh` runs both helpers' units on a real
+  systemd in a container with the property lists the release daemon prints
+  (`--helper-properties`), but has no hidraw device, so no feature report
+  has gone through the sandboxed helper; the
+  lamp count, `LampArrayKind`, and level counts of the owner's M5406WA,
+  whether its intensity and the WMI backlight levels 0–3 multiply or
+  override each other, and whether the colour survives suspend are unread.
+  Level counts follow HID Usage Tables 1.4 section 26.9 (N is off plus N
+  levels). Ticket 136's notes hold the owner's check, done on a released
+  build through Better Manager. No LampArray effect is offered, by design;
+  only `kbd_rgb_mode`'s four firmware effects are, and that path has run
+  against fixture sysfs only.
+- Removing `better-manager` or `better-manager-daemon` gives the hardware
+  back (`better-manager-daemon --release-hardware` in both prerms): the
+  keyboard's colour as above, and the battery's charge limit to what it
+  read before Better OS's first write, recorded in
+  `/var/lib/better-os/hardware-before.json`. A limit set by a version
+  before that record existed, or recorded outside 60, 80, and 100, is left
+  as it is (the removal says so) until the firmware resets it.
 - Restore checks the shared application catalog and writes nothing for an
   application that is gone; the person chooses another or clears the default.
   Two limits: an entry whose `TryExec` program is missing still counts as

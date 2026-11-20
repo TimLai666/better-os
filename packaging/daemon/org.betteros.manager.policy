@@ -62,6 +62,23 @@
     </defaults>
   </action>
 
+  <!-- ADR 0034, ticket 136. Reads the keyboard's LampArray and sets one
+       colour and intensity, or gives the lighting back to the firmware, or
+       sets one of four kbd_rgb_mode effects. The daemon finds the device
+       itself and builds every report; a caller sends an effect name from a
+       closed set and five numbers. The person at the machine is not asked,
+       as UPower does not ask for the keyboard brightness; a remote or
+       inactive session authenticates. -->
+  <action id="org.betteros.manager.keyboard-lighting">
+    <description>Change the keyboard's colour</description>
+    <message>Authentication is required to change the keyboard's colour</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+  </action>
+
   <!-- ADR 0032, ticket 127. Writes only Better OS's own lines in /etc/fstab
        and its own udev rules file, for a drive the daemon looks up itself
        from a UUID. Asked once, then kept for a few minutes. -->
