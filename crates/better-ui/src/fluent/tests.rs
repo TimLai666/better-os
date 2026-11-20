@@ -1078,7 +1078,11 @@ fn a_desktop_accent_replaces_only_the_accent_roles() {
     let on = hex(0xffffff);
     let p = super::with_accent(&LIGHT, fill, on);
     assert_eq!(p.accent, fill);
-    assert_eq!(p.accent_text, fill);
+    // GNOME's blue is 3.6:1 on a light window, short of body text's 4.5:1,
+    // so its text is the nearest darker blue that reads.
+    assert_eq!(p.accent_text, super::accent_text_for(&LIGHT, fill));
+    assert_ne!(p.accent_text, fill);
+    assert!(p.accent_text.b > p.accent_text.r);
     assert_eq!(p.text_on_accent, on);
     assert_eq!(p.window_background, LIGHT.window_background);
     assert_eq!(p.text_primary, LIGHT.text_primary);

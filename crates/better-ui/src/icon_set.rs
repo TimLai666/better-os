@@ -149,13 +149,19 @@ pub fn picture_disabled(picture: Picture, size: f32) -> Img {
 /// Where an action icon sits, which decides its colour and size.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Placement {
-    /// Alone, as in a toolbar button: the accent, 18px.
+    /// Alone, as in a toolbar button: the palette's icon accent (the
+    /// desktop's accent, or the nearest tone of it that reads on every
+    /// surface), 18px whatever the control's own icon size.
     Alone,
     /// Beside a text label, as in a menu row or a labelled button: the
-    /// secondary text colour, 16px, so the words lead.
+    /// quiet grey, so the words lead, at the size of the control's own icon
+    /// slot (16px in a button or menu row, 20px in a settings card, 13px in
+    /// a tab, 12px in a chip).
     Labelled,
-    /// On an accent-filled button, where the accent would vanish: the text
-    /// on accent colour and a shade of it toward the accent, 16px.
+    /// On an accent-filled button or checked toggle: the palette's icon on
+    /// accent (the theme's text on accent, or the nearest tone that reads on
+    /// that fill at rest, under the pointer, and pressed) and a shade of it
+    /// toward the fill, at the control's own icon slot.
     OnAccent,
 }
 
@@ -173,7 +179,9 @@ impl Placement {
         }
     }
 
-    /// The size an action icon is drawn at here.
+    /// The size an action icon is drawn at here when the caller has no slot
+    /// of its own ([`action`]); a control passes its slot through
+    /// [`Glyph::slot`], which keeps 18px only for [`Placement::Alone`].
     pub const fn size(self) -> f32 {
         match self {
             Placement::Alone => 18.0,
@@ -399,64 +407,141 @@ mod renderer_tests {
         assert_ne!(accented.icon_accent_2, DARK.icon_accent_2);
     }
 
-    /// Whatever accent the desktop gives, every placement's icon reads on
-    /// every surface it is drawn on: its main layer at 3:1 and its second
-    /// layer a tone of its own, 1.5:1 from the main layer and from the
-    /// surface. Each accent comes with the text colour its theme puts on it,
-    /// and two with one that does not read there (white on a pale or a
-    /// near-white fill), so the on-accent check is a check and not an
-    /// assumption. Disabled icons are exempt, as WCAG exempts them.
-    #[test]
-    fn every_icon_reads_on_what_it_is_drawn_on_whatever_the_accent() {
-        use crate::fluent::{ICON_CONTRAST, LAYER_CONTRAST, contrast, hex, icon_surfaces, over};
-        let accents: [(&str, Option<(u32, u32)>); 9] = [
-            ("Windows 11 default", None),
-            ("Zorin blue", Some((0x15a6f0, 0xffffff))),
-            ("Zorin blue's dark variant", Some((0xbde6fb, 0x161c1f))),
-            ("pale with white on it", Some((0xbde6fb, 0xffffff))),
-            ("GNOME purple", Some((0x9141ac, 0xffffff))),
-            ("near-black", Some((0x0a0a0a, 0xffffff))),
-            ("near-white", Some((0xf5f5f5, 0x161c1f))),
-            ("near-white with white on it", Some((0xf5f5f5, 0xffffff))),
-            ("Windows 11 blues swapped", Some((0x60cdff, 0x000000))),
-        ];
-        let mut faults = Vec::new();
-        for (name, accent) in accents {
+    /// The accents a desktop can hand the windows, with the text colour its
+    /// theme puts on each: Windows 11's own, Zorin's light and dark blues,
+    /// GNOME's nine, the extremes, and pairings whose text on accent does
+    /// not read on the fill, so the on-accent check is a check and not an
+    /// assumption.
+    const ACCENTS: [(&str, Option<(u32, u32)>); 20] = [
+        ("Windows 11 default", None),
+        ("Windows 11 blues swapped", Some((0x60cdff, 0x000000))),
+        ("Zorin blue", Some((0x15a6f0, 0xffffff))),
+        ("Zorin blue's dark variant", Some((0xbde6fb, 0x161c1f))),
+        ("pale with white on it", Some((0xbde6fb, 0xffffff))),
+        ("GNOME blue", Some((0x3584e4, 0xffffff))),
+        ("GNOME teal", Some((0x2190a4, 0xffffff))),
+        ("GNOME green", Some((0x3a944a, 0xffffff))),
+        ("GNOME yellow", Some((0xc88800, 0xffffff))),
+        ("GNOME orange", Some((0xed5b00, 0xffffff))),
+        ("GNOME red", Some((0xe62d42, 0xffffff))),
+        ("GNOME pink", Some((0xd56199, 0xffffff))),
+        ("GNOME purple", Some((0x9141ac, 0xffffff))),
+        ("GNOME slate", Some((0x6f8396, 0xffffff))),
+        ("near-black", Some((0x0a0a0a, 0xffffff))),
+        ("near-black with black on it", Some((0x0a0a0a, 0x000000))),
+        ("near-white", Some((0xf5f5f5, 0x161c1f))),
+        ("near-white with white on it", Some((0xf5f5f5, 0xffffff))),
+        ("mid grey", Some((0x808080, 0xffffff))),
+        ("saturated yellow", Some((0xffd400, 0xffffff))),
+    ];
+
+    /// Every palette [`ACCENTS`] gives, in both appearances, with its name.
+    fn accented_palettes() -> Vec<(String, crate::fluent::Palette)> {
+        let mut out = Vec::new();
+        for (name, accent) in ACCENTS {
             for base in [&LIGHT, &DARK] {
                 let palette = match accent {
                     None => *base,
-                    Some((fill, on)) => with_accent(base, hex(fill), hex(on)),
+                    Some((fill, on)) => {
+                        with_accent(base, crate::fluent::hex(fill), crate::fluent::hex(on))
+                    }
                 };
                 let appearance = if base.is_dark() { "dark" } else { "light" };
-                let fill = over(palette.accent, palette.window_background);
-                let surfaces = icon_surfaces(&palette);
-                for picture in [Picture::Copy, Picture::Delete] {
-                    for placement in [Placement::Alone, Placement::Labelled, Placement::OnAccent] {
-                        let (main, second) = action_colours(picture, placement, &palette, false);
-                        let under: &[Rgba] = match placement {
-                            Placement::OnAccent => &[fill],
-                            _ => &surfaces,
-                        };
-                        let what =
-                            format!("{name} in {appearance}, {} {placement:?}", picture.name());
-                        if contrast(main, second) < LAYER_CONTRAST {
-                            faults.push(format!("{what}: layers {:.2}:1", contrast(main, second)));
+                out.push((format!("{name} in {appearance}"), palette));
+            }
+        }
+        out
+    }
+
+    /// The fills an accent button or checked toggle really shows, from the
+    /// palette's own roles: at rest, under the pointer, and pressed, over
+    /// the window and over a card.
+    fn accent_fills(palette: &crate::fluent::Palette) -> Vec<Rgba> {
+        use crate::fluent::over;
+        let window = palette.window_background;
+        let card = over(palette.card, window);
+        let mut fills = Vec::new();
+        for base in [window, card] {
+            for fill in [
+                palette.accent,
+                palette.accent_secondary,
+                palette.accent_tertiary,
+            ] {
+                fills.push(over(fill, base));
+            }
+        }
+        fills
+    }
+
+    /// Whatever accent the desktop gives, every placement's icon reads on
+    /// every surface it is drawn on: its main layer at 3:1 and its second
+    /// layer a tone of its own, 1.5:1 from the main layer and from the
+    /// surface. An icon alone or beside a label is checked on every fill a
+    /// window draws one on (`icon_surfaces`: buttons and rows at rest, under
+    /// the pointer and pressed, cards, menus, dialogs, info bars); one on an
+    /// accent fill on that fill at rest, under the pointer, and pressed.
+    /// Disabled icons are exempt, as WCAG exempts them.
+    #[test]
+    fn every_icon_reads_on_what_it_is_drawn_on_whatever_the_accent() {
+        use crate::fluent::{ICON_CONTRAST, LAYER_CONTRAST, contrast, icon_surfaces};
+        let mut faults = Vec::new();
+        for (name, palette) in accented_palettes() {
+            // The rule's own list, and the fills a review measured an icon
+            // on, built here so a narrower list in the rule cannot pass.
+            let window = palette.window_background;
+            let card = crate::fluent::over(palette.card, window);
+            let mut surfaces = icon_surfaces(&palette);
+            surfaces.extend([
+                crate::fluent::over(palette.subtle_fill, window),
+                crate::fluent::over(palette.subtle_fill_tertiary, card),
+                crate::fluent::over(palette.control_fill, card),
+                crate::fluent::over(palette.control_fill_secondary, window),
+                crate::fluent::over(palette.critical_background, window),
+                crate::fluent::over(palette.tab_hover, window),
+            ]);
+            let fills = accent_fills(&palette);
+            for picture in [Picture::Copy, Picture::Delete] {
+                for placement in [Placement::Alone, Placement::Labelled, Placement::OnAccent] {
+                    let (main, second) = action_colours(picture, placement, &palette, false);
+                    let under: &[Rgba] = match placement {
+                        Placement::OnAccent => &fills,
+                        _ => &surfaces,
+                    };
+                    let what = format!("{name}, {} {placement:?}", picture.name());
+                    if contrast(main, second) < LAYER_CONTRAST {
+                        faults.push(format!("{what}: layers {:.2}:1", contrast(main, second)));
+                    }
+                    for surface in under {
+                        if contrast(main, *surface) < ICON_CONTRAST {
+                            faults.push(format!(
+                                "{what}: main layer {:.2}:1 on {surface:?}",
+                                contrast(main, *surface)
+                            ));
                         }
-                        for surface in under {
-                            if contrast(main, *surface) < ICON_CONTRAST {
-                                faults.push(format!(
-                                    "{what}: main layer {:.2}:1 on {surface:?}",
-                                    contrast(main, *surface)
-                                ));
-                            }
-                            if contrast(second, *surface) < LAYER_CONTRAST {
-                                faults.push(format!(
-                                    "{what}: second layer {:.2}:1 on {surface:?}",
-                                    contrast(second, *surface)
-                                ));
-                            }
+                        if contrast(second, *surface) < LAYER_CONTRAST {
+                            faults.push(format!(
+                                "{what}: second layer {:.2}:1 on {surface:?}",
+                                contrast(second, *surface)
+                            ));
                         }
                     }
+                }
+            }
+        }
+        assert!(faults.is_empty(), "{}", faults.join("\n"));
+    }
+
+    /// Accent text (a link, an accent word, a shortcut key) keeps 4.5:1 on
+    /// every surface text sits on, whatever the accent.
+    #[test]
+    fn accent_text_reads_whatever_the_accent() {
+        use crate::fluent::{TEXT_CONTRAST, contrast, icon_surfaces};
+        let mut faults = Vec::new();
+        for (name, palette) in accented_palettes() {
+            for surface in icon_surfaces(&palette) {
+                let ratio = contrast(palette.accent_text, surface);
+                if ratio < TEXT_CONTRAST {
+                    faults.push(format!("{name}: accent text {ratio:.2}:1 on {surface:?}"));
                 }
             }
         }

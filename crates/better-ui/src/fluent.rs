@@ -114,7 +114,9 @@ pub struct Palette {
     pub accent_tertiary: Rgba,
     /// `AccentFillColorDisabled`.
     pub accent_disabled: Rgba,
-    /// `AccentTextFillColorPrimary`: a hyperlink, an accent-colored word.
+    /// `AccentTextFillColorPrimary`: a hyperlink, an accent-colored word. A
+    /// desktop accent gives it the nearest tone that keeps body text's 4.5:1
+    /// on every surface (see [`accent_text_for`]).
     pub accent_text: Rgba,
     /// `TextOnAccentFillColorPrimary`.
     pub text_on_accent: Rgba,
@@ -258,18 +260,71 @@ pub fn over(top: Rgba, under: Rgba) -> Rgba {
     mix(under, top, top.a)
 }
 
-/// The opaque surfaces an action icon is drawn on in this appearance: the
-/// window background, a card, a menu, and a dialog, each as it shows over
-/// the window.
-pub fn icon_surfaces(palette: &Palette) -> [Rgba; 4] {
+/// Every opaque surface an action icon or accent text is drawn on in this
+/// appearance, each translucent fill composited over what it sits on: the
+/// window, a card, the content layer beside a navigation pane, a menu, a
+/// dialog, and a selected tab; on each of them a subtle button or row at
+/// rest, under the pointer, and pressed (`subtle_fill`,
+/// `subtle_fill_tertiary`), a standard button's fills (`control_fill` and its
+/// secondary and tertiary), and a tab under the pointer or pressed; and the
+/// four info bar backgrounds over the window and over a card. A check box's
+/// or radio's own fills (`control_alt_fill*`) are left out: that square
+/// only ever holds its check mark, which is text on accent, never an action.
+pub fn icon_surfaces(palette: &Palette) -> Vec<Rgba> {
     let window = palette.window_background;
-    [
+    let card = over(palette.card, window);
+    let bases = [
         window,
-        over(palette.card, window),
+        card,
+        over(palette.layer, window),
         over(palette.flyout, window),
         over(palette.dialog, window),
-    ]
+        over(palette.tab_selected, window),
+    ];
+    let fills = [
+        palette.subtle_fill,
+        palette.subtle_fill_tertiary,
+        palette.control_fill,
+        palette.control_fill_secondary,
+        palette.control_fill_tertiary,
+        palette.tab_hover,
+        palette.tab_pressed,
+    ];
+    let status = [
+        palette.critical_background,
+        palette.success_background,
+        palette.caution_background,
+        palette.attention_background,
+    ];
+    let mut surfaces = bases.to_vec();
+    for base in bases {
+        surfaces.extend(fills.iter().map(|fill| over(*fill, base)));
+    }
+    for base in [window, card] {
+        surfaces.extend(status.iter().map(|fill| over(*fill, base)));
+    }
+    surfaces
 }
+
+/// Every opaque fill an accent button or checked toggle shows `fill` as:
+/// at rest, under the pointer (90%) and pressed (80%), over the window and
+/// over a card, as [`with_accent`] builds `accent_secondary` and
+/// `accent_tertiary`.
+pub fn accent_surfaces(palette: &Palette, fill: Rgba) -> Vec<Rgba> {
+    let window = palette.window_background;
+    let card = over(palette.card, window);
+    let mut surfaces = Vec::new();
+    for base in [window, card] {
+        for alpha in [fill.a, fill.a * 0.9, fill.a * 0.8] {
+            surfaces.push(over(with_alpha(fill, alpha), base));
+        }
+    }
+    surfaces
+}
+
+/// The contrast accent text keeps against what it is drawn on: WCAG 2.1's
+/// 4.5:1 for body text (1.4.3). Links and accent words are body size.
+pub const TEXT_CONTRAST: f32 = 4.5;
 
 /// Whether an icon in `main` with its second layer in `second` reads on
 /// every one of `surfaces`.
@@ -298,9 +353,9 @@ fn step_until(start: Rgba, toward: Rgba, reads: impl Fn(Rgba) -> bool) -> Rgba {
 
 /// The colour an action icon alone is drawn in for `accent` in `base`'s
 /// appearance: the accent itself when it and its [`second_layer`] read on
-/// every [`icon_surfaces`], otherwise the accent mixed toward the primary
-/// text colour, in small steps that keep its hue as far as a mix does, until
-/// they read.
+/// every one of [`icon_surfaces`], otherwise the accent mixed toward the
+/// primary text colour, in small steps that keep its hue as far as a mix
+/// does, until they read.
 pub fn icon_accent_for(base: &Palette, accent: Rgba) -> Rgba {
     let dark = base.is_dark();
     let surfaces = icon_surfaces(base);
@@ -310,21 +365,35 @@ pub fn icon_accent_for(base: &Palette, accent: Rgba) -> Rgba {
     })
 }
 
+/// The colour accent text (a link, an accent word) is drawn in for
+/// `accent` in `base`'s appearance: the accent when it keeps
+/// [`TEXT_CONTRAST`] on every one of [`icon_surfaces`], otherwise the
+/// accent mixed toward the primary text colour in the same small steps.
+pub fn accent_text_for(base: &Palette, accent: Rgba) -> Rgba {
+    let surfaces = icon_surfaces(base);
+    let text = over(base.text_primary, base.window_background);
+    step_until(accent, text, |c| {
+        surfaces.iter().all(|s| contrast(c, *s) >= TEXT_CONTRAST)
+    })
+}
+
 /// The colour an action icon on an accent `fill` is drawn in: the theme's
-/// own text on accent when it and its minor layer read on that fill,
-/// otherwise moved toward black or white, whichever the fill is further
-/// from, until they do. A pale fill so gets a dark icon.
-pub fn icon_on_accent_for(fill: Rgba, on_fill: Rgba, window: Rgba) -> Rgba {
-    let fill = over(fill, window);
+/// own text on accent when it and its minor layer read on every one of
+/// [`accent_surfaces`] (at rest, under the pointer, pressed), otherwise
+/// moved toward black or white, whichever the fill is further from, until
+/// they do. A pale fill so gets a dark icon.
+pub fn icon_on_accent_for(base: &Palette, fill: Rgba, on_fill: Rgba) -> Rgba {
+    let rest = over(fill, base.window_background);
+    let surfaces = accent_surfaces(base, fill);
     let black = hex(0x000000);
     let white = hex(0xffffff);
-    let toward = if contrast(black, fill) >= contrast(white, fill) {
+    let toward = if contrast(black, rest) >= contrast(white, rest) {
         black
     } else {
         white
     };
-    step_until(over(on_fill, fill), toward, |c| {
-        icon_reads(c, on_accent_second_layer(c, fill), &[fill])
+    step_until(over(on_fill, rest), toward, |c| {
+        icon_reads(c, on_accent_second_layer(c, rest), &surfaces)
     })
 }
 
@@ -611,10 +680,11 @@ pub fn palette_with_system_accent(dark: bool) -> &'static Palette {
 }
 
 /// `base` with its accent roles taken from a desktop accent. The fills keep
-/// the accent as it is; the icon roles are the nearest colours that read.
+/// the accent as it is; the icon roles and the accent text are the nearest
+/// colours that read on what they are drawn on.
 pub fn with_accent(base: &Palette, fill: Rgba, on_fill: Rgba) -> Palette {
     let icon_accent = icon_accent_for(base, fill);
-    let icon_on_accent = icon_on_accent_for(fill, on_fill, base.window_background);
+    let icon_on_accent = icon_on_accent_for(base, fill, on_fill);
     Palette {
         icon_accent,
         icon_accent_2: second_layer(icon_accent, base.is_dark()),
@@ -626,7 +696,7 @@ pub fn with_accent(base: &Palette, fill: Rgba, on_fill: Rgba) -> Palette {
         accent: fill,
         accent_secondary: with_alpha(fill, 0.9),
         accent_tertiary: with_alpha(fill, 0.8),
-        accent_text: fill,
+        accent_text: accent_text_for(base, fill),
         text_on_accent: on_fill,
         text_on_accent_secondary: with_alpha(on_fill, 0.8),
         ..*base
