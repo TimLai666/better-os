@@ -4877,6 +4877,7 @@ dependencies = [
 name = "monitor-service"
 version = "0.2.16"
 dependencies = [
+ "better-core",
  "manager-store",
  "monitor-collectors-linux",
  "monitor-core",

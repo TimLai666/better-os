@@ -11,6 +11,10 @@
 //!
 //! The file is shell syntax, but nothing here sources or executes it. Fields
 //! are read one at a time and unquoted.
+//!
+//! This module is also the only Rust code that reads the file
+//! ([`read_os_release_under`]); `crates/better-core/tests/os_release_readers.rs`
+//! fails when another crate names its path.
 
 /// The Ubuntu releases Better OS publishes packages for.
 pub const SUPPORTED_UBUNTU_RELEASES: [&str; 2] = ["22.04", "24.04"];
@@ -90,17 +94,61 @@ pub fn system_name(content: &str) -> Option<String> {
 /// when the first is not there.
 pub const OS_RELEASE_FILES: [&str; 2] = ["/etc/os-release", "/usr/lib/os-release"];
 
-/// The running system's os-release text, read from [`OS_RELEASE_FILES`]
-/// under `root` (`/` for the real machine). `None` when neither can be read.
-pub fn read_os_release_under(root: &std::path::Path) -> Option<String> {
-    OS_RELEASE_FILES
-        .iter()
-        .find_map(|file| std::fs::read_to_string(root.join(file.trim_start_matches('/'))).ok())
+/// Why the os-release text could not be read: the file that was tried last
+/// and what the system said about it.
+#[derive(Debug)]
+pub struct OsReleaseUnreadable {
+    pub path: std::path::PathBuf,
+    pub error: std::io::Error,
+}
+
+impl std::fmt::Display for OsReleaseUnreadable {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "cannot read {}: {}",
+            self.path.display(),
+            self.error
+        )
+    }
+}
+
+impl std::error::Error for OsReleaseUnreadable {}
+
+/// The os-release text of the system under `root` (`/` for the running
+/// machine, a directory of fixtures in a test, a captured machine for an
+/// audit), read from [`OS_RELEASE_FILES`]: `/etc/os-release`, and
+/// `/usr/lib/os-release` only when the first does not exist. A first file
+/// that exists and cannot be read is reported, not skipped, because
+/// os-release(5) says its data is then the only data.
+///
+/// This is the one place in the workspace that reads the file. Everything
+/// that needs the host's identity calls it, so the daemon, the client, the
+/// windows and the audit cannot read two different files on one machine.
+/// `install.sh` keeps a shell copy of the same order.
+pub fn read_os_release_under(root: &std::path::Path) -> Result<String, OsReleaseUnreadable> {
+    let mut last = None;
+    for file in OS_RELEASE_FILES {
+        let path = root.join(file.trim_start_matches('/'));
+        match std::fs::read_to_string(&path) {
+            Ok(text) => return Ok(text),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                last = Some(OsReleaseUnreadable { path, error });
+            }
+            Err(error) => return Err(OsReleaseUnreadable { path, error }),
+        }
+    }
+    Err(last.expect("OS_RELEASE_FILES is not empty"))
+}
+
+/// The running machine's os-release text ([`read_os_release_under`] `/`).
+pub fn read_os_release() -> Result<String, OsReleaseUnreadable> {
+    read_os_release_under(std::path::Path::new("/"))
 }
 
 /// The running system's name ([`system_name`] of its own os-release file).
 pub fn running_system_name() -> Option<String> {
-    system_name(&read_os_release_under(std::path::Path::new("/"))?)
+    system_name(&read_os_release().ok()?)
 }
 
 /// Pulls one `KEY=` value out of an os-release file, unquoting it.
@@ -270,10 +318,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("etc")).unwrap();
         std::fs::create_dir_all(root.join("usr/lib")).unwrap();
-        assert_eq!(read_os_release_under(&root), None);
+        let missing = read_os_release_under(&root).unwrap_err();
+        assert_eq!(missing.path, root.join("usr/lib/os-release"));
+        assert!(missing.to_string().starts_with("cannot read "), "{missing}");
         std::fs::write(root.join("usr/lib/os-release"), "NAME=\"Vendor\"\n").unwrap();
         assert_eq!(
             read_os_release_under(&root)
+                .ok()
                 .as_deref()
                 .and_then(system_name)
                 .as_deref(),
@@ -282,11 +333,18 @@ mod tests {
         std::fs::write(root.join("etc/os-release"), ZORIN_18).unwrap();
         assert_eq!(
             read_os_release_under(&root)
+                .ok()
                 .as_deref()
                 .and_then(system_name)
                 .as_deref(),
             Some("Zorin OS")
         );
+        // An /etc/os-release that is there and cannot be read is the answer:
+        // the vendor file is not consulted in its place.
+        std::fs::remove_file(root.join("etc/os-release")).unwrap();
+        std::fs::create_dir(root.join("etc/os-release")).unwrap();
+        let unreadable = read_os_release_under(&root).unwrap_err();
+        assert_eq!(unreadable.path, root.join("etc/os-release"));
         std::fs::remove_dir_all(&root).unwrap();
     }
 
