@@ -9,7 +9,7 @@ use better_ui::fluent::{
 };
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
-use gpui_component::{Icon, IconName};
+use gpui_component::IconName;
 
 use crate::app::{FilesApp, OpenMenu};
 use crate::context_menu::{
@@ -295,7 +295,7 @@ impl Render for FilesApp {
             })
             .when(!self.embedded, |root| {
                 root.child(better_ui::window_chrome::title_bar(
-                    Icon::new(IconName::Folder).size(px(16.0)),
+                    better_ui::icon_set::picture(better_ui::icon_set::Picture::Folder, 16.0),
                     format!("{} {}", c.brand_name, c.files),
                     p.text_primary.into(),
                 ))

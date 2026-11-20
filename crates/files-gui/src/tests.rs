@@ -3353,8 +3353,8 @@ fn a_pinned_folder_keeps_its_own_icon_and_wears_a_star() {
         &session,
         &row(favourite, Location::local(&documents).unwrap()),
     );
-    assert_eq!(glyph, Some(crate::icons::DOCUMENTS));
-    assert!(matches!(emblem, Some(gpui_component::IconName::StarFill)));
+    assert_eq!(glyph, Some(better_ui::icon_set::Picture::Documents));
+    assert_eq!(emblem, Some(better_ui::icon_set::Picture::Star));
     let (glyph, emblem) = crate::shell::sidebar_row_icon(
         &session,
         &row(
@@ -3362,8 +3362,8 @@ fn a_pinned_folder_keeps_its_own_icon_and_wears_a_star() {
             Location::local(documents.join("reports")).unwrap(),
         ),
     );
-    assert_eq!(glyph, Some(crate::icons::FOLDER));
-    assert!(matches!(emblem, Some(gpui_component::IconName::StarFill)));
+    assert_eq!(glyph, Some(better_ui::icon_set::Picture::Folder));
+    assert_eq!(emblem, Some(better_ui::icon_set::Picture::Star));
     let (glyph, emblem) = crate::shell::sidebar_row_icon(
         &session,
         &row(
@@ -3371,7 +3371,7 @@ fn a_pinned_folder_keeps_its_own_icon_and_wears_a_star() {
             Location::local(&documents).unwrap(),
         ),
     );
-    assert_eq!(glyph, Some(crate::icons::DOCUMENTS));
+    assert_eq!(glyph, Some(better_ui::icon_set::Picture::Documents));
     assert!(emblem.is_none(), "only a favourite wears the star");
 }
 

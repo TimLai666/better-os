@@ -897,9 +897,9 @@ impl PreviewApp {
             fluent::button::Button::icon_button(
                 "media-toggle",
                 if playing {
-                    gpui_component::IconName::Pause
+                    better_ui::icon_set::Picture::Pause
                 } else {
-                    gpui_component::IconName::Play
+                    better_ui::icon_set::Picture::Play
                 },
                 if playing { c.media_pause } else { c.media_play },
             )
@@ -989,7 +989,7 @@ impl Render for PreviewApp {
                 cx.listener(|app, event: &KeyDownEvent, window, cx| app.on_key(event, window, cx)),
             )
             .child(better_ui::window_chrome::title_bar(
-                gpui_component::Icon::new(gpui_component::IconName::Eye).size(px(16.0)),
+                better_ui::icon_set::picture(better_ui::icon_set::Picture::File, 16.0),
                 format!("{} — {}", self.title(), c.preview),
                 p.text_primary.into(),
             ))
