@@ -73,6 +73,15 @@ Dragging a favourite between two other favourites to reorder is modelled
 (`BookmarkFile::move_to`) and reachable from the buttons and the keyboard. The
 pointer reorder gesture inside the sidebar is not wired yet.
 
+## The sidebar's order
+
+Owner, 2026-11-16 (ticket 132). Top to bottom: the places (Home, the
+person's folders, Recent, Trash), Favorites, Applications, Dropbox, each
+plugin's section, Devices (This PC and the drives), the tailnet's machines.
+The drives sit above the other computers. `sidebar::NAV_ORDER` is the one
+place the order is written; the pane draws its groups in that order, and the
+keyboard moves through them in the order they are drawn.
+
 ## Devices without the storage service
 
 Ticket 35 connected the Devices section to the storage layer, and

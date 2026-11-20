@@ -28,7 +28,8 @@ use storage_core::{DeviceStateKind, IdentityKey};
 use crate::bookmarks::BookmarkFile;
 use crate::i18n::{Copy, user_directory_label};
 
-/// The four sections, in the order they are drawn.
+/// The four kinds of row [`build_rows`] makes. The order the navigation pane
+/// draws its groups in is [`NAV_ORDER`], not this enum's.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum SidebarSection {
     Places,
@@ -54,6 +55,45 @@ impl SidebarSection {
         }
     }
 }
+
+/// One group of lines in the navigation pane, under its own header or
+/// separator.
+///
+/// The pane draws more than the four row sections: the Dropbox folder, each
+/// plugin's section, and the tailnet's machines come from elsewhere, and they
+/// are ordered here with the rest so the order is decided once.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum NavGroup {
+    /// Home, the person's folders, Recent, Trash.
+    Places,
+    /// The pinned folders.
+    Favorites,
+    /// The Applications view, after a separator.
+    Applications,
+    /// The Dropbox folder, when Dropbox is installed.
+    Dropbox,
+    /// Each plugin's section, while it has items.
+    Plugins,
+    /// This PC and every drive.
+    Devices,
+    /// The tailnet's online machines.
+    Tailnet,
+}
+
+/// The navigation pane's groups, top to bottom, and the only place that
+/// order is written. Drives sit above the tailnet's machines (ticket 132):
+/// the disks in the computer come before other computers. Keyboard
+/// navigation moves through the lines in the order they are drawn, so it
+/// follows this too.
+pub const NAV_ORDER: [NavGroup; 7] = [
+    NavGroup::Places,
+    NavGroup::Favorites,
+    NavGroup::Applications,
+    NavGroup::Dropbox,
+    NavGroup::Plugins,
+    NavGroup::Devices,
+    NavGroup::Tailnet,
+];
 
 /// Whether the row can be opened right now.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

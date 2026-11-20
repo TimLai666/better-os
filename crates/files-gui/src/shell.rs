@@ -29,8 +29,8 @@ use crate::i18n::{Copy, Locale, copy};
 use crate::keys::Focus;
 use crate::prefs::{ItemScale, ViewMode};
 use crate::sidebar::{
-    FilesystemProbe, NoDeviceStates, SidebarInputs, SidebarRow, SidebarSection, build_rows,
-    shown_rows,
+    FilesystemProbe, NAV_ORDER, NavGroup, NoDeviceStates, SidebarInputs, SidebarRow,
+    SidebarSection, build_rows, shown_rows,
 };
 use crate::toolbar::toolbar_state;
 
@@ -853,164 +853,185 @@ impl FilesApp {
             }
             item.entry()
         };
-        for row in rows
-            .iter()
-            .filter(|row| row.section == SidebarSection::Places)
-        {
-            out.push((row_item(row), Some(NavTarget::Row(row.clone()))));
-        }
-        let pinned: Vec<&SidebarRow> = rows
-            .iter()
-            .filter(|row| row.section == SidebarSection::Favorites)
-            .collect();
-        if !pinned.is_empty() {
-            out.push((NavEntry::Header(c.sidebar_favorites.into()), None));
-            for row in pinned {
-                out.push((row_item(row), Some(NavTarget::Row(row.clone()))));
-            }
-        }
-        for row in rows
-            .iter()
-            .filter(|row| row.section == SidebarSection::Applications)
-        {
-            out.push((NavEntry::Separator, None));
-            out.push((row_item(row), Some(NavTarget::Row(row.clone()))));
-        }
-
-        // Dropbox, with its sync state, when the Dropbox command and folder
-        // are there.
-        if let Some((folder, status)) = self.sharing.dropbox()
-            && let Ok(location) = files_core::Location::local(&folder)
-        {
-            let mut item = NavItem::new("Dropbox", IconName::Inbox);
-            if let Some(status) = status {
-                item = item.caption(status);
-            }
-            let row = SidebarRow {
-                section: SidebarSection::Places,
-                key: "place-dropbox".to_string(),
-                label: "Dropbox".to_string(),
-                location,
-                availability: crate::sidebar::Availability::Available,
-                bookmark_index: None,
-                device_state: None,
-                identity_volatile: false,
-            };
-            out.push((item.entry(), Some(NavTarget::Row(row))));
-        }
-
-        // Each plugin's section, while it has items (folio's `section`).
-        for (plugin, poll) in self.plugins.snapshot() {
-            let (Some(section), Some(poll)) = (plugin.manifest.section.clone(), poll) else {
-                continue;
-            };
-            if poll.items.is_empty() {
-                continue;
-            }
-            out.push((
-                NavEntry::Header(plugin.translate(&section.title).into()),
-                None,
-            ));
-            let opened = self
-                .plugin_opened
-                .get(&plugin.id)
-                .cloned()
-                .unwrap_or_default();
-            for item in section.rows(&poll.items, &opened) {
-                let icon = crate::plugin_page::item_icon(item.icon.as_deref());
-                let mut nav = NavItem::new(item.name.clone(), icon);
-                if let Some(subtitle) = &item.subtitle {
-                    nav = nav.caption(subtitle.render(&plugin.catalog));
+        // The groups in the one order the pane has (ticket 132).
+        for group in NAV_ORDER {
+            match group {
+                NavGroup::Places => {
+                    for row in rows
+                        .iter()
+                        .filter(|row| row.section == SidebarSection::Places)
+                    {
+                        out.push((row_item(row), Some(NavTarget::Row(row.clone()))));
+                    }
                 }
-                out.push((
-                    nav.entry(),
-                    Some(NavTarget::PluginItem(Box::new((
-                        plugin.clone(),
-                        item.clone(),
-                    )))),
-                ));
-            }
-            // With a view, the section ends with the row that opens it, and
-            // how many items there are.
-            if let Some(view) = &plugin.manifest.view {
-                let label = view.label.as_deref().unwrap_or(&view.title);
-                let nav = NavItem::new(
-                    plugin.translate(label),
-                    crate::plugin_page::item_icon(view.icon.as_deref()),
-                )
-                .caption(poll.items.len().to_string());
-                out.push((nav.entry(), Some(NavTarget::PluginView(plugin.id.clone()))));
-            }
-        }
-
-        // The tailnet's online machines, when Tailscale runs (ticket 117),
-        // each under its tailnet name; opening one tries SFTP there.
-        let machines = crate::share::sidebar_machines(self.sharing.machines());
-        if !machines.is_empty() {
-            out.push((NavEntry::Header(c.tailnet.into()), None));
-            for machine in machines {
-                let item = NavItem::new(machine.name.clone(), IconName::Globe)
-                    .caption(machine.address.clone());
-                out.push((item.entry(), Some(NavTarget::Machine(machine))));
-            }
-        }
-
-        // Drives (ticket 122): every drive with how full it is, "This PC"
-        // first. A drive the storage layer reports keeps its removal state,
-        // shown instead of the free space while it needs attention.
-        let note = self.session.collection.note(c);
-        let devices: Vec<DeviceRow> = if self.session.collection.has_states() {
-            self.session.device_rows().to_vec()
-        } else {
-            Vec::new()
-        };
-        let drives = self.session.shown_drives();
-        let mount_rows: Vec<&SidebarRow> = rows
-            .iter()
-            .filter(|row| row.section == SidebarSection::Devices)
-            .collect();
-        if !drives.is_empty() || !devices.is_empty() || !mount_rows.is_empty() || note.is_some() {
-            out.push((NavEntry::Header(c.sidebar_devices.into()), None));
-            out.push((
-                NavItem::new(c.this_pc, IconName::HardDrive)
-                    .icon_path(crate::icons::COMPUTER)
-                    .entry(),
-                Some(NavTarget::ThisPc),
-            ));
-        }
-        let mut shown_devices: Vec<String> = Vec::new();
-        for drive in &drives {
-            let device = devices.iter().find(|device| {
-                drive.object_path.as_deref() == Some(device.object_path.as_str())
-                    || (drive.mount_point.is_some() && drive.mount_point == device.mount_point)
-            });
-            if let Some(device) = device {
-                shown_devices.push(device.object_path.clone());
-            }
-            out.push((
-                self.drive_item(drive, device, c),
-                Some(match device {
-                    Some(device) => NavTarget::Device(device.clone()),
-                    None => NavTarget::Drive(drive.key.clone()),
-                }),
-            ));
-        }
-        for device in devices
-            .into_iter()
-            .filter(|device| !shown_devices.contains(&device.object_path))
-        {
-            out.push((
-                self.device_item(&device, c),
-                Some(NavTarget::Device(device)),
-            ));
-        }
-        // No list of drives yet and no states: the mount table's rows, as
-        // before, every one of them unknown.
-        if drives.is_empty() && !self.session.collection.has_states() {
-            for row in mount_rows {
-                let item = NavItem::new(row.label.clone(), IconName::HardDrive)
-                    .caption(c.device_state_unknown_without_service);
-                out.push((item.entry(), Some(NavTarget::Row(row.clone()))));
+                NavGroup::Favorites => {
+                    let pinned: Vec<&SidebarRow> = rows
+                        .iter()
+                        .filter(|row| row.section == SidebarSection::Favorites)
+                        .collect();
+                    if !pinned.is_empty() {
+                        out.push((NavEntry::Header(c.sidebar_favorites.into()), None));
+                        for row in pinned {
+                            out.push((row_item(row), Some(NavTarget::Row(row.clone()))));
+                        }
+                    }
+                }
+                NavGroup::Applications => {
+                    for row in rows
+                        .iter()
+                        .filter(|row| row.section == SidebarSection::Applications)
+                    {
+                        out.push((NavEntry::Separator, None));
+                        out.push((row_item(row), Some(NavTarget::Row(row.clone()))));
+                    }
+                }
+                NavGroup::Dropbox => {
+                    // Dropbox, with its sync state, when the Dropbox command and folder
+                    // are there.
+                    if let Some((folder, status)) = self.sharing.dropbox()
+                        && let Ok(location) = files_core::Location::local(&folder)
+                    {
+                        let mut item = NavItem::new("Dropbox", IconName::Inbox);
+                        if let Some(status) = status {
+                            item = item.caption(status);
+                        }
+                        let row = SidebarRow {
+                            section: SidebarSection::Places,
+                            key: "place-dropbox".to_string(),
+                            label: "Dropbox".to_string(),
+                            location,
+                            availability: crate::sidebar::Availability::Available,
+                            bookmark_index: None,
+                            device_state: None,
+                            identity_volatile: false,
+                        };
+                        out.push((item.entry(), Some(NavTarget::Row(row))));
+                    }
+                }
+                NavGroup::Plugins => {
+                    // Each plugin's section, while it has items (folio's `section`).
+                    for (plugin, poll) in self.plugins.snapshot() {
+                        let (Some(section), Some(poll)) = (plugin.manifest.section.clone(), poll)
+                        else {
+                            continue;
+                        };
+                        if poll.items.is_empty() {
+                            continue;
+                        }
+                        out.push((
+                            NavEntry::Header(plugin.translate(&section.title).into()),
+                            None,
+                        ));
+                        let opened = self
+                            .plugin_opened
+                            .get(&plugin.id)
+                            .cloned()
+                            .unwrap_or_default();
+                        for item in section.rows(&poll.items, &opened) {
+                            let icon = crate::plugin_page::item_icon(item.icon.as_deref());
+                            let mut nav = NavItem::new(item.name.clone(), icon);
+                            if let Some(subtitle) = &item.subtitle {
+                                nav = nav.caption(subtitle.render(&plugin.catalog));
+                            }
+                            out.push((
+                                nav.entry(),
+                                Some(NavTarget::PluginItem(Box::new((
+                                    plugin.clone(),
+                                    item.clone(),
+                                )))),
+                            ));
+                        }
+                        // With a view, the section ends with the row that opens it, and
+                        // how many items there are.
+                        if let Some(view) = &plugin.manifest.view {
+                            let label = view.label.as_deref().unwrap_or(&view.title);
+                            let nav = NavItem::new(
+                                plugin.translate(label),
+                                crate::plugin_page::item_icon(view.icon.as_deref()),
+                            )
+                            .caption(poll.items.len().to_string());
+                            out.push((nav.entry(), Some(NavTarget::PluginView(plugin.id.clone()))));
+                        }
+                    }
+                }
+                NavGroup::Devices => {
+                    // Drives (ticket 122): every drive with how full it is, "This PC"
+                    // first. A drive the storage layer reports keeps its removal state,
+                    // shown instead of the free space while it needs attention.
+                    let note = self.session.collection.note(c);
+                    let devices: Vec<DeviceRow> = if self.session.collection.has_states() {
+                        self.session.device_rows().to_vec()
+                    } else {
+                        Vec::new()
+                    };
+                    let drives = self.session.shown_drives();
+                    let mount_rows: Vec<&SidebarRow> = rows
+                        .iter()
+                        .filter(|row| row.section == SidebarSection::Devices)
+                        .collect();
+                    if !drives.is_empty()
+                        || !devices.is_empty()
+                        || !mount_rows.is_empty()
+                        || note.is_some()
+                    {
+                        out.push((NavEntry::Header(c.sidebar_devices.into()), None));
+                        out.push((
+                            NavItem::new(c.this_pc, IconName::HardDrive)
+                                .icon_path(crate::icons::COMPUTER)
+                                .entry(),
+                            Some(NavTarget::ThisPc),
+                        ));
+                    }
+                    let mut shown_devices: Vec<String> = Vec::new();
+                    for drive in &drives {
+                        let device = devices.iter().find(|device| {
+                            drive.object_path.as_deref() == Some(device.object_path.as_str())
+                                || (drive.mount_point.is_some()
+                                    && drive.mount_point == device.mount_point)
+                        });
+                        if let Some(device) = device {
+                            shown_devices.push(device.object_path.clone());
+                        }
+                        out.push((
+                            self.drive_item(drive, device, c),
+                            Some(match device {
+                                Some(device) => NavTarget::Device(device.clone()),
+                                None => NavTarget::Drive(drive.key.clone()),
+                            }),
+                        ));
+                    }
+                    for device in devices
+                        .into_iter()
+                        .filter(|device| !shown_devices.contains(&device.object_path))
+                    {
+                        out.push((
+                            self.device_item(&device, c),
+                            Some(NavTarget::Device(device)),
+                        ));
+                    }
+                    // No list of drives yet and no states: the mount table's rows, as
+                    // before, every one of them unknown.
+                    if drives.is_empty() && !self.session.collection.has_states() {
+                        for row in mount_rows {
+                            let item = NavItem::new(row.label.clone(), IconName::HardDrive)
+                                .caption(c.device_state_unknown_without_service);
+                            out.push((item.entry(), Some(NavTarget::Row(row.clone()))));
+                        }
+                    }
+                }
+                NavGroup::Tailnet => {
+                    // The tailnet's online machines, when Tailscale runs (ticket 117),
+                    // each under its tailnet name; opening one tries SFTP there.
+                    let machines = crate::share::sidebar_machines(self.sharing.machines());
+                    if !machines.is_empty() {
+                        out.push((NavEntry::Header(c.tailnet.into()), None));
+                        for machine in machines {
+                            let item = NavItem::new(machine.name.clone(), IconName::Globe)
+                                .caption(machine.address.clone());
+                            out.push((item.entry(), Some(NavTarget::Machine(machine))));
+                        }
+                    }
+                }
             }
         }
         out

@@ -709,6 +709,28 @@ fn a_bookmark_of_a_place_is_not_listed_again_under_favorites() {
 }
 
 #[test]
+fn the_drives_sit_above_the_tailnet_and_every_other_group_keeps_its_place() {
+    use crate::sidebar::{NAV_ORDER, NavGroup};
+    // Ticket 132: Devices moved up one place, above the tailnet's machines,
+    // and nothing else moved.
+    assert_eq!(
+        NAV_ORDER,
+        [
+            NavGroup::Places,
+            NavGroup::Favorites,
+            NavGroup::Applications,
+            NavGroup::Dropbox,
+            NavGroup::Plugins,
+            NavGroup::Devices,
+            NavGroup::Tailnet,
+        ]
+    );
+    let at = |group| NAV_ORDER.iter().position(|g| *g == group).unwrap();
+    assert!(at(NavGroup::Devices) < at(NavGroup::Tailnet));
+    assert_eq!(at(NavGroup::Tailnet), NAV_ORDER.len() - 1);
+}
+
+#[test]
 fn the_sidebar_keeps_its_four_sections_distinct() {
     let home = tempfile::tempdir().unwrap();
     let directories = UserDirectories::from_values(Some(home.path()), None);
