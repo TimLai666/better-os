@@ -1130,6 +1130,17 @@ impl TouchpadApp {
                     cx,
                 ))
             })
+            .when(self.gestures.collides_with_gnome(), |this| {
+                this.child(
+                    self.card(
+                        div()
+                            .min_w_0()
+                            .text_xs()
+                            .child(c.gesture_collision_unreliable),
+                        cx,
+                    ),
+                )
+            })
             .child(self.profile_card(cx))
             .child(self.preset_card(cx))
             .when_some(

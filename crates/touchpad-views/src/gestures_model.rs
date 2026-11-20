@@ -454,11 +454,15 @@ impl GestureScreen {
     }
 
     pub fn with_profiles(
-        profiles: GestureProfiles,
+        mut profiles: GestureProfiles,
         device: Option<String>,
         captured: Option<GestureConfig>,
         adapter: Box<dyn SessionAdapter>,
     ) -> Self {
+        // The same correction the gesture service makes, through the same
+        // function, so a stale "conflict" from an older model is neither shown
+        // nor written back (ticket 131).
+        profiles.annotate_conflicts();
         Self {
             profiles,
             device,
@@ -638,6 +642,16 @@ impl GestureScreen {
     /// and the service is not running.
     pub fn service_stopped(&self) -> bool {
         self.service_running == Some(false)
+    }
+
+    /// Whether a gesture switched on collides with one of GNOME's own, which
+    /// GNOME 46 does not reliably let go of (ticket 131, ADR 0035).
+    pub fn collides_with_gnome(&self) -> bool {
+        std::iter::once(&self.profiles.global)
+            .chain(self.profiles.devices.values())
+            .filter(|profile| profile.enabled)
+            .flat_map(|profile| profile.gestures.iter())
+            .any(|gesture| gesture.enabled && gesture.conflict.conflicts())
     }
 
     pub fn set_known_shortcuts(&mut self, known: KnownShortcuts) {

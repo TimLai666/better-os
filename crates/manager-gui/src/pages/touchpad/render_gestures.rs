@@ -74,6 +74,19 @@ impl TouchpadPage {
                 ),
             ));
         }
+        if self.gestures.collides_with_gnome() {
+            rows.push(Row::new(
+                0.0,
+                div().pb(px(12.0)).child(
+                    InfoBar::new(
+                        "touchpad-gesture-collision",
+                        Severity::Warning,
+                        c.gesture_collision_unreliable,
+                    )
+                    .locale(words),
+                ),
+            ));
+        }
 
         rows.extend(self.competitor_rows(cx));
         rows.push(Row::card(0.0, card::GESTURE_PROFILE, self.profile_card(cx)));

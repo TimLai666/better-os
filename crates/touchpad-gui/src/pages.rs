@@ -794,7 +794,9 @@ impl TouchpadApp {
                                 .text_color(cx.theme().muted_foreground)
                                 .child(format!(
                                     "{} · {:?} · {}",
-                                    check.id, check.state, check.detail
+                                    check.id,
+                                    check.state,
+                                    self.model.check_detail(check, self.model.locale())
                                 ))
                         })),
                     cx,

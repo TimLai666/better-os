@@ -76,6 +76,32 @@ fn the_window_leaves_taking_gnomes_gestures_to_the_service() {
     );
 }
 
+/// A file written by 0.2.16 marks the four-finger swipes as colliding with
+/// GNOME. The window corrects that with the function the service uses, so it
+/// neither shows the badge nor writes the old annotation back (ticket 131).
+#[test]
+fn a_stale_conflict_from_an_older_model_is_corrected_when_the_screen_opens() {
+    let mut stale = mac_style();
+    for gesture in &mut stale.gestures {
+        if gesture.shape == GestureShape::Swipe && gesture.contacts.get() == 4 {
+            gesture.conflict = touchpad_gestures::ConflictState::Conflicts {
+                with: "gnome.overview.swipe".to_string(),
+                detail: "gnome.overview_and_application_grid".to_string(),
+            };
+        }
+    }
+    let screen = screen_with(GestureProfiles::global_only(stale), None);
+    let rows = screen.rows(copy(Locale::EnUs));
+    assert!(rows.iter().all(|row| row.conflict.is_none()));
+    assert!(
+        screen
+            .config()
+            .gestures
+            .iter()
+            .all(|gesture| !gesture.conflict.conflicts())
+    );
+}
+
 #[test]
 fn a_stopped_gesture_service_is_said_and_an_unknown_one_is_not() {
     let mut screen = screen();
