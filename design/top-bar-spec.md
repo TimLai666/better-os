@@ -28,11 +28,13 @@ what each answer costs.
 **Answered by the owner on 2026-11-21:** D1 is (A), the Better OS window made
 a dock. D2: ADR 0036 is accepted. D3 is (a) now and (c) once ticket 142's
 taskbar exists. D4 is (a) until ticket 94 makes Better Launcher a complete
-start menu, then (b). D7 is (a), the Better OS flyout. D5 and D6 are still
-open: for D5 the owner said the bar is not there to replace a window's menus
-but to offer other things, and what that means for the bar carrying
-application menus at all is being confirmed; D6 was asked about and not yet
-answered.
+start menu, then (b). D7 is (a), the Better OS flyout. D5 (answered the same day): the bar
+carries no application menus at all. A window keeps its own menu row and the
+bar offers other things: the Better OS menu, the focused application's name
+with the actions every window has, and the status area. The sections and
+tickets below that describe handing menus to the bar (the AppMenu registrar,
+`com.canonical.dbusmenu` export from `better-ui`, tickets 153 to 155) are
+being revised to match and are not to be built as written. D6 is still open.
 
 | # | Decision | Recommendation | What each choice costs |
 | --- | --- | --- | --- |
