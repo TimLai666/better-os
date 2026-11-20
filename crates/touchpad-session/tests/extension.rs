@@ -353,25 +353,24 @@ fn the_packaged_metadata_names_the_uuid_the_packaging_installs_under() {
 /// reported as an import failure. That distinction is what makes this a usable
 /// check outside a shell.
 ///
-/// Where `gjs` is not installed the test says so and passes: it is a check that
-/// can be run rather than a dependency this workspace takes.
+/// Where `gjs` is not installed the test says so and returns on a developer's
+/// machine: it is a program the check runs, not a dependency this workspace
+/// takes. Under CI, which installs it, a missing `gjs` fails the test
+/// (`test_prerequisites`, ticket 177); the interface, metadata, and bounds
+/// checks above run either way.
 #[test]
 fn the_extension_is_valid_javascript() {
     let path = adapter_dir().join("extension.js");
-    let output = match std::process::Command::new("gjs")
-        .arg("-m")
-        .arg(&path)
-        .output()
-    {
-        Ok(output) => output,
-        Err(_) => {
-            eprintln!(
-                "skipping: gjs is not installed, so extension.js was not parsed. \
-                 The interface, metadata, and bounds checks above still ran."
-            );
-            return;
-        }
-    };
+    let output = test_prerequisites::require!(
+        "gjs",
+        std::process::Command::new("gjs")
+            .arg("-m")
+            .arg(&path)
+            .output()
+            .map_err(|error| format!(
+                "gjs could not be run, so extension.js was not parsed: {error}"
+            ))
+    );
     let reported = String::from_utf8_lossy(&output.stderr);
     assert!(
         !reported.contains("SyntaxError") && !reported.contains("Failed to parse module"),

@@ -66,6 +66,7 @@ members = [
     "crates/window-attention-service",
     "crates/hardware-core",
     "crates/hardware-platform",
+    "crates/test-prerequisites",
 ]
 
 [workspace.package]
@@ -139,6 +140,7 @@ window-attention-core = { path = "crates/window-attention-core" }
 window-attention-service = { path = "crates/window-attention-service" }
 hardware-core = { path = "crates/hardware-core" }
 hardware-platform = { path = "crates/hardware-platform", default-features = false }
+test-prerequisites = { path = "crates/test-prerequisites" }
 libc = "0.2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "signal"] }
 # zbus stays on its default async-io flavor everywhere in this workspace.

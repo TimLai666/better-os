@@ -193,10 +193,11 @@ fn require_every_start_answered(unanswered: &[String]) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn every_start_answers_the_call_that_activated_it() {
     let names = names("org.betteros.Storage1Test");
-    let Some(bus) = ActivatingBus::start("storage-service", &names) else {
-        eprintln!("skipping: dbus-daemon is not available in this environment");
-        return;
-    };
+    let bus = test_prerequisites::require!(
+        "dbus-daemon",
+        ActivatingBus::start("storage-service", &names)
+            .ok_or("a private dbus-daemon did not start")
+    );
     let caller = bus.caller().await;
 
     let mut unanswered = Vec::new();

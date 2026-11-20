@@ -60,10 +60,10 @@ impl Fake {
 
 #[test]
 fn the_window_reads_and_sets_every_pass_through_on_the_bus() {
-    let Some((_bus, address)) = private_bus() else {
-        eprintln!("skipped: no dbus-daemon on this machine");
-        return;
-    };
+    let (_bus, address) = test_prerequisites::require!(
+        "dbus-daemon",
+        private_bus().ok_or("a private dbus-daemon did not start")
+    );
     // SAFETY: the only test in this binary, before any thread reads it.
     unsafe { std::env::set_var("DBUS_SYSTEM_BUS_ADDRESS", &address) };
 

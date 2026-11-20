@@ -431,6 +431,15 @@ collection is explicitly configured to include them.
 
 ## Test seams
 
+- `test-prerequisites` is the one rule for a test that needs something the
+  machine may not have (a program such as `dbus-daemon`, `dconf-service`, or
+  `gjs`, a locale, a filesystem feature, a user other than root): a skip on a
+  developer's machine and a failure under CI (ticket 177). It is a crate with
+  no dependencies at all, so every crate's tests take it as a dev-dependency
+  without a cycle or a heavy edge, `better-core`'s included, and
+  `defaults-platform`'s `test-support` feature uses it for the private dconf
+  service. Its own test fails when a crate prints a skip of its own or reads
+  `CI` itself, and CI fails a test log that contains a skip line.
 - Manifest behavior is tested through public parse and catalog-validation APIs.
 - Manager behavior uses mock state and asserts observable plans, stages,
   failure evidence, recovery results, and status results.

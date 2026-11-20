@@ -10,11 +10,11 @@ It does not replace the license text supplied by each upstream project.
 ## Review summary
 
 - Root project license: `GPL-3.0-or-later`.
-- Resolved Cargo packages: 979.
-- Packages with an SPDX license expression: 977.
+- Resolved Cargo packages: 980.
+- Packages with an SPDX license expression: 978.
 - Packages with only a license-file field: 0.
 - Packages without package-level license metadata: 2.
-- `Cargo.lock` SHA-256: `11ac9880e12c1f8814a812cb9e00208c3d862515680baa0b2afa6090c1067901`.
+- `Cargo.lock` SHA-256: `61f2ca1aa8e4e285ceb1322e02e75c5bbab05efbc3219c5b2dd1cb45c81fe10e`.
 
 The 2 package(s) without package-level license metadata are
 listed separately below. Their pinned upstream checkout contains both
@@ -28,7 +28,7 @@ source of truth for those packages.
 | `MIT OR Apache-2.0` | 424 |
 | `MIT` | 202 |
 | `Apache-2.0 OR MIT` | 79 |
-| `GPL-3.0-or-later` | 68 |
+| `GPL-3.0-or-later` | 69 |
 | `MIT/Apache-2.0` | 41 |
 | `Apache-2.0` | 32 |
 | `Unicode-3.0` | 18 |
@@ -137,6 +137,7 @@ Better OS does not relicense or silently select a different expression.
 | `storage-core` | `0.2.16` | `GPL-3.0-or-later` | workspace |
 | `storage-platform` | `0.2.16` | `GPL-3.0-or-later` | workspace |
 | `storage-service` | `0.2.16` | `GPL-3.0-or-later` | workspace |
+| `test-prerequisites` | `0.2.16` | `GPL-3.0-or-later` | workspace |
 | `touchpad-core` | `0.2.16` | `GPL-3.0-or-later` | workspace |
 | `touchpad-gesture-service` | `0.2.16` | `GPL-3.0-or-later` | workspace |
 | `touchpad-gestures` | `0.2.16` | `GPL-3.0-or-later` | workspace |
@@ -901,6 +902,7 @@ keeps its own license.
 | `tempfile` | `3.27.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/tempfile/3.27.0) |
 | `tendril` | `0.4.3` | `MIT/Apache-2.0` | [crates.io](https://crates.io/crates/tendril/0.4.3) |
 | `termcolor` | `1.4.1` | `Unlicense OR MIT` | [crates.io](https://crates.io/crates/termcolor/1.4.1) |
+| `test-prerequisites` | `0.2.16` | `GPL-3.0-or-later` | workspace |
 | `thiserror` | `1.0.69` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/thiserror/1.0.69) |
 | `thiserror` | `2.0.19` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/thiserror/2.0.19) |
 | `thiserror-impl` | `1.0.69` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/thiserror-impl/1.0.69) |

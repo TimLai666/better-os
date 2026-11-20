@@ -1205,10 +1205,10 @@ mod bus {
     /// a name nobody owns reads as not on the bus.
     #[tokio::test(flavor = "multi_thread")]
     async fn the_page_reads_the_service_and_changes_the_offer() {
-        let Some(bus) = PrivateBus::start() else {
-            eprintln!("skipping: dbus-daemon is not available");
-            return;
-        };
+        let bus = test_prerequisites::require!(
+            "dbus-daemon",
+            PrivateBus::start().ok_or("a private dbus-daemon did not start")
+        );
         let directory = tempfile::tempdir().unwrap();
         let engine = std::sync::Arc::new(
             awake_service::AwakeEngine::start_in(

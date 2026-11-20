@@ -130,10 +130,10 @@ impl Drop for ActivatingBus {
 
 #[test]
 fn every_start_answers_the_call_that_activated_it() {
-    let Some(bus) = ActivatingBus::start() else {
-        eprintln!("skipping: dbus-daemon is not available in this environment");
-        return;
-    };
+    let bus = test_prerequisites::require!(
+        "dbus-daemon",
+        ActivatingBus::start().ok_or("a private dbus-daemon did not start")
+    );
     let caller = bus
         .builder()
         .method_timeout(CALLER_TIMEOUT)

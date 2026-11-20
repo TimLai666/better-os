@@ -982,16 +982,13 @@ mod tests {
         // character set. Needs the zh_TW.UTF-8 locale and GVfs's zh_TW
         // translation (Ubuntu's language pack); without them there is
         // nothing to compare against.
-        let Some(words) = gvfs_translation_in(HOST_KEY_FAILED, c"zh_TW.UTF-8") else {
-            // CI installs both (`locales`, `language-pack-gnome-zh-hant-base`),
-            // so there a missing one is a broken image, not a skip.
-            assert!(
-                std::env::var_os("CI").is_none(),
-                "no zh_TW.UTF-8 locale or no GVfs zh_TW catalog on CI"
-            );
-            eprintln!("skipping: no zh_TW.UTF-8 locale or no GVfs zh_TW catalog here");
-            return;
-        };
+        // CI installs both (`locales`, `language-pack-gnome-zh-hant-base`),
+        // so there a missing one fails the test rather than skipping it.
+        let words = test_prerequisites::require!(
+            "the zh_TW.UTF-8 locale and GVfs's zh_TW catalog",
+            gvfs_translation_in(HOST_KEY_FAILED, c"zh_TW.UTF-8")
+                .ok_or("gettext found no zh_TW translation of GVfs's message")
+        );
         assert_eq!(words, "驗證主機金鑰失敗");
         assert!(
             words.contains("主機金鑰"),
