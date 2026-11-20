@@ -595,7 +595,7 @@ impl FilesApp {
                     .on_click(act(cx, |app, _, _| app.session.toggle_pin())),
             )
             .secondary(
-                BarCommand::new(c.open_terminal_here, Picture::Terminal)
+                BarCommand::new(c.open_terminal_here, Picture::OpenTerminal)
                     .disabled(in_trash)
                     .on_click(act(cx, |app, _, _| {
                         app.session.open_terminal_here(&crate::terminal::on_path)

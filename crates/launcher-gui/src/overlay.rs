@@ -726,7 +726,7 @@ fn result_lines(model: &OverlayModel) -> Vec<ResultLine> {
 fn command_icon(command: &Command) -> Glyph {
     match command {
         Command::Open | Command::OpenPath => Picture::OpenExternal.into(),
-        Command::RunInTerminal => Picture::Terminal.into(),
+        Command::RunInTerminal => Picture::OpenTerminal.into(),
         Command::PinToStart => Picture::Pin.into(),
         Command::UnpinFromStart => Picture::Unpin.into(),
         Command::MoveToFront => IconName::ArrowLeft.into(),
