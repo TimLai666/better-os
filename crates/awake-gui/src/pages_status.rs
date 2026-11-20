@@ -124,11 +124,11 @@ impl AwakeApp {
                     },
                     cx,
                 ))
-                .when_some(status.backend.detail.clone(), |view, detail| {
-                    view.child(self.key_value(c.backend_unavailable_detail, detail, cx))
+                .when_some(status.backend.detail.as_deref(), |view, detail| {
+                    view.child(self.key_value(c.backend_unavailable_detail, c.said(detail), cx))
                 })
-                .when_some(status.attention.clone(), |view, attention| {
-                    view.child(self.key_value(c.attention_required, attention, cx))
+                .when_some(status.attention.as_deref(), |view, attention| {
+                    view.child(self.key_value(c.attention_required, c.said(attention), cx))
                 })
                 .when_some(
                     status.interrupted_previous_session.clone(),

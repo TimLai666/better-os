@@ -162,7 +162,7 @@ impl ManagerApp {
                         div().pb(px(12.0)).child(
                             ErrorBar::new(
                                 "awake-read-failed",
-                                ErrorReport::new(w.read_failed, details.clone()),
+                                ErrorReport::new(w.read_failed, copy(locale).details(details)),
                             )
                             .locale(locale.words()),
                         ),
@@ -1756,7 +1756,7 @@ impl ManagerApp {
                 },
             ));
         if let Some(detail) = &backend.detail {
-            backend_card = backend_card.description(detail.clone());
+            backend_card = backend_card.description(c.said(detail));
         }
         if !backend.available {
             backend_card = backend_card.status(Severity::Warning);
