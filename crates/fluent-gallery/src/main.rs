@@ -41,7 +41,7 @@ use better_ui::fluent::{
     BODY, BODY_STRONG, CAPTION, Palette, SUBTITLE, ShownState, TITLE, label, palette, radius,
     spacing,
 };
-use better_ui::icon_set::{self, Kind, Picture};
+use better_ui::icon_set::{self, Kind, Picture, Placement};
 use gpui::{
     AnyElement, App, AppContext as _, Context, ElementId, Entity, InteractiveElement, IntoElement,
     MouseButton, ParentElement, Pixels, Point, Render, SharedString, StatefulInteractiveElement,
@@ -411,8 +411,11 @@ fn section(title: &str, p: &Palette, rows: Vec<AnyElement>) -> AnyElement {
 
 const COLUMN: f32 = 150.0;
 
-/// One icon's cell on the icons page: its three sizes and its name.
-const ICON_CELL: f32 = 128.0;
+/// One icon's cell on the icons page: its sizes and its name.
+const ICON_CELL: f32 = 148.0;
+
+/// GNOME's purple accent, for the icons page's second accent.
+const OTHER_ACCENT: u32 = 0x9141ac;
 
 /// The column names over a state matrix.
 fn state_header(p: &Palette, live: &str) -> AnyElement {
@@ -2434,11 +2437,12 @@ impl Gallery {
         ]
     }
 
-    /// Every picture icon in `better_ui::icon_set` at 16, 20 and 40px, on
-    /// each appearance's window background (ticket 147).
+    /// Every icon in `better_ui::icon_set` on each appearance's window
+    /// background (ticket 147): each action alone at 18px in the accent and
+    /// beside its label at 16px in the secondary text colour, then with
+    /// another desktop accent, then every object at 16, 20 and 40px.
     fn icons_page(&self, p: &Palette) -> Vec<AnyElement> {
-        let strip = |kind: Kind, dark: bool| {
-            let colours = better_ui::fluent::palette_for(dark);
+        let backdrop = |colours: &Palette| {
             div()
                 .flex()
                 .flex_wrap()
@@ -2446,10 +2450,67 @@ impl Gallery {
                 .p(spacing::MD)
                 .rounded(radius::SM)
                 .bg(colours.window_background)
+        };
+        let actions = |colours: &Palette| {
+            backdrop(colours)
                 .children(
                     Picture::ALL
                         .iter()
-                        .filter(|icon| icon.kind() == kind)
+                        .filter(|icon| icon.kind() == Kind::Action)
+                        .map(|&icon| {
+                            div()
+                                .w(px(ICON_CELL))
+                                .flex()
+                                .flex_col()
+                                .gap(spacing::XS)
+                                .child(
+                                    div()
+                                        .h(px(40.0))
+                                        .flex()
+                                        .items_center()
+                                        .gap(spacing::MD)
+                                        .child(icon_set::action(
+                                            icon,
+                                            Placement::Alone,
+                                            colours,
+                                            false,
+                                        ))
+                                        .child(icon_set::action_sized(
+                                            icon,
+                                            Placement::Alone,
+                                            colours,
+                                            false,
+                                            40.0,
+                                        )),
+                                )
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap(spacing::SM)
+                                        .child(icon_set::action(
+                                            icon,
+                                            Placement::Labelled,
+                                            colours,
+                                            false,
+                                        ))
+                                        .child(label(
+                                            icon.name().to_string(),
+                                            BODY,
+                                            colours.text_primary,
+                                        )),
+                                )
+                        }),
+                )
+                .into_any_element()
+        };
+        let objects = |dark: bool| {
+            let colours = better_ui::fluent::palette_for(dark);
+            backdrop(colours)
+                .children(
+                    Picture::ALL
+                        .iter()
+                        .filter(|icon| icon.kind() == Kind::Object)
                         .map(|&icon| {
                             div()
                                 .w(px(ICON_CELL))
@@ -2476,41 +2537,76 @@ impl Gallery {
                 .into_any_element()
         };
         let disabled = |dark: bool| {
-            let colours = better_ui::fluent::palette_for(dark);
-            div()
-                .flex()
+            let colours = better_ui::fluent::palette_with_system_accent(dark);
+            backdrop(colours)
                 .items_center()
-                .gap(spacing::MD)
-                .p(spacing::MD)
-                .rounded(radius::SM)
-                .bg(colours.window_background)
-                .children(
-                    [
-                        Picture::Folder,
-                        Picture::Documents,
-                        Picture::Copy,
-                        Picture::Delete,
-                    ]
-                    .map(|icon| icon_set::picture_disabled(icon, 20.0)),
-                )
+                .child(icon_set::picture_disabled(Picture::Folder, 20.0))
+                .child(icon_set::picture_disabled(Picture::Documents, 20.0))
+                .child(icon_set::action(
+                    Picture::Copy,
+                    Placement::Alone,
+                    colours,
+                    true,
+                ))
+                .child(icon_set::action(
+                    Picture::Delete,
+                    Placement::Alone,
+                    colours,
+                    true,
+                ))
+                .child(icon_set::action(
+                    Picture::Rename,
+                    Placement::Labelled,
+                    colours,
+                    true,
+                ))
                 .into_any_element()
         };
-        let both = |kind: Kind| {
-            vec![
-                caption_over(self.t("Light", "淺色"), p, strip(kind, false)).into_any_element(),
-                caption_over(self.t("Dark", "深色"), p, strip(kind, true)).into_any_element(),
-            ]
+        // A desktop accent other than the default, to see the lighter layer
+        // follow it.
+        let other_accent = |dark: bool| {
+            better_ui::fluent::with_accent(
+                better_ui::fluent::palette_for(dark),
+                better_ui::fluent::hex(OTHER_ACCENT),
+                better_ui::fluent::hex(0xffffff),
+            )
+        };
+        // The appearance the gallery is in comes first.
+        let two = |light: AnyElement, dark: AnyElement| {
+            let light = caption_over(self.t("Light", "淺色"), p, light).into_any_element();
+            let dark = caption_over(self.t("Dark", "深色"), p, dark).into_any_element();
+            if p.is_dark() {
+                vec![dark, light]
+            } else {
+                vec![light, dark]
+            }
         };
         vec![
-            section(self.t("Object icons", "物件圖示"), p, both(Kind::Object)),
-            section(self.t("Action icons", "動作圖示"), p, both(Kind::Action)),
+            section(
+                self.t(
+                    "Action icons: alone at 18px, beside a label at 16px",
+                    "動作圖示：單獨 18px，旁邊有文字 16px",
+                ),
+                p,
+                two(
+                    actions(better_ui::fluent::palette_with_system_accent(false)),
+                    actions(better_ui::fluent::palette_with_system_accent(true)),
+                ),
+            ),
+            section(
+                self.t("Action icons with another accent", "換一個重點色的動作圖示"),
+                p,
+                two(actions(&other_accent(false)), actions(&other_accent(true))),
+            ),
             section(
                 self.t("Disabled", "停用"),
                 p,
-                vec![
-                    caption_over(self.t("Light", "淺色"), p, disabled(false)).into_any_element(),
-                    caption_over(self.t("Dark", "深色"), p, disabled(true)).into_any_element(),
-                ],
+                two(disabled(false), disabled(true)),
+            ),
+            section(
+                self.t("Object icons", "物件圖示"),
+                p,
+                two(objects(false), objects(true)),
             ),
         ]
     }
