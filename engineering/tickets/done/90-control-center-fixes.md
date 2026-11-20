@@ -51,10 +51,11 @@ Spec section 9.
 
 ## Notes
 
-**Blocked:** waiting on CI's `package` job (the container check in
-`packaging/test-daemon-e2e.sh`, which removes `better-manager` under a real
-dpkg and `setpriv`) passing on the final head of pull request #25; this
-machine has no usable Docker. Everything else is built and checked.
+CI's `package` job (the container check in `packaging/test-daemon-e2e.sh`,
+which removes `better-manager` under a real dpkg and `setpriv`) passed on the
+final head of pull request #25 (`16762f0`, 2026-11-21) on all four targets,
+with shellcheck on the maintainer scripts in the `installer` job. This machine
+has no usable Docker, so that run is the evidence for the removal step.
 
 Second review (2026-11-21), all fixed:
 
