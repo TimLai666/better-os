@@ -41,3 +41,7 @@ does it, so Better OS writes it.
 - [ ] The evaluation results are in the performance file with the command.
 - [ ] fmt, clippy on stable, the crate's tests, and the license inventory check
       pass.
+
+## In the Better OS session (2026-11-21, ADR 0038 option D, decision C4)
+
+Nothing changes: mixed Chinese and English typing is in the engine core.

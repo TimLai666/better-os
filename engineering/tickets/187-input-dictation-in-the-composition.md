@@ -45,3 +45,7 @@ the same composition so it can be corrected by typing. Spec sections 4.1, 4.2,
       `/home/tim/Developer/better-os-evidence/187/`, compared with
       `design/better-input/dictation-*.html`.
 - [ ] fmt, clippy on stable, the crates' tests pass.
+
+## In the Better OS session (2026-11-21, ADR 0038 option D, decision C4)
+
+The engine side and the dictation shortcut are per session. In the session the composition reaches applications through ticket 221's front end, and the shortcut `<Super><Alt>h` is written through the cosmic-config adapter (ticket 206), checked against the session's own key bindings rather than GNOME's wm, shell, mutter, and media-keys schemas; ticket 221 carries both. This ticket is unchanged for GNOME.

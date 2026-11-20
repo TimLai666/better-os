@@ -2,6 +2,30 @@
 
 **Blocked by:** 156
 
+## Under ADR 0038's option D (2026-11-21)
+
+Built for the Better OS session first, where the bar is a layer surface on
+`cosmic-comp` (ticket 152). What changes there:
+
+- **Noticing XWayland**: `gnome-session-x11-services.target` does not exist in
+  the session. `cosmic-comp` starts XWayland itself (seen rootless, ADR 0038);
+  whether eagerly or on demand, and how `DISPLAY` reaches the user manager, is
+  ticket 201's fact. The bridge's waiting states keep their shape with the
+  session's signal in place of GNOME's target: the session launcher's imported
+  `DISPLAY` (ticket 203) and the X connection closing. No timer, as before.
+- **The selection** is free in the session (no AppIndicator extension), so the
+  bridge holds it whenever the bar runs; the "held by another program" state
+  stays for a program that takes it.
+- **Clicks and coordinates**: forwarded clicks under `cosmic-comp`'s XWayland
+  (X events and XTest), and the conversion from logical bar coordinates to X
+  root coordinates with `cosmic-comp`'s XWayland scaling
+  (`descale_xwayland`), replace the Mutter facts in the first step; they are
+  checked in ticket 201's VM.
+- **The final check** with real XEmbed programs is done in the session; the
+  "gone back to Zorin's AppIndicator extension" half waits with ticket 151.
+- Unchanged: the crate, the unit, docking, capture, the items, `x11rb`, the
+  card rows, the unit's sandbox.
+
 ## Why
 
 Owner, 2026-11-21 (decision D6 in `design/top-bar-spec.md`): old X11

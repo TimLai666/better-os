@@ -52,3 +52,7 @@ the one IBus restart a new engine needs.
       recorded in Notes.
 - [ ] fmt, clippy on stable, the crates' tests, `verify-deb.sh`, and the license
       inventory check pass.
+
+## In the Better OS session (2026-11-21, ADR 0038 option D, decision C4)
+
+The IBus restart and the GNOME VM check are GNOME's. In the session the install order is the same with the session's framework in place of the IBus restart (Fcitx 5's own reload, or none under S4 (a)), and `replaces` means 新酷音 in Fcitx 5; ticket 221 builds and checks that half, so this ticket is unchanged.

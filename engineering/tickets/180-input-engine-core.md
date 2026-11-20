@@ -54,3 +54,7 @@ each add one part.
       asserts the source files are byte-identical afterwards.
 - [ ] fmt, clippy on stable, the crate's tests, and the license inventory check
       (the lockfile gains `chewing`) pass.
+
+## In the Better OS session (2026-11-21, ADR 0038 option D, decision C4)
+
+Nothing changes: `input-core` has no IBus, no GPUI, and no D-Bus, so the same core serves GNOME's IBus engine and the session's front end (ticket 221). The import from 新酷音 reads `org.freedesktop.IBus.Chewing` through GSettings, which the session also reads, through its dconf profile's second database.

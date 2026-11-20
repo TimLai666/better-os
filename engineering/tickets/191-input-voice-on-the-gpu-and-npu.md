@@ -34,3 +34,7 @@ option that needs no proprietary runtime.
 - [ ] The NPU numbers are there, or Notes say exactly which part of ticket 98's
       work is still missing.
 - [ ] fmt, clippy on stable, the crates' tests pass.
+
+## In the Better OS session (2026-11-21, ADR 0038 option D, decision C4)
+
+Nothing changes.
