@@ -8,6 +8,7 @@ use std::io;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 
+use files_platform::Put;
 use git_core::{
     DiffLineKind, FileDiff, LineKey, PatchMode, RawDiff, change_fingerprint, line_key, parse_diff,
 };
@@ -319,7 +320,7 @@ pub fn discard_files(repository: &Path, files: &[FileSelection]) -> Result<(), G
             let full = repository.join(path);
             let in_head = committed && in_head(repository, path)?;
             if full.symlink_metadata().is_ok() {
-                trash(&full, !in_head).map_err(io_error)?;
+                trash(&full, !in_head)?;
             }
             if in_head {
                 Run::new(
@@ -352,7 +353,7 @@ pub fn discard_lines(repository: &Path, file: &FileSelection) -> Result<(), GitE
     };
     let full = repository.join(&file.path);
     if full.exists() {
-        trash(&full, false).map_err(io_error)?;
+        trash(&full, false)?;
     }
     Run::new(
         repository,
@@ -437,103 +438,14 @@ pub fn path_pattern(path: &Path) -> String {
     out
 }
 
-/// The desktop's trash: `$XDG_DATA_HOME/Trash`, or `~/.local/share/Trash`.
-pub fn trash_dir() -> Option<PathBuf> {
-    if let Some(data) = std::env::var_os("XDG_DATA_HOME").filter(|v| !v.is_empty()) {
-        return Some(PathBuf::from(data).join("Trash"));
-    }
-    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share/Trash"))
-}
-
-/// Puts a copy of the file (or the file itself, when `take` is set) in the
-/// trash, with the `.trashinfo` record the freedesktop.org trash
-/// specification asks for, so file managers can restore it to where it was.
-pub fn trash(path: &Path, take: bool) -> io::Result<PathBuf> {
-    let dir = trash_dir().ok_or_else(|| io::Error::other("no home folder"))?;
-    let files = dir.join("files");
-    let info = dir.join("info");
-    fs::create_dir_all(&files)?;
-    fs::create_dir_all(&info)?;
-    let name = path
-        .file_name()
-        .ok_or_else(|| io::Error::other("no file name"))?;
-    let mut candidate = name.to_os_string();
-    let mut n = 1;
-    let info_file = loop {
-        let mut info_name = candidate.clone();
-        info_name.push(".trashinfo");
-        let info_path = info.join(&info_name);
-        match fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&info_path)
-        {
-            Ok(_) => break info_path,
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-                n += 1;
-                candidate = name.to_os_string();
-                candidate.push(format!(".{n}"));
-            }
-            Err(error) => return Err(error),
-        }
-    };
-    let target = files.join(&candidate);
-    let absolute = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        std::env::current_dir()?.join(path)
-    };
-    let record = format!(
-        "[Trash Info]\nPath={}\nDeletionDate={}\n",
-        percent_encode(absolute.as_os_str().as_bytes()),
-        deletion_date()
-    );
-    fs::write(&info_file, record)?;
-    let result = if take {
-        fs::rename(path, &target).or_else(|_| {
-            copy_entry(path, &target)?;
-            fs::remove_file(path)
-        })
-    } else {
-        copy_entry(path, &target)
-    };
-    if let Err(error) = result {
-        let _ = fs::remove_file(&info_file);
-        return Err(error);
-    }
-    Ok(target)
-}
-
-fn copy_entry(from: &Path, to: &Path) -> io::Result<()> {
-    let meta = from.symlink_metadata()?;
-    if meta.file_type().is_symlink() {
-        std::os::unix::fs::symlink(fs::read_link(from)?, to)
-    } else {
-        fs::copy(from, to).map(|_| ())
-    }
-}
-
-fn percent_encode(bytes: &[u8]) -> String {
-    let mut out = String::new();
-    for &b in bytes {
-        if b.is_ascii_alphanumeric() || b"/-_.~".contains(&b) {
-            out.push(b as char);
-        } else {
-            out.push_str(&format!("%{b:02X}"));
-        }
-    }
-    out
-}
-
-/// Now as `YYYY-MM-DDThh:mm:ss` on the local wall clock, which is what the
-/// trash specification's `DeletionDate` holds and how Better Files reads it.
-fn deletion_date() -> String {
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-    better_core::local_time::TimeZone::System
-        .at(secs)
-        .civil
-        .iso_text()
+/// Puts the file in the trash the freedesktop.org trash specification gives
+/// it, so Better Files or any file manager can put it back where it was: the
+/// file itself when `take` is set, a copy otherwise. The writer is Better
+/// Files' (`files_platform::trash`, ticket 173), so a discard names, escapes,
+/// and places its item exactly as a deletion in Better Files does.
+fn trash(path: &Path, take: bool) -> Result<(), GitError> {
+    let put = if take { Put::Move } else { Put::Copy };
+    files_platform::trash_path(path, put)
+        .map(|_| ())
+        .map_err(|error| GitError::Io(error.to_string()))
 }

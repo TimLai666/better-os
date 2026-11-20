@@ -160,23 +160,13 @@ impl DesktopEntry {
         self.flag("Hidden") != Some(true) && self.flag("X-GNOME-Autostart-enabled") != Some(false)
     }
 
-    /// Whether `OnlyShowIn` and `NotShowIn` let it start on these desktops.
+    /// Whether the entry's desktop lists let it start on these desktops. The
+    /// rule is the application catalog's, the one every Better OS window
+    /// uses (ticket 173).
     pub(crate) fn for_desktops(&self, desktops: &[String]) -> bool {
-        let list = |key: &str| -> Vec<String> {
-            self.get(key)
-                .unwrap_or_default()
-                .split(';')
-                .filter(|name| !name.is_empty())
-                .map(|name| name.to_ascii_lowercase())
-                .collect()
-        };
-        let current: Vec<String> = desktops.iter().map(|d| d.to_ascii_lowercase()).collect();
-        let only = list("OnlyShowIn");
-        let not = list("NotShowIn");
-        if !only.is_empty() && !only.iter().any(|name| current.contains(name)) {
-            return false;
-        }
-        !not.iter().any(|name| current.contains(name))
+        app_catalog_core::DesktopEnvironments::new(desktops)
+            .shows_entry(|key| self.get(key))
+            .is_ok()
     }
 }
 

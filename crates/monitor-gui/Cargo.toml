@@ -12,6 +12,9 @@ test = true
 bench = false
 
 [dependencies]
+# The desktop-entry `OnlyShowIn`/`NotShowIn` rule, the catalog's own (ticket
+# 173), for the autostart list.
+app-catalog-core.workspace = true
 better-ui.workspace = true
 monitor-core.workspace = true
 monitor-views.workspace = true

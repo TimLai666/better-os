@@ -40,6 +40,17 @@
 //! layouts from its own root and resolves a relative path back against its top
 //! directory; a relative path that would climb out of it is refused.
 //!
+//! ## One writer
+//!
+//! This is the only code in Better OS that writes a trash (ticket 173):
+//! Better Files' jobs and Better Git's discards both put items in through it,
+//! so the name escaping, the collision rule, and the per-volume choice cannot
+//! drift apart. [`choose_trash`] is the specification's choice of trash for an
+//! item, which a job uses step by step so it can log each fallback, and
+//! [`trash_path`] is the whole of it for a caller with no job to report to.
+//! [`Put::Copy`] puts a copy in and leaves the item where it is, which is how
+//! a discarded change stays recoverable while Git rewrites the file.
+//!
 //! Nothing in the write side converts a path to a `String`. An original path
 //! is percent-encoded from its bytes and decoded back to bytes, so a file whose
 //! name is not valid UTF-8 goes into the trash and comes back out under the
@@ -488,18 +499,42 @@ pub fn ensure_trash(trash: &TrashDirectory) -> Result<(), TrashError> {
     Ok(())
 }
 
-/// Moves one item into the trash.
+/// How an item goes into the trash.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Put {
+    /// The item itself, with a `rename(2)`: it is no longer where it was.
+    Move,
+    /// A copy, and the item stays where it is. A copy crosses devices, so it
+    /// never fails with [`TrashError::CrossDevice`].
+    Copy,
+}
+
+/// Moves one item into the trash: [`put_in_trash`] with [`Put::Move`].
+pub fn move_to_trash(trash: &TrashDirectory, source: &Path) -> Result<TrashedItem, TrashError> {
+    put_in_trash(trash, source, Put::Move)
+}
+
+/// Puts a copy of one item into the trash and leaves the item in place.
+pub fn copy_to_trash(trash: &TrashDirectory, source: &Path) -> Result<TrashedItem, TrashError> {
+    put_in_trash(trash, source, Put::Copy)
+}
+
+/// Puts one item into the trash.
 ///
 /// The order is the specification's, and it is the whole collision story:
 ///
 /// 1. Pick a candidate name.
 /// 2. Create `info/<name>.trashinfo` with `O_EXCL`. Losing this race means
 ///    another process took the name; try the next candidate.
-/// 3. `rename` the item to `files/<name>`.
+/// 3. `rename` the item to `files/<name>`, or copy it there.
 ///
 /// If step 3 fails the info file is removed again, so a failed trashing never
 /// leaves a record pointing at nothing.
-pub fn move_to_trash(trash: &TrashDirectory, source: &Path) -> Result<TrashedItem, TrashError> {
+pub fn put_in_trash(
+    trash: &TrashDirectory,
+    source: &Path,
+    put: Put,
+) -> Result<TrashedItem, TrashError> {
     let metadata = fs::symlink_metadata(source).map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
             TrashError::NotFound {
@@ -550,7 +585,13 @@ pub fn move_to_trash(trash: &TrashDirectory, source: &Path) -> Result<TrashedIte
         let stored_path = trash.files_dir().join(&candidate);
         // `candidate` is a `String` here only because percent-encoding made it
         // one; the original bytes live in the record's `Path` key.
-        match fs::rename(source, &stored_path) {
+        let placed = match put {
+            Put::Move => fs::rename(source, &stored_path),
+            Put::Copy => copy_tree(source, &stored_path).inspect_err(|_| {
+                let _ = fs::remove_dir_all(&stored_path).or_else(|_| fs::remove_file(&stored_path));
+            }),
+        };
+        match placed {
             Ok(()) => {
                 return Ok(TrashedItem {
                     item: candidate,
@@ -576,6 +617,121 @@ pub fn move_to_trash(trash: &TrashDirectory, source: &Path) -> Result<TrashedIte
         path: source.to_path_buf(),
         reason: "no_free_trash_name".to_string(),
     })
+}
+
+/// A copy of a file, a symbolic link (as the link), or a directory and
+/// everything in it, at `to`, which must not exist yet.
+fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
+    let metadata = fs::symlink_metadata(from)?;
+    if metadata.file_type().is_symlink() {
+        std::os::unix::fs::symlink(fs::read_link(from)?, to)
+    } else if metadata.is_dir() {
+        fs::create_dir(to)?;
+        for entry in fs::read_dir(from)? {
+            let entry = entry?;
+            copy_tree(&entry.path(), &to.join(entry.file_name()))?;
+        }
+        fs::set_permissions(to, metadata.permissions())
+    } else {
+        fs::copy(from, to).map(|_| ())
+    }
+}
+
+/// The trash the specification gives an item.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TrashTarget {
+    /// The home trash: the item is on its device.
+    Home,
+    /// The item's own device's trash.
+    Volume(VolumeTrash),
+    /// The item is on another device that has no trash this user may use, so
+    /// it is copied into the home trash. `reason` is a stable key or the
+    /// error that said why.
+    HomeCopy { reason: String },
+}
+
+/// Which trash `source` goes to: the home trash when it is on the home
+/// trash's device, and otherwise its own device's
+/// ([`own_device_trash`]). The specification's "Trash directories" section:
+/// an implementation keeps a file on its own device rather than copying it
+/// to the home partition. An item that cannot be located is given the home
+/// trash, where the move reports it as missing.
+pub fn choose_trash(
+    home: &TrashDirectory,
+    source: &Path,
+    uid: Option<u32>,
+    devices: &dyn DeviceProbe,
+) -> TrashTarget {
+    match shares_device(home, source, devices) {
+        Ok(false) => own_device_trash(source, uid, devices),
+        _ => TrashTarget::Home,
+    }
+}
+
+/// The trash on `source`'s own device ([`volume_trash_for`]), or the home
+/// copy when that device has none this user may use.
+pub fn own_device_trash(source: &Path, uid: Option<u32>, devices: &dyn DeviceProbe) -> TrashTarget {
+    let Some(uid) = uid else {
+        return TrashTarget::HomeCopy {
+            reason: "files.trash.error.no_uid".to_string(),
+        };
+    };
+    match volume_trash_for(source, uid, devices) {
+        Ok(volume) => TrashTarget::Volume(volume),
+        Err(error) => TrashTarget::HomeCopy {
+            reason: error.to_string(),
+        },
+    }
+}
+
+/// Puts `source` in the trash the specification gives it, for a caller with
+/// no job to report to (Better Git's discards): [`choose_trash`] with the
+/// home trash, this user, and the host's devices; a move the kernel refuses
+/// across devices goes to the item's own device; and an item whose device
+/// trash cannot be used is copied into the home trash, then, for
+/// [`Put::Move`], removed.
+pub fn trash_path(source: &Path, put: Put) -> Result<TrashedItem, TrashError> {
+    let home = TrashDirectory::home_from_env().ok_or_else(|| TrashError::Io {
+        path: source.to_path_buf(),
+        reason: "no_home_trash".to_string(),
+    })?;
+    trash_path_with(&home, source, put, current_uid(), &HostDevices)
+}
+
+/// [`trash_path`] with the home trash, the user, and the devices given.
+pub fn trash_path_with(
+    home: &TrashDirectory,
+    source: &Path,
+    put: Put,
+    uid: Option<u32>,
+    devices: &dyn DeviceProbe,
+) -> Result<TrashedItem, TrashError> {
+    let target = match choose_trash(home, source, uid, devices) {
+        TrashTarget::Home => match put_in_trash(home, source, put) {
+            // The device numbers agreed and the kernel still said `EXDEV`: a
+            // bind mount does that. The item's own device decides.
+            Err(TrashError::CrossDevice { .. }) => own_device_trash(source, uid, devices),
+            done => return done,
+        },
+        other => other,
+    };
+    if let TrashTarget::Volume(volume) = &target {
+        match put_in_trash(&volume.directory, source, put) {
+            Err(TrashError::NotFound { path }) => return Err(TrashError::NotFound { path }),
+            Err(_) => {}
+            done => return done,
+        }
+    }
+    let item = copy_to_trash(home, source)?;
+    if put == Put::Move {
+        let removed = if fs::symlink_metadata(source).is_ok_and(|metadata| metadata.is_dir()) {
+            fs::remove_dir_all(source)
+        } else {
+            fs::remove_file(source)
+        };
+        removed.map_err(|error| TrashError::io(source, &error))?;
+    }
+    Ok(item)
 }
 
 /// Where a trashed item says it came from.
@@ -1484,6 +1640,104 @@ mod tests {
 
     fn uid() -> u32 {
         current_uid().expect("this process has a uid")
+    }
+
+    // --- The one writer (ticket 173) -------------------------------------
+
+    #[test]
+    fn a_copy_in_the_trash_leaves_the_item_where_it_is() {
+        let (root, trash) = fixture();
+        let file = root.path().join("notes.txt");
+        fs::write(&file, b"one").unwrap();
+        let first = copy_to_trash(&trash, &file).unwrap();
+        assert_eq!(fs::read(&file).unwrap(), b"one");
+        assert_eq!(fs::read(&first.stored_path).unwrap(), b"one");
+        assert_eq!(first.item, "notes.txt");
+        // The collision rule is the one a move uses.
+        let second = copy_to_trash(&trash, &file).unwrap();
+        assert_eq!(second.item, "notes.1.txt");
+
+        let tree = root.path().join("tree");
+        fs::create_dir(&tree).unwrap();
+        fs::write(tree.join("a"), b"a").unwrap();
+        std::os::unix::fs::symlink("a", tree.join("link")).unwrap();
+        let item = copy_to_trash(&trash, &tree).unwrap();
+        assert_eq!(fs::read(tree.join("a")).unwrap(), b"a");
+        assert_eq!(fs::read(item.stored_path.join("a")).unwrap(), b"a");
+        assert!(
+            fs::symlink_metadata(item.stored_path.join("link"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[test]
+    fn an_item_on_the_home_device_goes_to_the_home_trash() {
+        let home_root = tempfile::tempdir().unwrap();
+        let home = TrashDirectory::new(home_root.path().join("Trash"));
+        let file = home_root.path().join("draft.txt");
+        fs::write(&file, b"x").unwrap();
+        let devices = FakeDevices::new(&[(Path::new("/"), 1)]);
+        assert_eq!(
+            choose_trash(&home, &file, Some(uid()), &devices),
+            TrashTarget::Home
+        );
+        let item = trash_path_with(&home, &file, Put::Copy, Some(uid()), &devices).unwrap();
+        assert!(item.info_path.starts_with(home.info_dir()));
+        assert!(file.exists());
+    }
+
+    #[test]
+    fn an_item_on_another_device_goes_to_that_devices_own_trash() {
+        let home_root = tempfile::tempdir().unwrap();
+        let stick = tempfile::tempdir().unwrap();
+        let stick_top = fs::canonicalize(stick.path()).unwrap();
+        let home = TrashDirectory::new(home_root.path().join("Trash"));
+        let devices = FakeDevices::new(&[(Path::new("/"), 1), (&stick_top, 7)]);
+        let file = stick_top.join("big.iso");
+        fs::write(&file, b"iso").unwrap();
+
+        assert!(matches!(
+            choose_trash(&home, &file, Some(uid()), &devices),
+            TrashTarget::Volume(_)
+        ));
+        let item = trash_path_with(&home, &file, Put::Move, Some(uid()), &devices).unwrap();
+        assert!(
+            item.info_path
+                .starts_with(stick_top.join(format!(".Trash-{}", uid()))),
+            "{}",
+            item.info_path.display()
+        );
+        assert!(!file.exists());
+        assert!(!home.root().exists(), "nothing went to the home trash");
+    }
+
+    #[test]
+    fn an_item_whose_device_has_no_usable_trash_is_copied_home_and_moved_only_when_asked() {
+        let home_root = tempfile::tempdir().unwrap();
+        let stick = tempfile::tempdir().unwrap();
+        let stick_top = fs::canonicalize(stick.path()).unwrap();
+        let home = TrashDirectory::new(home_root.path().join("Trash"));
+        let devices = FakeDevices::new(&[(Path::new("/"), 1), (&stick_top, 7)]);
+        let file = stick_top.join("notes.txt");
+        fs::write(&file, b"kept").unwrap();
+
+        // No uid, so no private trash on the device can be made.
+        assert_eq!(
+            choose_trash(&home, &file, None, &devices),
+            TrashTarget::HomeCopy {
+                reason: "files.trash.error.no_uid".to_string()
+            }
+        );
+        let copy = trash_path_with(&home, &file, Put::Copy, None, &devices).unwrap();
+        assert!(copy.info_path.starts_with(home.info_dir()));
+        assert_eq!(fs::read(&file).unwrap(), b"kept");
+
+        let moved = trash_path_with(&home, &file, Put::Move, None, &devices).unwrap();
+        assert!(moved.info_path.starts_with(home.info_dir()));
+        assert_eq!(fs::read(&moved.stored_path).unwrap(), b"kept");
+        assert!(!file.exists());
     }
 
     #[test]

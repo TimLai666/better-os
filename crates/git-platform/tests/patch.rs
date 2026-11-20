@@ -417,7 +417,9 @@ fn discard_twice_keeps_both_copies() {
     SystemGit
         .discard_files(&s.repo, &[FileSelection::whole("f.txt")])
         .unwrap();
-    assert_eq!(trashed(&s), vec!["f.txt", "f.txt.2"]);
+    // The second copy is named the way Better Files names one (ticket 173):
+    // the number before the extension, so it still opens as a text file.
+    assert_eq!(trashed(&s), vec!["f.1.txt", "f.txt"]);
 }
 
 #[test]
