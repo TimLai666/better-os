@@ -28,9 +28,9 @@ desktop's icon theme) stay as they are; the owner said those are fine.
 ## What to build
 
 1. **One icon set in `better-ui`.** A module that owns every icon by name,
-   says for each whether it is an object icon or an action icon, serves its
-   SVG, and gives one element to draw it at a size (object icons through
-   `img`, action icons as today). The per-window copies of line icons move
+   says for each whether it is a picture (an object or an action icon) or a
+   plain symbol, serves its SVG, and gives one element to draw it at a size
+   (pictures through `img`, plain symbols as today). The per-window copies of line icons move
    into it; no window keeps its own.
 2. **Sort every icon in use** into object, action, or plain symbol (arrows,
    chevrons, close, check, window buttons), by what it stands for at each call
@@ -44,8 +44,11 @@ desktop's icon theme) stay as they are; the owner said those are fine.
    levels, CPU, memory, user, bell, palette, calendar, star, and the rest the
    sorting finds). The nine in the demo are a starting point, not finished
    work: Documents is too pale on the light background.
-4. **Colour the action icons** that DESIGN.md gives a colour to, and leave
-   plain symbols alone.
+4. **Draw the action icons** as flat filled shapes, plainer than the object
+   icons (owner, 2026-11-21: a line icon with one coloured part "looks odd",
+   and a shaded, detailed picture is too realistic for a button). The demo
+   has five: new folder, copy, rename, delete, refresh. Plain symbols stay
+   line icons.
 5. **Every window moved over**: Files, Git, Monitor, Manager and the control
    center pages, Launcher, Awake, Touchpad, the app chooser, and the Fluent
    gallery, which gains a page showing every icon at 16px, 20px, and 40px in

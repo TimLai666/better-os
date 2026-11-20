@@ -141,7 +141,7 @@ A selected row in a list has a subtle fill across the row and a 3px accent bar, 
 
 The owner decided on 2026-11-21 that icons inside a window are full-colour pictures, as in Windows 11's File Explorer and Settings, and no longer the single-colour line icons the toolkit brings with it. `design/design-demos/icon-directions.html` shows the old icons beside the chosen ones.
 
-There are two kinds, told apart by what the icon stands for.
+There are three kinds, told apart by what the icon stands for.
 
 **An object icon** stands for a thing: a folder, a device, a file kind, a settings category, a component, a place in a navigation pane. It is a filled picture with no outline.
 
@@ -151,7 +151,9 @@ There are two kinds, told apart by what the icon stands for.
 - The same picture is used in the light and the dark appearance, so every icon must stand out against both window backgrounds (`#f3f3f3` and `#202020`). A pale shape, such as a sheet of paper, gets a thin edge in a darker shade of its own colour.
 - A disabled object icon is drawn at 36% opacity, the same as disabled text.
 
-**An action icon** stands for something a button does: copy, rename, delete, refresh, new folder. It is a 2px line with round ends in the primary text colour, and at most one part of it is coloured to say what it does: red for removing, green for adding, blue otherwise. Arrows, chevrons, close, check, and the window buttons carry no colour at all.
+**An action icon** stands for something a button does: copy, rename, delete, refresh, new folder. It is a filled shape too, but plainer than an object icon, because a row of buttons should not compete with the content: flat fills with no gradient, one colour in at most two shades plus white, and no small parts such as a pencil's eraser or a bin's ribs. Two overlapping squares for copy, a pencil outline filled in amber for rename, a red bin for delete, a yellow folder with a white plus for new folder. Two other treatments were tried on 2026-11-21 and the owner turned both down: a line icon with one coloured part reads as neither line nor colour, and a detailed, shaded picture is too realistic for a button.
+
+**A plain symbol** is the third kind: arrows, chevrons, close, check, and the window buttons. These are marks, not pictures, and stay a 2px line with round ends in the primary text colour.
 
 An icon in an info bar keeps its status colour as before. A tray icon stays a single-colour symbolic icon, because the desktop recolours those for its own panel.
 

@@ -38,7 +38,7 @@
   .row.sel { background: var(--hover); font-weight: 600; }
   .row.sel::before { content: ""; position: absolute; left: 0; top: 10px; width: 3px; height: 16px; border-radius: 2px; background: var(--accent); }
   .row svg { width: 20px; height: 20px; flex: none; }
-  .bar svg { width: 18px; height: 18px; }
+  .bar svg { width: 20px; height: 20px; }
   .big { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--stroke); }
   .big svg { width: 40px; height: 40px; }
   .line { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
@@ -109,6 +109,14 @@ const actions = [
   ['<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/>', '<path d="M21 3v5h-5"/><path d="M8 16H3v5"/>', "#2f7de1"]
 ];
 
+const colorActions = [
+  '<path d="M2.5 6.5a2 2 0 0 1 2-2h4.6l2 2.2h8.4a2 2 0 0 1 2 2V18a2 2 0 0 1-2 2h-15a2 2 0 0 1-2-2z" fill="#f0b429"/><path d="M12 10.2v6.4M8.8 13.4h6.4" fill="none" stroke="#ffffff" stroke-width="2.2" stroke-linecap="round"/>',
+  '<rect x="3" y="3" width="12.5" height="12.5" rx="2.5" fill="#9cc0f5"/><rect x="8.5" y="8.5" width="12.5" height="12.5" rx="2.5" fill="#2f7de1"/>',
+  '<path d="M15.6 3.6a2.4 2.4 0 0 1 3.4 0l1.4 1.4a2.4 2.4 0 0 1 0 3.4L9 19.8l-4.8-4.8z" fill="#f0a020"/><path d="M4.2 15 9 19.8 3 21z" fill="#b8740c"/>',
+  '<rect x="3.5" y="4.6" width="17" height="3" rx="1.5" fill="#d4402f"/><rect x="9.5" y="2.6" width="5" height="3" rx="1" fill="#d4402f"/><path d="M5.5 9h13l-.9 10.2a2 2 0 0 1-2 1.8H8.4a2 2 0 0 1-2-1.8z" fill="#ec6a5c"/>',
+  '<path d="M4.2 11a8 8 0 0 1 13.4-4.4" fill="none" stroke="#2f7de1" stroke-width="2.8" stroke-linecap="round"/><path d="M20.6 3.6v5.8h-5.8z" fill="#2f7de1"/><g transform="rotate(180 12 12)"><path d="M4.2 11a8 8 0 0 1 13.4-4.4" fill="none" stroke="#2f7de1" stroke-width="2.8" stroke-linecap="round"/><path d="M20.6 3.6v5.8h-5.8z" fill="#2f7de1"/></g>'
+];
+
 const svg = (inner, cls) => `<svg viewBox="0 0 24 24" aria-hidden="true"${cls ? ` class="${cls}"` : ""}>${inner}</svg>`;
 
 const styles = [
@@ -120,14 +128,14 @@ const styles = [
     act: a => svg(a[0] + `<g stroke="${a[2]}">${a[1]}</g>`, "line") },
   { title: "方向二：彩色實心圖案", note: "不用外框線，每個圖示有自己的形狀、顏色和明暗。",
     icon: i => svg(color[i]),
-    act: a => svg(a[0] + `<g stroke="${a[2]}">${a[1]}</g>`, "line") }
+    act: (a, i) => svg(colorActions[i]) }
 ];
 
 document.getElementById("cols").innerHTML = styles.map(s => `
   <section>
     <h2>${s.title}</h2>
     <p class="note">${s.note}</p>
-    <div class="bar">${actions.map(a => `<span>${s.act(a)}</span>`).join("")}</div>
+    <div class="bar">${actions.map((a, i) => `<span>${s.act(a, i)}</span>`).join("")}</div>
     ${names.map((n, i) => `<div class="row${i === 2 ? " sel" : ""}">${s.icon(i)}<span>${n}</span></div>`).join("")}
     <div class="big">${names.map((n, i) => s.icon(i)).join("")}</div>
   </section>`).join("");
