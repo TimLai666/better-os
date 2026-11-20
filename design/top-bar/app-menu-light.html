@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="zh-Hant-TW" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>頂端列：應用程式選單（淺色）</title>
+<style>
+:root{--font:system-ui,"Inter","Segoe UI","Noto Sans CJK TC","Noto Sans TC",sans-serif}
+html[data-theme=light]{--bg:#f3f3f3;--card:rgba(255,255,255,.7);--card-solid:#fbfbfb;--ctl:rgba(255,255,255,.7);--text:rgba(0,0,0,.894);--text2:rgba(0,0,0,.62);--text3:rgba(0,0,0,.36);--accent:#005fb8;--on-accent:#fff;--subtle:rgba(0,0,0,.037);--subtle2:rgba(0,0,0,.06);--stroke:rgba(0,0,0,.06);--cstroke:rgba(0,0,0,.0578);--strong:rgba(0,0,0,.45);--crit:#c42b1c;--warn:#9d5d00;--flyout:#f9f9f9;--knob:#fff;--track:rgba(0,0,0,.45);--elev:rgba(0,0,0,.14);--wall1:#cfe3f4;--wall2:#9cc3e6;--win:#f3f3f3;--taskbar:rgba(238,238,238,.92)}
+html[data-theme=dark]{--bg:#202020;--card:rgba(255,255,255,.05);--card-solid:#2b2b2b;--ctl:rgba(255,255,255,.06);--text:#fff;--text2:rgba(255,255,255,.77);--text3:rgba(255,255,255,.36);--accent:#60cdff;--on-accent:#000;--subtle:rgba(255,255,255,.06);--subtle2:rgba(255,255,255,.09);--stroke:rgba(255,255,255,.07);--cstroke:rgba(0,0,0,.1);--strong:rgba(255,255,255,.55);--crit:#ff99a4;--warn:#fce100;--flyout:#2c2c2c;--knob:#000;--track:rgba(255,255,255,.55);--elev:rgba(0,0,0,.45);--wall1:#1d2b3a;--wall2:#0d1520;--win:#202020;--taskbar:rgba(32,32,32,.92)}
+*{box-sizing:border-box}
+body{margin:0;background:#888;color:var(--text);font:400 14px/20px var(--font);-webkit-font-smoothing:antialiased;padding:24px}
+.screen{position:relative;width:var(--w,1440px);height:900px;overflow:hidden;background:linear-gradient(160deg,var(--wall1),var(--wall2));border-radius:2px;box-shadow:0 2px 12px rgba(0,0,0,.3)}
+.bar{position:absolute;left:0;top:0;right:0;height:32px;background:var(--bg);border-bottom:1px solid var(--stroke);display:flex;align-items:center;padding:0 4px;gap:0;z-index:5}
+.bi{height:28px;display:inline-flex;align-items:center;gap:6px;padding:0 8px;border-radius:4px;color:var(--text);white-space:nowrap}
+.bi.menu{padding:0 10px}
+.bi:hover,.bi.open{background:var(--subtle2)}
+.bi.app{font-weight:600}
+.bi.dis{color:var(--text3)}
+.gap{flex:1}
+.bi .pct{font-size:14px}
+.bi .dot{position:absolute;margin:-10px 0 0 12px;width:6px;height:6px;border-radius:3px;background:var(--accent)}
+.bi.bell{position:relative}
+.fly{position:absolute;top:36px;background:var(--flyout);border:1px solid var(--stroke);border-radius:8px;box-shadow:0 8px 16px var(--elev);z-index:6;padding:4px}
+.mi{height:32px;display:flex;align-items:center;gap:12px;padding:0 12px 0 8px;border-radius:4px;min-width:240px}
+.mi .slot{width:16px;display:grid;place-items:center;color:var(--text)}
+.mi .l{flex:1}
+.mi .k{color:var(--text2);font-size:12px}
+.mi.dis{color:var(--text3)} .mi.dis .k{color:var(--text3)}
+.mi.hl{background:var(--subtle2)}
+.sep{height:1px;background:var(--stroke);margin:4px 4px}
+.panel{width:360px;padding:16px}
+.panel h3{font:600 14px/20px var(--font);margin:0 0 8px}
+.cap{font-size:12px;line-height:16px;color:var(--text2)}
+.grid{display:grid;grid-template-columns:repeat(6,48px);gap:8px 6px;margin-top:8px}
+.cell{width:48px;display:flex;flex-direction:column;align-items:center;gap:2px}
+.cell .ico{width:48px;height:40px;border-radius:4px;display:grid;place-items:center}
+.cell .ico:hover{background:var(--subtle2)}
+.cell .t{font-size:12px;line-height:16px;color:var(--text2);text-align:center;width:48px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cal{display:grid;grid-template-columns:repeat(7,1fr);gap:2px;text-align:center;margin:8px 0 16px}
+.cal span{height:36px;display:grid;place-items:center;border-radius:18px}
+.cal .h{height:24px;color:var(--text2);font-size:12px}
+.cal .o{color:var(--text3)}
+.cal .today{background:var(--accent);color:var(--on-accent);font-weight:600}
+.row{display:flex;align-items:center;justify-content:space-between}
+.btn{height:32px;padding:0 12px;border-radius:4px;border:1px solid var(--stroke);background:var(--ctl);color:var(--text);font:400 14px/20px var(--font);display:inline-flex;align-items:center;gap:8px;white-space:nowrap}
+.btn.sub{border-color:transparent;background:transparent;color:var(--text)}
+.sw{width:40px;height:20px;border-radius:10px;border:1px solid var(--track);position:relative;display:inline-block}
+.sw::after{content:"";position:absolute;width:12px;height:12px;border-radius:6px;top:3px;left:3px;background:var(--text2)}
+.note-card{background:var(--card);border:1px solid var(--cstroke);border-radius:4px;padding:12px;margin-top:8px}
+.note-card .top{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text2)}
+.note-card .top .x{margin-left:auto}
+.note-card .tt{font-weight:600;margin-top:4px}
+.note-card .acts{display:flex;gap:8px;margin-top:8px}
+.appi{width:16px;height:16px;border-radius:4px;display:inline-grid;place-items:center;color:#fff;font:700 10px/1 var(--font)}
+.win{position:absolute;left:120px;top:88px;width:1000px;height:640px;background:var(--win);border-radius:12px 12px 0 0;box-shadow:0 12px 32px rgba(0,0,0,.28);overflow:hidden}
+.win .tb{height:46px;display:flex;align-items:center;padding:0 12px;gap:8px;border-bottom:1px solid var(--stroke)}
+.win .tb .t{font-weight:600;flex:1;text-align:center}
+.win .tb .c{width:24px;height:24px;border-radius:12px;background:var(--subtle2);display:grid;place-items:center;color:var(--text2)}
+.win .side{position:absolute;top:46px;bottom:0;left:0;width:220px;padding:8px}
+.win .side div{height:32px;border-radius:4px;margin:2px 0;background:var(--subtle)}
+.win .main{position:absolute;top:46px;left:236px;right:16px;bottom:0;padding:12px 0}
+.win .main div{height:36px;border-bottom:1px solid var(--stroke);display:flex;align-items:center;gap:12px;color:var(--text2)}
+.win .main div i{width:18px;height:14px;border-radius:2px;background:#e8b33a;display:inline-block}
+.win.ff .tb{background:var(--card-solid)}
+.taskbar{position:absolute;left:0;right:0;bottom:0;height:45px;background:var(--taskbar);border-top:1px solid var(--stroke);display:flex;align-items:center;gap:6px;padding:0 8px;z-index:4}
+.taskbar .tk{width:36px;height:36px;border-radius:6px;display:grid;place-items:center;color:var(--text)}
+.taskbar .tk.on{background:var(--subtle2)}
+.taskbar .zr{width:22px;height:22px;border-radius:5px;background:linear-gradient(135deg,#15a6f0,#0a5fbf)}
+.taskbar .gapt{flex:1}
+.caption{position:absolute;left:24px;bottom:56px;max-width:900px;font-size:12px;line-height:16px;color:#fff;background:rgba(0,0,0,.45);padding:6px 10px;border-radius:4px;z-index:3}
+.legend{max-width:1440px;margin-top:16px;font-size:12px;line-height:16px;color:#fff}
+</style>
+</head>
+<body>
+<div class="screen" style="--w:1440px">
+<div class="bar" role="menubar" aria-label="頂端列"><span class="bi" title="Better OS 選單"><svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><defs><linearGradient id="bo" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#4cc2ff"/><stop offset="1" stop-color="#0063b1"/></linearGradient></defs><path d="M12 2 22 12 12 22 2 12z" fill="url(#bo)"/><path d="M12 7l5 5-5 5-5-5z" fill="#fff" opacity=".9"/></svg></span><span class="bi app menu">Better Files</span><span class="bi menu">檔案</span><span class="bi menu open">編輯</span><span class="bi menu">檢視</span><span class="bi menu">前往</span><span class="bi menu">視窗</span><span class="bi menu">說明</span><span class="gap"></span><span class="bi" title="顯示隱藏的圖示"><svg class="ic" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m18 15-6-6-6 6"/></svg></span><span class="bi" title="Better Monitor"><svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3v18h18"/><path d="M7 15v3M11 11v7M15 7v11M19 13v5"/></svg></span><span class="bi" title="Better Awake"><svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg></span><span class="bi" title="軟體更新"><svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg></span><span class="bi" title="Zorin Connect"><svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="7" y="2" width="10" height="20" rx="2"/><path d="M11 18h2"/></svg></span><span class="bi" title="輸入法：新酷音">酷</span><span class="bi" title="網路：已連線到 HomeNet"><svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><path d="M12 20h.01"/></svg></span><span class="bi" title="音量 45%"><svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 5 6 9H2v6h4l5 4z"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg></span><span class="bi" title="電池 87%，使用電池"><svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="7" width="16" height="10" rx="2"/><path d="M22 11v2"/><rect x="4" y="9" width="10" height="6" rx="1" fill="currentColor" stroke="none"/></svg><span class="pct">87%</span></span><span class="bi" title="日期與時間">11月21日 週六 下午3:42</span><span class="bi bell" title="通知，2 則未讀"><svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg><span class="dot"></span></span></div><div class="win"><div class="tb"><span style="width:56px"></span><span class="t">Better Files</span><span class="c"><svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/></svg></span><span class="c"><svg class="ic" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="1"/></svg></span><span class="c"><svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg></span></div><div class="side"><div></div><div></div><div></div><div></div><div></div><div></div><div></div><div></div></div><div class="main"><div><i></i>文件</div><div><i></i>下載</div><div><i></i>圖片</div><div><i></i>專案</div><div><i></i>音樂</div><div><i></i>影片</div><div><i></i>報告.pdf</div><div><i></i>預算.ods</div></div></div><div class="taskbar" aria-label="Zorin 工作列（時鐘與系統選單在頂端列開啟時隱藏）"><span class="tk"><span class="zr"></span></span><span class="tk"><svg class="ic" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg></span><span class="tk on"><svg class="ic" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></span><span class="tk"><svg class="ic" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 0 0 18"/></svg></span><span class="tk"><svg class="ic" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="6" r="2"/><circle cx="6" cy="18" r="2"/><circle cx="18" cy="9" r="2"/><path d="M6 8v8M18 11c0 4-6 3-10 6"/></svg></span><span class="tk"><svg class="ic" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3v18h18"/><path d="M7 15v3M11 11v7M15 7v11"/></svg></span><span class="gapt"></span><span class="tk" title="顯示桌面"><svg class="ic" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4v16"/></svg></span></div><div class="fly" style="left:150px" role="menu"><div class="mi" role="menuitem"><span class="slot"></span><span class="l">復原</span><span class="k">Ctrl+Z</span></div><div class="mi dis" role="menuitem"><span class="slot"></span><span class="l">重做</span><span class="k">Ctrl+Shift+Z</span></div><div class="sep"></div><div class="mi" role="menuitem"><span class="slot"></span><span class="l">剪下</span><span class="k">Ctrl+X</span></div><div class="mi hl" role="menuitem"><span class="slot"></span><span class="l">複製</span><span class="k">Ctrl+C</span></div><div class="mi dis" role="menuitem"><span class="slot"></span><span class="l">貼上</span><span class="k">Ctrl+V</span></div><div class="mi" role="menuitem"><span class="slot"></span><span class="l">重新命名…</span><span class="k">F2</span></div><div class="mi" role="menuitem"><span class="slot"></span><span class="l">移到垃圾桶</span><span class="k">Delete</span></div><div class="sep"></div><div class="mi" role="menuitem"><span class="slot"></span><span class="l">全選</span><span class="k">Ctrl+A</span></div><div class="mi" role="menuitem"><span class="slot"></span><span class="l">反向選取</span><span class="k">Ctrl+Shift+I</span></div><div class="sep"></div><div class="mi" role="menuitem"><span class="slot"></span><span class="l">尋找</span><span class="k">Ctrl+F</span></div></div>
+</div>
+<p class="legend">設計稿：頂端列在 1440 × 900 邏輯像素的畫面上，縮放 1（擁有者的螢幕是 2880 × 1800、縮放 2，等於 1440 × 900）。控制項外觀依 DESIGN.md 與 better_ui::fluent，文案與行為依 design/top-bar-spec.md。選單內容是示意：實際項目是 Better Files 現有的每個指令，每個只出現在一個選單（規格 5.2）。目前沒有可貼上的東西，所以「貼上」停用。另一個外觀：app-menu-dark.html。</p>
+</body>
+</html>
