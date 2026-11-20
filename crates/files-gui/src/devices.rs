@@ -125,8 +125,11 @@ pub struct DeviceRow {
     pub filesystem: Option<String>,
     /// An image is being written to this device's drive.
     pub erasing: bool,
-    /// What of the running system its drive holds, as the storage service
-    /// worked it out (ticket 171): only `Free` is ejected or formatted.
+    /// What of the running system its drive holds (ticket 171), by this
+    /// window's own reading of `storage_platform::system_use` for the drive
+    /// the service names: the service's reports carry no such field, so a
+    /// released Better Files can still read them. Only `Free` is ejected or
+    /// formatted; a row whose drive the window has not read yet is Unknown.
     pub system_use: storage_platform::SystemUse,
 }
 
@@ -353,11 +356,15 @@ pub trait DeviceLink: Send + Sync {
 pub enum EraseRequest {
     Format {
         object_path: String,
+        /// The device the person confirmed, by its stable identity: a
+        /// different device now at the same object path is refused.
+        identity: String,
         filesystem: storage_platform::FilesystemKind,
         label: String,
     },
     WriteImage {
         object_path: String,
+        identity: String,
         image: PathBuf,
     },
 }
@@ -458,9 +465,25 @@ pub struct DeviceInventory {
     /// the user dismisses them: a warning about data that may not have been
     /// written must not disappear with the row that caused it.
     warnings: HashMap<String, UnsafeRemoval>,
+    /// Which drives hold the running system, from the window's own drive
+    /// scan; unknown until the first one.
+    system: storage_platform::SystemDrives,
 }
 
 impl DeviceInventory {
+    /// Takes a new reading of which drives hold the running system and
+    /// stamps every row with its drive's answer.
+    pub fn set_system(&mut self, system: storage_platform::SystemDrives) {
+        self.system = system;
+        self.stamp();
+    }
+
+    fn stamp(&mut self) {
+        for row in &mut self.rows {
+            row.system_use = self.system.of_drive(row.drive.as_deref());
+        }
+    }
+
     pub fn rows(&self) -> &[DeviceRow] {
         &self.rows
     }
@@ -508,6 +531,7 @@ impl DeviceInventory {
     /// Replaces the rows from a full inventory.
     pub fn apply_inventory(&mut self, reports: Vec<DeviceReport>) {
         self.rows = reports.into_iter().map(row_from).collect();
+        self.stamp();
     }
 
     /// Removes a device and returns the mount point it had, so the caller knows
@@ -576,7 +600,8 @@ pub fn row_from(report: DeviceReport) -> DeviceRow {
         whole_disk: report.whole_disk,
         filesystem: report.filesystem,
         erasing: report.erasing,
-        system_use: report.system_use,
+        // Stamped by the inventory from the window's own reading.
+        system_use: storage_platform::SystemUse::Unknown,
     }
 }
 

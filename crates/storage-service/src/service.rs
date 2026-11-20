@@ -108,6 +108,12 @@ impl<C: DeviceControl + Clone + 'static> StorageService<C> {
         };
         let mut coordinator = self.coordinator.lock().await;
         coordinator
+            .refuse_if_replaced(
+                &DeviceHandle::new(&request.object_path),
+                request.identity.as_deref(),
+            )
+            .map_err(refuse)?;
+        coordinator
             .format(
                 &DeviceHandle::new(&request.object_path),
                 &format,
@@ -131,6 +137,12 @@ impl<C: DeviceControl + Clone + 'static> StorageService<C> {
             .map_err(|error| fdo::Error::InvalidArgs(error.to_string()))?;
         let (write, control) = {
             let mut coordinator = self.coordinator.lock().await;
+            coordinator
+                .refuse_if_replaced(
+                    &DeviceHandle::new(&request.object_path),
+                    request.identity.as_deref(),
+                )
+                .map_err(refuse)?;
             let write = coordinator
                 .begin_image_write(
                     &DeviceHandle::new(&request.object_path),

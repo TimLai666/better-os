@@ -281,6 +281,7 @@ pub enum Withheld {
     RunningSystem,
     SystemFolder,
     Swap,
+    SystemTable,
     Unknown,
 }
 
@@ -293,6 +294,7 @@ impl Withheld {
             U::RunningSystem => Some(Withheld::RunningSystem),
             U::SystemFolder { .. } => Some(Withheld::SystemFolder),
             U::Swap => Some(Withheld::Swap),
+            U::SystemTable => Some(Withheld::SystemTable),
             U::Unknown => Some(Withheld::Unknown),
         }
     }
@@ -303,6 +305,7 @@ impl Withheld {
             Withheld::RunningSystem => c.errors.system_running,
             Withheld::SystemFolder => c.errors.system_folder,
             Withheld::Swap => c.errors.system_swap,
+            Withheld::SystemTable => c.errors.system_table,
             Withheld::Unknown => c.errors.system_unknown,
         }
     }

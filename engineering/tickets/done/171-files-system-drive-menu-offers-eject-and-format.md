@@ -51,3 +51,26 @@ Eject and Format.
   `tests/context_menu.rs` and `integration_tests.rs`, not drawn.
 - Known limits, in the spec: a system path on ZFS or bcachefs makes every
   drive unknown; a swap file is not traced.
+- 2026-11-21, review fixes (items 1 to 6): the storage service's reports
+  carry no new field (a released Better Files reads them strictly; reports a
+  client reads are no longer `deny_unknown_fields` from now on, and
+  `crates/storage-service/tests/released_client.rs` reads the replies with
+  v0.2.16's own copied types); Better Files judges the service's rows by its
+  own scan of the same rule, by drive object. The rule is the right way
+  round (`is_person_media`): anything mounted outside `/media`, `/run/media`
+  or `/mnt/better-os`, a foreign fstab line (`storage.system.table`), swap
+  partitions and swap files, loop devices through their backing file, ZFS
+  pools by `zfs_member` label, bcachefs members, and sources found by device
+  number (`/dev/root`). Better Manager's Drives section reads the same rule
+  and mounts or unmounts only after the daemon made the change. Format and
+  Write to Drive carry the identity confirmed: the dialog closes when its
+  device goes or is replaced, the session compares again, and the service
+  refuses `storage.erase.device_changed` (a service older than the field is
+  asked again without it). Tests for each; the running host's own tables
+  read every held mount (`--ignored` test, run once).
+- Checks after the review round, on the final tree: `cargo fmt --all
+  --check`, `cargo +stable clippy -D warnings --all-targets` and `cargo test
+  --no-fail-fast` for every crate changed and those depending on them (1840
+  passed, 0 failed). The sandbox screenshots of the first round stand: the
+  fixture listing's menus go through `drive_row_kind`, which this round did
+  not change.

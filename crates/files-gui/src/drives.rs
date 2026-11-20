@@ -928,7 +928,7 @@ impl DriveSources {
         // The kernel's record of what the running system uses; nothing in
         // tests, where the private bus's drives are all there is.
         let system: SystemSourcesRead = if testing {
-            Arc::new(|| Some(SystemSources::default()))
+            Arc::new(|| Some(SystemSources::every_mount_personal()))
         } else {
             Arc::new(|| SystemSources::read(&storage_platform::Roots::system()))
         };
@@ -1006,6 +1006,13 @@ impl DriveSources {
 
     /// Reads every drive and how full each is. Runs on the scanner's thread.
     pub fn scan(&self) -> Vec<Drive> {
+        self.scan_with_system().0
+    }
+
+    /// [`Self::scan`], with which UDisks2 drives hold the running system
+    /// (ticket 171): what the storage service's device rows are stamped
+    /// with, by drive object.
+    pub fn scan_with_system(&self) -> (Vec<Drive>, SystemDrives) {
         if let Some(fixture) = &self.fixture {
             let mut drives = fixture();
             let files = (self.system_files)();
@@ -1017,7 +1024,7 @@ impl DriveSources {
                     auto.failure = Some(failure);
                 }
             }
-            return drives;
+            return (drives, SystemDrives::unknown());
         }
         let devices = (self.devices)();
         let mounts = (self.mounts)();
@@ -1027,12 +1034,14 @@ impl DriveSources {
             .find(|mount| mount.mount_point == Path::new("/"))
             .map(|mount| mount.source.clone());
         let sources = (self.system)();
+        let system = devices
+            .as_deref()
+            .map_or_else(SystemDrives::unknown, |devices| {
+                SystemDrives::find(devices, sources.as_ref())
+            });
         let mut drives = devices
             .as_deref()
-            .map(|devices| {
-                let system = SystemDrives::find(devices, sources.as_ref());
-                drives_with_system(devices, root_source.as_deref(), &system)
-            })
+            .map(|devices| drives_with_system(devices, root_source.as_deref(), &system))
             .unwrap_or_default();
         // No UDisks2 block is `/` (ZFS, an overlay live session, composefs):
         // the system drive comes from the mount table.
@@ -1074,7 +1083,7 @@ impl DriveSources {
             }
         }
         sort_drives(&mut drives);
-        drives
+        (drives, system)
     }
 }
 
@@ -1131,10 +1140,13 @@ fn gvfs_children() -> Vec<PathBuf> {
     receiver.recv_timeout(CAPACITY_TIMEOUT).unwrap_or_default()
 }
 
+/// One scan: the drives, and which UDisks2 drives hold the running system.
+pub type Scanned = (Vec<Drive>, SystemDrives);
+
 /// Reads the drives on a thread of its own, when asked and whenever UDisks2
 /// says something changed; the window takes the newest list each frame.
 pub struct DriveScanner {
-    latest: Arc<Mutex<Option<Vec<Drive>>>>,
+    latest: Arc<Mutex<Option<Scanned>>>,
     generation: Arc<AtomicU64>,
     requests: Sender<()>,
     /// Set when the window lets go of the scanner, so its thread ends even
@@ -1148,7 +1160,7 @@ const SETTLE: Duration = Duration::from_millis(150);
 
 impl DriveScanner {
     pub fn start(sources: DriveSources) -> Self {
-        let latest: Arc<Mutex<Option<Vec<Drive>>>> = Arc::default();
+        let latest: Arc<Mutex<Option<Scanned>>> = Arc::default();
         let generation = Arc::new(AtomicU64::new(0));
         let closed = Arc::new(AtomicBool::new(false));
         let (requests, inbox): (Sender<()>, Receiver<()>) = channel();
@@ -1180,9 +1192,9 @@ impl DriveScanner {
                         std::thread::sleep(SETTLE);
                         // Requests made meanwhile are this one scan.
                         while inbox.try_recv().is_ok() {}
-                        let drives = sources.scan();
+                        let scanned = sources.scan_with_system();
                         if let Ok(mut latest) = latest.lock() {
-                            *latest = Some(drives);
+                            *latest = Some(scanned);
                         }
                         generation.fetch_add(1, Ordering::Release);
                     }
@@ -1208,8 +1220,9 @@ impl DriveScanner {
         self.generation.load(Ordering::Acquire)
     }
 
-    /// The newest list, once one has been read.
-    pub fn take(&self) -> Option<Vec<Drive>> {
+    /// The newest list, once one has been read, with which drives hold the
+    /// running system.
+    pub fn take(&self) -> Option<Scanned> {
         self.latest.lock().ok().and_then(|mut latest| latest.take())
     }
 }

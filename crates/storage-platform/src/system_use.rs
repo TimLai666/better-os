@@ -1,22 +1,28 @@
 //! Whether a drive holds something the running system is using (ticket 171).
 //!
 //! UDisks2 marks the drive the system runs from with `HintSystem` only when
-//! it is internal. A system installed on a USB drive, a live USB, or `/home`
-//! on an external disk is a hot-pluggable removable drive like any stick, and
-//! nothing in UDisks2's answer says otherwise. Ejecting or formatting it
-//! takes the running system down with it.
+//! it is internal. A system installed on a USB drive, a live USB, `/home` or
+//! swap on an external disk is a hot-pluggable removable drive like any
+//! stick, and nothing in UDisks2's answer says otherwise. Ejecting or
+//! formatting it takes the running system, or a part of it, down with it.
 //!
-//! So the answer is worked out here, once, from the kernel's own record of
-//! what is mounted where and which swap is in use, matched against UDisks2's
-//! devices: Better Files' menu, the storage service, and `manager-daemon`
-//! all ask [`SystemDrives`], so a drive is never safe to one of them and the
-//! running system to another.
+//! So the answer is worked out here, once, and Better Files' menu, the
+//! storage service, and `manager-daemon` all ask [`SystemDrives`], so a drive
+//! is never safe to one of them and in use to another.
+//!
+//! **The rule is the right way round.** A drive is the person's only when
+//! everything of it that is mounted is mounted where removable media is
+//! mounted for a person ([`is_person_media`]: `/media/…`, `/run/media/…`,
+//! Better OS's own `/mnt/better-os/…`). A drive is held when any volume on
+//! it, or under an unlocked container, logical volume or loop file on it, is
+//! mounted anywhere else (`/`, `/home`, `/srv`, `/var/lib/docker`, a
+//! booted ISO's `/isodevice`…), holds swap in use (a partition or a swap
+//! file), or is named by an `/etc/fstab` line outside Better OS's own block.
 //!
 //! **Unknown is never Free.** A drive is [`SystemUse::Free`] only when the
-//! mount table could be read, every system mount and swap on a block device
-//! was traced to a drive, and this drive is not one of them. Anything short
-//! of that is [`SystemUse::Unknown`], and Unknown is treated as held: nothing
-//! is ejected or formatted on a guess.
+//! mount table could be read, every held mount and swap was traced to a
+//! drive, and this drive is not one of them. Anything short of that is
+//! [`SystemUse::Unknown`], and Unknown is treated as held.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -26,29 +32,23 @@ use serde::{Deserialize, Serialize};
 use crate::model::PlatformDevice;
 use crate::roots::Roots;
 
-/// Mount points the running system cannot lose: its root, its boot and
-/// firmware partitions, the people's home folders and the system's own
-/// trees, and a live session's medium (Ubuntu's `/cdrom`, Debian live's,
-/// dracut's and Arch's), whose squashfs the whole session runs from.
-pub const SYSTEM_PATHS: &[&str] = &[
-    "/",
-    "/boot",
-    "/boot/efi",
-    "/efi",
-    "/home",
-    "/usr",
-    "/var",
-    "/cdrom",
-    "/run/live/medium",
-    "/lib/live/mount/medium",
-    "/run/initramfs/live",
-    "/run/archiso/bootmnt",
-];
+/// The line Better OS's block in `/etc/fstab` starts with (ADR 0032). The
+/// block's lines are Better OS's own mounts under [`MOUNT_BASE`], not the
+/// system's; `drive-mounts` writes it and reads these two constants.
+pub const FSTAB_BEGIN: &str =
+    "# >>> Better OS drive mounting (written by Better Manager; do not edit inside this block)";
+/// The line Better OS's block ends with.
+pub const FSTAB_END: &str = "# <<< Better OS drive mounting";
+/// Where Better OS mounts the internal drives it was asked to (ADR 0032).
+pub const MOUNT_BASE: &str = "/mnt/better-os";
 
-/// Whether a mount point is one of [`SYSTEM_PATHS`] exactly. `/home/me/usb`
-/// is not: a stick mounted under a home folder is the person's.
-pub fn is_system_path(point: &Path) -> bool {
-    SYSTEM_PATHS.iter().any(|path| point == Path::new(path))
+/// Where removable media is mounted for a person: UDisks2's `/media/<user>/`
+/// and `/run/media/<user>/` (and anything below `/media`), and Better OS's
+/// own mount root. Anything mounted elsewhere is the system's.
+pub fn is_person_media(point: &Path) -> bool {
+    ["/media", "/run/media", MOUNT_BASE]
+        .iter()
+        .any(|root| point.starts_with(root) && point != Path::new(root))
 }
 
 /// What, if anything, of the running system a drive holds.
@@ -59,11 +59,13 @@ pub enum SystemUse {
     Free,
     /// The running system's root (`/`) is on it.
     RunningSystem,
-    /// Another mounted system path is on it (`/home`, `/boot/efi`, a live
-    /// session's medium).
+    /// Something of it is mounted outside a person's media folders (`/home`,
+    /// `/boot/efi`, `/srv`, a live session's medium).
     SystemFolder { path: PathBuf },
     /// Swap the system is using is on it.
     Swap,
+    /// A line in `/etc/fstab` that Better OS did not write names it.
+    SystemTable,
     /// It could not be told: treated as held.
     #[default]
     Unknown,
@@ -84,6 +86,7 @@ impl SystemUse {
             SystemUse::RunningSystem => Some("storage.system.running_system"),
             SystemUse::SystemFolder { .. } => Some("storage.system.folder"),
             SystemUse::Swap => Some("storage.system.swap"),
+            SystemUse::SystemTable => Some("storage.system.table"),
             SystemUse::Unknown => Some("storage.system.unknown"),
         }
     }
@@ -93,6 +96,7 @@ impl SystemUse {
         match code {
             "storage.system.running_system" => Some(SystemUse::RunningSystem),
             "storage.system.swap" => Some(SystemUse::Swap),
+            "storage.system.table" => Some(SystemUse::SystemTable),
             "storage.system.unknown" => Some(SystemUse::Unknown),
             _ => code
                 .strip_prefix("storage.system.folder")
@@ -114,9 +118,10 @@ impl SystemUse {
     /// How strongly it holds a drive, for keeping the strongest of several.
     fn rank(&self) -> u8 {
         match self {
-            SystemUse::RunningSystem => 4,
-            SystemUse::SystemFolder { .. } => 3,
-            SystemUse::Swap => 2,
+            SystemUse::RunningSystem => 5,
+            SystemUse::SystemFolder { .. } => 4,
+            SystemUse::Swap => 3,
+            SystemUse::SystemTable => 2,
             SystemUse::Unknown => 1,
             SystemUse::Free => 0,
         }
@@ -132,31 +137,49 @@ impl SystemUse {
     }
 }
 
-/// One thing the running system uses that lives on a block device: a system
-/// mount or an active swap partition, with every node it goes by.
-#[derive(Clone, Debug, Eq, PartialEq)]
+/// One thing the running system uses that lives on block devices: a mount
+/// outside a person's media folders, or a swap in use, with every way it is
+/// named.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct SystemSource {
     pub held: SystemUse,
-    /// The node the kernel names (`/dev/mapper/vg-root`), the node it
-    /// resolves to (`/dev/dm-0`), and every node it is built on, down to the
-    /// partitions (`/dev/sda3`).
+    /// Device nodes: what the kernel names (`/dev/mapper/vg-root`), what that
+    /// resolves to (`/dev/dm-0`), and every node under it, down to the
+    /// partitions (`/dev/sda3`), a loop file's own device included.
     pub nodes: Vec<String>,
+    /// A ZFS pool: its members are the devices UDisks2 reports as
+    /// `zfs_member` with the pool's name as their label.
+    pub zfs_pool: Option<String>,
 }
 
-/// What the kernel says the running system uses, read from `/proc` and
-/// `/sys`.
+impl SystemSource {
+    /// A source named by one device node.
+    pub fn node(held: SystemUse, node: impl Into<String>) -> Self {
+        Self {
+            held,
+            nodes: vec![node.into()],
+            zfs_pool: None,
+        }
+    }
+}
+
+/// What the kernel and the system's mount table say the running system uses,
+/// read from `/proc`, `/sys` and `/etc/fstab`.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct SystemSources {
     pub sources: Vec<SystemSource>,
+    /// The device each `/etc/fstab` line outside Better OS's block names
+    /// (`UUID=…`, `LABEL=…`, `PARTUUID=…`, `/dev/…`).
+    pub fstab: Vec<String>,
+    /// Where removable media is mounted for a person, when not the
+    /// standard places ([`is_person_media`]); empty means those. A test
+    /// whose fake UDisks2 mounts under a temporary directory says so here.
+    pub media_roots: Vec<PathBuf>,
 }
 
-/// Filesystems on block devices the mount table does not name.
-const UNTRACEABLE_FILESYSTEMS: &[&str] = &["zfs", "bcachefs"];
-
-/// Block devices that are no drive: memory, compressed swap, loop files (a
-/// live medium's own mount names the drive under its loop).
-fn is_virtual_node(node: &str) -> bool {
-    ["/dev/zram", "/dev/ram", "/dev/loop"]
+/// Block devices that are no drive: memory and compressed swap.
+fn is_memory_node(node: &str) -> bool {
+    ["/dev/zram", "/dev/ram"]
         .iter()
         .any(|prefix| node.starts_with(prefix))
 }
@@ -182,108 +205,393 @@ fn unescape(field: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-impl SystemSources {
-    /// The system mounts and swap partitions in `/proc/self/mounts` and
-    /// `/proc/swaps` text, each with its own node only. Mounts that are no
-    /// block device (an overlay `/`, `tmpfs`, ZFS datasets) are left out:
-    /// nothing a drive's eject could take away is named by them.
-    pub fn parse(mounts: &str, swaps: &str) -> Self {
-        let mut sources = Vec::new();
-        for line in mounts.lines() {
-            let mut fields = line.split_whitespace();
-            let (Some(source), Some(point)) = (fields.next(), fields.next()) else {
-                continue;
-            };
-            let filesystem = fields.next().unwrap_or_default();
-            let (source, point) = (unescape(source), PathBuf::from(unescape(point)));
-            if !is_system_path(&point) {
-                continue;
-            }
-            let held = if point == Path::new("/") {
-                SystemUse::RunningSystem
-            } else {
-                SystemUse::SystemFolder { path: point }
-            };
-            // A ZFS dataset lives on a pool whose drives the mount table
-            // does not name: kept with no node, so it is never traced and
-            // every drive it could be on stays unknown.
-            if UNTRACEABLE_FILESYSTEMS.contains(&filesystem) {
-                sources.push(SystemSource {
-                    held,
-                    nodes: Vec::new(),
-                });
-                continue;
-            }
-            if !source.starts_with("/dev/") || is_virtual_node(&source) {
-                continue;
-            }
-            sources.push(SystemSource {
-                held,
-                nodes: vec![source],
-            });
-        }
-        // `Filename Type Size Used Priority`, after a header line. A swap
-        // file lives on a filesystem that is mounted, and an eject of its
-        // drive is refused as busy by the kernel; only partitions name a
-        // drive here.
-        for line in swaps.lines().skip(1) {
-            let mut fields = line.split_whitespace();
-            let (Some(name), Some(kind)) = (fields.next(), fields.next()) else {
-                continue;
-            };
-            let name = unescape(name);
-            if kind != "partition" || is_virtual_node(&name) {
-                continue;
-            }
-            sources.push(SystemSource {
-                held: SystemUse::Swap,
-                nodes: vec![name],
-            });
-        }
-        Self { sources }
-    }
+/// One mount, as either mount table spells it.
+struct Mount {
+    source: String,
+    point: PathBuf,
+    filesystem: String,
+    /// `major:minor` from `/proc/self/mountinfo`; `None` from `/proc/mounts`.
+    device: Option<(u32, u32)>,
+}
 
-    /// Reads the running system's mounts and swap under `roots`, and follows
-    /// each node through `/dev`'s links and `/sys/class/block/*/slaves` to
-    /// the partitions it is built on (LVM, LUKS, RAID). `None` when the mount
-    /// table cannot be read: then nothing about any drive is known.
-    pub fn read(roots: &Roots) -> Option<Self> {
-        let mounts = std::fs::read_to_string(roots.proc.join("self/mounts"))
-            .or_else(|_| std::fs::read_to_string(roots.proc.join("mounts")))
-            .ok()?;
-        // No swap file is no swap.
-        let swaps = std::fs::read_to_string(roots.proc.join("swaps")).unwrap_or_default();
-        let mut found = Self::parse(&mounts, &swaps);
-        for source in &mut found.sources {
-            let mut nodes = Vec::new();
-            for node in &source.nodes {
-                underlying(roots, node, &mut nodes, 0);
-            }
-            source.nodes = nodes;
+/// A swap in use.
+struct SwapEntry {
+    name: String,
+    partition: bool,
+}
+
+fn parse_mounts(text: &str) -> Vec<Mount> {
+    text.lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let (source, point, filesystem) = (fields.next()?, fields.next()?, fields.next()?);
+            Some(Mount {
+                source: unescape(source),
+                point: PathBuf::from(unescape(point)),
+                filesystem: filesystem.to_string(),
+                device: None,
+            })
+        })
+        .collect()
+}
+
+/// `/proc/self/mountinfo`: `id parent major:minor root point options
+/// [optional…] - type source super-options`.
+fn parse_mountinfo(text: &str) -> Vec<Mount> {
+    text.lines()
+        .filter_map(|line| {
+            let (before, after) = line.split_once(" - ")?;
+            let fields: Vec<&str> = before.split_whitespace().collect();
+            let (major, minor) = fields.get(2)?.split_once(':')?;
+            let point = fields.get(4)?;
+            let mut rest = after.split_whitespace();
+            let (filesystem, source) = (rest.next()?, rest.next()?);
+            Some(Mount {
+                source: unescape(source),
+                point: PathBuf::from(unescape(point)),
+                filesystem: filesystem.to_string(),
+                device: Some((major.parse().ok()?, minor.parse().ok()?)),
+            })
+        })
+        .collect()
+}
+
+fn parse_swaps(text: &str) -> Vec<SwapEntry> {
+    // `Filename Type Size Used Priority`, after a header line.
+    text.lines()
+        .skip(1)
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let (name, kind) = (fields.next()?, fields.next()?);
+            let name = unescape(name);
+            (!is_memory_node(&name)).then_some(SwapEntry {
+                name,
+                partition: kind == "partition",
+            })
+        })
+        .collect()
+}
+
+/// The device each fstab line outside Better OS's block names. Lines for
+/// filesystems on no device (`proc`, `tmpfs`, `none`) name nothing.
+pub fn parse_fstab(text: &str) -> Vec<String> {
+    let mut inside = false;
+    let mut specs = Vec::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed == FSTAB_BEGIN {
+            inside = true;
+            continue;
         }
-        Some(found)
+        if trimmed == FSTAB_END {
+            inside = false;
+            continue;
+        }
+        if inside || trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let Some(spec) = trimmed.split_whitespace().next() else {
+            continue;
+        };
+        let spec = unescape(spec);
+        let names_device = spec.starts_with("/dev/")
+            || ["UUID=", "LABEL=", "PARTUUID=", "PARTLABEL="]
+                .iter()
+                .any(|prefix| spec.starts_with(prefix));
+        if names_device {
+            specs.push(spec);
+        }
+    }
+    specs
+}
+
+/// Whether an fstab line's device field names `device`.
+fn fstab_names(spec: &str, device: &PlatformDevice) -> bool {
+    let same = |value: Option<&String>, wanted: &str| {
+        value.is_some_and(|value| value.eq_ignore_ascii_case(wanted))
+    };
+    if let Some(uuid) = spec.strip_prefix("UUID=") {
+        same(device.block.id_uuid.as_ref(), uuid)
+    } else if let Some(label) = spec.strip_prefix("LABEL=") {
+        device.block.id_label.as_deref() == Some(label)
+    } else if let Some(partuuid) = spec.strip_prefix("PARTUUID=") {
+        same(device.block.partition_uuid.as_ref(), partuuid)
+    } else if let Some(label) = spec.strip_prefix("PARTLABEL=") {
+        device
+            .block
+            .symlinks
+            .iter()
+            .any(|link| link == &format!("/dev/disk/by-partlabel/{label}"))
+    } else {
+        names_node(spec, device)
     }
 }
 
-/// `node`, the node its link resolves to, and every node under it, in that
-/// order and without repeats.
-fn underlying(roots: &Roots, node: &str, into: &mut Vec<String>, depth: usize) {
+impl SystemSources {
+    /// No mount, no swap, no fstab line, and every mount point a person's:
+    /// for a fake UDisks2 on a private bus whose volumes are mounted under a
+    /// temporary directory. Never what a machine is read as.
+    pub fn every_mount_personal() -> Self {
+        Self {
+            media_roots: vec![PathBuf::from("/")],
+            ..Self::default()
+        }
+    }
+
+    fn is_personal(&self, point: &Path) -> bool {
+        if self.media_roots.is_empty() {
+            is_person_media(point)
+        } else {
+            self.media_roots
+                .iter()
+                .any(|root| point.starts_with(root) && point != root.as_path())
+        }
+    }
+
+    /// What `/proc/self/mounts` (or `mountinfo`), `/proc/swaps` and
+    /// `/etc/fstab` text say, each source with its own node only: no link is
+    /// followed and no file is read.
+    pub fn parse(mounts: &str, swaps: &str) -> Self {
+        let mounts = if mounts.contains(" - ") {
+            parse_mountinfo(mounts)
+        } else {
+            parse_mounts(mounts)
+        };
+        Self::from_tables(&mounts, &parse_swaps(swaps), Vec::new(), |_, _, _| {
+            Vec::new()
+        })
+    }
+
+    /// The same, with an fstab.
+    pub fn parse_with_fstab(mounts: &str, swaps: &str, fstab: &str) -> Self {
+        let mut found = Self::parse(mounts, swaps);
+        found.fstab = parse_fstab(fstab);
+        found
+    }
+
+    /// Builds the sources; `trace(node, device number, file)` adds what a
+    /// node, a mount's device number or a file's device resolves to.
+    fn from_tables(
+        mounts: &[Mount],
+        swaps: &[SwapEntry],
+        fstab: Vec<String>,
+        trace: impl Fn(Option<&str>, Option<(u32, u32)>, Option<&Path>) -> Vec<String>,
+    ) -> Self {
+        let mut sources = Vec::new();
+        for mount in mounts {
+            if is_person_media(&mount.point) {
+                continue;
+            }
+            let held = if mount.point == Path::new("/") {
+                SystemUse::RunningSystem
+            } else {
+                SystemUse::SystemFolder {
+                    path: mount.point.clone(),
+                }
+            };
+            let block_number = mount.device.filter(|(major, _)| *major != 0);
+            let mut source = SystemSource {
+                held,
+                ..SystemSource::default()
+            };
+            match mount.filesystem.as_str() {
+                // `rpool/ROOT/ubuntu`: the pool is the first segment.
+                "zfs" => {
+                    source.zfs_pool = mount.source.split('/').next().map(str::to_string);
+                }
+                // `/dev/sda1:/dev/sdb1`: every member.
+                "bcachefs" => {
+                    for member in mount.source.split(':').filter(|m| m.starts_with("/dev/")) {
+                        source.nodes.extend(trace(Some(member), None, None));
+                        source.nodes.push(member.to_string());
+                    }
+                }
+                _ if mount.source.starts_with("/dev/") => {
+                    if is_memory_node(&mount.source) {
+                        continue;
+                    }
+                    source.nodes.push(mount.source.clone());
+                    source
+                        .nodes
+                        .extend(trace(Some(&mount.source), block_number, None));
+                }
+                // No device path but a real block device number (`/dev/root`
+                // spelled another way, a filesystem that names its source
+                // freely): resolved through the number.
+                _ if block_number.is_some() => {
+                    let traced = trace(None, block_number, None);
+                    if traced.is_empty() {
+                        // Cannot be told which drive: kept untraced.
+                        source.nodes.push(format!("untraced:{}", mount.source));
+                    }
+                    source.nodes.extend(traced);
+                }
+                // tmpfs, proc, overlay, FUSE: on no drive.
+                _ => continue,
+            }
+            dedup(&mut source.nodes);
+            sources.push(source);
+        }
+        for swap in swaps {
+            let mut source = SystemSource {
+                held: SystemUse::Swap,
+                ..SystemSource::default()
+            };
+            if swap.partition {
+                source.nodes.push(swap.name.clone());
+                source.nodes.extend(trace(Some(&swap.name), None, None));
+            } else {
+                // A swap file: the drive of the filesystem it is on.
+                source
+                    .nodes
+                    .extend(trace(None, None, Some(Path::new(&swap.name))));
+            }
+            dedup(&mut source.nodes);
+            sources.push(source);
+        }
+        Self {
+            sources,
+            fstab,
+            media_roots: Vec::new(),
+        }
+    }
+
+    /// Reads the running system's mounts (`/proc/self/mountinfo`), swap and
+    /// fstab under `roots` (`/etc/fstab` beside `roots.proc`), and follows
+    /// each node through `/dev`'s links, `/sys/class/block/*/slaves` (LVM,
+    /// LUKS, RAID), a loop device's backing file, and a mount's device
+    /// number to the partitions it is on. `None` when the mount table cannot
+    /// be read: then nothing about any drive is known.
+    pub fn read(roots: &Roots) -> Option<Self> {
+        let mounts = match std::fs::read_to_string(roots.proc.join("self/mountinfo")) {
+            Ok(text) => parse_mountinfo(&text),
+            Err(_) => parse_mounts(
+                &std::fs::read_to_string(roots.proc.join("self/mounts"))
+                    .or_else(|_| std::fs::read_to_string(roots.proc.join("mounts")))
+                    .ok()?,
+            ),
+        };
+        // No swap file is no swap.
+        let swaps =
+            parse_swaps(&std::fs::read_to_string(roots.proc.join("swaps")).unwrap_or_default());
+        let etc = roots
+            .proc
+            .parent()
+            .map_or_else(|| PathBuf::from("/etc"), |root| root.join("etc"));
+        let fstab = std::fs::read_to_string(etc.join("fstab"))
+            .map(|text| parse_fstab(&text))
+            .unwrap_or_default();
+        let numbers: Vec<((u32, u32), String)> = mounts
+            .iter()
+            .filter(|mount| mount.source.starts_with("/dev/"))
+            .filter_map(|mount| Some((mount.device?, mount.source.clone())))
+            .collect();
+        let trace = |node: Option<&str>, number: Option<(u32, u32)>, file: Option<&Path>| {
+            let mut found = Vec::new();
+            if let Some(node) = node {
+                underlying(roots, &numbers, node, &mut found, 0);
+            }
+            if let Some(number) = number
+                && let Some(node) = node_of_number(roots, &numbers, number)
+            {
+                underlying(roots, &numbers, &node, &mut found, 0);
+            }
+            if let Some(file) = file
+                && let Some(number) = device_of_file(file)
+                && let Some(node) = node_of_number(roots, &numbers, number)
+            {
+                underlying(roots, &numbers, &node, &mut found, 0);
+            }
+            found
+        };
+        Some(Self::from_tables(&mounts, &swaps, fstab, trace))
+    }
+}
+
+fn dedup(nodes: &mut Vec<String>) {
+    let mut seen = Vec::new();
+    nodes.retain(|node| {
+        if seen.contains(node) {
+            false
+        } else {
+            seen.push(node.clone());
+            true
+        }
+    });
+}
+
+/// The device a file is on, as `major:minor`.
+fn device_of_file(file: &Path) -> Option<(u32, u32)> {
+    use std::os::unix::fs::MetadataExt as _;
+    let device = std::fs::metadata(file).ok()?.dev();
+    Some((libc::major(device), libc::minor(device)))
+}
+
+/// The node a device number names: the block device `/sys/dev/block` lists,
+/// or, for a filesystem's anonymous number (btrfs, `0:…`), the device the
+/// mount with that number came from.
+fn node_of_number(
+    roots: &Roots,
+    numbers: &[((u32, u32), String)],
+    number: (u32, u32),
+) -> Option<String> {
+    if number.0 == 0 {
+        return numbers
+            .iter()
+            .find(|(known, _)| *known == number)
+            .map(|(_, source)| source.clone());
+    }
+    let link = std::fs::read_link(
+        roots
+            .sys
+            .join("dev/block")
+            .join(format!("{}:{}", number.0, number.1)),
+    )
+    .ok()?;
+    let name = link.file_name()?.to_string_lossy().into_owned();
+    Some(format!("/dev/{name}"))
+}
+
+/// `node`, the node its link resolves to, every node under it (device
+/// mapper and RAID slaves), and for a loop device the device its backing
+/// file is on, in that order and without repeats.
+fn underlying(
+    roots: &Roots,
+    numbers: &[((u32, u32), String)],
+    node: &str,
+    into: &mut Vec<String>,
+    depth: usize,
+) {
     if depth > 8 || into.iter().any(|known| known == node) {
         return;
     }
     into.push(node.to_string());
     let real = std::fs::canonicalize(node)
         .ok()
-        .map(|path| path.to_string_lossy().into_owned());
-    let real = real.unwrap_or_else(|| node.to_string());
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_else(|| node.to_string());
     if real != node && !into.contains(&real) {
         into.push(real.clone());
     }
-    let Some(name) = Path::new(&real).file_name() else {
+    let Some(name) = Path::new(&real)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+    else {
         return;
     };
-    let slaves = roots.sys.join("class/block").join(name).join("slaves");
-    let Ok(entries) = std::fs::read_dir(slaves) else {
+    let block = roots.sys.join("class/block").join(&name);
+    // A loop device: the drive its file is on (a booted ISO's stick, a
+    // snap's root). Not traceable when the file is gone: the loop then
+    // stays a node no drive answers to, and the drives are unknown.
+    if let Ok(backing) = std::fs::read_to_string(block.join("loop/backing_file")) {
+        let backing = backing.trim().trim_end_matches(" (deleted)");
+        if let Some(number) = device_of_file(Path::new(backing))
+            && let Some(node) = node_of_number(roots, numbers, number)
+        {
+            underlying(roots, numbers, &node, into, depth + 1);
+        }
+    }
+    let Ok(entries) = std::fs::read_dir(block.join("slaves")) else {
         return;
     };
     let mut names: Vec<String> = entries
@@ -292,7 +600,7 @@ fn underlying(roots: &Roots, node: &str, into: &mut Vec<String>, depth: usize) {
         .collect();
     names.sort();
     for name in names {
-        underlying(roots, &format!("/dev/{name}"), into, depth + 1);
+        underlying(roots, numbers, &format!("/dev/{name}"), into, depth + 1);
     }
 }
 
@@ -332,7 +640,7 @@ pub fn drive_object_of<'a>(
 pub struct SystemDrives {
     /// Drive object → what it holds.
     held: BTreeMap<String, SystemUse>,
-    /// The mount table was read and every system source was traced to a
+    /// The mount table was read and every held source was traced to a
     /// drive: a drive not in `held` is free.
     complete: bool,
 }
@@ -344,8 +652,8 @@ impl SystemDrives {
     }
 
     /// Works out which of `devices`' drives hold what `sources` names, and
-    /// what UDisks2 itself reports mounted at a system path. `None` sources
-    /// (the mount table could not be read) know nothing.
+    /// what UDisks2 itself reports mounted outside a person's media folders.
+    /// `None` sources (the mount table could not be read) know nothing.
     pub fn find(devices: &[PlatformDevice], sources: Option<&SystemSources>) -> Self {
         let Some(sources) = sources else {
             return Self::unknown();
@@ -356,23 +664,26 @@ impl SystemDrives {
         };
         for source in &sources.sources {
             let mut traced = false;
-            for device in devices
-                .iter()
-                .filter(|device| source.nodes.iter().any(|node| names_node(node, device)))
-            {
+            for device in devices.iter().filter(|device| {
+                source.nodes.iter().any(|node| names_node(node, device))
+                    || source.zfs_pool.as_deref().is_some_and(|pool| {
+                        device.block.id_type.as_deref() == Some("zfs_member")
+                            && device.block.id_label.as_deref() == Some(pool)
+                    })
+            }) {
                 traced |= found.hold(device, devices, source.held.clone());
             }
             if !traced {
                 found.complete = false;
             }
         }
-        // UDisks2's own list of where each volume is mounted, for a system
-        // mount the kernel names in a way no link matches.
+        // UDisks2's own list of where each volume is mounted, for a mount the
+        // kernel names in a way no link matches.
         for device in devices {
             if let Some(point) = device
                 .mount_points()
                 .into_iter()
-                .find(|point| is_system_path(point))
+                .find(|point| !sources.is_personal(point))
             {
                 let held = if point == Path::new("/") {
                     SystemUse::RunningSystem
@@ -380,6 +691,12 @@ impl SystemDrives {
                     SystemUse::SystemFolder { path: point }
                 };
                 found.hold(device, devices, held);
+            }
+        }
+        // The administrator's own mount table.
+        for spec in &sources.fstab {
+            for device in devices.iter().filter(|device| fstab_names(spec, device)) {
+                found.hold(device, devices, SystemUse::SystemTable);
             }
         }
         // A btrfs filesystem across several devices is held on all of them.
@@ -469,59 +786,56 @@ mod tests {
         }
     }
 
-    const MOUNTS: &str = "\
-/dev/sdb2 / ext4 rw,relatime 0 0
-proc /proc proc rw 0 0
-/dev/sdb1 /boot/efi vfat rw 0 0
-/dev/nvme0n1p3 /home ext4 rw 0 0
-/dev/sdc1 /media/me/STICK vfat rw 0 0
-/dev/loop3 /snap/core/1 squashfs ro 0 0
-tmpfs /run tmpfs rw 0 0
-";
-    const SWAPS: &str = "\
-Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority
-/dev/sdd2                               partition\t8388604\t\t0\t\t-2
-/swap.img                               file\t\t2097148\t\t0\t\t-3
-/dev/zram0                              partition\t4096\t\t0\t\t100
-";
-
-    #[test]
-    fn the_mount_table_names_the_system_paths_and_swap_partitions_only() {
-        let sources = SystemSources::parse(MOUNTS, SWAPS);
-        let held: Vec<(&SystemUse, &str)> = sources
-            .sources
-            .iter()
-            .map(|source| (&source.held, source.nodes[0].as_str()))
-            .collect();
-        assert_eq!(
-            held,
-            [
-                (&SystemUse::RunningSystem, "/dev/sdb2"),
-                (
-                    &SystemUse::SystemFolder {
-                        path: "/boot/efi".into()
-                    },
-                    "/dev/sdb1"
-                ),
-                (
-                    &SystemUse::SystemFolder {
-                        path: "/home".into()
-                    },
-                    "/dev/nvme0n1p3"
-                ),
-                (&SystemUse::Swap, "/dev/sdd2"),
-            ]
-        );
+    fn of(sources: &SystemSources, devices: &[PlatformDevice], drive: &str) -> SystemUse {
+        SystemDrives::find(devices, Some(sources)).of_drive(Some(drive))
     }
 
     #[test]
-    fn an_escaped_mount_point_is_read_as_the_kernel_meant_it() {
-        let sources = SystemSources::parse(
-            "/dev/sdb1 /run/live/medium vfat ro 0 0\n/dev/sdc1 /media/me/My\\040Stick vfat rw 0 0\n",
-            "",
-        );
-        assert_eq!(sources.sources.len(), 1);
-        assert_eq!(unescape("My\\040Stick"), "My Stick");
+    fn only_a_person_s_media_folders_leave_a_drive_free() {
+        for point in [
+            "/media/me/STICK",
+            "/run/media/me/STICK",
+            "/mnt/better-os/AB12",
+        ] {
+            assert!(is_person_media(Path::new(point)), "{point}");
+        }
+        for point in [
+            "/",
+            "/media",
+            "/mnt/better-os",
+            "/srv",
+            "/mnt/usb",
+            "/home/me/usb",
+        ] {
+            assert!(!is_person_media(Path::new(point)), "{point}");
+        }
+    }
+
+    #[test]
+    fn a_mount_anywhere_the_system_keeps_things_holds_its_drive() {
+        let stick = volume("/b/sdc1", "/dev/sdc1", Some("/d/stick"), &[]);
+        let devices = [stick];
+        for point in [
+            "/home/other",
+            "/srv",
+            "/opt",
+            "/nix",
+            "/var/lib/docker",
+            "/var/lib/flatpak",
+            "/var/log",
+            "/tmp",
+            "/mnt/usb",
+            "/isodevice",
+        ] {
+            let sources = SystemSources::parse(&format!("/dev/sdc1 {point} ext4 rw 0 0\n"), "");
+            assert_eq!(
+                of(&sources, &devices, "/d/stick"),
+                SystemUse::SystemFolder { path: point.into() },
+                "{point}"
+            );
+        }
+        let sources = SystemSources::parse("/dev/sdc1 /media/me/STICK vfat rw 0 0\n", "");
+        assert_eq!(of(&sources, &devices, "/d/stick"), SystemUse::Free);
     }
 
     #[test]
@@ -538,39 +852,47 @@ Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority
             ),
         ];
         let sources = SystemSources::parse(
-            "/dev/sdb2 / ext4 rw 0 0\n/dev/sdb1 /boot/efi vfat rw 0 0\n",
+            "/dev/sdb2 / ext4 rw 0 0\n/dev/sdb1 /boot/efi vfat rw 0 0\n/dev/sdb3 /media/me/DATA ext4 rw 0 0\n/dev/sdc1 /media/me/STICK vfat rw 0 0\n",
             "",
         );
         let system = SystemDrives::find(&devices, Some(&sources));
-        // The second partition of the system disk is on the same drive.
         assert_eq!(
             system.of_device(&devices[2], &devices),
             SystemUse::RunningSystem
         );
         assert_eq!(system.of_device(&devices[3], &devices), SystemUse::Free);
-        assert!(!system.of_device(&devices[0], &devices).permits_removal());
     }
 
     #[test]
-    fn home_and_swap_on_an_external_disk_hold_it() {
+    fn swap_partitions_hold_their_drive_and_memory_swap_is_nothing() {
         let devices = [
             volume("/b/nvme", "/dev/nvme0n1p2", Some("/d/nvme"), &["/"]),
-            volume("/b/sdb1", "/dev/sdb1", Some("/d/ext"), &[]),
             volume("/b/sdc1", "/dev/sdc1", Some("/d/swap"), &[]),
         ];
         let sources = SystemSources::parse(
-            "/dev/nvme0n1p2 / ext4 rw 0 0\n/dev/sdb1 /home ext4 rw 0 0\n",
-            "Filename Type Size Used Priority\n/dev/sdc1 partition 1 0 -2\n",
+            "/dev/nvme0n1p2 / ext4 rw 0 0\n",
+            "Filename Type Size Used Priority\n/dev/sdc1 partition 1 0 -2\n/dev/zram0 partition 4 0 100\n",
         );
-        let system = SystemDrives::find(&devices, Some(&sources));
+        assert_eq!(of(&sources, &devices, "/d/swap"), SystemUse::Swap);
+    }
+
+    #[test]
+    fn an_fstab_line_outside_better_os_s_block_holds_a_drive_that_is_not_mounted() {
+        let mut data = volume("/b/sdc1", "/dev/sdc1", Some("/d/data"), &[]);
+        data.block.id_uuid = Some("ABCD-1234".into());
+        let mut ours = volume("/b/sdd1", "/dev/sdd1", Some("/d/ours"), &[]);
+        ours.block.id_uuid = Some("FEED-0001".into());
+        let devices = [data, ours];
+        let fstab = format!(
+            "UUID=abcd-1234 /data ext4 defaults,noauto 0 2\nproc /proc proc defaults 0 0\n{FSTAB_BEGIN}\nUUID=FEED-0001 /mnt/better-os/FEED-0001 vfat nofail 0 0\n{FSTAB_END}\n"
+        );
+        let sources = SystemSources::parse_with_fstab("", "", &fstab);
+        assert_eq!(of(&sources, &devices, "/d/data"), SystemUse::SystemTable);
+        assert_eq!(of(&sources, &devices, "/d/ours"), SystemUse::Free);
         assert_eq!(
-            system.of_drive(Some("/d/ext")),
-            SystemUse::SystemFolder {
-                path: "/home".into()
-            }
+            parse_fstab("LABEL=Backup /b ext4 0 0\n/dev/sdz1 /c ext4 0 0\n").len(),
+            2
         );
-        assert_eq!(system.of_drive(Some("/d/swap")), SystemUse::Swap);
-        assert_eq!(system.of_drive(Some("/d/nvme")), SystemUse::RunningSystem);
     }
 
     #[test]
@@ -581,56 +903,61 @@ Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority
         cleartext.block.symlinks = vec!["/dev/mapper/luks-1234".into()];
         let devices = [container, cleartext];
         let sources = SystemSources::parse("/dev/mapper/luks-1234 / ext4 rw 0 0\n", "");
-        let system = SystemDrives::find(&devices, Some(&sources));
-        assert_eq!(system.of_drive(Some("/d/usb")), SystemUse::RunningSystem);
+        assert_eq!(of(&sources, &devices, "/d/usb"), SystemUse::RunningSystem);
     }
 
     #[test]
-    fn a_root_traced_through_its_slaves_holds_the_physical_volume() {
-        let pv = volume("/b/sdb3", "/dev/sdb3", Some("/d/usb"), &[]);
-        let lv = volume("/b/dm1", "/dev/dm-1", None, &[]);
-        let devices = [pv, lv];
-        let sources = SystemSources {
-            sources: vec![SystemSource {
-                held: SystemUse::RunningSystem,
-                nodes: vec![
-                    "/dev/mapper/vg-root".into(),
-                    "/dev/dm-1".into(),
-                    "/dev/sdb3".into(),
-                ],
-            }],
-        };
-        let system = SystemDrives::find(&devices, Some(&sources));
-        assert_eq!(system.of_drive(Some("/d/usb")), SystemUse::RunningSystem);
-        assert_eq!(system.of_drive(Some("/d/other")), SystemUse::Free);
+    fn a_zfs_root_holds_the_drives_of_its_pool_and_only_those() {
+        let mut member = volume("/b/sdb1", "/dev/sdb1", Some("/d/pool"), &[]);
+        member.block.id_type = Some("zfs_member".into());
+        member.block.id_label = Some("rpool".into());
+        let stick = volume("/b/sdc1", "/dev/sdc1", Some("/d/stick"), &[]);
+        let devices = [member, stick];
+        let sources = SystemSources::parse(
+            "28 1 0:25 / / rw - zfs rpool/ROOT/ubuntu_abc rw\n35 28 0:26 / /home rw - zfs rpool/USERDATA/home rw\n",
+            "",
+        );
+        assert_eq!(of(&sources, &devices, "/d/pool"), SystemUse::RunningSystem);
+        assert_eq!(of(&sources, &devices, "/d/stick"), SystemUse::Free);
+        // A pool UDisks2 does not list: the drives cannot be told.
+        let other = SystemSources::parse("28 1 0:25 / / rw - zfs bpool/BOOT rw\n", "");
+        assert_eq!(of(&other, &devices, "/d/stick"), SystemUse::Unknown);
+    }
+
+    #[test]
+    fn a_bcachefs_root_holds_every_member() {
+        let devices = [
+            volume("/b/sdb1", "/dev/sdb1", Some("/d/one"), &[]),
+            volume("/b/sdc1", "/dev/sdc1", Some("/d/two"), &[]),
+            volume("/b/sdd1", "/dev/sdd1", Some("/d/stick"), &[]),
+        ];
+        let sources =
+            SystemSources::parse("28 1 0:30 / / rw - bcachefs /dev/sdb1:/dev/sdc1 rw\n", "");
+        assert_eq!(of(&sources, &devices, "/d/one"), SystemUse::RunningSystem);
+        assert_eq!(of(&sources, &devices, "/d/two"), SystemUse::RunningSystem);
+        assert_eq!(of(&sources, &devices, "/d/stick"), SystemUse::Free);
     }
 
     #[test]
     fn what_cannot_be_told_is_unknown_and_never_free() {
         let stick = volume("/b/sdc1", "/dev/sdc1", Some("/d/stick"), &["/media/me/S"]);
         let devices = [stick];
-        // No mount table at all.
         assert_eq!(
             SystemDrives::find(&devices, None).of_drive(Some("/d/stick")),
             SystemUse::Unknown
         );
-        // A ZFS root: its pool's drives are not named anywhere.
-        let zfs = SystemSources::parse("rpool/ROOT/ubuntu / zfs rw 0 0\n", "");
-        assert_eq!(
-            SystemDrives::find(&devices, Some(&zfs)).of_drive(Some("/d/stick")),
-            SystemUse::Unknown
-        );
-        // An overlay root (a live session) names no drive and holds none.
-        let live = SystemSources::parse("overlay / overlay rw 0 0\n", "");
-        assert_eq!(
-            SystemDrives::find(&devices, Some(&live)).of_drive(Some("/d/stick")),
-            SystemUse::Free
-        );
         // A root UDisks2 does not list: any drive might hold it.
         let sources = SystemSources::parse("/dev/sda2 / ext4 rw 0 0\n", "");
-        let system = SystemDrives::find(&devices, Some(&sources));
-        assert_eq!(system.of_drive(Some("/d/stick")), SystemUse::Unknown);
-        // A volume with no drive object.
+        assert_eq!(of(&sources, &devices, "/d/stick"), SystemUse::Unknown);
+        // A loop device whose file was not traced (no `/sys` read).
+        let looped = SystemSources::parse("/dev/loop0 /rofs squashfs ro 0 0\n", "");
+        assert_eq!(of(&looped, &devices, "/d/stick"), SystemUse::Unknown);
+        // A swap file whose filesystem was not traced.
+        let file = SystemSources::parse("", "Filename Type\n/swap.img file 1 0 -2\n");
+        assert_eq!(of(&file, &devices, "/d/stick"), SystemUse::Unknown);
+        // An overlay root (a live session) names no drive and holds none.
+        let live = SystemSources::parse("overlay / overlay rw 0 0\n", "");
+        assert_eq!(of(&live, &devices, "/d/stick"), SystemUse::Free);
         let complete = SystemDrives::find(&devices, Some(&SystemSources::default()));
         assert_eq!(complete.of_drive(None), SystemUse::Unknown);
         assert_eq!(complete.of_drive(Some("/d/stick")), SystemUse::Free);
@@ -664,25 +991,31 @@ Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority
             Some(home)
         );
         assert_eq!(
-            SystemUse::from_refusal("storage.system.running_system"),
-            Some(SystemUse::RunningSystem)
+            SystemUse::from_refusal("storage.system.table"),
+            Some(SystemUse::SystemTable)
         );
         assert_eq!(SystemUse::from_refusal("storage.erase.busy"), None);
         assert_eq!(SystemUse::Free.refusal(), None);
     }
 
-    #[test]
-    fn slaves_are_followed_in_a_fixture_tree() {
+    /// A fixture tree for [`SystemSources::read`]: `proc`, `sys`, `etc`.
+    fn tree() -> (tempfile::TempDir, Roots) {
         let root = tempfile::tempdir().unwrap();
         let roots = Roots::at(root.path());
         std::fs::create_dir_all(roots.proc.join("self")).unwrap();
+        std::fs::create_dir_all(root.path().join("etc")).unwrap();
+        (root, roots)
+    }
+
+    #[test]
+    fn slaves_are_followed_in_a_fixture_tree() {
+        let (_root, roots) = tree();
         std::fs::write(
             roots.proc.join("self/mounts"),
-            "/dev/dm-7 / ext4 rw 0 0\n/dev/dm-8 /mnt/data ext4 rw 0 0\n",
+            "/dev/dm-7 / ext4 rw 0 0\n/dev/dm-8 /media/me/x ext4 rw 0 0\n",
         )
         .unwrap();
-        let slaves = roots.sys.join("class/block/dm-7/slaves");
-        std::fs::create_dir_all(slaves.join("dm-6")).unwrap();
+        std::fs::create_dir_all(roots.sys.join("class/block/dm-7/slaves/dm-6")).unwrap();
         std::fs::create_dir_all(roots.sys.join("class/block/dm-6/slaves/sdz3")).unwrap();
         let read = SystemSources::read(&roots).unwrap();
         assert_eq!(read.sources.len(), 1);
@@ -690,10 +1023,120 @@ Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority
             read.sources[0].nodes,
             ["/dev/dm-7", "/dev/dm-6", "/dev/sdz3"]
         );
-        // No mount table: nothing is known.
         assert_eq!(
-            SystemSources::read(&Roots::at(root.path().join("none"))),
+            SystemSources::read(&Roots::at(_root.path().join("none"))),
             None
         );
+    }
+
+    #[test]
+    fn a_source_udisks_does_not_know_is_found_by_its_device_number() {
+        let (_root, roots) = tree();
+        // `/dev/root` at 8:18; `/sys/dev/block/8:18` is sdb2.
+        std::fs::write(
+            roots.proc.join("self/mountinfo"),
+            "22 1 8:18 / / rw - ext4 /dev/root rw\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(roots.sys.join("dev/block")).unwrap();
+        std::os::unix::fs::symlink(
+            "../../devices/pci0000:00/usb1/1-1/block/sdb/sdb2",
+            roots.sys.join("dev/block/8:18"),
+        )
+        .unwrap();
+        let read = SystemSources::read(&roots).unwrap();
+        assert!(
+            read.sources[0].nodes.contains(&"/dev/sdb2".to_string()),
+            "{read:?}"
+        );
+        let devices = [volume("/b/sdb2", "/dev/sdb2", Some("/d/usb"), &[])];
+        assert_eq!(of(&read, &devices, "/d/usb"), SystemUse::RunningSystem);
+    }
+
+    #[test]
+    fn a_loop_device_and_a_swap_file_are_traced_to_the_drive_their_file_is_on() {
+        let (root, roots) = tree();
+        // The backing file and the swap file are real files in the tree;
+        // their device is whatever the temporary directory is on.
+        let iso = root.path().join("ubuntu.iso");
+        let swap = root.path().join("swapfile");
+        std::fs::write(&iso, b"iso").unwrap();
+        std::fs::write(&swap, b"swap").unwrap();
+        let (major, minor) = device_of_file(&iso).unwrap();
+        // The kernel names that device: a link under /sys/dev/block when it
+        // is a block device, else the mount with that anonymous number.
+        let mut mountinfo = "40 1 7:0 / /rofs ro - squashfs /dev/loop0 ro\n".to_string();
+        if major == 0 {
+            mountinfo.push_str(&format!(
+                "41 1 {major}:{minor} / /isodevice rw - btrfs /dev/sdb1 rw\n"
+            ));
+        } else {
+            std::fs::create_dir_all(roots.sys.join("dev/block")).unwrap();
+            std::os::unix::fs::symlink(
+                "../../devices/usb/block/sdb/sdb1",
+                roots.sys.join(format!("dev/block/{major}:{minor}")),
+            )
+            .unwrap();
+        }
+        std::fs::write(roots.proc.join("self/mountinfo"), mountinfo).unwrap();
+        std::fs::create_dir_all(roots.sys.join("class/block/loop0/loop")).unwrap();
+        std::fs::write(
+            roots.sys.join("class/block/loop0/loop/backing_file"),
+            format!("{}\n", iso.display()),
+        )
+        .unwrap();
+        std::fs::write(
+            roots.proc.join("swaps"),
+            format!(
+                "Filename Type Size Used Priority\n{} file 4 0 -2\n",
+                swap.display()
+            ),
+        )
+        .unwrap();
+        let read = SystemSources::read(&roots).unwrap();
+        let devices = [volume("/b/sdb1", "/dev/sdb1", Some("/d/usb"), &[])];
+        let system = SystemDrives::find(&devices, Some(&read));
+        assert_eq!(
+            system.of_drive(Some("/d/usb")),
+            SystemUse::SystemFolder {
+                path: "/rofs".into()
+            }
+        );
+        // Every source was traced, so another drive is free.
+        assert_eq!(system.of_drive(Some("/d/other")), SystemUse::Free);
+        let swap_only = read
+            .sources
+            .iter()
+            .find(|source| source.held == SystemUse::Swap)
+            .unwrap();
+        assert!(
+            swap_only.nodes.contains(&"/dev/sdb1".to_string()),
+            "{read:?}"
+        );
+    }
+
+    /// Reads the running host (read-only) and prints what it holds: every
+    /// held mount and swap must name some node, or every drive would be
+    /// unknown on this machine.
+    #[test]
+    #[ignore = "reads the running host's /proc, /sys and /etc/fstab"]
+    fn the_host_names_a_node_for_every_held_mount() {
+        let read = SystemSources::read(&Roots::system()).expect("a mount table");
+        for source in &read.sources {
+            eprintln!("{:?} {:?} {:?}", source.held, source.nodes, source.zfs_pool);
+            assert!(
+                !source.nodes.is_empty() || source.zfs_pool.is_some(),
+                "{source:?}"
+            );
+        }
+        eprintln!("fstab: {:?}", read.fstab);
+    }
+
+    #[test]
+    fn the_fstab_beside_proc_is_read() {
+        let (root, roots) = tree();
+        std::fs::write(roots.proc.join("self/mounts"), "").unwrap();
+        std::fs::write(root.path().join("etc/fstab"), "UUID=X /srv ext4 0 0\n").unwrap();
+        assert_eq!(SystemSources::read(&roots).unwrap().fstab, ["UUID=X"]);
     }
 }

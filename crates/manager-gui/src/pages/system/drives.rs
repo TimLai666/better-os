@@ -303,7 +303,12 @@ fn read() -> Result<Vec<Drive>, String> {
         .iter()
         .find(|mount| mount.mount_point == std::path::Path::new("/"))
         .map(|mount| mount.source.clone());
-    let mut drives = drive_mounts::listing::drives_from_devices(&devices, root.as_deref());
+    // The one rule for what the running system holds (ticket 171): a drive
+    // with `/home`, swap or an fstab line of its own is never offered for
+    // turning off and unmounting here, as in Better Files and the daemon.
+    let sources = storage_platform::SystemSources::read(&storage_platform::Roots::system());
+    let system = storage_platform::SystemDrives::find(&devices, sources.as_ref());
+    let mut drives = drive_mounts::listing::drives_with_system(&devices, root.as_deref(), &system);
     choice::apply(&mut drives, &files);
     if let Some(bus) = system_bus() {
         for drive in &mut drives {
@@ -316,6 +321,24 @@ fn read() -> Result<Vec<Drive>, String> {
         }
     }
     Ok(listed(drives))
+}
+
+/// What a change came to once the window has done its own part: the mount
+/// or unmount runs only when the daemon made the change, never after a
+/// refusal (a drive holding swap is refused `system_drive`, and its volume
+/// must stay mounted).
+fn after_change(
+    outcome: SetOutcome,
+    follow: impl FnOnce() -> Option<String>,
+    c: &Copy,
+) -> SetOutcome {
+    match outcome {
+        SetOutcome::Done { .. } => match follow() {
+            Some(detail) => SetOutcome::Failed(c.reason_after.replace("{detail}", &detail)),
+            None => outcome,
+        },
+        other => other,
+    }
 }
 
 /// A removable drive turned on is mounted now; a mount UDisks2 made of a
@@ -398,12 +421,7 @@ impl ManagerApp {
                         Some(bus) => client::set_mount_automatically(&bus, &uuid, on),
                         None => SetOutcome::Failed("the system bus is not reachable".into()),
                     };
-                    match (&outcome, follow(&drive, on)) {
-                        (SetOutcome::Done { .. }, Some(detail)) => {
-                            SetOutcome::Failed(c.reason_after.replace("{detail}", &detail))
-                        }
-                        _ => outcome,
-                    }
+                    after_change(outcome, || follow(&drive, on), c)
                 })
                 .await;
             let _ = this.update(cx, |app, cx| {
@@ -524,7 +542,7 @@ impl ManagerApp {
 #[cfg(test)]
 mod tests {
     // Not `super::*`: that brings gpui's own `test` attribute in.
-    use super::{EN, ZH_TW, bytes, description, listed, name, name_words, reason};
+    use super::{EN, ZH_TW, after_change, bytes, description, listed, name, name_words, reason};
     use drive_mounts::choice::{AutoMount, Locked};
     use drive_mounts::client::SetOutcome;
     use drive_mounts::listing::{Drive, DriveKind};
@@ -618,5 +636,74 @@ mod tests {
         }
         assert_eq!(bytes(32_000_000_000), "29.8 GB");
         assert_eq!(bytes(512_000_000_000), "477 GB");
+    }
+
+    /// Ticket 171: a drive the daemon refused (one holding swap or `/home`,
+    /// `system_drive`) is never unmounted by the window afterwards.
+    #[test]
+    fn a_refused_change_never_mounts_or_unmounts_the_drive() {
+        let followed = std::cell::Cell::new(false);
+        let follow = || {
+            followed.set(true);
+            None
+        };
+        let refused = SetOutcome::Refused("system_drive".into());
+        assert_eq!(after_change(refused.clone(), follow, &EN), refused);
+        assert!(!followed.get(), "nothing was unmounted");
+        for other in [
+            SetOutcome::Cancelled,
+            SetOutcome::Busy("busy".into()),
+            SetOutcome::Failed("x".into()),
+        ] {
+            after_change(other, || panic!("followed after a failure"), &EN);
+        }
+        let done = SetOutcome::Done {
+            mount_point: String::new(),
+        };
+        assert_eq!(
+            after_change(done, || Some("busy".into()), &EN),
+            SetOutcome::Failed("it was saved, but busy".into())
+        );
+    }
+
+    /// The listing the page builds uses the same rule as the daemon: swap on
+    /// a USB disk holds every volume on it.
+    #[test]
+    fn the_page_reads_swap_and_home_with_the_one_rule() {
+        use storage_platform::model::{BlockInfo, DeviceAddress, DriveInfo, PlatformDevice};
+        let volume = |object: &str, node: &str, kind: &str, mounted: Option<&str>| PlatformDevice {
+            address: DeviceAddress {
+                object_path: object.into(),
+                device_path: node.into(),
+            },
+            block: BlockInfo {
+                device_path: node.into(),
+                id_type: Some(kind.into()),
+                id_uuid: Some(format!("{object}-uuid")),
+                partition_number: Some(1),
+                size: 1 << 34,
+                ..BlockInfo::default()
+            },
+            drive: Some(DriveInfo {
+                object_path: "/d/usb".into(),
+                removable: true,
+                connection_bus: "usb".into(),
+                ..DriveInfo::default()
+            }),
+            mount_point: mounted.map(Into::into),
+        };
+        let devices = [
+            volume("/b/sdc1", "/dev/sdc1", "ext4", Some("/media/me/DATA")),
+            volume("/b/sdc2", "/dev/sdc2", "swap", None),
+        ];
+        let sources = storage_platform::SystemSources::parse(
+            "",
+            "Filename Type Size Used Priority\n/dev/sdc2 partition 1 0 -2\n",
+        );
+        let system = storage_platform::SystemDrives::find(&devices, Some(&sources));
+        let drives = drive_mounts::listing::drives_with_system(&devices, None, &system);
+        let data = drives.iter().find(|drive| drive.key == "/b/sdc1").unwrap();
+        assert_eq!(data.system_use, storage_platform::SystemUse::Swap);
+        assert!(!data.ejectable);
     }
 }

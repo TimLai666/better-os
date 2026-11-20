@@ -328,12 +328,10 @@ pub fn names_device(source: &str, device: &PlatformDevice) -> bool {
 pub fn drives_from_devices(devices: &[PlatformDevice], root_source: Option<&str>) -> Vec<Drive> {
     let sources = SystemSources {
         sources: root_source
-            .map(|source| SystemSource {
-                held: SystemUse::RunningSystem,
-                nodes: vec![source.to_string()],
-            })
+            .map(|source| SystemSource::node(SystemUse::RunningSystem, source))
             .into_iter()
             .collect(),
+        ..SystemSources::default()
     };
     drives_with_system(
         devices,

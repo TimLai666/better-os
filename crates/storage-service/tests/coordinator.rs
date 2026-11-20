@@ -1112,16 +1112,13 @@ async fn system_on_a_usb_drive(fixture: &Fixture) -> Harness {
 async fn the_drive_the_system_runs_from_is_never_ejected_formatted_or_overwritten() {
     let fixture = Fixture::new("systemusb");
     let mut harness = system_on_a_usb_drive(&fixture).await;
-    // The report says so, for the window's menu.
+    // All three are listed: UDisks2 marks none of them as the system's.
     for object in [OBJECT, ROOT_OBJECT, SYSTEM_DISK] {
-        assert_eq!(
+        assert!(
             harness
                 .coordinator
                 .report(&DeviceHandle::new(object))
-                .expect("listed")
-                .system_use,
-            storage_platform::SystemUse::RunningSystem,
-            "{object}"
+                .is_some()
         );
     }
     // A request sent anyway is refused with the typed reason, and nothing
@@ -1192,10 +1189,6 @@ async fn an_ordinary_stick_is_free_and_ejects() {
     )));
     let mut harness = harness(&fixture, control);
     connect_and_mount(&mut harness).await;
-    assert_eq!(
-        harness.coordinator.report(&handle()).unwrap().system_use,
-        storage_platform::SystemUse::Free
-    );
     assert!(
         harness
             .coordinator
@@ -1207,17 +1200,13 @@ async fn an_ordinary_stick_is_free_and_ejects() {
 }
 
 #[tokio::test]
-async fn a_stick_whose_system_use_cannot_be_told_is_reported_unknown_and_refused() {
+async fn a_stick_whose_system_use_cannot_be_told_is_refused() {
     let fixture = Fixture::new("unknownstick");
     let control = FakeDeviceControl::new([usb_stick(OBJECT, DEVICE, UUID)]);
     // The mount table could not be read.
     control.set_system_sources(None);
     let mut harness = harness(&fixture, control);
     connect_and_mount(&mut harness).await;
-    assert_eq!(
-        harness.coordinator.report(&handle()).unwrap().system_use,
-        storage_platform::SystemUse::Unknown
-    );
     refused_with(
         harness.coordinator.eject(&handle()).await,
         "storage.system.unknown",
@@ -1228,5 +1217,49 @@ async fn a_stick_whose_system_use_cannot_be_told_is_reported_unknown_and_refused
             .calls()
             .iter()
             .any(|call| call.starts_with("eject"))
+    );
+}
+
+/// Ticket 171: with the Format dialog open, stick A is pulled and stick C
+/// arrives at the same object path. The confirmation names A, so C is
+/// refused and nothing is erased.
+#[tokio::test]
+async fn an_erase_confirmed_for_one_stick_is_refused_for_another_at_the_same_path() {
+    let fixture = Fixture::new("replaced");
+    let control = FakeDeviceControl::new([usb_stick(OBJECT, DEVICE, UUID)]);
+    let mut harness = harness(&fixture, control);
+    connect_and_mount(&mut harness).await;
+    let confirmed = harness.coordinator.report(&handle()).unwrap().identity;
+    assert!(
+        harness
+            .coordinator
+            .refuse_if_replaced(&handle(), Some(&confirmed))
+            .is_ok()
+    );
+
+    harness.control.detach(&address());
+    harness
+        .coordinator
+        .handle_event(PlatformEvent::Removed { address: address() })
+        .await;
+    let other = usb_stick(OBJECT, DEVICE, "C0C0-0001");
+    harness.control.attach(other.clone());
+    harness
+        .coordinator
+        .handle_event(PlatformEvent::Added(Box::new(other)))
+        .await;
+
+    refused_with(
+        harness
+            .coordinator
+            .refuse_if_replaced(&handle(), Some(&confirmed)),
+        "storage.erase.device_changed",
+    );
+    assert!(
+        !harness
+            .control
+            .calls()
+            .iter()
+            .any(|call| call.starts_with("format"))
     );
 }

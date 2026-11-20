@@ -102,8 +102,31 @@ pub fn setting(drive: &Drive, files: &SystemFiles) -> Option<AutoMount> {
     // (ticket 171) is the system's, whatever kind of drive it is.
     let held = !matches!(
         drive.system_use,
-        crate::listing::SystemUse::Free | crate::listing::SystemUse::Unknown
+        crate::listing::SystemUse::Free
+            | crate::listing::SystemUse::Unknown
+            // The fstab line decides, and says so itself below.
+            | crate::listing::SystemUse::SystemTable
     );
+    // An administrator's fstab line names it: that line is the reason, in
+    // its own words, even when the drive is also mounted somewhere the
+    // system keeps things.
+    let foreign_line = names_of(drive).and_then(|names| match &files.fstab {
+        Ok(fstab) => fstab.foreign_line(&names),
+        Err(_) => None,
+    });
+    if held
+        && drive.kind != DriveKind::System
+        && let Some(line) = foreign_line
+    {
+        return Some(AutoMount {
+            on: !line.noauto,
+            locked: Some(Locked::SystemTable {
+                line: line.line,
+                mount_point: line.mount_point,
+            }),
+            failure: None,
+        });
+    }
     if drive.kind == DriveKind::System || (held && drive.uuid.is_some()) {
         return Some(AutoMount {
             on: true,

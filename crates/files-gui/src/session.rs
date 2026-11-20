@@ -430,6 +430,9 @@ pub enum PendingDialog {
     /// warning that everything on it goes.
     Format {
         object_path: String,
+        /// The identity of the device the dialog was opened for: another
+        /// device later at the same object path closes it (ticket 171).
+        identity: String,
         device_label: String,
         filesystem: storage_platform::FilesystemKind,
     },
@@ -437,6 +440,7 @@ pub enum PendingDialog {
     /// every volume on it.
     WriteImage {
         object_path: String,
+        identity: String,
         device_label: String,
         image: LocalPath,
         volumes: Vec<String>,
@@ -1496,8 +1500,16 @@ impl FilesSession {
         if self.refuse_if_system(object_path) {
             return;
         }
+        let Some(identity) = self
+            .devices
+            .get(object_path)
+            .map(|row| row.identity.clone())
+        else {
+            return;
+        };
         self.dialog = Some(PendingDialog::Format {
             object_path: object_path.to_string(),
+            identity,
             device_label: self.device_label(object_path),
             filesystem: storage_platform::FilesystemKind::Exfat,
         });
@@ -1513,7 +1525,15 @@ impl FilesSession {
         else {
             return;
         };
+        let Some(identity) = self
+            .devices
+            .get(&target.object_path)
+            .map(|row| row.identity.clone())
+        else {
+            return;
+        };
         self.dialog = Some(PendingDialog::WriteImage {
+            identity,
             object_path: target.object_path,
             device_label: target.name,
             image,
@@ -1527,6 +1547,7 @@ impl FilesSession {
         let request = match self.dialog.take() {
             Some(PendingDialog::Format {
                 object_path,
+                identity,
                 filesystem,
                 ..
             }) => {
@@ -1540,14 +1561,19 @@ impl FilesSession {
                 }
                 crate::devices::EraseRequest::Format {
                     object_path,
+                    identity,
                     filesystem,
                     label: label.trim().to_string(),
                 }
             }
             Some(PendingDialog::WriteImage {
-                object_path, image, ..
+                object_path,
+                identity,
+                image,
+                ..
             }) => crate::devices::EraseRequest::WriteImage {
                 object_path,
+                identity,
                 image: image.as_path().to_path_buf(),
             },
             other => {
@@ -1555,12 +1581,61 @@ impl FilesSession {
                 return;
             }
         };
+        // The device at that path must still be the one the person
+        // confirmed: a stick pulled and another plugged in can take the
+        // same object path (ticket 171).
+        let (object_path, identity) = match &request {
+            crate::devices::EraseRequest::Format {
+                object_path,
+                identity,
+                ..
+            }
+            | crate::devices::EraseRequest::WriteImage {
+                object_path,
+                identity,
+                ..
+            } => (object_path.clone(), identity.clone()),
+        };
+        if self
+            .devices
+            .get(&object_path)
+            .is_none_or(|row| row.identity != identity)
+        {
+            self.notice = Some(Notice::Key(DEVICE_CHANGED.to_string()));
+            return;
+        }
         // Asked again: the drive may have become the system's while the
-        // dialog was open (ticket 171).
+        // dialog was open.
         if self.refuse_if_system(request.object_path()) {
             return;
         }
         self.link.request_erase(request);
+    }
+
+    /// Closes a Format or Write to Drive dialog whose device is gone, or is
+    /// now another device at the same object path, and says so.
+    fn close_erase_for_changed_device(&mut self) {
+        let (object_path, identity) = match &self.dialog {
+            Some(PendingDialog::Format {
+                object_path,
+                identity,
+                ..
+            })
+            | Some(PendingDialog::WriteImage {
+                object_path,
+                identity,
+                ..
+            }) => (object_path.clone(), identity.clone()),
+            _ => return,
+        };
+        if self
+            .devices
+            .get(&object_path)
+            .is_none_or(|row| row.identity != identity)
+        {
+            self.dialog = None;
+            self.notice = Some(Notice::Key(DEVICE_CHANGED.to_string()));
+        }
     }
 
     /// What of the running system the drive of the storage service's
@@ -1717,7 +1792,10 @@ impl FilesSession {
                 });
                 self.link.request_refresh();
             }
-            DeviceNotice::Inventory(reports) => self.devices.apply_inventory(reports),
+            DeviceNotice::Inventory(reports) => {
+                self.devices.apply_inventory(reports);
+                self.close_erase_for_changed_device();
+            }
             DeviceNotice::Mounted {
                 object_path,
                 mount_point,
@@ -1773,7 +1851,10 @@ impl FilesSession {
             DeviceNotice::Disconnected {
                 object_path,
                 unsafe_removal,
-            } => self.handle_disconnect(&object_path, unsafe_removal),
+            } => {
+                self.handle_disconnect(&object_path, unsafe_removal);
+                self.close_erase_for_changed_device();
+            }
             // Nothing to draw yet: the row changes when an inventory reports
             // the new policy, not when a request for one was accepted.
             DeviceNotice::PolicyApplied { .. } => {}
@@ -1817,13 +1898,29 @@ impl FilesSession {
     /// Whether the window has to redraw.
     fn pump_drives(&mut self) -> bool {
         let mut changed = false;
-        if let Some(drives) = self
+        if let Some((drives, system)) = self
             .drive_scanner
             .as_ref()
             .and_then(|scanner| scanner.take())
         {
             changed |= drives != self.drives;
             self.drives = drives;
+            // The storage service's rows are judged by the same reading
+            // (ticket 171).
+            let before: Vec<_> = self
+                .devices
+                .rows()
+                .iter()
+                .map(|r| r.system_use.clone())
+                .collect();
+            self.devices.set_system(system);
+            changed |= before
+                != self
+                    .devices
+                    .rows()
+                    .iter()
+                    .map(|r| r.system_use.clone())
+                    .collect::<Vec<_>>();
         }
         if self.window_visible && self.last_drive_scan.elapsed() >= crate::drives::DRIVES_REFRESH {
             self.refresh_drives();
@@ -3816,6 +3913,10 @@ pub fn preview_program() -> String {
 /// FUSE mount, the Trash, Recents, or one no watch could be made for) is read
 /// again. Five seconds is soon enough that a file someone else added shows
 /// while the person still looks.
+/// The refusal said when the device a Format or Write to Drive dialog was
+/// opened for is gone or is another device now (ticket 171).
+pub const DEVICE_CHANGED: &str = "storage.erase.device_changed";
+
 pub const UNANNOUNCED_REFRESH: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// The same, for a tab in the background: slower, and the tab is read again

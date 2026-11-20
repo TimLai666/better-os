@@ -172,13 +172,6 @@ pub struct StorageCoordinator<C: DeviceControl> {
     /// handle is captured where it is unambiguous. A coordinator built outside
     /// a runtime has none, and runs the same work inline.
     runtime: Option<tokio::runtime::Handle>,
-    /// Which drives hold something of the running system (ticket 171), as of
-    /// the last inventory or mount change: what each report says. Every
-    /// request that would take a drive away reads it again first.
-    system: SystemDrives,
-    /// Every block device UDisks2 listed when `system` was worked out, the
-    /// internal ones included: a volume's drive is found among them.
-    all_devices: Vec<PlatformDevice>,
 }
 
 impl<C: DeviceControl> StorageCoordinator<C> {
@@ -207,8 +200,6 @@ impl<C: DeviceControl> StorageCoordinator<C> {
             clients: BTreeMap::new(),
             erasing: Erasing::default(),
             runtime: tokio::runtime::Handle::try_current().ok(),
-            system: SystemDrives::unknown(),
-            all_devices: Vec::new(),
         })
     }
 
@@ -263,19 +254,28 @@ impl<C: DeviceControl> StorageCoordinator<C> {
         }
     }
 
-    /// Works out again which drives hold the running system, for the
-    /// reports. Called when the inventory or a mount changes.
-    async fn recompute_system(&mut self) {
-        match self.control.enumerate().await {
-            Ok(devices) => {
-                let sources = self.control.system_sources();
-                self.system = SystemDrives::find(&devices, sources.as_ref());
-                self.all_devices = devices;
-            }
-            Err(_) => {
-                self.system = SystemDrives::unknown();
-                self.all_devices.clear();
-            }
+    /// Refuses an erase when the device at `handle` is no longer the one the
+    /// person confirmed (`expected` is its identity key, as reports carry
+    /// it): a stick pulled and another plugged in can take the same object
+    /// path (ticket 171). Nothing to compare is nothing refused.
+    pub fn refuse_if_replaced(
+        &self,
+        handle: &DeviceHandle,
+        expected: Option<&str>,
+    ) -> Result<(), ServiceError> {
+        let Some(expected) = expected else {
+            return Ok(());
+        };
+        let now = self
+            .registry
+            .get(handle)
+            .map(|machine| machine.identity().key().to_string());
+        if now.as_deref() == Some(expected) {
+            Ok(())
+        } else {
+            Err(ServiceError::Refused(
+                "storage.erase.device_changed".to_string(),
+            ))
         }
     }
 
@@ -314,9 +314,6 @@ impl<C: DeviceControl> StorageCoordinator<C> {
     /// Called once at start and after a UDisks2 restart. Not on a timer.
     pub async fn refresh_inventory(&mut self) -> Result<(), ServiceError> {
         let devices = self.control.enumerate().await?;
-        let sources = self.control.system_sources();
-        self.system = SystemDrives::find(&devices, sources.as_ref());
-        self.all_devices = devices.clone();
         let mut seen: Vec<DeviceHandle> = Vec::new();
 
         for device in devices {
@@ -344,21 +341,18 @@ impl<C: DeviceControl> StorageCoordinator<C> {
     pub async fn handle_event(&mut self, event: PlatformEvent) {
         match event {
             PlatformEvent::Added(device) => {
-                self.recompute_system().await;
                 if device.classify().is_external() {
                     let handle = DeviceHandle::new(device.address.object_path.clone());
                     self.admit(handle, *device).await;
                 }
             }
             PlatformEvent::Removed { address } => {
-                self.recompute_system().await;
                 self.remove(&DeviceHandle::new(address.object_path)).await;
             }
             PlatformEvent::MountChanged {
                 address,
                 mount_point,
             } => {
-                self.recompute_system().await;
                 let handle = DeviceHandle::new(address.object_path);
                 if let Some(device) = self.known.get_mut(&handle) {
                     device.mount_point = mount_point.clone();
@@ -373,14 +367,7 @@ impl<C: DeviceControl> StorageCoordinator<C> {
                 match self.control.read(&address).await {
                     Ok(device) => {
                         let mount_point = device.mount_point.clone();
-                        let moved = self
-                            .known
-                            .get(&handle)
-                            .is_none_or(|known| known.mount_points() != device.mount_points());
                         self.known.insert(handle.clone(), device);
-                        if moved {
-                            self.recompute_system().await;
-                        }
                         self.apply_mount(&handle, mount_point).await;
                     }
                     // The object is gone. That is a disconnect, whatever the
@@ -1027,7 +1014,6 @@ impl<C: DeviceControl> StorageCoordinator<C> {
                 size: 0,
                 whole_disk: false,
                 erasing: false,
-                system_use: SystemUse::Unknown,
             },
         };
         let _ = self.updates.send(report);
@@ -1068,10 +1054,6 @@ impl<C: DeviceControl> StorageCoordinator<C> {
             size: device.map(|device| device.block.size).unwrap_or(0),
             whole_disk: device.is_some_and(|device| device.block.partition_number.is_none()),
             erasing: self.is_erasing(handle),
-            system_use: match device {
-                Some(device) => self.system.of_device(device, &self.all_devices),
-                None => SystemUse::Unknown,
-            },
         }
     }
 }

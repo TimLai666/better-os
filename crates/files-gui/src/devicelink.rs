@@ -543,32 +543,46 @@ async fn handle<C: DeviceControl + Clone + 'static>(
                     .await;
             }
         },
-        Request::Erase(crate::devices::EraseRequest::WriteImage { object_path, image }) => {
-            write_image(backend, object_path, image, notices).await;
+        Request::Erase(crate::devices::EraseRequest::WriteImage {
+            object_path,
+            identity,
+            image,
+        }) => {
+            write_image(backend, object_path, identity, image, notices).await;
         }
         Request::Erase(crate::devices::EraseRequest::Format {
             object_path,
+            identity,
             filesystem,
             label,
         }) => {
             // Only a request the person confirmed in the window gets here.
             let outcome = match backend {
                 Backend::Service(client) => client
-                    .format(&object_path, filesystem, &label, true)
+                    .format(&object_path, filesystem, &label, true, Some(&identity))
                     .await
                     .map_err(|error| error.to_string()),
-                Backend::Embedded(embedded) => embedded
-                    .coordinator
-                    .format(
-                        &storage_core::DeviceHandle::new(object_path.clone()),
-                        &storage_platform::FormatRequest {
-                            kind: filesystem,
-                            label,
-                        },
-                        true,
-                    )
-                    .await
-                    .map_err(|error| error.to_string()),
+                Backend::Embedded(embedded) => {
+                    let handle = storage_core::DeviceHandle::new(object_path.clone());
+                    match embedded
+                        .coordinator
+                        .refuse_if_replaced(&handle, Some(&identity))
+                    {
+                        Err(error) => Err(error.to_string()),
+                        Ok(()) => embedded
+                            .coordinator
+                            .format(
+                                &handle,
+                                &storage_platform::FormatRequest {
+                                    kind: filesystem,
+                                    label,
+                                },
+                                true,
+                            )
+                            .await
+                            .map_err(|error| error.to_string()),
+                    }
+                }
             };
             let _ = notices.send(DeviceNotice::Erased {
                 object_path,
@@ -618,6 +632,7 @@ async fn handle<C: DeviceControl + Clone + 'static>(
 async fn write_image<C: DeviceControl + Clone + 'static>(
     backend: &mut Backend<C>,
     object_path: String,
+    identity: String,
     image: PathBuf,
     notices: &Sender<DeviceNotice>,
 ) {
@@ -636,7 +651,7 @@ async fn write_image<C: DeviceControl + Clone + 'static>(
             let client = client.clone();
             tokio::spawn(async move {
                 let outcome = client
-                    .write_image(&object_path, &image, true, progress)
+                    .write_image(&object_path, &image, true, Some(&identity), progress)
                     .await
                     .map(|_| ())
                     .map_err(|error| error.to_string());
@@ -648,6 +663,17 @@ async fn write_image<C: DeviceControl + Clone + 'static>(
             });
         }
         Backend::Embedded(embedded) => {
+            if let Err(error) = embedded.coordinator.refuse_if_replaced(
+                &storage_core::DeviceHandle::new(object_path.clone()),
+                Some(&identity),
+            ) {
+                let _ = notices.send(DeviceNotice::Erased {
+                    object_path,
+                    format: false,
+                    outcome: Err(error.to_string()),
+                });
+                return;
+            }
             let write = match embedded
                 .coordinator
                 .begin_image_write(
@@ -835,7 +861,6 @@ mod tests {
             size: 0,
             whole_disk: false,
             erasing: false,
-            system_use: storage_platform::SystemUse::Free,
         };
         assert_eq!(
             mounted_from(&[report("/a", Some("/media/a")), report("/b", None)]),

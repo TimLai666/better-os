@@ -496,7 +496,10 @@ impl DriveChange<'_> {
         // is not refused here: nothing this method does takes it away.
         let held = !matches!(
             drive.system_use,
-            drive_mounts::listing::SystemUse::Free | drive_mounts::listing::SystemUse::Unknown
+            drive_mounts::listing::SystemUse::Free
+                | drive_mounts::listing::SystemUse::Unknown
+                // Refused below as `system_table`, with its own words.
+                | drive_mounts::listing::SystemUse::SystemTable
         );
         if held || drive.mount_points.iter().any(|p| p == Path::new("/")) {
             return Err(DaemonError::DriveRefused("system_drive".into()));

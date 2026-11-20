@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 
 /// Where Better OS mounts the internal drives it was asked to.
-pub const MOUNT_BASE: &str = "/mnt/better-os";
+pub const MOUNT_BASE: &str = storage_platform::system_use::MOUNT_BASE;
 
 /// A filesystem UUID as `blkid` and UDisks2 report it: hex digits and dashes
 /// (an ext4 `8a1c…-…`, a FAT `ABCD-1234`, an NTFS `01D9…`, an ISO 9660

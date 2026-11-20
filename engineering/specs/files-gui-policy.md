@@ -106,47 +106,73 @@ yet; one built later takes its name from `Drive::naming`.
 ## Nothing the running system uses is ejected or formatted
 
 Ticket 171. UDisks2 marks the drive the system runs from only when it is
-internal, so a system installed on a USB drive, a live USB, or `/home` on an
-external disk is listed by the storage service like any stick. Whether a
-drive may be ejected, unmounted, powered off, formatted, or have an image
-written to it is decided in one place, `storage_platform::system_use`, from
-the kernel's mount table (`/proc/self/mounts`), its swap list
-(`/proc/swaps`), and each device-mapper or RAID node's
-`/sys/class/block/*/slaves`, matched against UDisks2's devices.
+internal, so a system installed on a USB drive, a live USB, or `/home` or
+swap on an external disk is listed by the storage service like any stick.
+Whether a drive may be ejected, unmounted, powered off, formatted, or have an
+image written to it is decided in one place, `storage_platform::system_use`,
+from the kernel's mount table (`/proc/self/mountinfo`), its swap list
+(`/proc/swaps`), `/etc/fstab`, and `/sys` (device-mapper and RAID slaves,
+a loop device's backing file, a device number's node), matched against
+UDisks2's devices.
 
-- A drive **holds the running system** when any volume on it, or under an
-  unlocked container or logical volume on it, is mounted at `/`, `/boot`,
-  `/boot/efi`, `/efi`, `/home`, `/usr`, `/var`, or a live session's medium
-  (`/cdrom`, `/run/live/medium`, `/lib/live/mount/medium`,
-  `/run/initramfs/live`, `/run/archiso/bootmnt`), or is active swap. A btrfs
-  filesystem across several drives holds all of them.
-- A drive is **free** only when the mount table was read, every one of those
-  mounts and swaps was traced to a drive, and this drive is not one of them.
+- **The rule is the right way round.** A drive is the person's only when
+  everything of it that is mounted is mounted where removable media is
+  mounted for a person: below `/media`, `/run/media`, or Better OS's own
+  `/mnt/better-os`. A drive is **held** when any volume on it, or under an
+  unlocked container, logical volume or loop file on it (an ISO booted with
+  `iso-scan`, a snap), is mounted anywhere else (`/`, `/home/<anyone>`,
+  `/srv`, `/opt`, `/nix`, `/var/lib/docker`, `/tmp`, a live medium), holds
+  swap in use (a partition, or the filesystem a swap file is on), or is named
+  by an `/etc/fstab` line outside Better OS's own block. A ZFS dataset holds
+  the drives UDisks2 reports as `zfs_member` of its pool; a bcachefs mount
+  holds every member it names; a mount whose source UDisks2 does not know
+  (`/dev/root`) is found by its device number. A btrfs filesystem across
+  several drives holds all of them.
+- A drive is **free** only when the mount table was read, every held mount
+  and swap was traced to a drive, and this drive is not one of them.
   Anything else is **unknown**, and unknown is treated as held.
-- Better Files' menu for a drive that holds the running system or is unknown
-  offers neither Eject nor Format and says why in one line, which is also
-  what a refusal says when a request was sent anyway: "This drive holds the
-  running system, so it can't be ejected or formatted." /
+- Better Files' menu for a drive that is held or unknown offers neither
+  Eject nor Format and says why in one line, which is also what a refusal
+  says when a request was sent anyway: "This drive holds the running system,
+  so it can't be ejected or formatted." /
   「這個磁碟上有正在執行的系統，所以不能退出或格式化。」; "This drive holds a
   folder the running system uses, …" / 「這個磁碟上有系統正在使用的資料夾，…」;
   "This drive holds swap the running system uses, …" /
-  「這個磁碟上有系統正在使用的置換空間，…」; and for unknown "Better Files
-  can't tell whether the running system uses this drive, so it can't be
-  ejected or formatted." / 「無法確定系統是否正在使用這個磁碟，所以不能退出或
-  格式化。」. Write to Drive does not list it.
-- The same answer refuses the request where it is carried out: Better
-  Files' session, the storage service (`storage.system.running_system`,
+  「這個磁碟上有系統正在使用的置換空間，…」; "The system's mount table
+  (/etc/fstab) names this drive, …" / 「系統的掛載表（/etc/fstab）指定了這個
+  磁碟，…」; and for unknown "Better Files can't tell whether the running
+  system uses this drive, so it can't be ejected or formatted." /
+  「無法確定系統是否正在使用這個磁碟，所以不能退出或格式化。」. Write to Drive
+  does not list it.
+- Better Files reads the rule itself, from its own drive scan, for its own
+  rows and for the storage service's (by the UDisks2 drive object a report
+  names). The storage service's reports carry no such field: a Better Files
+  already released reads them strictly, and a field it does not know would
+  make it drop the whole device list. Reports a client reads are no longer
+  `deny_unknown_fields` from now on; requests the service reads still are.
+  `crates/storage-service/tests/released_client.rs` reads this service's
+  replies with v0.2.16's own types.
+- The same rule refuses the request where it is carried out: Better Files'
+  session, the storage service (`storage.system.running_system`,
   `storage.system.folder:<path>`, `storage.system.swap`,
-  `storage.system.unknown`), the direct UDisks2 eject and unmount of a drive
-  the storage service does not list, and `manager-daemon`'s
-  `SetMountAutomatically` (`system_drive`, which also locks the drive's
-  "Mount automatically" choice in both windows).
-- A storage service that predates the answer reports nothing, and its
-  devices read as unknown.
+  `storage.system.table`, `storage.system.unknown`), the direct UDisks2
+  eject and unmount of a drive the storage service does not list, Better
+  Manager's Drives section, and `manager-daemon`'s `SetMountAutomatically`
+  (`system_drive`, which also locks the drive's "Mount automatically" choice
+  in both windows). A window mounts or unmounts after a change only when
+  the daemon made it.
+- **The device confirmed is the device erased.** Format and Write to Drive
+  carry the stable identity of the device the person confirmed. The dialog
+  closes, saying "The drive was removed or replaced while this was open, so
+  nothing was erased." / 「這個視窗開著時磁碟被拔除或換掉了，所以沒有清除任何
+  東西。」, when its device goes or another device takes its object path; the
+  session compares again before sending, and the service refuses
+  (`storage.erase.device_changed`) when the device at that path is another
+  one. A service older than the field is asked again without it, after the
+  window's own comparison.
 
-Known limits: a system path on ZFS or bcachefs names no drive, so while
-one is mounted every drive is unknown; and a swap *file* on a removable
-drive is not traced (the kernel refuses that drive's unmount as busy).
+Known limits: a swap file is traced to the drive its filesystem is on, and a
+loop file whose backing file is gone leaves every other drive unknown.
 
 ## Devices without the storage service
 
