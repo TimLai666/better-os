@@ -193,20 +193,16 @@ fn etc_dir(roots: &Roots) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("/etc"))
 }
 
+/// The machine's os-release, through `better_core::host`, the one reader of
+/// the file: `etc/os-release` under the machine's root, else
+/// `usr/lib/os-release`. The root is `/etc`'s parent, so a snapshot redirects
+/// it as it redirects `/etc`.
 fn collect_os(inventory: &mut Inventory, roots: &Roots) {
-    let Some(text) = read_trimmed(&etc_dir(roots).join("os-release")) else {
+    let etc = etc_dir(roots);
+    let root = etc.parent().unwrap_or(Path::new("/"));
+    let Ok(text) = better_core::host::read_os_release_under(root) else {
         return;
     };
-    let mut fields = BTreeMap::new();
-    for line in text.lines() {
-        let Some((key, value)) = line.split_once('=') else {
-            continue;
-        };
-        let value = value.trim().trim_matches('"').to_string();
-        if !value.is_empty() {
-            fields.insert(key.trim().to_string(), value);
-        }
-    }
     for (field, key) in [
         ("NAME", "os.name"),
         ("VERSION", "os.version"),
@@ -214,8 +210,8 @@ fn collect_os(inventory: &mut Inventory, roots: &Roots) {
         ("VERSION_ID", "os.version_id"),
         ("VARIANT", "os.variant"),
     ] {
-        if let Some(value) = fields.get(field) {
-            inventory.insert(key, InventoryEntry::public(value.clone()));
+        if let Some(value) = better_core::host::os_release_field(&text, field) {
+            inventory.insert(key, InventoryEntry::public(value));
         }
     }
 }
@@ -566,6 +562,22 @@ mod tests {
             inventory.get("kernel.release").unwrap().value,
             "6.11.0-19-generic"
         );
+    }
+
+    #[test]
+    fn a_machine_with_only_the_vendor_os_release_is_still_named() {
+        let directory = snapshot();
+        let root = directory.path();
+        std::fs::remove_file(root.join("etc/os-release")).unwrap();
+        std::fs::create_dir_all(root.join("usr/lib")).unwrap();
+        std::fs::write(
+            root.join("usr/lib/os-release"),
+            "NAME=\"Ubuntu\"\nVERSION_ID=\"24.04\"\n",
+        )
+        .unwrap();
+        let inventory = audit(root);
+        assert_eq!(inventory.get("os.name").unwrap().value, "Ubuntu");
+        assert_eq!(inventory.get("os.version_id").unwrap().value, "24.04");
     }
 
     #[test]

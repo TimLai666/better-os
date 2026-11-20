@@ -193,9 +193,27 @@ impl SearchState {
 
     /// The scope, named for a person.
     pub fn scope_label(&self, location: &Location, c: &'static Copy) -> String {
+        self.scope_label_on(location, c, crate::drives::running_system_name())
+    }
+
+    /// The scope when the running system calls itself `system`: the root is
+    /// the system's drive, named as the path bar and the sidebar name it
+    /// (ticket 138), not `/`.
+    pub fn scope_label_on(
+        &self,
+        location: &Location,
+        c: &'static Copy,
+        system: Option<&str>,
+    ) -> String {
         match self.scope.as_ref() {
             Some(SearchScope::CurrentLocation(_)) | None => {
-                format!("{} {}", c.search_in, location.display_name())
+                let name = match location.as_local_path() {
+                    Some(path) if path.as_path() == std::path::Path::new("/") => {
+                        crate::drives::system_drive_name(system, c)
+                    }
+                    _ => location.display_name(),
+                };
+                format!("{} {name}", c.search_in)
             }
             Some(SearchScope::Recursive(_)) => c.search_scope_recursive.to_string(),
             Some(SearchScope::Indexed) => c.search_scope_indexed.to_string(),

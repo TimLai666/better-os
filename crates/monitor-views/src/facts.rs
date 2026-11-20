@@ -129,6 +129,12 @@ impl ProcessFacts {
             .and_then(|pid| u32::try_from(pid).ok())
     }
 
+    /// The start time in hundredths of a second, which tells two processes
+    /// on one PID apart: see [`ProcessFacts::action_target`].
+    pub fn start_token(&self) -> Option<u64> {
+        self.start_time.copied().map(|start| (start * 100.0) as u64)
+    }
+
     /// The target a process action would apply to.
     ///
     /// The start time doubles as the reuse token. It is in seconds and is
@@ -140,8 +146,8 @@ impl ProcessFacts {
         if let Some(uid) = self.uid.copied().and_then(|uid| u32::try_from(uid).ok()) {
             target = target.owned_by(uid);
         }
-        if let Some(start) = self.start_time.copied() {
-            target = target.started_at((start * 100.0) as u64);
+        if let Some(start) = self.start_token() {
+            target = target.started_at(start);
         }
         if let Some(nice) = self.nice.copied().and_then(|nice| i32::try_from(nice).ok()) {
             target = target.with_nice(nice);

@@ -1,4 +1,5 @@
 mod app;
+mod card_notes;
 mod charts;
 mod i18n;
 mod layout;

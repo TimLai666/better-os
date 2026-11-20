@@ -137,6 +137,35 @@ Two radii, as on Windows 11. 4px for everything that sits in the page: buttons, 
 
 A selected row in a list has a subtle fill across the row and a 3px accent bar, 16px tall and rounded, at its leading edge, never an outline. A text field has a 1px stroke whose bottom edge is the strong stroke at rest and a 2px accent line while focused; that line is the field's focus indicator. Every other control shows keyboard focus with WinUI's focus visual: a 2px ring in primary text color with a 1px inner ring in the opposite color, drawn 3px outside the control, and only when focus came from the keyboard.
 
+## Icons
+
+The owner decided on 2026-11-21 that icons inside a window are full-colour pictures, as in Windows 11's File Explorer and Settings, and no longer the single-colour line icons the toolkit brings with it. `design/design-demos/icon-directions.html` shows the old icons beside the chosen ones.
+
+There are three kinds, told apart by what the icon stands for.
+
+**An object icon** stands for a thing: a folder, a device, a file kind, a settings category, a component, a place in a navigation pane. It is a filled picture with no outline.
+
+- Each one has its own outline and the colour the thing has in the world: a red-roofed house for Home, a photograph with a sun and hills for Pictures, a clapperboard for Videos. No shared tile, badge, or folder shape sits behind them.
+- Light comes from the top left in every icon: the top of a shape is lighter than its bottom, and a shape may carry one soft gradient to show it. Nothing glows and nothing casts a shadow outside its own shape.
+- An icon uses at most four colours and is drawn on a 24px grid so that it still reads at 16px and 20px, the two sizes rows use.
+- The same picture is used in the light and the dark appearance, so every icon must stand out against both window backgrounds (`#f3f3f3` and `#202020`). A pale shape, such as a sheet of paper, gets a thin edge in a darker shade of its own colour.
+- A disabled object icon is drawn at 36% opacity, the same as disabled text.
+
+**An action icon** stands for something a button does: copy, rename, delete, refresh, new folder. It is a filled shape in two layers of one colour, and it never carries a colour of its own, because a row of buttons should not compete with the content. `design/design-demos/action-icon-options.html` shows the approved drawings under "三（修過）".
+
+- The main layer draws the body of the thing in the full colour: the front sheet of copy, the pencil's shaft, the folder, the whole bin. The second layer draws only a minor part in a lighter shade of the same colour: the sheet behind, the pencil's tip, the folder's tab, the two slots on the bin. The body is never the lighter layer.
+- The two layers do not overlap. Where one sits behind the other, only its visible part is drawn, with a gap between them. The lighter shade is a colour of its own in each appearance, not the full colour made transparent, which turns muddy on a dark background.
+- A mark on top of a shape, such as the plus on the new-folder icon, is cut out of it.
+- The colour depends on where the icon is. Alone, as in a toolbar button, it is the accent and drawn at 18px. Beside a text label, as in a menu row, it is the secondary text colour and drawn at 16px, so the words lead. Delete, and any other action that destroys something, is the critical colour in both places.
+
+Four other treatments were tried on 2026-11-21 and the owner turned each down: a line icon with one coloured part reads as neither line nor colour; a detailed, shaded picture is too realistic for a button; a flat shape in its own bright colour per action looks childish in a row; and accent-coloured icons beside menu labels are too heavy.
+
+**A plain symbol** is the third kind: arrows, chevrons, close, check, and the window buttons. These are marks, not pictures, and stay a 2px line with round ends in the primary text colour.
+
+An icon in an info bar keeps its status colour as before. A tray icon stays a single-colour symbolic icon, because the desktop recolours those for its own panel.
+
+Every icon is drawn once, in `better-ui`, and a window asks for it by name; a window does not draw its own. In Better Files, the folder and file pictures in the content area still come from the desktop's icon theme.
+
 ## Window frame
 
 GNOME's compositor draws no frame for a Wayland window, so every application draws its own; GTK applications, Chromium, and Electron look like the desktop because GTK draws theirs from the current theme. Better OS does the same (ticket 108): `better_ui::system_frame` opens GTK 4 (and libadwaita when installed) at run time, asks it to draw the window frame with its shadow, the header bar, and the title buttons in each state into Cairo images, and the kit paints those images. It never imitates a theme by hand. Chromium's `ui/gtk/window_frame_provider_gtk.cc` and `nav_button_provider_gtk.cc` are the method.

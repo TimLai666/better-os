@@ -150,12 +150,31 @@ require_commands() {
 # cannot share that code, so the two are kept matching by hand and by fixture:
 # every case below has a test there. Change one and change the other, or the
 # installer fetches one release's packages while the client plans for another.
+# Which file is read follows the same rule as `read_os_release_under` there:
+# /etc/os-release, and /usr/lib/os-release only when the first does not exist.
+#
+# The file, or the root it is looked for under, is a variable so the mapping
+# can be exercised against a fixture for a release this machine is not
+# running. It only chooses which published package is fetched, so overriding
+# it buys nothing a person could not get by downloading the other package by
+# hand. BETTER_OS_INSTALL_OS_RELEASE names one file; BETTER_OS_INSTALL_ROOT
+# names a root to look under in that order.
+os_release_path() {
+    if [[ -n "${BETTER_OS_INSTALL_OS_RELEASE:-}" ]]; then
+        printf '%s\n' "$BETTER_OS_INSTALL_OS_RELEASE"
+        return
+    fi
+    local root="${BETTER_OS_INSTALL_ROOT:-}"
+    if [[ -e "$root/etc/os-release" ]]; then
+        printf '%s\n' "$root/etc/os-release"
+    else
+        printf '%s\n' "$root/usr/lib/os-release"
+    fi
+}
+
 detect_ubuntu_release() {
-    # The path is a variable so the mapping can be exercised against a fixture
-    # for a release this machine is not running. It only chooses which
-    # published package is fetched, so overriding it buys nothing a person
-    # could not get by downloading the other package by hand.
-    local os_release="${BETTER_OS_INSTALL_OS_RELEASE:-/etc/os-release}"
+    local os_release=""
+    os_release="$(os_release_path)"
     [[ -r "$os_release" ]] || fail "cannot read $os_release, so this system cannot be identified."
 
     local distribution_id="" version_id="" ubuntu_codename="" version_codename="" pretty_name=""

@@ -170,6 +170,31 @@ impl AppsModel {
         self.expanded.iter().any(|expanded| expanded == key)
     }
 
+    /// Whether process `pid` is one of group `key`'s.
+    pub fn group_holds(&self, key: &str, pid: u32) -> bool {
+        self.applications
+            .iter()
+            .chain(self.services.iter())
+            .find(|row| row.group.key == key)
+            .is_some_and(|row| {
+                row.member_indices
+                    .iter()
+                    .any(|index| self.processes.get(*index).is_some_and(|p| p.pid == pid))
+            })
+    }
+
+    /// The groups that are open, by key.
+    pub fn expanded(&self) -> &[String] {
+        &self.expanded
+    }
+
+    /// Open (`true`) or close a group.
+    pub fn set_expanded(&mut self, key: &str, expanded: bool) {
+        if self.is_expanded(key) != expanded {
+            self.toggle_expanded(key);
+        }
+    }
+
     pub fn toggle_expanded(&mut self, key: &str) {
         match self.expanded.iter().position(|expanded| expanded == key) {
             Some(index) => {

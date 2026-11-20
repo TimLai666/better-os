@@ -12,22 +12,35 @@
 //! and matched by `install.sh`, so the client cannot drift from the service
 //! that will refuse its plan.
 
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use better_core::host::{
-    describe_distribution, describe_os_release, resolve_distribution_id, resolve_ubuntu_release,
+    describe_distribution, describe_os_release, read_os_release_under, resolve_distribution_id,
+    resolve_ubuntu_release,
 };
 
 use crate::{MockPlatform, PlatformError, SystemCapabilities, SystemProfile};
 
 /// Where the os-release text comes from.
 enum OsReleaseSource {
-    Path(PathBuf),
+    /// The system under `root`, read by `better_core::host` — the daemon's
+    /// reader too, so the two cannot read different files. `primary` is the
+    /// first file that reader tries, kept for [`HostPlatform::os_release_path`].
+    Root { root: PathBuf, primary: PathBuf },
     /// Fixture content, so a test can exercise a release this machine is not
     /// running without touching the filesystem.
     Content(String),
+}
+
+impl OsReleaseSource {
+    fn under(root: &Path) -> Self {
+        let first = better_core::host::OS_RELEASE_FILES[0].trim_start_matches('/');
+        Self::Root {
+            root: root.to_path_buf(),
+            primary: root.join(first),
+        }
+    }
 }
 
 /// Where the architecture comes from.
@@ -49,7 +62,7 @@ impl HostPlatform {
     /// The machine this process is running on.
     pub fn new() -> Self {
         Self {
-            os_release: OsReleaseSource::Path(PathBuf::from("/etc/os-release")),
+            os_release: OsReleaseSource::under(Path::new("/")),
             architecture: ArchitectureSource::Dpkg,
         }
     }
@@ -67,20 +80,20 @@ impl HostPlatform {
         }
     }
 
-    /// The file this probe reads, when it reads one. `None` means it was built
-    /// from a fixture.
+    /// The file this probe reads first, when it reads one (`/usr/lib/os-release`
+    /// follows only when it does not exist). `None` means it was built from a
+    /// fixture.
     pub fn os_release_path(&self) -> Option<&Path> {
         match &self.os_release {
-            OsReleaseSource::Path(path) => Some(path.as_path()),
+            OsReleaseSource::Root { primary, .. } => Some(primary.as_path()),
             OsReleaseSource::Content(_) => None,
         }
     }
 
     fn os_release_text(&self) -> Result<String, PlatformError> {
         match &self.os_release {
-            OsReleaseSource::Path(path) => fs::read_to_string(path).map_err(|error| {
-                PlatformError::UnsupportedHost(format!("cannot read {}: {error}", path.display()))
-            }),
+            OsReleaseSource::Root { root, .. } => read_os_release_under(root)
+                .map_err(|error| PlatformError::UnsupportedHost(error.to_string())),
             OsReleaseSource::Content(content) => Ok(content.clone()),
         }
     }
@@ -238,13 +251,29 @@ mod tests {
     #[test]
     fn an_unreadable_os_release_is_reported_rather_than_defaulted() {
         let probe = HostPlatform {
-            os_release: OsReleaseSource::Path(PathBuf::from("/nonexistent/os-release")),
+            os_release: OsReleaseSource::under(Path::new("/nonexistent")),
             architecture: ArchitectureSource::Fixed("amd64".to_string()),
         };
         assert!(matches!(
             probe.profile(),
             Err(PlatformError::UnsupportedHost(_))
         ));
+    }
+
+    #[test]
+    fn a_host_with_only_the_vendor_os_release_resolves_through_the_shared_reader() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("usr/lib")).unwrap();
+        std::fs::write(
+            root.path().join("usr/lib/os-release"),
+            "NAME=\"Ubuntu\"\nID=ubuntu\nVERSION_ID=\"24.04\"\nUBUNTU_CODENAME=noble\n",
+        )
+        .unwrap();
+        let probe = HostPlatform {
+            os_release: OsReleaseSource::under(root.path()),
+            architecture: ArchitectureSource::Fixed("amd64".to_string()),
+        };
+        assert_eq!(probe.profile().unwrap().release, "24.04");
     }
 
     #[test]

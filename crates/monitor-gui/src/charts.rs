@@ -794,6 +794,10 @@ pub(crate) struct TableSettings {
     pub(crate) precedence: monitor_views::grouping::GroupingPrecedence,
     /// The applications the person opened, by group key.
     pub(crate) expanded: Vec<String>,
+    /// The processes whose children the person hid on the Details page's
+    /// tree, and those hidden while the current search is typed.
+    pub(crate) collapsed: Vec<monitor_views::ProcessKey>,
+    pub(crate) filter_collapsed: Vec<monitor_views::ProcessKey>,
 }
 
 impl TableSettings {
@@ -811,6 +815,12 @@ impl TableSettings {
         if model.show_command_line() != self.command_lines {
             model.set_show_command_line(self.command_lines);
         }
+        if model.collapsed() != self.collapsed.as_slice() {
+            model.set_collapsed(self.collapsed.clone());
+        }
+        if model.filter_collapsed() != self.filter_collapsed.as_slice() {
+            model.set_filter_collapsed(self.filter_collapsed.clone());
+        }
     }
 
     /// Make an applications model show these settings.
@@ -818,10 +828,19 @@ impl TableSettings {
         if model.filter() != self.filter {
             model.set_filter(self.filter.clone());
         }
+        // Exactly these: a group closed while the round was being built
+        // stays closed rather than springing open for a round.
+        let stale: Vec<String> = model
+            .expanded()
+            .iter()
+            .filter(|key| !self.expanded.contains(key))
+            .cloned()
+            .collect();
+        for key in &stale {
+            model.set_expanded(key, false);
+        }
         for key in &self.expanded {
-            if !model.is_expanded(key) {
-                model.toggle_expanded(key);
-            }
+            model.set_expanded(key, true);
         }
     }
 }
