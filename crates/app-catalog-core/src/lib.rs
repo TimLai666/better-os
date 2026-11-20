@@ -24,6 +24,7 @@ pub mod entry;
 pub mod error;
 pub mod exec;
 pub mod plan;
+pub mod reasons;
 pub mod record;
 
 pub use catalog::{Catalog, CatalogBuilder, DirectoryRank, RejectedEntry, ShadowedEntry};

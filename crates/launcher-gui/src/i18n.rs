@@ -265,3 +265,105 @@ pub fn when(locale: Locale, now: u64, then: u64) -> String {
         (d, _, _) => format!("{d} days ago"),
     }
 }
+
+/// The details of a failed launch, in words (ticket 172). A key the launcher
+/// or the application catalog gave is its sentence, with what followed the
+/// key (an application's id, a program) in parentheses; anything else is the
+/// system's own message, shown as it is under a label saying so.
+pub fn failure_details(text: &str, locale: Locale) -> String {
+    let zh = locale.resolved() == Locale::ZhTw;
+    let text = text.trim();
+    let (key, detail) = match text.split_once(':') {
+        Some((key, detail)) => (key, detail.trim()),
+        None => (text, ""),
+    };
+    let own = match key {
+        "launcher.platform.error.unknown_application" => Some(if zh {
+            "這個應用程式已經不在了，可能已被移除。"
+        } else {
+            "The app is no longer there; it may have been removed."
+        }),
+        "launcher.platform.error.activation_failed" => Some(if zh {
+            "已經開著的 Better Launcher 沒有回應。"
+        } else {
+            "The Better Launcher that is already open didn't answer."
+        }),
+        _ => None,
+    };
+    let language = if zh {
+        app_catalog_core::reasons::Language::TraditionalChinese
+    } else {
+        app_catalog_core::reasons::Language::English
+    };
+    let sentence = own.or_else(|| app_catalog_core::reasons::sentence(text, language));
+    let is_key = key.contains('.')
+        && key
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c == '_' || c == '.');
+    match sentence {
+        Some(sentence) if detail.is_empty() => sentence.to_string(),
+        Some(sentence) if zh => format!("{sentence}（{detail}）"),
+        Some(sentence) => format!("{sentence} ({detail})"),
+        None if is_key && zh => format!("原因不明（{text}）"),
+        None if is_key => format!("Unknown reason ({text})"),
+        None if zh => format!("系統回報：{text}"),
+        None => format!("The system said: {text}"),
+    }
+}
+
+#[cfg(test)]
+mod failure_tests {
+    use super::{Locale, failure_details};
+
+    /// Ticket 172: no launch failure's details show a key, in either
+    /// language; every key launcher-platform can emit has its own sentence.
+    #[test]
+    fn a_failed_launch_says_why_in_words_and_never_the_key() {
+        let platform = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../launcher-platform/src/lib.rs");
+        let text = std::fs::read_to_string(platform).unwrap();
+        let mut keys: Vec<&str> = text
+            .match_indices("\"launcher.platform.error.")
+            .map(|(at, _)| {
+                let rest = &text[at + 1..];
+                let end = rest
+                    .find(|c: char| !(c.is_ascii_lowercase() || c == '_' || c == '.'))
+                    .unwrap_or(rest.len());
+                &rest[..end]
+            })
+            .collect();
+        assert!(keys.contains(&"launcher.platform.error.unknown_application"));
+        keys.extend([
+            "catalog.launch.error.relative_path",
+            "catalog.platform.error.spawn_failed",
+        ]);
+        for key in keys {
+            for locale in [Locale::EnUs, Locale::ZhTw] {
+                let said = failure_details(&format!("{key}:org.gnome.Maps.desktop"), locale);
+                assert!(
+                    !said.contains("launcher.platform") && !said.contains("catalog."),
+                    "{said}"
+                );
+                assert!(
+                    !said.contains("Unknown reason") && !said.contains("原因不明"),
+                    "{said}"
+                );
+            }
+        }
+        assert_eq!(
+            failure_details(
+                "launcher.platform.error.unknown_application:org.gnome.Maps.desktop",
+                Locale::EnUs
+            ),
+            "The app is no longer there; it may have been removed. (org.gnome.Maps.desktop)"
+        );
+        assert_eq!(
+            failure_details("No such file or directory (os error 2)", Locale::ZhTw),
+            "系統回報：No such file or directory (os error 2)"
+        );
+        assert_eq!(
+            failure_details("launcher.something.new", Locale::EnUs),
+            "Unknown reason (launcher.something.new)"
+        );
+    }
+}

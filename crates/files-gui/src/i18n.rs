@@ -603,7 +603,16 @@ pub struct Copy {
 /// What the storage service's, the disk service's and the job engine's
 /// error keys say, in one language ([`crate::errors::explain`] picks the
 /// sentence). `{device}`, `{operation}` and `{detail}` are filled in.
+/// Which language an [`ErrorCopy`] is, for the sentences kept in
+/// `errors::SENTENCES` rather than in a field of their own.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ErrorLanguage {
+    English,
+    TraditionalChinese,
+}
+
 pub struct ErrorCopy {
+    pub language: ErrorLanguage,
     pub erase_busy: &'static str,
     pub erase_not_confirmed: &'static str,
     pub image_unmount_failed: &'static str,
@@ -1146,6 +1155,7 @@ pub const EN_US: Copy = Copy {
     no_filter_matches: "Nothing in this folder matches",
     type_unknown_file: "File",
     errors: ErrorCopy {
+        language: ErrorLanguage::English,
         erase_busy: "Something is still writing to this drive. Wait until it finishes, then try again.",
         erase_not_confirmed: "Nothing was erased: the erase was not confirmed.",
         image_unmount_failed: "A volume on the drive ({device}) is in use and could not be unmounted, so nothing was written. Close what is using it and try again.",
@@ -1687,6 +1697,7 @@ pub const ZH_TW: Copy = Copy {
     no_filter_matches: "這個資料夾沒有相符的項目",
     type_unknown_file: "檔案",
     errors: ErrorCopy {
+        language: ErrorLanguage::TraditionalChinese,
         erase_busy: "還有東西正在寫入這個磁碟。請等它完成後再試一次。",
         erase_not_confirmed: "沒有清除任何東西：清除動作沒有被確認。",
         image_unmount_failed: "磁碟上的一個磁區（{device}）正在使用中，無法卸載，所以沒有寫入。請關閉使用它的程式後再試一次。",

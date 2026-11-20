@@ -203,13 +203,23 @@ impl Copy {
     }
 
     /// The details of a failed read or change: a key the service or this page
-    /// gave (`awake.…`) as its sentence, and the system's own message as it is,
-    /// because an error report is where someone diagnosing it reads that.
+    /// gave (`awake.…`) as its sentence, and the system's own message under a
+    /// label saying whose words they are, because an error report is where
+    /// someone diagnosing it reads them.
     pub(crate) fn details(&self, details: &str) -> String {
         if details.trim_start().starts_with("awake.") {
             self.said(details)
+        } else if details.trim().is_empty() {
+            String::new()
         } else {
-            details.to_string()
+            match self.reason_language {
+                awake_ipc::reasons::Language::English => {
+                    format!("The system said: {}", details.trim())
+                }
+                awake_ipc::reasons::Language::TraditionalChinese => {
+                    format!("系統回報：{}", details.trim())
+                }
+            }
         }
     }
 }

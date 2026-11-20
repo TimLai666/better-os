@@ -171,3 +171,178 @@ fn every_key_reads_as_a_sentence_in_both_languages() {
     // Text that is no key is left as it is.
     assert_eq!(explain("Sent to Phone.", &EN_US), "Sent to Phone.");
 }
+
+/// Names of enum values, not messages: the window labels each from its
+/// typed value (`i18n`'s job-state, operation, conflict, confidence, format,
+/// scope, view and scale labels), and the string is only what a job log or a
+/// preferences file stores.
+const LABEL_FAMILIES: &[&str] = &[
+    "files.job.state.",
+    "files.operation.kind.",
+    "files.conflict.kind.",
+    "files.job.confidence.",
+    "files.archive.format.",
+    "files.search.scope.",
+    "files.view.",
+    "files.scale.",
+];
+
+/// The production lines of a source file, before its `#[cfg(test)] mod`.
+fn production(text: &str) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut out = String::new();
+    for (index, line) in lines.iter().enumerate() {
+        if line.trim() == "#[cfg(test)]"
+            && lines
+                .get(index + 1)
+                .is_some_and(|next| next.trim_start().starts_with("mod "))
+        {
+            break;
+        }
+        if line.trim_start().starts_with("//") {
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
+}
+
+fn keys_in(directory: &std::path::Path, into: &mut std::collections::BTreeSet<String>) {
+    for entry in std::fs::read_dir(directory).unwrap().flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            keys_in(&path, into);
+            continue;
+        }
+        let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+        // The table itself names every key; it is the answer, not the
+        // question.
+        if path.extension().is_none_or(|e| e != "rs")
+            || stem == "tests"
+            || stem.ends_with("_tests")
+            || path.ends_with("files-gui/src/errors.rs")
+        {
+            continue;
+        }
+        let text = production(&std::fs::read_to_string(&path).unwrap());
+        for prefix in ["\"files.", "\"storage."] {
+            for (at, _) in text.match_indices(prefix) {
+                let rest = &text[at + 1..];
+                let end = rest
+                    .find(|c: char| {
+                        !(c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '.')
+                    })
+                    .unwrap_or(rest.len());
+                let key = rest[..end].trim_end_matches('.');
+                if key.matches('.').count() >= 2 {
+                    into.insert(key.to_string());
+                }
+            }
+        }
+    }
+}
+
+/// Every message key the crates below the window and the window itself can
+/// emit (ticket 172).
+fn emitted() -> std::collections::BTreeSet<String> {
+    let crates = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
+    let mut keys = std::collections::BTreeSet::new();
+    for member in [
+        "files-core",
+        "files-platform",
+        "files-operations",
+        "files-preview",
+        "files-search",
+        "storage-core",
+        "storage-service",
+        "files-gui",
+    ] {
+        keys_in(&crates.join(member).join("src"), &mut keys);
+    }
+    keys.retain(|key| !LABEL_FAMILIES.iter().any(|family| key.starts_with(family)));
+    keys
+}
+
+/// Whether text shows a key (`files.trash.error.io`), as opposed to a
+/// sentence that ends on the word ("a list of files.").
+fn shows_key(text: &str) -> bool {
+    ["files.", "storage."].iter().any(|family| {
+        text.match_indices(family)
+            .any(|(at, _)| text[at + family.len()..].starts_with(|c: char| c.is_ascii_lowercase()))
+    })
+}
+
+#[test]
+fn every_message_key_the_files_and_storage_crates_emit_has_a_sentence_in_both_languages() {
+    let keys = emitted();
+    for required in [
+        "files.trash.error.no_home",
+        "files.archive.entry.parent_traversal",
+        "files.listing.error.permission_denied",
+        "storage.unknown.signal_unsupported",
+        "files.preview.degraded.too_large",
+    ] {
+        assert!(keys.contains(required), "the scan missed {required}");
+    }
+    for key in &keys {
+        for c in [&EN_US, &ZH_TW] {
+            for text in [key.clone(), format!("{key}:/media/stick/a.iso")] {
+                let said = explain(&text, c);
+                assert!(
+                    !said.contains("Unknown reason") && !said.contains("原因不明"),
+                    "{text} has no sentence: {said}"
+                );
+                assert!(!shows_key(&said), "{text} shows a key: {said}");
+                assert!(
+                    !said.contains("()") && !said.contains("（）"),
+                    "{text}: {said}"
+                );
+            }
+        }
+    }
+    // The reverse: a sentence nothing emits is a key that went away.
+    for (key, _, _) in files_gui::errors::SENTENCES {
+        if !key.contains(':') {
+            assert!(
+                keys.contains(*key),
+                "{key} has a sentence but nothing emits it"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_key_inside_a_sentences_detail_is_said_as_its_own_sentence() {
+    let error = OperationError::TrashUnavailable {
+        reason: "files.trash.error.no_home".into(),
+    };
+    assert_eq!(
+        explain(&error.to_string(), &EN_US),
+        format!(
+            "{} There is no home folder to keep the trash in.",
+            EN_US.errors.trash_unavailable.replace(" ({detail})", "")
+        )
+    );
+    let refused = OperationError::ArchiveEntryRefused {
+        path: PathBuf::from("/home/a/evil.tar"),
+        entry: PathBuf::from("../etc/passwd"),
+        reason: "files.archive.entry.parent_traversal".into(),
+    };
+    let said = explain(&refused.to_string(), &ZH_TW);
+    assert!(said.contains("/home/a/evil.tar"), "{said}");
+    assert!(
+        said.ends_with("這個項目的名稱用「..」跳出了資料夾。"),
+        "{said}"
+    );
+    assert!(!said.contains("files."), "{said}");
+    let limit = OperationError::ArchiveLimitExceeded {
+        path: PathBuf::from("/home/a/big.zip"),
+        limit: files_operations::ArchiveLimit::Entries,
+        maximum: 100_000,
+    };
+    assert_eq!(
+        explain(&limit.to_string(), &EN_US),
+        "The archive holds more than 100000 items, which is more than Better Files unpacks (/home/a/big.zip)."
+    );
+}

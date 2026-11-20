@@ -53,6 +53,25 @@ impl From<IpcError> for ClientError {
     }
 }
 
+/// A failed call, as what it means: a service nobody runs (the bus says the
+/// name has no owner and nothing can start it) is the service not running,
+/// not a connection that broke (ticket 172: the window said "the connection
+/// failed" for a service that was simply not there).
+pub(crate) fn call_error(error: zbus::Error) -> ClientError {
+    let text = error.to_string();
+    let not_running = [
+        "org.freedesktop.DBus.Error.ServiceUnknown",
+        "org.freedesktop.DBus.Error.NameHasNoOwner",
+    ]
+    .iter()
+    .any(|name| text.contains(name));
+    if not_running {
+        ClientError::ServiceUnavailable(text)
+    } else {
+        ClientError::Transport(text)
+    }
+}
+
 pub(crate) struct ServiceClient {
     proxy: AwakeProxy<'static>,
 }
@@ -129,10 +148,7 @@ impl ServiceClient {
     }
 
     async fn call(&self, document: &str) -> Result<String, ClientError> {
-        self.proxy
-            .request(document)
-            .await
-            .map_err(|error| ClientError::Transport(error.to_string()))
+        self.proxy.request(document).await.map_err(call_error)
     }
 
     pub(crate) async fn status_request(

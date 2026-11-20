@@ -1265,7 +1265,11 @@ pub fn outcome_label(outcome: &BindingOutcome, c: &'static Copy) -> String {
         BindingOutcome::Unsupported { detail, .. } => {
             format!("{} · {detail}", c.verification_unsupported)
         }
-        BindingOutcome::Skipped { reason } => format!("{} · {reason}", c.verification_not_run),
+        BindingOutcome::Skipped { reason } => format!(
+            "{} · {}",
+            c.verification_not_run,
+            crate::i18n::problem_sentence(reason, c.locale())
+        ),
     }
 }
 

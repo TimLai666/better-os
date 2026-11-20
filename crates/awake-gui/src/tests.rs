@@ -1175,6 +1175,27 @@ fn what_went_wrong_with_the_service_is_said_in_words_in_both_languages() {
         c.client_error(&ClientError::Transport("Connection reset".into())),
         "The connection to the Better Awake service failed. The system said: Connection reset"
     );
+    // One statement, punctuated, never the banner's title again.
+    let missing =
+        ClientError::ServiceUnavailable("org.freedesktop.DBus.Error.ServiceUnknown".into());
+    assert_eq!(
+        c.client_error(&missing),
+        "The Better Awake service is not running. The system said: org.freedesktop.DBus.Error.ServiceUnknown"
+    );
+    assert_eq!(
+        copy(Locale::ZhTw).client_error(&missing),
+        "Better Awake 服務沒有在執行。系統回報：org.freedesktop.DBus.Error.ServiceUnknown"
+    );
+    let banner = c.banner_detail(&missing).unwrap();
+    assert_eq!(
+        banner,
+        "The system said: org.freedesktop.DBus.Error.ServiceUnknown"
+    );
+    assert!(!banner.contains(c.service_unreachable));
+    assert_eq!(
+        c.banner_detail(&ClientError::ServiceUnavailable(String::new())),
+        None
+    );
     assert_eq!(
         copy(Locale::ZhTw).client_error(&ClientError::Transport("Connection reset".into())),
         "和 Better Awake 服務的連線中斷了。系統回報：Connection reset"
@@ -1195,4 +1216,23 @@ fn the_backend_detail_and_attention_are_sentences() {
         copy(Locale::EnUs).said("awake.backend.lease_lost"),
         "The system stopped keeping the computer awake, so Better Awake is asking it again."
     );
+}
+
+#[test]
+fn a_service_nobody_runs_is_not_running_rather_than_a_broken_connection() {
+    use crate::client::{ClientError, call_error};
+    let unknown = zbus::Error::MethodError(
+        zbus::names::OwnedErrorName::try_from("org.freedesktop.DBus.Error.ServiceUnknown").unwrap(),
+        Some("The name org.betteros.Awake1 was not provided by any .service files".into()),
+        zbus::message::Message::method_call("/", "Ping")
+            .unwrap()
+            .build(&())
+            .unwrap(),
+    );
+    assert!(matches!(
+        call_error(unknown),
+        ClientError::ServiceUnavailable(_)
+    ));
+    let broken = zbus::Error::InputOutput(std::sync::Arc::new(std::io::Error::other("reset")));
+    assert!(matches!(call_error(broken), ClientError::Transport(_)));
 }

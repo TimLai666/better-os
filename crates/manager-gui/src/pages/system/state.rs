@@ -334,7 +334,7 @@ impl ManagerApp {
                     },
                 },
                 None => WriteOutcome::Failed {
-                    details: "the system bus is not reachable".to_string(),
+                    details: "manager.system.bus_unreachable".to_string(),
                 },
             },
             cx,
@@ -349,7 +349,7 @@ impl ManagerApp {
             move || match buses().0 {
                 Some(system) => privileged::set_charge_limit(&system, percent),
                 None => WriteOutcome::Failed {
-                    details: "the system bus is not reachable".to_string(),
+                    details: "manager.system.bus_unreachable".to_string(),
                 },
             },
             cx,
@@ -363,7 +363,7 @@ impl ManagerApp {
             move || match buses().0 {
                 Some(system) => privileged::set_fan_mode(&system, mode),
                 None => WriteOutcome::Failed {
-                    details: "the system bus is not reachable".to_string(),
+                    details: "manager.system.bus_unreachable".to_string(),
                 },
             },
             cx,
@@ -395,7 +395,7 @@ impl ManagerApp {
                     }
                 }
                 _ => WriteOutcome::Failed {
-                    details: "the buses are not reachable".to_string(),
+                    details: "manager.system.buses_unreachable".to_string(),
                 },
             },
             cx,
@@ -415,7 +415,7 @@ impl ManagerApp {
                     Err(details) => WriteOutcome::Failed { details },
                 },
                 None => WriteOutcome::Failed {
-                    details: "neither XDG_CONFIG_HOME nor HOME is set".to_string(),
+                    details: "manager.system.no_config_home".to_string(),
                 },
             },
             cx,

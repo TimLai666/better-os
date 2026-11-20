@@ -1312,11 +1312,15 @@ mod no_key_on_screen {
             copy(Locale::ZhTw).details("awake.error.too_many_sessions"),
             "同時執行的工作階段太多了，請先結束一個再開始新的。"
         );
-        // The system's own message stays as it is: the error report is where
-        // someone diagnosing the failure reads it.
+        // The system's own message stays, under a label saying whose words
+        // they are: the error report is where someone diagnosing it reads it.
         assert_eq!(
             c.details("org.freedesktop.DBus.Error.NoReply: timed out"),
-            "org.freedesktop.DBus.Error.NoReply: timed out"
+            "The system said: org.freedesktop.DBus.Error.NoReply: timed out"
+        );
+        assert_eq!(
+            copy(Locale::ZhTw).details("org.freedesktop.DBus.Error.NoReply: timed out"),
+            "系統回報：org.freedesktop.DBus.Error.NoReply: timed out"
         );
     }
 }

@@ -196,14 +196,16 @@ impl AwakeApp {
                         .text_color(cx.theme().muted_foreground)
                         .child(c.service_unreachable_detail),
                 )
-                // What went wrong, in words, with the system's own message
-                // after it for someone who has to diagnose this.
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(c.client_error(detail)),
-                )
+                // What went wrong, when the title has not said it, and the
+                // system's own message for someone who has to diagnose this.
+                .when_some(c.banner_detail(detail), |view, line| {
+                    view.child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(line),
+                    )
+                })
                 .into_any_element(),
         )
     }

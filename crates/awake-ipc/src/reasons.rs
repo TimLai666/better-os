@@ -70,11 +70,6 @@ pub const PROVIDER_REASONS: &[(&str, &str, &str)] = &[
         "這台電腦沒有回報電源變壓器，所以無法判斷是否接上電源。",
     ),
     (
-        "awake.provider.no_power_supply",
-        "This computer reports no battery and no power adapter.",
-        "這台電腦沒有回報電池，也沒有回報電源變壓器。",
-    ),
-    (
         "awake.provider.wrong_provider",
         "Better Awake asked the wrong source for this reading. This is a fault in Better Awake.",
         "Better Awake 向錯誤的來源要求這項資料，這是 Better Awake 本身的問題。",
@@ -222,8 +217,8 @@ pub const SERVICE_REASONS: &[(&str, &str, &str)] = &[
     ),
     (
         "awake.error.lid_limit_out_of_range",
-        "That time limit for a closed lid is outside what Better Awake allows.",
-        "這個闔上螢幕的時間限制超出 Better Awake 允許的範圍。",
+        "A closed-lid time limit of {n} minutes is outside what Better Awake allows.",
+        "闔上螢幕 {n} 分鐘的時間限制超出 Better Awake 允許的範圍。",
     ),
     // Rules.
     (
@@ -334,8 +329,8 @@ pub const SERVICE_REASONS: &[(&str, &str, &str)] = &[
     // A rule that matches and is held back.
     (
         "awake.battery.below_stop_threshold",
-        "The battery is below this rule's stop level, so the rule is not keeping the computer awake.",
-        "電量低於這條規則的停止門檻，所以這條規則沒有讓電腦保持清醒。",
+        "The battery is at {n}%, below this rule's stop level, so the rule is not keeping the computer awake.",
+        "電量只剩 {n}%，低於這條規則的停止門檻，所以這條規則沒有讓電腦保持清醒。",
     ),
     (
         "awake.lid.closed_on_battery_limit",
@@ -446,8 +441,8 @@ pub const SERVICE_REASONS: &[(&str, &str, &str)] = &[
     ),
     (
         "awake.ipc.error.invalid_quick_sessions:too_many_lengths",
-        "There are too many lengths.",
-        "長度太多了。",
+        "There are {n} lengths, and at most 8 can be offered.",
+        "共有 {n} 個長度，最多只能提供 8 個。",
     ),
     (
         "awake.ipc.error.invalid_quick_sessions:duplicate_length",
@@ -456,8 +451,8 @@ pub const SERVICE_REASONS: &[(&str, &str, &str)] = &[
     ),
     (
         "awake.ipc.error.invalid_quick_sessions:length_out_of_range",
-        "A length is outside what Better Awake allows.",
-        "有個長度超出 Better Awake 允許的範圍。",
+        "A length of {n} minutes is outside what Better Awake allows.",
+        "{n} 分鐘的長度超出 Better Awake 允許的範圍。",
     ),
     (
         "awake.ipc.error.invalid_quick_sessions:default_out_of_range",
@@ -466,8 +461,8 @@ pub const SERVICE_REASONS: &[(&str, &str, &str)] = &[
     ),
     (
         "awake.ipc.error.invalid_quick_sessions:battery_out_of_range",
-        "The battery stop must be between 1 and 99 percent.",
-        "電量停止門檻必須介於 1% 到 99% 之間。",
+        "A battery stop of {n}% cannot be used: it must be between 1 and 99 percent.",
+        "電量停止門檻 {n}% 無法使用，必須介於 1% 到 99% 之間。",
     ),
     // Files the service keeps.
     (
@@ -605,8 +600,33 @@ pub fn reason(key: &str, language: Language) -> String {
             detail = tail;
         }
     }
+    // A number goes into the sentence where the sentence says what it is
+    // (`{n}`); a number the sentence has no place for (a session's id, a
+    // limit already said in words) is left out rather than hung on the end.
+    let numeric = |text: &str| {
+        text.chars()
+            .all(|c| c.is_ascii_digit() || c == ':' || c == '%')
+    };
+    let mut said = said.to_string();
+    if said.contains("{n}") {
+        let (number, rest) = match detail {
+            Some(text) => match text.split_once(':') {
+                Some((number, rest)) => (number, Some(rest.trim()).filter(|r| !r.is_empty())),
+                None => (text, None),
+            },
+            None => ("", None),
+        };
+        if number.is_empty() {
+            return said.replace(" {n}", "").replace("{n}", "");
+        }
+        said = said.replace("{n}", number);
+        detail = rest;
+    }
+    if detail.is_some_and(numeric) {
+        detail = None;
+    }
     match (detail, language) {
-        (None, _) => said.to_string(),
+        (None, _) => said,
         (Some(inner), Language::English) if inner.starts_with("awake.") => {
             format!("{said} {}", reason(inner, language))
         }
@@ -662,7 +682,13 @@ mod tests {
                 .file_stem()
                 .and_then(|stem| stem.to_str())
                 .unwrap_or("");
-            if stem == "tests" || stem.ends_with("_tests") {
+            // This file is the table: every key in it is a string literal,
+            // so reading it would make the reverse check below unable to
+            // fail (ticket 172's review).
+            if stem == "tests"
+                || stem.ends_with("_tests")
+                || path.ends_with("awake-ipc/src/reasons.rs")
+            {
                 continue;
             }
             let text = production(&std::fs::read_to_string(&path).unwrap());
@@ -799,7 +825,34 @@ mod tests {
                     .to_string(),
                 Language::TraditionalChinese
             ),
-            "長度太多了。（9）"
+            "共有 9 個長度，最多只能提供 8 個。"
+        );
+        assert_eq!(
+            reason(
+                &IpcError::InvalidQuickSessions(QuickSessionsError::LengthOutOfRange {
+                    minutes: 0
+                })
+                .to_string(),
+                Language::English
+            ),
+            "A length of 0 minutes is outside what Better Awake allows."
+        );
+        // A number the sentence has no place for is left out.
+        assert_eq!(
+            reason("awake.error.unknown_session:4", Language::English),
+            "That session has already ended."
+        );
+        assert_eq!(
+            reason(
+                &IpcError::InvalidQuickSessions(QuickSessionsError::DefaultOutOfRange { index: 8 })
+                    .to_string(),
+                Language::TraditionalChinese
+            ),
+            "預設長度不在提供的長度之中。"
+        );
+        assert_eq!(
+            reason("awake.battery.below_stop_threshold:12", Language::English),
+            "The battery is at 12%, below this rule's stop level, so the rule is not keeping the computer awake."
         );
     }
 
