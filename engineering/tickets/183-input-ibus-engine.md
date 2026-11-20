@@ -47,3 +47,7 @@ shows of it, and how the engine runs the new program after an update.
       and the next key is handled by the new one. Screenshots in
       `/home/tim/Developer/better-os-evidence/183/`.
 - [ ] fmt, clippy on stable, the crates' tests pass.
+
+## In the Better OS session (2026-11-21, ADR 0038 option D, decision C4)
+
+This ticket is GNOME's: IBus serves `cosmic-comp` no Wayland input method (ADR 0038), and in the session the input method is Fcitx 5 with Chewing (C4). Better Input reaches applications in the session through ticket 221's front end, chosen by the owner's decision S4 in `engineering/specs/better-os-session.md`; this ticket is unchanged for GNOME.

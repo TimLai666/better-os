@@ -56,3 +56,7 @@ runtime, and how the models are downloaded, stored, and removed.
       receives them.
 - [ ] fmt, clippy on stable, the crates' tests, and the license inventory check
       pass.
+
+## In the Better OS session (2026-11-21, ADR 0038 option D, decision C4)
+
+Nothing changes: capture is PipeWire's and the locked or inactive check is logind's in both sessions.

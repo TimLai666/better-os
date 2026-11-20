@@ -43,3 +43,7 @@ the owner chooses.
 - [ ] Against a real `dconf-service` on a private bus: apply, verify, restore,
       and the second read agreeing.
 - [ ] fmt, clippy on stable, the crates' tests pass.
+
+## In the Better OS session (2026-11-21, ADR 0038 option D, decision C4)
+
+This adapter writes GNOME's `org.gnome.desktop.input-sources` and stays GNOME's. In the session the input-source list is Fcitx 5's profile, written by the typed writer ticket 208 adds (with the same capture and restore), which ticket 221 uses to make Better Input the session's source; under S4 (a) the session's source is Better Input's own client instead. Nothing here changes.

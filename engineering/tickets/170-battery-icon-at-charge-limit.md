@@ -53,3 +53,14 @@ the same as a laptop running on battery.
   and English, light and dark.
 - The desktop's own icon either shows the held state or the ticket records,
   with the evidence, why it cannot yet and which ticket will.
+
+## Under ADR 0038's option D (2026-11-21)
+
+In the Better OS session the desktop's battery icon is the top bar's
+(ticket 157), which draws this ticket's rule, so the held state shows there
+with nothing of GNOME's to change. The GNOME half of the last bullet above
+shrinks to GNOME's own indicator while GNOME is the default: find out with
+evidence what it draws at the limit and whether anything outside shell code
+changes it, and if only shell code can, say so on the System page's charge
+limit card; do not write the relay ADR now, because the GNOME bar (tickets
+151 to 159) waits under option D.

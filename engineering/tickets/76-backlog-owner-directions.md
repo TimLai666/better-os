@@ -102,3 +102,17 @@ built with its whole feature set, in Fluent, and is not released until all of
 it works on a real desktop with nothing for the person to type. Better Files
 matches every feature of `omacom/folio` (MIT), rewritten in Rust and GPUI;
 Better Git matches GitHub Desktop.
+
+## 2026-11-21: direction 3 and the Better OS session
+
+The owner chose a Better OS session on COSMIC's compositor beside GNOME (ADR
+0038, option D; `engineering/specs/better-os-session.md`). It is the desktop a
+Debian-based Better OS would ship: Better OS's own surfaces on `cosmic-comp`,
+no GNOME Shell code. It does not make Better OS a distribution (ADR 0040,
+proposed, words what it does make it), and it does not settle direction 3's
+open questions. Two facts it adds to them: Debian has no COSMIC packages (ADR
+0038), so a Debian distribution would build the session's closure (14
+packages, or 13 with Better OS's own `cosmic-comp`, ADR 0039) itself rather
+than take it from System76's source as C2 allows on Zorin and Ubuntu; and it
+would need the signed repository of its own that AGENTS.md still forbids
+without a decision. Direction 4 (Omarchy) stays withdrawn.

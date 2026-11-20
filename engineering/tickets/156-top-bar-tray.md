@@ -2,6 +2,18 @@
 
 **Blocked by:** 150, 152
 
+## Under ADR 0038's option D (2026-11-21)
+
+The owner chose the Better OS session on `cosmic-comp` beside GNOME; the bar
+is built for the session first (ticket 152). In the session no AppIndicator
+extension holds `org.kde.StatusNotifierWatcher`, so the bar's watcher owns it
+from the start of the session and is never handed back: the Better Defaults
+entry "Tray icons in the top bar" and the headless GNOME Shell check below are
+GNOME's half and wait with ticket 151. The host, the clicks, the tray menus,
+the drawing, and the card rows are unchanged and checked in the session
+(ticket 201's VM) with Better Awake's and Better Monitor's trays and a
+libappindicator test item.
+
 ## Why
 
 Owner, 2026-11-12: while the top bar is on, every StatusNotifierItem shows in

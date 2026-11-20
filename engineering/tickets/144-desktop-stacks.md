@@ -1,9 +1,17 @@
 # Ticket 144 — Desktop stacks: files on the desktop grouped automatically
 
-**Blocked by:** the desktop-icons decision in ticket 143 (who draws the
-desktop: Better Files, COSMIC Files, or Zorin's extension), now decision C6
-of proposed [ADR 0038](/engineering/decisions/0038-cosmic-as-the-desktop.md),
-which recommends Better Files; on GNOME also ADR 0036's acceptance
+**Blocked by:** 214 (Better Files draws the desktop in the Better OS session).
+Before 2026-11-21: the desktop-icons decision of ticket 143, which the owner
+answered as C6 of [ADR 0038](/engineering/decisions/0038-cosmic-as-the-desktop.md)
+(Better Files); on GNOME also a desktop row in ADR 0036, which waits.
+
+## Under ADR 0038's option D (2026-11-21)
+
+The owner answered C6 on 2026-11-21: Better Files draws the desktop. So this
+ticket's blocker is met on the session side: in the Better OS session the
+desktop is ticket 214's layer surface, and stacks build on it. On GNOME the desktop stays Zorin's extension until a desktop row is added
+to ADR 0036, which waits with ticket 151 (C6: built only if the owner keeps
+building GNOME-only surfaces), so stacks ship in the session first.
 
 ## Why
 

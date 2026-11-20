@@ -49,3 +49,7 @@ better. This ticket builds the model path and the measurement that decides it.
       repository; the numbers in the table come from a run, with the command.
 - [ ] fmt, clippy on stable, the crates' tests, and the license inventory check
       pass.
+
+## In the Better OS session (2026-11-21, ADR 0038 option D, decision C4)
+
+Nothing changes: word choice and the quality gate are in the engine core. The gate decides the default input source in both sessions.
