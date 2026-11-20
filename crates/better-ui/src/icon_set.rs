@@ -622,7 +622,7 @@ mod renderer_tests {
             .copied()
             .filter(|p| p.kind() == Kind::Object)
             .collect();
-        assert_eq!(objects.len(), 86);
+        assert_eq!(objects.len(), 88);
         for size in [12.0, 16.0, 20.0, 24.0, 32.0, 40.0, 48.0, 64.0_f32] {
             for &picture in &objects {
                 let path = picture.path_for(size);

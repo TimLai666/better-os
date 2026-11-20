@@ -935,12 +935,8 @@ impl AwakeApp {
                     cx,
                 ))
                 .child(self.key_value(
-                    c.on_ac_power,
-                    match on_ac_power {
-                        Some(true) => c.on_ac_power,
-                        Some(false) => c.on_battery_power,
-                        None => c.unknown,
-                    },
+                    c.power_state,
+                    power_words(self.charge.as_ref(), on_ac_power, self.locale),
                     cx,
                 ))
                 .child(self.key_value(c.battery_stop_threshold, status.battery.summary(c), cx))
@@ -963,5 +959,27 @@ fn preset_key(length: PresetLength) -> String {
     match length {
         PresetLength::Indefinite => "indefinite".to_string(),
         PresetLength::Minutes { minutes } => minutes.to_string(),
+    }
+}
+
+/// The power row: the battery's state in the words every battery icon in
+/// Better OS uses (`hardware_core::charge_state`, ticket 170). Without a
+/// battery reading of its own, the window says only what the service saw.
+pub(crate) fn power_words(
+    charge: Option<&hardware_core::charge_state::ChargeReadings>,
+    on_ac_power: Option<bool>,
+    locale: crate::i18n::Locale,
+) -> String {
+    let c = copy(locale);
+    match charge {
+        Some(charge) => {
+            hardware_core::charge_state::battery_look(charge, crate::i18n::language(locale)).words
+        }
+        None => match on_ac_power {
+            Some(true) => c.on_ac_power,
+            Some(false) => c.on_battery_power,
+            None => c.unknown,
+        }
+        .to_string(),
     }
 }

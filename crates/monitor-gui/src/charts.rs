@@ -257,6 +257,10 @@ pub(crate) struct BatteryReadings {
     pub(crate) cycles: Option<u64>,
     pub(crate) voltage: Option<f64>,
     pub(crate) charge_limit: Option<f64>,
+    /// The battery has a charge limit and it could not be read.
+    pub(crate) charge_limit_unreadable: bool,
+    /// `charge_control_start_threshold`, `0.0..=1.0`.
+    pub(crate) charge_start: Option<f64>,
     pub(crate) technology: Option<String>,
     pub(crate) model: Option<String>,
     pub(crate) manufacturer: Option<String>,
@@ -538,6 +542,11 @@ impl Readings {
                         cycles: unsigned(m, "battery.cycles"),
                         voltage: number(m, "battery.voltage"),
                         charge_limit: number(m, "battery.charge.limit"),
+                        charge_limit_unreadable: matches!(
+                            m.get(&id("battery.charge.limit")),
+                            Some(monitor_core::Observation::Unsupported(_))
+                        ),
+                        charge_start: number(m, "battery.charge.start"),
                         technology: text(m, "battery.technology"),
                         model: text(m, "battery.model"),
                         manufacturer: text(m, "battery.manufacturer"),
@@ -589,6 +598,33 @@ impl Readings {
                 .collect();
         }
         readings
+    }
+
+    /// What the battery icon reads for `battery`: its own status, charge and
+    /// limit, and whether any power source is online
+    /// (`hardware_core::charge_state`).
+    pub(crate) fn charge_readings(
+        &self,
+        battery: &BatteryReadings,
+    ) -> hardware_core::charge_state::ChargeReadings {
+        use hardware_core::charge_state::{ChargeLimit, ChargeReadings, charger_online};
+        let percent = |ratio: f64| (ratio * 100.0).round().clamp(0.0, 100.0) as u8;
+        ChargeReadings {
+            charger_online: charger_online(self.power_sources.iter().map(|s| s.online)),
+            status: battery
+                .status
+                .as_deref()
+                .and_then(hardware_core::battery::BatteryStatus::from_key),
+            percent: battery.charge.map(percent),
+            limit: match battery.charge_limit {
+                Some(end) => ChargeLimit::Percent {
+                    end: percent(end),
+                    start: battery.charge_start.map(percent),
+                },
+                None if battery.charge_limit_unreadable => ChargeLimit::Unreadable,
+                None => ChargeLimit::NotSupported,
+            },
+        }
     }
 
     /// This machine's own battery: the first that is not a peripheral's.

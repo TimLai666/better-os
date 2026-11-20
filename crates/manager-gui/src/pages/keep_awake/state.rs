@@ -69,6 +69,10 @@ pub(crate) enum Dialog {
 pub(crate) struct KeepAwakeState {
     pub(crate) sub: SubPage,
     pub(crate) read: Option<Read>,
+    /// What the battery is doing, read from sysfs with each read of the
+    /// service, for the charge card (`hardware_core::charge_state`, ticket
+    /// 170): the service's status says only "on AC power".
+    pub(crate) charge: Option<hardware_core::charge_state::ChargeReadings>,
     /// When the read in flight started, for the 300 ms ring.
     pub(crate) reading_since: Option<Instant>,
     pub(crate) busy: bool,
@@ -213,7 +217,7 @@ impl ManagerApp {
                 crate::pages::states::LOADING_RING_AFTER_MS,
             ));
             let work = cx.background_spawn(async move {
-                match Target::session() {
+                let read = match Target::session() {
                     Ok(target) => bus::read(&target),
                     Err(error) => Read {
                         version: None,
@@ -222,15 +226,19 @@ impl ManagerApp {
                         history: None,
                         offer: None,
                     },
-                }
+                };
+                let charge =
+                    hardware_platform::sysfs::charge_readings(&crate::pages::system::state::root());
+                (read, charge)
             });
             ring.await;
             let _ = this.update(cx, |_, cx| cx.notify());
-            let read = work.await;
+            let (read, charge) = work.await;
             let _ = this.update(cx, |app, cx| {
                 app.keep_awake.task = None;
                 app.keep_awake.reading_since = None;
                 app.keep_awake.read = Some(read);
+                app.keep_awake.charge = charge;
                 if app.keep_awake.again {
                     app.keep_awake.again = false;
                     app.refresh_keep_awake(cx);

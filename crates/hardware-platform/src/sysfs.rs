@@ -17,6 +17,9 @@ use monitor_collectors_linux::hwmon::{SensorKind as MonitorKind, scan_hwmon};
 /// mode switch, first match wins (spec 11.2).
 pub const FAN_PLATFORM_DEVICES: [&str; 1] = ["asus-nb-wmi"];
 
+/// The variable a debug build of a window reads its sysfs root from.
+pub const DEBUG_ROOT_VARIABLE: &str = "BETTER_OS_DEBUG_SYS_ROOT";
+
 /// Where the machine is: `/` on a real one.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SysRoot(PathBuf);
@@ -24,6 +27,18 @@ pub struct SysRoot(PathBuf);
 impl SysRoot {
     pub fn system() -> SysRoot {
         SysRoot(PathBuf::from("/"))
+    }
+
+    /// The root a window reads: `/`, or in a debug build the fixture tree
+    /// `BETTER_OS_DEBUG_SYS_ROOT` names, for screenshots in a sandbox. A
+    /// release build never reads the variable.
+    pub fn for_window() -> SysRoot {
+        if cfg!(debug_assertions)
+            && let Some(root) = std::env::var_os(DEBUG_ROOT_VARIABLE)
+        {
+            return SysRoot::at(root);
+        }
+        SysRoot::system()
     }
 
     /// A tree laid out as `<root>/sys`, `<root>/proc`, `<root>/etc`.
@@ -94,7 +109,37 @@ pub fn battery(root: &SysRoot) -> Presence<BatteryFacts> {
         model: read_text(&dir.join("model_name"))
             .ok()
             .filter(|m| !m.is_empty()),
+        charger_online: charger_online(root),
+        charge_start: number("charge_control_start_threshold")
+            .filter(|start| (0.0..100.0).contains(start))
+            .map(|start| start.round() as u8),
     })
+}
+
+/// Whether a mains adapter or a USB-C port supplies power: the `online` of
+/// every `power_supply` that is not a battery, combined by
+/// `hardware_core::charge_state::charger_online`. `None` when there is no
+/// such entry or one could not be read.
+pub fn charger_online(root: &SysRoot) -> Option<bool> {
+    hardware_core::charge_state::charger_online(
+        sorted_entries(&root.path("sys/class/power_supply"))
+            .into_iter()
+            .filter(|dir| read_text(&dir.join("type")).is_ok_and(|t| t != "Battery"))
+            .map(|dir| match read_text(&dir.join("online")).as_deref() {
+                Ok("0") => Some(false),
+                Ok(text) => text.parse::<u32>().ok().map(|v| v > 0),
+                Err(_) => None,
+            }),
+    )
+}
+
+/// What a battery icon reads, for a window that shows the battery without
+/// the System page's other facts (Better Awake). `None` when there is no
+/// system battery or its charge cannot be read.
+pub fn charge_readings(root: &SysRoot) -> Option<hardware_core::charge_state::ChargeReadings> {
+    let battery = battery(root);
+    let facts = battery.value()?;
+    Some(facts.charge_readings(&charge_limit(root)))
 }
 
 /// `charge_control_end_threshold` of the system battery, when it has one.

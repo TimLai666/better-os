@@ -849,3 +849,14 @@ GUI or dependency compiles when the relevant command was not executed.
   with dpkg's own version string, and the component page explains it in place
   of an install button. `better-manager-cli plan` is a simulation and still
   prints a plan for it; `run` refuses.
+- Every battery icon and battery line goes through
+  `hardware_core::charge_state::battery_look` (ticket 170,
+  `engineering/specs/battery-charge-state.md`); a window never maps the
+  kernel's `status` to a picture or words of its own, and
+  `crates/hardware-core/tests/one_battery_rule.rs` fails when one does. The
+  held state's five-point window under the limit is a starting value nobody
+  has watched firmware fall through. GNOME's own battery indicator (42 and
+  46) draws a battery held at its limit like one running the machine, and
+  nothing outside the shell's code can change that; the System page's charge
+  limit card says so until the top bar (ticket 157) draws the desktop's
+  battery. None of it has been seen on the owner's desktop yet.

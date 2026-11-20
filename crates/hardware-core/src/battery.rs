@@ -20,6 +20,31 @@ impl BatteryStatus {
             _ => BatteryStatus::Unknown,
         }
     }
+
+    /// The status as Better Monitor's `battery.status` metric spells it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            BatteryStatus::Charging => "charging",
+            BatteryStatus::Discharging => "discharging",
+            BatteryStatus::Full => "full",
+            BatteryStatus::NotCharging => "not_charging",
+            BatteryStatus::Unknown => "unknown",
+        }
+    }
+
+    /// The status from Better Monitor's `battery.status` metric; `None` for a
+    /// word it does not spell.
+    pub fn from_key(key: &str) -> Option<BatteryStatus> {
+        [
+            BatteryStatus::Charging,
+            BatteryStatus::Discharging,
+            BatteryStatus::Full,
+            BatteryStatus::NotCharging,
+            BatteryStatus::Unknown,
+        ]
+        .into_iter()
+        .find(|status| status.as_str() == key)
+    }
 }
 
 /// The machine's own battery, read.
@@ -34,6 +59,11 @@ pub struct BatteryFacts {
     pub full_design: Option<f64>,
     pub cycles: Option<u64>,
     pub model: Option<String>,
+    /// Whether a charger supplies power, from the other `power_supply`
+    /// entries' `online` (`charge_state::charger_online`).
+    pub charger_online: Option<bool>,
+    /// `charge_control_start_threshold`, when the battery has one.
+    pub charge_start: Option<u8>,
 }
 
 /// Home's "Battery is wearing out" item starts below this share of the
@@ -41,6 +71,20 @@ pub struct BatteryFacts {
 pub const WEARING_OUT_BELOW_PERCENT: u8 = 80;
 
 impl BatteryFacts {
+    /// What the battery icon reads, with the limit the System page read
+    /// beside these facts (`MachineFacts::charge_limit`).
+    pub fn charge_readings(
+        &self,
+        limit: &crate::Presence<u8>,
+    ) -> crate::charge_state::ChargeReadings {
+        crate::charge_state::ChargeReadings {
+            charger_online: self.charger_online,
+            status: Some(self.status),
+            percent: self.capacity,
+            limit: crate::charge_state::ChargeLimit::from_presence(limit, self.charge_start),
+        }
+    }
+
     /// What it holds now as a share of what it held new, rounded, at most
     /// 100. `None` when either figure is missing or the design is zero.
     pub fn health_percent(&self) -> Option<u8> {
@@ -93,6 +137,8 @@ mod tests {
             full_design: Some(4_998_000.0),
             cycles: Some(0),
             model: Some("ASUS Battery".into()),
+            charger_online: Some(false),
+            charge_start: None,
         }
     }
 
@@ -110,6 +156,15 @@ mod tests {
         );
         assert_eq!(BatteryStatus::parse("Unknown"), BatteryStatus::Unknown);
         assert_eq!(BatteryStatus::parse("whatever"), BatteryStatus::Unknown);
+    }
+
+    #[test]
+    fn metric_keys_round_trip() {
+        for raw in ["Charging", "Discharging", "Full", "Not charging", "Unknown"] {
+            let status = BatteryStatus::parse(raw);
+            assert_eq!(BatteryStatus::from_key(status.as_str()), Some(status));
+        }
+        assert_eq!(BatteryStatus::from_key("Not charging"), None);
     }
 
     #[test]

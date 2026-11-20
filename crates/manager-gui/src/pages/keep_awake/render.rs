@@ -565,11 +565,28 @@ impl ManagerApp {
             ..
         } = battery
         {
-            let source = match on_ac_power {
-                Some(true) => c.on_ac_power,
-                Some(false) => c.on_battery_power,
-                None => c.unknown,
+            // The battery's state in the words and picture every battery
+            // icon in Better OS uses (ticket 170); without a reading of its
+            // own, only what the service saw.
+            let look = self
+                .keep_awake
+                .charge
+                .as_ref()
+                .map(|charge| crate::home::battery_look(charge, locale));
+            let source: String = match &look {
+                Some(look) => look.words.clone(),
+                None => match on_ac_power {
+                    Some(true) => c.on_ac_power,
+                    Some(false) => c.on_battery_power,
+                    None => c.unknown,
+                }
+                .to_string(),
             };
+            let source = source.as_str();
+            let charge_icon = look
+                .as_ref()
+                .map(crate::home::battery_picture)
+                .unwrap_or(Picture::Battery);
             let charge = percent
                 .map(|percent| {
                     fill(
@@ -582,7 +599,7 @@ impl ManagerApp {
             rows.push(Row::new(
                 gap,
                 SettingsCard::new("awake-charge", c.current_charge)
-                    .icon(Picture::BatteryMedium)
+                    .icon(charge_icon)
                     .description(c.on_battery_rule_detail)
                     .content(label(charge, BODY, p.text_secondary)),
             ));

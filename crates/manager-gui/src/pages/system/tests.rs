@@ -80,6 +80,7 @@ fn a_limit_set_elsewhere_names_its_value() {
 
 #[test]
 fn the_battery_reads_its_charge_status_and_rows() {
+    use hardware_core::Presence;
     let battery = BatteryFacts {
         capacity: Some(87),
         status: BatteryStatus::Charging,
@@ -87,10 +88,16 @@ fn the_battery_reads_its_charge_status_and_rows() {
         full_design: Some(4_680_000.0),
         cycles: Some(0),
         model: Some("A32-K55".into()),
+        charger_online: Some(true),
+        charge_start: None,
     };
-    assert_eq!(battery_description(&battery, Locale::ZhTw), "87% · 充電中");
+    let limit = Presence::Present(100);
     assert_eq!(
-        battery_description(&battery, Locale::EnUs),
+        battery_description(&battery.charge_readings(&limit), Locale::ZhTw),
+        "87% · 充電中"
+    );
+    assert_eq!(
+        battery_description(&battery.charge_readings(&limit), Locale::EnUs),
         "87% · Charging"
     );
     assert_eq!(
@@ -105,7 +112,84 @@ fn the_battery_reads_its_charge_status_and_rows() {
         status: BatteryStatus::Unknown,
         ..battery
     };
-    assert_eq!(battery_description(&unread, Locale::EnUs), "Unknown");
+    assert_eq!(
+        battery_description(&unread.charge_readings(&limit), Locale::EnUs),
+        "Battery state unknown"
+    );
+}
+
+/// The owner's machine on 2026-11-21: the charger online, `Not charging`
+/// at 80% with the limit at 80 (ticket 170).
+fn held() -> BatteryFacts {
+    BatteryFacts {
+        capacity: Some(80),
+        status: BatteryStatus::NotCharging,
+        full: Some(4_106_000.0),
+        full_design: Some(4_680_000.0),
+        cycles: Some(0),
+        model: Some("A32-K55".into()),
+        charger_online: Some(true),
+        charge_start: None,
+    }
+}
+
+#[test]
+fn the_charge_limit_card_says_the_battery_is_held_and_what_gnome_draws() {
+    use hardware_core::Presence;
+    let charge = held().charge_readings(&Presence::Present(80));
+    assert_eq!(
+        charge_limit_lines(Some(&charge), true, copy(Locale::ZhTw), Locale::ZhTw),
+        vec![
+            "目前：80% · 已接上電源，維持在 80%。".to_string(),
+            copy(Locale::ZhTw).charge_desktop_icon.to_string(),
+        ]
+    );
+    assert_eq!(
+        charge_limit_lines(Some(&charge), true, copy(Locale::EnUs), Locale::EnUs),
+        vec![
+            "Now: 80% · Plugged in, holding at 80%.".to_string(),
+            "At the limit, the desktop's own battery icon looks the same as on battery, with no charging mark: GNOME draws it that way, and nothing outside GNOME can change it.".to_string(),
+        ]
+    );
+    // Off GNOME the sentence about GNOME's icon is not said.
+    assert_eq!(
+        charge_limit_lines(Some(&charge), false, copy(Locale::EnUs), Locale::EnUs).len(),
+        1
+    );
+    // No limit under 100%: nothing to say about the desktop's icon.
+    let full = BatteryFacts {
+        capacity: Some(100),
+        status: BatteryStatus::Full,
+        ..held()
+    }
+    .charge_readings(&Presence::Present(100));
+    assert_eq!(
+        charge_limit_lines(Some(&full), true, copy(Locale::EnUs), Locale::EnUs),
+        vec!["Now: 100% · Plugged in, fully charged.".to_string()]
+    );
+    // A battery that could not be read says nothing about now.
+    assert!(charge_limit_lines(None, true, copy(Locale::EnUs), Locale::EnUs).is_empty());
+}
+
+#[test]
+fn online_below_the_limit_and_not_charging_is_never_called_holding() {
+    use hardware_core::Presence;
+    let stuck = BatteryFacts {
+        capacity: Some(52),
+        ..held()
+    }
+    .charge_readings(&Presence::Present(80));
+    for locale in BOTH {
+        let line = &charge_limit_lines(Some(&stuck), true, copy(locale), locale)[0];
+        assert!(
+            !line.contains("維持") && !line.contains("holding"),
+            "{line}"
+        );
+    }
+    assert_eq!(
+        battery_description(&stuck, Locale::EnUs),
+        "52% · Plugged in, not charging"
+    );
 }
 
 #[test]

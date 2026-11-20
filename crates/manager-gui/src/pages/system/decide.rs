@@ -14,9 +14,10 @@ use hardware_core::sensors::{SensorLabel, SensorRow, SensorSummary};
 use hardware_core::write::WriteOutcome;
 
 use super::copy::{Copy, copy};
-use crate::home::battery_words;
+use crate::home::battery_look;
 use crate::i18n::Locale;
 use crate::pages::states::PageState;
+use hardware_core::charge_state::{ChargeLimit, ChargeReadings};
 
 /// Sentences one after another: a space between them in English, nothing
 /// between them in Chinese, where a full stop already ends each one.
@@ -74,13 +75,46 @@ pub(crate) fn charge_label(choice: ChargeChoice, c: &Copy) -> String {
     }
 }
 
-/// `87% · 充電中`, or the status alone when the charge could not be read.
-pub(crate) fn battery_description(battery: &BatteryFacts, locale: Locale) -> String {
-    let status = battery_words(battery.status, locale);
-    match battery.capacity {
+/// `87% · 充電中`, or the state alone when the charge could not be read.
+/// The state is the battery icon rule's (`hardware_core::charge_state`),
+/// with the limit the page read beside the battery.
+pub(crate) fn battery_description(charge: &ChargeReadings, locale: Locale) -> String {
+    let status = battery_look(charge, locale).words;
+    match charge.percent {
         Some(percent) => format!("{percent}% · {status}"),
-        None => status.to_string(),
+        None => status,
     }
+}
+
+/// The sentences the charge limit card puts before its description: what
+/// the battery is doing now, and, on GNOME, what the desktop's own battery
+/// icon shows while a limit under 100% holds the battery (ticket 170).
+///
+/// GNOME Shell 42 and 46 add a charging mark only for UPower's `charging`
+/// state and draw `pending-charge`, which is what a held battery reports, as
+/// the plain level icon a battery running the machine has; UPower 0.99.17
+/// and 1.90.3 have no charge-threshold property to change that, and nothing
+/// outside the shell's own code decides the icon
+/// (`engineering/specs/battery-charge-state.md`). The sentence goes once
+/// Better OS's own top bar (ticket 157) draws the desktop's battery.
+pub(crate) fn charge_limit_lines(
+    charge: Option<&ChargeReadings>,
+    on_gnome: bool,
+    c: &Copy,
+    locale: Locale,
+) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(charge) = charge {
+        lines.push(
+            c.charge_now
+                .replace("{state}", &battery_description(charge, locale)),
+        );
+        let below_full = matches!(charge.limit, ChargeLimit::Percent { end, .. } if end < 100);
+        if on_gnome && below_full {
+            lines.push(c.charge_desktop_icon.to_string());
+        }
+    }
+    lines
 }
 
 pub(crate) fn battery_rows(battery: &BatteryFacts, c: &Copy) -> Vec<String> {

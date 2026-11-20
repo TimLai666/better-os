@@ -70,6 +70,12 @@ pub(crate) struct AwakeApp {
     pub(crate) preferences_saved: bool,
 
     pub(crate) status: Option<StatusView>,
+    /// What the battery is doing, read from sysfs each time the service's
+    /// status arrives, for the Battery section's power row
+    /// (`hardware_core::charge_state`, ticket 170). The service's status
+    /// carries only "on AC power", which cannot tell a battery held at its
+    /// charge limit from one charging.
+    pub(crate) charge: Option<hardware_core::charge_state::ChargeReadings>,
     pub(crate) rules: Vec<RuleView>,
     /// The rules exactly as the service reported them. The presented rows carry
     /// localized sentences rather than operands, so the editor is opened from
@@ -121,6 +127,7 @@ impl AwakeApp {
             store,
             preferences_saved: readable,
             status: None,
+            charge: None,
             rules: Vec::new(),
             raw_rules: Vec::new(),
             rules_suppression: None,
@@ -191,6 +198,7 @@ impl AwakeApp {
                     .map(ProviderRow::from_wire)
                     .collect();
                 self.status = Some(StatusView::from_status(&status));
+                self.charge = read_charge();
                 self.connection_error = None;
             }
             Err(error) => {
@@ -842,4 +850,13 @@ impl better_ui::restart::Restartable for AwakeApp {
     fn restart_state(&self, _window: &Window, _cx: &App) -> crate::restart::AwakeView {
         crate::restart::AwakeView::of(self.section, self.pane)
     }
+}
+
+/// The battery's readings for the power row: none in a test build, which
+/// never reads the machine's sysfs.
+fn read_charge() -> Option<hardware_core::charge_state::ChargeReadings> {
+    if cfg!(test) {
+        return None;
+    }
+    hardware_platform::sysfs::charge_readings(&hardware_platform::sysfs::SysRoot::for_window())
 }

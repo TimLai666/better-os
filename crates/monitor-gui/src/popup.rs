@@ -488,7 +488,7 @@ impl PopupView {
                         .map(share)
                         .unwrap_or_else(missing),
                     battery
-                        .map(|b| i18n::battery_line(b, self.locale))
+                        .map(|b| i18n::battery_line(r, b, self.locale))
                         .unwrap_or_default(),
                 )
             }
@@ -585,6 +585,14 @@ impl PopupView {
         let top = line_top(section, &values);
         let capacity = values.len().max(2);
         let lines = self.lines(section);
+        // The battery's picture follows its state, as every battery icon does
+        // (ticket 170); the other sections keep their own.
+        let icon = match (section, self.readings.system_battery()) {
+            (Section::Battery, Some(battery)) => {
+                i18n::battery_picture(&i18n::battery_look(&self.readings, battery, self.locale))
+            }
+            _ => section.icon(),
+        };
         div()
             .flex()
             .flex_col()
@@ -611,7 +619,7 @@ impl PopupView {
                                     .flex()
                                     .items_center()
                                     .gap(px(6.0))
-                                    .child(icon_set::picture(section.icon(), 16.0))
+                                    .child(icon_set::picture(icon, 16.0))
                                     .child(label(self.title(section), CAPTION, p.text_secondary)),
                             )
                             .child(label(figure, BODY_STRONG, p.text_primary))

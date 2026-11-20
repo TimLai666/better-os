@@ -3,12 +3,15 @@
 //!
 //! No GPUI, no I/O, and no words: `hardware-platform` reads the machine into
 //! the facts here, and the window turns the decisions here into its own copy.
+//! The one exception is [`charge_state`], the battery's state with its icon
+//! and words, which every battery icon in the suite shares (ticket 170).
 //! Every rule a card follows (when it is drawn, when it is disabled, which
 //! choices it offers, which reading is shown) lives in this crate so the
 //! window, Home, the daemon, and the session service all ask the same place.
 
 pub mod battery;
 pub mod charge;
+pub mod charge_state;
 pub mod display;
 pub mod fan;
 pub mod follow;

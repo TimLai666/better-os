@@ -104,12 +104,7 @@ pub(crate) fn root() -> SysRoot {
     if cfg!(test) {
         return SysRoot::at("/nonexistent/better-os-test-root");
     }
-    if cfg!(debug_assertions)
-        && let Some(root) = std::env::var_os("BETTER_OS_DEBUG_SYS_ROOT")
-    {
-        return SysRoot::at(root);
-    }
-    SysRoot::system()
+    SysRoot::for_window()
 }
 
 /// The system and session buses, opened once. A test build opens neither, so

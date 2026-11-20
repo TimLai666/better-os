@@ -275,3 +275,33 @@ fn hidraw_nodes_are_judged_by_name_size_and_descriptor_never_trusted() {
     assert!(!sysfs::is_hidraw_name("hidraw-1"));
     assert!(!sysfs::is_hidraw_name("event3"));
 }
+
+/// The owner's machine on 2026-11-21: the charger online, the battery
+/// `Not charging` at 80% with the limit at 80 (ticket 170).
+#[test]
+fn the_owners_machine_held_at_its_limit_reads_as_held() {
+    use hardware_core::charge_state::{ChargeLimit, ChargeState, charge_state};
+    let root = fixture("held");
+    assert_eq!(sysfs::charger_online(&root), Some(true));
+    let readings = sysfs::charge_readings(&root).expect("BAT1 is a system battery");
+    assert_eq!(readings.status, Some(BatteryStatus::NotCharging));
+    assert_eq!(readings.percent, Some(80));
+    assert_eq!(
+        readings.limit,
+        ChargeLimit::Percent {
+            end: 80,
+            start: None
+        }
+    );
+    assert_eq!(
+        charge_state(&readings),
+        ChargeState::HoldingAtLimit { limit: 80 }
+    );
+}
+
+#[test]
+fn the_charger_is_offline_on_the_owners_discharging_fixture_and_unknown_without_one() {
+    assert_eq!(sysfs::charger_online(&fixture("owner")), Some(false));
+    assert_eq!(sysfs::charger_online(&fixture("nothing")), None);
+    assert_eq!(sysfs::charge_readings(&fixture("nothing")), None);
+}

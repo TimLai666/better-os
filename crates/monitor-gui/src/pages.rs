@@ -488,14 +488,12 @@ impl MonitorApp {
             );
         };
         let p = palette(cx);
+        let look = i18n::battery_look(&self.readings, &battery, self.locale);
         self.resource_card(
             "card-battery",
             c.battery,
-            Picture::Battery,
-            Some((
-                i18n::battery_status(battery.status.as_deref(), self.locale).to_string(),
-                p.text_secondary,
-            )),
+            i18n::battery_picture(&look),
+            Some((look.words, p.text_secondary)),
             battery.charge.map(share),
             Some((
                 vec![ChartSeries::new(
@@ -505,7 +503,7 @@ impl MonitorApp {
                 )],
                 100.0,
             )),
-            i18n::battery_line(&battery, self.locale),
+            i18n::battery_line(&self.readings, &battery, self.locale),
             Resource::Battery,
             cx,
         )
@@ -960,7 +958,7 @@ impl MonitorApp {
                     Some(charge) => format!(
                         "{} · {}",
                         share(charge),
-                        i18n::battery_status(battery.status.as_deref(), self.locale)
+                        i18n::battery_look(r, battery, self.locale).words
                     ),
                     None => c.not_available.to_string(),
                 },
@@ -1964,7 +1962,8 @@ impl MonitorApp {
             .span_label(self.span_label())
             .minimum_label("0"),
         );
-        let charging = battery.status.as_deref() == Some("charging");
+        let look = i18n::battery_look(&self.readings, &battery, self.locale);
+        let charging = look.state == hardware_core::charge_state::ChargeState::Charging;
         let stats = div()
             .flex()
             .flex_wrap()
@@ -1978,7 +1977,7 @@ impl MonitorApp {
             ))
             .child(crate::shell::stat(
                 c.column_state,
-                i18n::battery_status(battery.status.as_deref(), self.locale).to_string(),
+                look.words.clone(),
                 true,
                 p,
             ))
@@ -2072,7 +2071,7 @@ impl MonitorApp {
             .gap(spacing::LG)
             .child(self.detail_header(
                 c.battery.to_string(),
-                Some(i18n::battery_line(&battery, self.locale)),
+                Some(i18n::battery_line(&self.readings, &battery, self.locale)),
                 p,
             ))
             .child(chart)

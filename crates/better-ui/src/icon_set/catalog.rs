@@ -191,6 +191,10 @@ pictures! {
         BatteryMedium "battery-medium",
         BatteryLow "battery-low",
         BatteryCharging "battery-charging",
+        // Plugged in and held at the charge limit, and plugged in and full
+        // (ticket 170, `hardware_core::charge_state::BatteryIcon`).
+        BatteryPlugged "battery-plugged",
+        BatteryFullPlugged "battery-full-plugged",
         Gauge "gauge",
         Brightness "brightness",
         Moon "moon",

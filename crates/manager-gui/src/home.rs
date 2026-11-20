@@ -42,23 +42,35 @@ pub(crate) struct Device {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct Battery {
     pub(crate) percent: u8,
-    pub(crate) status: BatteryStatus,
+    /// What the battery icon rule reads (`hardware_core::charge_state`).
+    pub(crate) charge: ChargeReadings,
 }
 
 /// The kernel's `status` words for a battery, read in one place for Home and
 /// System (`hardware-core`).
+#[cfg(test)]
 pub(crate) use hardware_core::battery::BatteryStatus;
+use hardware_core::charge_state::{BatteryLook, ChargeReadings, Language};
 
-/// The words for a status: 充電中 / Charging, and the rest.
-pub(crate) fn battery_words(status: BatteryStatus, locale: Locale) -> &'static str {
-    let s = shell(locale);
-    match status {
-        BatteryStatus::Charging => s.battery_charging,
-        BatteryStatus::Discharging => s.battery_discharging,
-        BatteryStatus::Full => s.battery_full,
-        BatteryStatus::NotCharging => s.battery_not_charging,
-        BatteryStatus::Unknown => s.battery_unknown,
-    }
+/// What a battery icon shows, from the one rule every battery icon in Better
+/// OS follows (ticket 170): Home's banner, the System page's battery and
+/// charge limit cards, and the Keep awake page.
+pub(crate) fn battery_look(readings: &ChargeReadings, locale: Locale) -> BatteryLook {
+    hardware_core::charge_state::battery_look(
+        readings,
+        match locale.resolved() {
+            Locale::ZhTw => Language::TraditionalChinese,
+            Locale::EnUs | Locale::System => Language::English,
+        },
+    )
+}
+
+/// The picture for a look, from `better-ui`'s icon set. Every battery icon
+/// the rule names has a drawing there (a test checks it); the empty battery
+/// stands for one that did not.
+pub(crate) fn battery_picture(look: &BatteryLook) -> better_ui::icon_set::Picture {
+    better_ui::icon_set::Picture::from_path(look.icon.asset_path())
+        .unwrap_or(better_ui::icon_set::Picture::Battery)
 }
 
 /// Values firmware writes when nobody filled the field in.
@@ -138,11 +150,10 @@ impl HostRoot {
     /// charge can be read.
     pub(crate) fn battery(&self) -> Option<Battery> {
         let root = hardware_platform::sysfs::SysRoot::at(&self.0);
-        let battery = hardware_platform::sysfs::battery(&root);
-        let facts = battery.value()?;
+        let charge = hardware_platform::sysfs::charge_readings(&root)?;
         Some(Battery {
-            percent: facts.capacity?.min(100),
-            status: facts.status,
+            percent: charge.percent?.min(100),
+            charge,
         })
     }
 }
@@ -164,7 +175,7 @@ pub(crate) fn battery_line(locale: Locale, battery: Battery) -> String {
     format!(
         "{}% · {}",
         battery.percent,
-        battery_words(battery.status, locale)
+        battery_look(&battery.charge, locale).words
     )
 }
 
@@ -292,27 +303,58 @@ mod tests {
         );
     }
 
+    fn battery(percent: u8, status: BatteryStatus, charger: bool, limit: u8) -> Battery {
+        Battery {
+            percent,
+            charge: ChargeReadings {
+                charger_online: Some(charger),
+                status: Some(status),
+                percent: Some(percent),
+                limit: hardware_core::charge_state::ChargeLimit::Percent {
+                    end: limit,
+                    start: None,
+                },
+            },
+        }
+    }
+
     #[test]
     fn the_battery_says_its_charge_and_what_it_is_doing_in_both_languages() {
-        let battery = |status| Battery {
-            percent: 87,
-            status,
-        };
         assert_eq!(
-            battery_line(Locale::ZhTw, battery(BatteryStatus::Charging)),
+            battery_line(
+                Locale::ZhTw,
+                battery(87, BatteryStatus::Charging, true, 100)
+            ),
             "87% · 充電中"
         );
         assert_eq!(
-            battery_line(Locale::EnUs, battery(BatteryStatus::Discharging)),
+            battery_line(
+                Locale::EnUs,
+                battery(87, BatteryStatus::Discharging, false, 100)
+            ),
             "87% · On battery"
         );
         assert_eq!(
-            battery_line(Locale::EnUs, battery(BatteryStatus::Full)),
-            "87% · Full"
+            battery_line(Locale::EnUs, battery(100, BatteryStatus::Full, true, 100)),
+            "100% · Plugged in, fully charged"
         );
         assert_eq!(
-            battery_line(Locale::ZhTw, battery(BatteryStatus::Full)),
-            "87% · 已充滿"
+            battery_line(Locale::ZhTw, battery(100, BatteryStatus::Full, true, 100)),
+            "100% · 已接上電源，已充滿"
+        );
+        // The owner's machine on 2026-11-21 (ticket 170).
+        let held = battery(80, BatteryStatus::NotCharging, true, 80);
+        assert_eq!(
+            battery_line(Locale::ZhTw, held),
+            "80% · 已接上電源，維持在 80%"
+        );
+        assert_eq!(
+            battery_line(Locale::EnUs, held),
+            "80% · Plugged in, holding at 80%"
+        );
+        assert_eq!(
+            battery_picture(&battery_look(&held.charge, Locale::EnUs)),
+            better_ui::icon_set::Picture::BatteryPlugged
         );
         assert_eq!(
             BatteryStatus::parse("Not charging\n"),
@@ -353,13 +395,21 @@ mod tests {
             Some("ASUS Vivobook S 14 M5406WA")
         );
         assert_eq!(device.distribution.as_deref(), Some("Zorin OS 18.1"));
-        assert_eq!(
-            device.battery,
-            Some(Battery {
-                percent: 100,
-                status: BatteryStatus::Full
-            })
-        );
+        let battery = device.battery.expect("BAT1 is the system battery");
+        assert_eq!(battery.percent, 100);
+        assert_eq!(battery.charge.status, Some(BatteryStatus::Full));
+        // ACAD has no `online` here, so whether it is plugged in is unknown.
+        assert_eq!(battery.charge.charger_online, None);
+    }
+
+    #[test]
+    fn every_battery_icon_the_rule_names_has_a_drawing() {
+        for icon in hardware_core::charge_state::BatteryIcon::ALL {
+            assert!(
+                better_ui::icon_set::Picture::from_path(icon.asset_path()).is_some(),
+                "{icon:?}"
+            );
+        }
     }
 
     #[test]

@@ -214,11 +214,6 @@ fn every_visible_string(c: &'static Copy) -> Vec<&'static str> {
         c.npu_no_busy,
         c.npu_idle,
         c.charge,
-        c.battery_charging,
-        c.battery_discharging,
-        c.battery_full,
-        c.battery_not_charging,
-        c.battery_unknown,
         c.time_left,
         c.time_to_full,
         c.battery_health,
@@ -2044,12 +2039,12 @@ fn the_hardware_pages_read_the_graphics_card_battery_and_sensors() {
     );
     let battery = readings.system_battery().expect("a battery");
     assert_eq!(
-        i18n::battery_line(battery, Locale::EnUs),
+        i18n::battery_line(&readings, battery, Locale::EnUs),
         "On battery, about 2 h 10 min left"
     );
     assert_eq!(
-        i18n::battery_line(battery, Locale::ZhTw),
-        "使用電池中，剩下約 2 小時 10 分鐘"
+        i18n::battery_line(&readings, battery, Locale::ZhTw),
+        "使用電池，剩下約 2 小時 10 分鐘"
     );
     assert_eq!(readings.on_battery, Some(true));
     let hottest = readings.hottest().expect("a temperature");
@@ -2459,4 +2454,96 @@ fn a_selection_inside_a_closed_row_moves_onto_it() {
         200,
         "elsewhere stays"
     );
+}
+
+/// The owner's machine on 2026-11-21 as the service reports it: the adapter
+/// online, the battery not charging at 80% with the limit at 80 (ticket 170).
+fn held_round() -> Vec<monitor_core::CollectorReport> {
+    let at = Timestamp {
+        unix_ms: 1_700_000_000_000,
+        monotonic_ns: 1,
+    };
+    let m = |pairs: &[(&str, Observation)]| -> MetricSet {
+        pairs
+            .iter()
+            .map(|(id, o)| (MetricId::new(*id).unwrap(), o.clone()))
+            .collect()
+    };
+    let mut battery = CollectorReport::new(CollectorId::new("linux.battery").unwrap(), at);
+    battery.metrics.insert(
+        MetricId::new("power.on_battery").unwrap(),
+        Observation::boolean(false),
+    );
+    battery.entities.push(Entity::new(
+        EntityId::new(EntityKind::Battery, "BAT1"),
+        m(&[
+            ("battery.charge", Observation::float(0.8)),
+            ("battery.status", Observation::text("not_charging")),
+            ("battery.charge.limit", Observation::float(0.8)),
+            ("battery.peripheral", Observation::boolean(false)),
+        ]),
+    ));
+    battery.entities.push(Entity::new(
+        EntityId::new(EntityKind::PowerSource, "ACAD"),
+        m(&[
+            ("power_source.kind", Observation::text("mains")),
+            ("power_source.online", Observation::boolean(true)),
+        ]),
+    ));
+    vec![battery]
+}
+
+#[test]
+fn a_battery_held_at_its_limit_says_so_with_its_own_picture() {
+    use hardware_core::charge_state::{BatteryIcon, ChargeState};
+    let readings = Readings::from_reports(&held_round(), 1_700_000_000.0);
+    let battery = readings.system_battery().expect("a battery");
+    let look = i18n::battery_look(&readings, battery, Locale::ZhTw);
+    assert_eq!(look.state, ChargeState::HoldingAtLimit { limit: 80 });
+    assert_eq!(look.icon, BatteryIcon::Plugged);
+    assert_eq!(
+        i18n::battery_picture(&look),
+        better_ui::icon_set::Picture::BatteryPlugged
+    );
+    assert_eq!(
+        i18n::battery_line(&readings, battery, Locale::ZhTw),
+        "已接上電源，維持在 80%"
+    );
+    assert_eq!(
+        i18n::battery_line(&readings, battery, Locale::EnUs),
+        "Plugged in, holding at 80%"
+    );
+}
+
+#[test]
+fn an_unreadable_limit_is_unknown_not_a_battery_without_one() {
+    use hardware_core::charge_state::ChargeLimit;
+    let mut round = held_round();
+    round[0].entities[0].metrics.insert(
+        MetricId::new("battery.charge.limit").unwrap(),
+        Observation::Unsupported(UnsupportedReason::NotReported {
+            detail: "the charge limit could not be read".into(),
+        }),
+    );
+    let readings = Readings::from_reports(&round, 1_700_000_000.0);
+    let battery = readings.system_battery().unwrap();
+    assert_eq!(
+        readings.charge_readings(battery).limit,
+        ChargeLimit::Unreadable
+    );
+    assert_eq!(
+        i18n::battery_line(&readings, battery, Locale::EnUs),
+        "Battery state unknown"
+    );
+}
+
+#[test]
+fn every_battery_icon_the_rule_names_has_a_drawing() {
+    for icon in hardware_core::charge_state::BatteryIcon::ALL {
+        assert!(
+            better_ui::icon_set::Picture::from_path(icon.asset_path()).is_some(),
+            "{icon:?} has no picture at {}",
+            icon.asset_path()
+        );
+    }
 }

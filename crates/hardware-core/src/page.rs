@@ -2,6 +2,7 @@
 
 use crate::battery::BatteryFacts;
 use crate::charge::{ChargeLimitView, charge_limit_view};
+use crate::charge_state::ChargeReadings;
 use crate::display::KeyboardLevels;
 use crate::fan::FanState;
 use crate::lighting::{self, LightingHint};
@@ -47,6 +48,10 @@ pub struct PowerGroup {
     pub follow_charger: bool,
     pub charge_limit: Card<ChargeLimitView>,
     pub battery: Card<BatteryFacts>,
+    /// What the battery is doing (`charge_state`), drawn on the charge limit
+    /// card and the battery card. `None` when the battery's facts could not
+    /// be read.
+    pub charge: Option<ChargeReadings>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -87,12 +92,17 @@ pub fn system_view(facts: &MachineFacts) -> SystemView {
     let charge_limit: Card<ChargeLimitView> =
         facts.charge_limit.clone().map(charge_limit_view).into();
     let battery: Card<BatteryFacts> = facts.battery.clone().into();
+    let charge = facts
+        .battery
+        .value()
+        .map(|battery| battery.charge_readings(&facts.charge_limit));
     let power =
         (mode.is_drawn() || charge_limit.is_drawn() || battery.is_drawn()).then_some(PowerGroup {
             mode,
             follow_charger,
             charge_limit,
             battery,
+            charge,
         });
 
     let brightness: Card<u8> = facts.brightness.clone().into();
@@ -146,6 +156,8 @@ mod tests {
                 full_design: Some(100.0),
                 cycles: Some(0),
                 model: None,
+                charger_online: Some(true),
+                charge_start: None,
             }),
             brightness: Presence::Present(60),
             keyboard: Presence::Present(KeyboardLevels::from_gnome(33, 4).unwrap()),
@@ -319,5 +331,30 @@ mod tests {
         let mut f = owner();
         f.power_mode = Presence::Unreadable("timeout".into());
         assert!(!system_view(&f).power.unwrap().follow_charger);
+    }
+
+    #[test]
+    fn the_power_group_carries_the_battery_state_with_the_limit() {
+        use crate::charge_state::{ChargeLimit, ChargeState, charge_state};
+        let mut f = owner();
+        f.charge_limit = Presence::Present(80);
+        if let Presence::Present(battery) = &mut f.battery {
+            battery.capacity = Some(80);
+            battery.status = BatteryStatus::NotCharging;
+        }
+        let charge = system_view(&f).power.unwrap().charge.unwrap();
+        assert_eq!(
+            charge.limit,
+            ChargeLimit::Percent {
+                end: 80,
+                start: None
+            }
+        );
+        assert_eq!(
+            charge_state(&charge),
+            ChargeState::HoldingAtLimit { limit: 80 }
+        );
+        f.battery = Presence::Unreadable("EIO".into());
+        assert_eq!(system_view(&f).power.unwrap().charge, None);
     }
 }

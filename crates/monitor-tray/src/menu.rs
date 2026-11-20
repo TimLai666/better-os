@@ -49,6 +49,43 @@ impl Reading {
     }
 }
 
+/// What the battery icon rule reads from the battery collector's round: the
+/// battery's status, charge and limit, and whether any power source is
+/// online.
+fn charge_readings(
+    report: &monitor_core::CollectorReport,
+    battery: &monitor_core::Entity,
+) -> hardware_core::charge_state::ChargeReadings {
+    use hardware_core::charge_state::{ChargeLimit, ChargeReadings, charger_online};
+    let percent = |ratio: f64| (ratio * 100.0).round().clamp(0.0, 100.0) as u8;
+    let m = &battery.metrics;
+    let sources = report.entities_of(EntityKind::PowerSource).map(|source| {
+        match source.metrics.get(&id("power_source.online")) {
+            Some(Observation::Value(MetricScalar::Bool(online))) => Some(*online),
+            _ => None,
+        }
+    });
+    ChargeReadings {
+        charger_online: charger_online(sources),
+        status: m
+            .get(&id("battery.status"))
+            .and_then(Observation::as_text)
+            .and_then(hardware_core::battery::BatteryStatus::from_key),
+        percent: number(m, "battery.charge").map(percent),
+        limit: match (
+            m.get(&id("battery.charge.limit")),
+            number(m, "battery.charge.limit"),
+        ) {
+            (_, Some(end)) => ChargeLimit::Percent {
+                end: percent(end),
+                start: number(m, "battery.charge.start").map(percent),
+            },
+            (Some(Observation::Unsupported(_)), None) => ChargeLimit::Unreadable,
+            _ => ChargeLimit::NotSupported,
+        },
+    }
+}
+
 /// The handful of facts the item shows, read from one round.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TrayReadings {
@@ -64,8 +101,8 @@ pub struct TrayReadings {
     pub network_receive: Option<f64>,
     pub network_send: Option<f64>,
     pub battery: Option<f64>,
-    /// `charging`, `discharging`, `full`, `not_charging`.
-    pub battery_status: Option<String>,
+    /// What the battery is doing, for its words (`hardware_core::charge_state`).
+    pub battery_state: Option<hardware_core::charge_state::ChargeReadings>,
     pub battery_seconds_left: Option<f64>,
     pub battery_seconds_to_full: Option<f64>,
     /// The hottest temperature any sensor reports, and the chip it came from.
@@ -155,11 +192,7 @@ impl TrayReadings {
             });
             if let Some(entity) = system {
                 readings.battery = number(&entity.metrics, "battery.charge");
-                readings.battery_status = entity
-                    .metrics
-                    .get(&id("battery.status"))
-                    .and_then(Observation::as_text)
-                    .map(str::to_string);
+                readings.battery_state = Some(charge_readings(battery, entity));
                 readings.battery_seconds_left = number(&entity.metrics, "battery.time.remaining");
                 readings.battery_seconds_to_full = number(&entity.metrics, "battery.time.to_full");
             }
@@ -348,40 +381,45 @@ pub fn reading_line(reading: Reading, r: &TrayReadings, locale: Locale) -> Optio
             )
         }
         Reading::Battery => {
+            use hardware_core::charge_state::{ChargeState, Language, battery_look};
             let charge = percent(r.battery?);
-            let state = match r.battery_status.as_deref() {
-                Some("charging") => locale.pick("charging", "充電中"),
-                Some("discharging") => locale.pick("on battery", "使用電池中"),
-                Some("full") => locale.pick("fully charged", "已充飽"),
-                Some("not_charging") => locale.pick("plugged in", "已接電源"),
-                _ => "",
-            };
+            // The words every battery icon in Better OS uses (ticket 170).
+            let look = r.battery_state.as_ref().map(|readings| {
+                battery_look(
+                    readings,
+                    if locale.zh() {
+                        Language::TraditionalChinese
+                    } else {
+                        Language::English
+                    },
+                )
+            });
             let time = match (
-                r.battery_status.as_deref(),
+                look.as_ref().map(|look| look.state),
                 r.battery_seconds_left,
                 r.battery_seconds_to_full,
             ) {
-                (Some("discharging"), Some(left), _) => Some(if locale.zh() {
+                (Some(ChargeState::OnBattery), Some(left), _) => Some(if locale.zh() {
                     format!("剩下約 {}", hours_minutes(left, locale))
                 } else {
                     format!("about {} left", hours_minutes(left, locale))
                 }),
-                (Some("charging"), _, Some(full)) => Some(if locale.zh() {
+                (Some(ChargeState::Charging), _, Some(full)) => Some(if locale.zh() {
                     format!("約 {}後充滿", hours_minutes(full, locale))
                 } else {
                     format!("full in about {}", hours_minutes(full, locale))
                 }),
                 _ => None,
             };
-            [
-                Some(charge),
-                (!state.is_empty()).then(|| state.to_string()),
-                time,
-            ]
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>()
-            .join(if locale.zh() { "，" } else { ", " })
+            let state = match look {
+                Some(look) => format!("{charge} · {}", look.words),
+                None => charge,
+            };
+            match time {
+                Some(time) if locale.zh() => format!("{state}，{time}"),
+                Some(time) => format!("{state}, {time}"),
+                None => state,
+            }
         }
         Reading::Temperature => format!("{:.0} °C", r.hottest?),
     };
@@ -840,11 +878,62 @@ mod tests {
             memory_used: Some(10.0 * 1024.0 * 1024.0 * 1024.0),
             memory_total: Some(30.5 * 1024.0 * 1024.0 * 1024.0),
             battery: Some(0.83),
-            battery_status: Some("charging".into()),
+            battery_state: Some(hardware_core::charge_state::ChargeReadings {
+                charger_online: Some(true),
+                status: Some(hardware_core::battery::BatteryStatus::Charging),
+                percent: Some(83),
+                limit: hardware_core::charge_state::ChargeLimit::NotSupported,
+            }),
             battery_seconds_to_full: Some(14.0 * 60.0),
             hottest: Some(73.0),
             fan_rpm: Some(3450.0),
             ..TrayReadings::default()
+        }
+    }
+
+    /// The owner's machine on 2026-11-21, as the service reports it
+    /// (ticket 170).
+    #[test]
+    fn a_battery_held_at_its_limit_says_so_in_the_menu() {
+        use monitor_core::{CollectorId, Entity, EntityId, MetricSet, Timestamp};
+        let set = |pairs: &[(&str, Observation)]| -> MetricSet {
+            pairs.iter().map(|(n, o)| (id(n), o.clone())).collect()
+        };
+        let mut report = CollectorReport::new(
+            CollectorId::new("linux.battery").unwrap(),
+            Timestamp {
+                unix_ms: 1,
+                monotonic_ns: 1,
+            },
+        );
+        report.entities.push(Entity::new(
+            EntityId::new(EntityKind::Battery, "BAT1"),
+            set(&[
+                ("battery.charge", Observation::float(0.8)),
+                ("battery.status", Observation::text("not_charging")),
+                ("battery.charge.limit", Observation::float(0.8)),
+                ("battery.peripheral", Observation::boolean(false)),
+            ]),
+        ));
+        report.entities.push(Entity::new(
+            EntityId::new(EntityKind::PowerSource, "ACAD"),
+            set(&[("power_source.online", Observation::boolean(true))]),
+        ));
+        let readings = TrayReadings::from_round(&[report]);
+        for (locale, line) in [
+            (Locale::English, "Battery: 80% · Plugged in, holding at 80%"),
+            (
+                Locale::TraditionalChinese,
+                "電池：80% · 已接上電源，維持在 80%",
+            ),
+        ] {
+            let menu = build(
+                Some(&readings),
+                &IconChoice::default(),
+                locale,
+                ServiceState::Answering,
+            );
+            assert!(menu.labels().contains(&line), "{:?}", menu.labels());
         }
     }
 
@@ -863,7 +952,7 @@ mod tests {
             "{labels:?}"
         );
         assert!(
-            labels.contains(&"Battery: 83%, charging, full in about 14 min"),
+            labels.contains(&"Battery: 83% · Charging, full in about 14 min"),
             "{labels:?}"
         );
         assert!(labels.contains(&"Temperature: 73 °C"));

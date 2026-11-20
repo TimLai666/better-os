@@ -268,6 +268,8 @@ pub(crate) struct Copy {
     pub(crate) no_battery_detail: &'static str,
     pub(crate) current_charge: &'static str,
     pub(crate) on_ac_power: &'static str,
+    /// The Battery section's power row, whose value is the battery's state.
+    pub(crate) power_state: &'static str,
     pub(crate) on_battery_power: &'static str,
     pub(crate) on_battery_rule: &'static str,
     pub(crate) on_battery_rule_detail: &'static str,
@@ -567,6 +569,7 @@ static EN_US: Copy = Copy {
     no_battery_detail: "A battery stop threshold could never fire here, so none is offered. Sessions end on their own condition instead.",
     current_charge: "Current charge",
     on_ac_power: "On AC power",
+    power_state: "Power",
     on_battery_power: "On battery",
     on_battery_rule: "Stop sessions on battery by default",
     on_battery_rule_detail: "A new session takes the default battery stop unless the preset or rule that started it says otherwise.",
@@ -843,6 +846,7 @@ static ZH_TW: Copy = Copy {
     no_battery_detail: "電量停止門檻在這裡永遠不會觸發，所以不提供。工作階段依照自己的結束條件停止。",
     current_charge: "目前電量",
     on_ac_power: "使用外接電源",
+    power_state: "電源",
     on_battery_power: "使用電池",
     on_battery_rule: "使用電池時預設會停止工作階段",
     on_battery_rule_detail: "新的工作階段會採用預設電量門檻，除非開始它的預設項目或規則另有指定。",
@@ -944,4 +948,12 @@ pub(crate) fn limit_words(locale: Locale, minutes: u32) -> String {
 /// string replacement.
 pub(crate) fn fill(template: &str, name: &str, value: &str) -> String {
     template.replace(&format!("{{{name}}}"), value)
+}
+
+/// The battery state's language for this choice, after `system` is resolved.
+pub(crate) fn language(locale: Locale) -> hardware_core::charge_state::Language {
+    match locale.resolved() {
+        Locale::ZhTw => hardware_core::charge_state::Language::TraditionalChinese,
+        Locale::EnUs | Locale::System => hardware_core::charge_state::Language::English,
+    }
 }

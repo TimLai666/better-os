@@ -160,12 +160,7 @@ impl ManagerApp {
             MANAGER_VERSION,
         ));
         if let Some(battery) = device.battery {
-            let icon = match battery.status {
-                home::BatteryStatus::Charging => Picture::BatteryCharging,
-                _ if battery.percent >= 90 => Picture::BatteryFull,
-                _ if battery.percent >= 40 => Picture::BatteryMedium,
-                _ => Picture::BatteryLow,
-            };
+            let icon = home::battery_picture(&home::battery_look(&battery.charge, self.locale));
             banner = banner.trailing(
                 div()
                     .flex()

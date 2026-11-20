@@ -721,6 +721,8 @@ dependencies = [
  "gpui-component",
  "gpui-component-assets",
  "gpui_platform",
+ "hardware-core",
+ "hardware-platform",
  "serde",
  "serde_json",
  "tempfile",
@@ -4816,6 +4818,7 @@ dependencies = [
 name = "monitor-collectors-linux"
 version = "0.2.16"
 dependencies = [
+ "hardware-core",
  "libc",
  "monitor-core",
  "serde",
@@ -4853,6 +4856,7 @@ dependencies = [
  "gpui-component",
  "gpui-component-assets",
  "gpui_platform",
+ "hardware-core",
  "monitor-actions-linux",
  "monitor-collectors-linux",
  "monitor-core",
@@ -4913,6 +4917,7 @@ dependencies = [
 name = "monitor-tray"
 version = "0.2.16"
 dependencies = [
+ "hardware-core",
  "monitor-core",
  "monitor-ipc",
  "monitor-service",
