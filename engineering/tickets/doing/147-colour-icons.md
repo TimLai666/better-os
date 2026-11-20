@@ -255,13 +255,42 @@ found are fixed: Awake's primary buttons drew their icon in the kit's
 on-accent colour on gpui-component's own primary fill (dark on black in
 light), and Touchpad's wrapping top bar stretched over its page.
 
-Open risk, not fixed here: an action alone is drawn in the desktop's
-accent. In this round's sandbox the accent the windows took was `#bde6fb`
-(the Files sidebar's selection bar), and accent-coloured icons alone all
-but vanish on the light background (the gallery's Icons page shows it). In
-the stage 2 run, before the latest merge of `main`, the same Files reload
-icon was a saturated blue. Which accent the owner's desktop gives, and
-whether an icon should use a darker accent role, is for the owner to see.
+An icon reads whatever accent the desktop gives. The review round found
+that an action alone was drawn in the raw accent, so a pale one all but
+vanished on a light background (`#bde6fb`, 1.2:1), and Zorin's own light
+accent `#15a6f0` is 2.4:1 on `#f3f3f3`, with white on it 2.7:1. The
+palette now has icon roles beside the accent: `icon_accent` is the accent
+when it keeps 3:1 (WCAG relative luminance) on every surface an icon is
+drawn on (window, card, menu, dialog) and its second layer keeps 1.5:1
+from the main layer and from those surfaces; otherwise the accent mixed
+toward the primary text colour in 5% steps until both hold.
+`icon_on_accent` is the theme's text on accent when it keeps the same
+two thresholds on the fill, otherwise moved toward black or white,
+whichever the fill is further from. The quiet grey and the critical colour
+already keep them. Fills, the selection, and focus still use the accent.
+`every_icon_reads_on_what_it_is_drawn_on_whatever_the_accent` checks nine
+accents (the defaults, Zorin's light and dark, a pale one with white on it,
+GNOME purple, near-black, near-white with dark and with white text, the
+Windows blues swapped) in both appearances, and fails on the old rule. In
+the sandbox, with the same pale accent, Files' reload icon is now `#738a96`
+on `#f9f9f9` and the selection bar is still `#bde6fb`
+(`/tmp/claude-1000/t147-screens/round3/`).
+
+Why the sandbox had `#bde6fb`: the sandbox's private bus started
+`xdg-desktop-portal` by D-Bus activation with the real home, so GTK took the
+owner's real `gtk-theme`, `ZorinBlue-Dark`, from the portal, whose
+`gtk-4.0/gtk.css` defines `accent_bg_color #bde6fb` and
+`accent_fg_color #161c1f`. Zorin's libadwaita loads
+`/usr/share/themes/<theme>/gtk-4.0/gtk.css` itself and does not change the
+file when the frame forces light or dark: a probe rendering the frame for
+light then dark read `#bde6fb` both times, and with
+`GTK_THEME=ZorinBlue-Light` read `#15a6f0` both times. So a window whose
+appearance differs from the desktop theme's takes that theme's accent and
+frame colours. That is the theme's own pair, not a lookup of the wrong
+variant by `system_frame`, so the lookup is unchanged; the icon roles make
+the result readable either way. Links and accent words (`accent_text`) are
+still the raw accent in `with_accent` and have the same pale-accent
+problem as text; that is outside this ticket's icons.
 
 Left as they are on purpose: arrows that name a command (Undo, Redo,
 move up and down, move to front, lower priority), Git's expand and wrap
