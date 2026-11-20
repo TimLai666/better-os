@@ -37,6 +37,7 @@ use better_ui::fluent::text_box::{NumberBox, NumberModel, TextBox};
 use better_ui::fluent::theme::Appearance;
 use better_ui::fluent::toggle::{CheckBox, CheckState, RadioButtons, RadioOption, ToggleSwitch};
 use better_ui::fluent::words::Locale;
+use better_ui::icon_set::{self, Kind, Picture};
 use better_ui::fluent::{
     BODY, BODY_STRONG, CAPTION, Palette, SUBTITLE, ShownState, TITLE, label, palette, radius,
     spacing,
@@ -57,7 +58,7 @@ Shows every better_ui::fluent control in every state.
   --light, --dark   Start in that appearance (the desktop's is the default).
   --zh-TW           Label the controls in Taiwan Mandarin.
   --page NAME       Open a page: buttons, text, selection, status, dialogs,
-                    collections, navigation, settings, window.
+                    collections, navigation, settings, icons, window.
   --compact         Start with the navigation pane compact.
   --dialog          Open the live content dialog on start.";
 
@@ -87,10 +88,11 @@ enum Page {
     Collections,
     Navigation,
     Settings,
+    Icons,
     Window,
 }
 
-const PAGES: [Page; 10] = [
+const PAGES: [Page; 11] = [
     Page::Buttons,
     Page::Text,
     Page::Selection,
@@ -100,6 +102,7 @@ const PAGES: [Page; 10] = [
     Page::Collections,
     Page::Navigation,
     Page::Settings,
+    Page::Icons,
     Page::Window,
 ];
 
@@ -115,6 +118,7 @@ impl Page {
             Page::Collections => "collections",
             Page::Navigation => "navigation",
             Page::Settings => "settings",
+            Page::Icons => "icons",
             Page::Window => "window",
         }
     }
@@ -139,6 +143,8 @@ impl Page {
             (Page::Navigation, true) => "導覽",
             (Page::Settings, false) => "Settings cards",
             (Page::Settings, true) => "設定卡片",
+            (Page::Icons, false) => "Icons",
+            (Page::Icons, true) => "圖示",
             (Page::Window, false) => "Window chrome",
             (Page::Window, true) => "視窗外框",
         }
@@ -155,6 +161,7 @@ impl Page {
             Page::Collections => IconName::LayoutDashboard,
             Page::Navigation => IconName::Map,
             Page::Settings => IconName::Settings,
+            Page::Icons => IconName::Palette,
             Page::Window => IconName::Frame,
         }
     }
@@ -403,6 +410,9 @@ fn section(title: &str, p: &Palette, rows: Vec<AnyElement>) -> AnyElement {
 }
 
 const COLUMN: f32 = 150.0;
+
+/// One icon's cell on the icons page: its three sizes and its name.
+const ICON_CELL: f32 = 128.0;
 
 /// The column names over a state matrix.
 fn state_header(p: &Palette, live: &str) -> AnyElement {
@@ -2424,6 +2434,73 @@ impl Gallery {
         ]
     }
 
+    /// Every picture icon in `better_ui::icon_set` at 16, 20 and 40px, on
+    /// each appearance's window background (ticket 147).
+    fn icons_page(&self, p: &Palette) -> Vec<AnyElement> {
+        let strip = |kind: Kind, dark: bool| {
+            let colours = better_ui::fluent::palette_for(dark);
+            div()
+                .flex()
+                .flex_wrap()
+                .gap(spacing::SM)
+                .p(spacing::MD)
+                .rounded(radius::SM)
+                .bg(colours.window_background)
+                .children(Picture::ALL.iter().filter(|icon| icon.kind() == kind).map(|&icon| {
+                    div()
+                        .w(px(ICON_CELL))
+                        .flex()
+                        .flex_col()
+                        .gap(spacing::XS)
+                        .child(
+                            div()
+                                .h(px(40.0))
+                                .flex()
+                                .items_center()
+                                .gap(spacing::MD)
+                                .child(icon_set::picture(icon, 16.0))
+                                .child(icon_set::picture(icon, 20.0))
+                                .child(icon_set::picture(icon, 40.0)),
+                        )
+                        .child(label(icon.name().to_string(), CAPTION, colours.text_secondary))
+                }))
+                .into_any_element()
+        };
+        let disabled = |dark: bool| {
+            let colours = better_ui::fluent::palette_for(dark);
+            div()
+                .flex()
+                .items_center()
+                .gap(spacing::MD)
+                .p(spacing::MD)
+                .rounded(radius::SM)
+                .bg(colours.window_background)
+                .children(
+                    [Picture::Folder, Picture::Documents, Picture::Copy, Picture::Delete]
+                        .map(|icon| icon_set::picture_disabled(icon, 20.0)),
+                )
+                .into_any_element()
+        };
+        let both = |kind: Kind| {
+            vec![
+                caption_over(self.t("Light", "淺色"), p, strip(kind, false)).into_any_element(),
+                caption_over(self.t("Dark", "深色"), p, strip(kind, true)).into_any_element(),
+            ]
+        };
+        vec![
+            section(self.t("Object icons", "物件圖示"), p, both(Kind::Object)),
+            section(self.t("Action icons", "動作圖示"), p, both(Kind::Action)),
+            section(
+                self.t("Disabled", "停用"),
+                p,
+                vec![
+                    caption_over(self.t("Light", "淺色"), p, disabled(false)).into_any_element(),
+                    caption_over(self.t("Dark", "深色"), p, disabled(true)).into_any_element(),
+                ],
+            ),
+        ]
+    }
+
     fn window_page(&self, p: &Palette) -> Vec<AnyElement> {
         let icon = || {
             Icon::new(IconName::Frame)
@@ -2586,6 +2663,7 @@ impl Render for Gallery {
             Page::Collections => self.collections_page(p, cx),
             Page::Navigation => self.navigation_page(p, cx),
             Page::Settings => self.settings_page(p, cx),
+            Page::Icons => self.icons_page(p),
             Page::Window => self.window_page(p),
         };
         let shown_dark = shows_dark(cx);
@@ -2647,7 +2725,8 @@ impl Render for Gallery {
                 )
                 .children(content),
         );
-        let entries: Vec<NavEntry> = PAGES[..9]
+        // Every page but the last, which sits in the footer.
+        let entries: Vec<NavEntry> = PAGES[..PAGES.len() - 1]
             .iter()
             .map(|page| NavItem::new(page.title(self.zh), page.icon()).entry())
             .collect();
@@ -2704,11 +2783,27 @@ impl Render for Gallery {
     }
 }
 
+/// The kit's assets, and Better OS's own icon set before them.
+struct GalleryAssets;
+
+impl gpui::AssetSource for GalleryAssets {
+    fn load(&self, path: &str) -> gpui::Result<Option<std::borrow::Cow<'static, [u8]>>> {
+        if let Some(svg) = better_ui::icon_set::load(path) {
+            return Ok(Some(std::borrow::Cow::Borrowed(svg)));
+        }
+        gpui_component_assets::Assets.load(path)
+    }
+
+    fn list(&self, path: &str) -> gpui::Result<Vec<SharedString>> {
+        gpui_component_assets::Assets.list(path)
+    }
+}
+
 fn main() {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     COMMAND_LINE.open_or_exit(&arguments);
     let options = Rc::new(Cell::new(Some(options(&arguments))));
-    let app = gpui_platform::application().with_assets(gpui_component_assets::Assets);
+    let app = gpui_platform::application().with_assets(GalleryAssets);
     app.run(move |cx| {
         gpui_component::init(cx);
         let window_options = gpui::WindowOptions {
