@@ -9,7 +9,9 @@
 
 use std::sync::Mutex;
 
-use better_core::local_time::{CivilTime, TimeZone, calendar_time, clock_time};
+use better_core::local_time::{
+    CivilTime, NextWallTime, TimeZone, WallTime, calendar_time, clock_time, reload_zone,
+};
 
 static TIMEZONE: Mutex<()> = Mutex::new(());
 
@@ -26,13 +28,15 @@ fn with_timezone<T>(zone: Option<&str>, body: impl FnOnce() -> T) -> T {
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let previous = std::env::var("TZ").ok();
     // SAFETY: the lock makes this the only thread in this binary touching the
-    // environment, and the conversion calls `tzset` itself.
+    // environment or converting a time; `reload_zone` makes the change the
+    // one the next conversion reads.
     unsafe {
         match zone {
             Some(zone) => std::env::set_var("TZ", zone),
             None => std::env::remove_var("TZ"),
         }
     }
+    reload_zone();
     let result = body();
     unsafe {
         match previous {
@@ -40,6 +44,7 @@ fn with_timezone<T>(zone: Option<&str>, body: impl FnOnce() -> T) -> T {
             None => std::env::remove_var("TZ"),
         }
     }
+    reload_zone();
     result
 }
 
@@ -102,12 +107,122 @@ fn a_wall_clock_time_reads_back_to_the_instant_on_both_sides_of_a_change() {
             second: 0,
         };
         // 08:00 the day before the change is 13:00Z; the day of it, 12:00Z.
-        assert_eq!(TimeZone::System.unix_at(eight(9)), Some(1_709_989_200));
-        assert_eq!(TimeZone::System.unix_at(eight(10)), Some(1_710_072_000));
+        assert_eq!(TimeZone::System.unix_at(eight(9)), 1_709_989_200);
+        assert_eq!(TimeZone::System.unix_at(eight(10)), 1_710_072_000);
         assert_eq!(
             TimeZone::System.unix_at(eight(9).add_days(1)),
-            Some(1_710_072_000)
+            1_710_072_000
         );
+    });
+}
+
+fn civil(month: u8, day: u8, hour: u8, minute: u8) -> CivilTime {
+    CivilTime {
+        year: 2024,
+        month,
+        day,
+        hour,
+        minute,
+        second: 0,
+    }
+}
+
+#[test]
+fn a_time_the_change_skips_resolves_to_just_past_the_gap() {
+    with_timezone(Some(NEW_YORK), || {
+        // 02:30 on 2024-03-10 never happens in New York; without the change it
+        // would have been 07:30Z, which the clock reads as 03:30 EDT.
+        let resolved = TimeZone::System.resolve(civil(3, 10, 2, 30));
+        assert_eq!(
+            resolved,
+            WallTime::Skipped {
+                after_gap: 1_710_055_800
+            }
+        );
+        assert_eq!(clock_time(1_710_055_800, TimeZone::System), "03:30");
+        assert_eq!(
+            TimeZone::System.resolve(civil(3, 10, 3, 30)),
+            WallTime::Once(1_710_055_800)
+        );
+    });
+}
+
+#[test]
+fn a_time_the_change_repeats_has_both_instants_whatever_was_converted_before() {
+    with_timezone(Some(NEW_YORK), || {
+        let repeated = WallTime::Twice {
+            earlier: 1_730_611_800,
+            later: 1_730_615_400,
+        };
+        // The C library's own reverse conversion answers this from the
+        // previous conversion's daylight-saving state; this does not.
+        let _summer = TimeZone::System.at(1_720_000_000);
+        assert_eq!(TimeZone::System.resolve(civil(11, 3, 1, 30)), repeated);
+        let _winter = TimeZone::System.at(1_735_000_000);
+        assert_eq!(TimeZone::System.resolve(civil(11, 3, 1, 30)), repeated);
+    });
+}
+
+#[test]
+fn until_a_time_across_spring_forward_is_on_the_wall_clock() {
+    with_timezone(Some(NEW_YORK), || {
+        // 22:00 EST on 2024-03-09: 08:00 is tomorrow, after the change, so it
+        // is 12:00Z and not the 13:00Z a day of seconds would give.
+        assert_eq!(
+            TimeZone::System.next_wall_time(1_710_039_600, 8, 0),
+            NextWallTime {
+                unix_seconds: 1_710_072_000,
+                tomorrow: true
+            }
+        );
+        // 01:00 EST on the day: 02:30 is skipped, so it ends at 03:30 EDT.
+        assert_eq!(
+            TimeZone::System.next_wall_time(1_710_050_400, 2, 30),
+            NextWallTime {
+                unix_seconds: 1_710_055_800,
+                tomorrow: false
+            }
+        );
+    });
+}
+
+#[test]
+fn until_a_time_across_fall_back_takes_the_first_reading_still_to_come() {
+    with_timezone(Some(NEW_YORK), || {
+        // 01:30 EDT: 01:45 is fifteen minutes away, not a day and a half.
+        assert_eq!(
+            TimeZone::System.next_wall_time(1_730_611_800, 1, 45),
+            NextWallTime {
+                unix_seconds: 1_730_612_700,
+                tomorrow: false
+            }
+        );
+        // 01:50 EDT: 01:45 EDT has passed, 01:45 EST is 55 minutes away.
+        assert_eq!(
+            TimeZone::System.next_wall_time(1_730_613_000, 1, 45),
+            NextWallTime {
+                unix_seconds: 1_730_616_300,
+                tomorrow: false
+            }
+        );
+        // 01:50 EST: both have passed, so it is tomorrow's 01:45 EST.
+        assert_eq!(
+            TimeZone::System.next_wall_time(1_730_616_600, 1, 45),
+            NextWallTime {
+                unix_seconds: 1_730_702_700,
+                tomorrow: true
+            }
+        );
+    });
+}
+
+#[test]
+fn a_zone_change_while_running_shows_after_a_reload() {
+    with_timezone(Some("UTC0"), || {
+        assert_eq!(clock_time(1_700_000_000, TimeZone::System), "22:13");
+    });
+    with_timezone(Some("CST-8"), || {
+        assert_eq!(clock_time(1_700_000_000, TimeZone::System), "06:13");
     });
 }
 

@@ -2,12 +2,25 @@
 //!
 //! Every Better OS window, tray, service, and command line that shows or reads
 //! a local time goes through here (ticket 146). The conversion is the C
-//! library's `localtime_r` and `mktime`, which already know `TZ`,
-//! `/etc/localtime`, every version of the TZif format, and the daylight-saving
-//! rules of the zone; a second reader would be a second, worse timezone
-//! database. Each timestamp is converted on its own, so two times on either
-//! side of a daylight-saving change each get the offset that was in force at
-//! them.
+//! library's `localtime_r`, which already knows `TZ`, `/etc/localtime`, every
+//! version of the TZif format, and the daylight-saving rules of the zone; a
+//! second reader would be a second, worse timezone database. Each timestamp is
+//! converted on its own, so two times on either side of a daylight-saving
+//! change each get the offset that was in force at them.
+//!
+//! The way back, a wall-clock time to an instant, is [`TimeZone::resolve`]. It
+//! is built on `localtime_r` alone, not on `mktime`, whose answer for a
+//! repeated hour depends on the conversion the process made before it. A wall
+//! time a change repeats has two instants and says so; one a change skips has
+//! a defined instant just past the gap.
+//!
+//! # Threads and `TZ`
+//!
+//! The C library reads `TZ` with `getenv`, which races with a `setenv` on
+//! another thread. The invariant every Better OS program keeps is that nothing
+//! sets an environment variable after it starts; only tests do, and a test
+//! binary that sets `TZ` holds one lock around every conversion it makes and
+//! calls [`reload_zone`] after the change.
 //!
 //! When the system has no timezone data — no `TZ`, no readable
 //! `/etc/localtime`, or a `TZ` the library could not load — the C library
@@ -20,14 +33,60 @@
 
 use std::ffi::CStr;
 use std::path::Path;
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 // POSIX does not require `localtime_r` to consult `TZ`, and glibc's does not
-// re-read it once the zone has been initialized. `tzset` first makes a zone
-// change while a program runs take effect at the next conversion. It is not in
-// the `libc` crate's exported surface, and it takes a lock internally, so
-// calling it on every conversion is safe and cheap.
+// re-read it once the zone has been initialized, so `tzset` is what makes a
+// zone change while a program runs take effect. It is not in the `libc`
+// crate's exported surface. It costs far more than the conversion itself (926
+// ns against 73 ns, measured in the review of ticket 146, because it checks
+// `/etc/localtime`), so it runs at most once per [`ZONE_RECHECK`], never per
+// timestamp: a list of a thousand file rows asks once.
 unsafe extern "C" {
     fn tzset();
+}
+
+/// How long a zone the C library loaded is used before it is asked to look
+/// again. A timezone changed while a program runs (Settings, `timedatectl`)
+/// shows in that program's next conversion at most this long afterwards.
+pub const ZONE_RECHECK: Duration = Duration::from_secs(1);
+
+/// Milliseconds after [`clock_start`] of the last `tzset`, or `u64::MAX` for
+/// never.
+static ZONE_CHECKED_AT: AtomicU64 = AtomicU64::new(u64::MAX);
+
+fn clock_start() -> Instant {
+    static START: OnceLock<Instant> = OnceLock::new();
+    *START.get_or_init(Instant::now)
+}
+
+fn elapsed_millis() -> u64 {
+    u64::try_from(clock_start().elapsed().as_millis()).unwrap_or(u64::MAX - 1)
+}
+
+/// Calls `tzset` when the last call is older than [`ZONE_RECHECK`].
+fn refresh_zone() {
+    let now = elapsed_millis();
+    let last = ZONE_CHECKED_AT.load(Ordering::Relaxed);
+    let recheck = u64::try_from(ZONE_RECHECK.as_millis()).unwrap_or(u64::MAX);
+    if last == u64::MAX || now.saturating_sub(last) >= recheck {
+        reload_zone_at(now);
+    }
+}
+
+/// Makes the next conversion read the zone again, now. A program never needs
+/// it; a test that has just changed `TZ` does.
+pub fn reload_zone() {
+    reload_zone_at(elapsed_millis());
+}
+
+fn reload_zone_at(now: u64) {
+    // SAFETY: `tzset` takes no arguments, returns nothing, and synchronizes
+    // internally.
+    unsafe { tzset() };
+    ZONE_CHECKED_AT.store(now, Ordering::Relaxed);
 }
 
 /// The system's own zone file when `TZ` does not name one.
@@ -95,16 +154,114 @@ impl TimeZone {
         }
     }
 
-    /// The instant at which this zone's wall clock reads `civil`. A time a
-    /// daylight-saving change skips is moved past the gap, and one it repeats
-    /// is taken once, the way the C library's `mktime` decides; `None` only for
-    /// a date the library cannot place.
-    pub fn unix_at(self, civil: CivilTime) -> Option<i64> {
-        match self {
-            TimeZone::Fixed(offset) => civil.unix_utc().checked_sub(i64::from(offset)),
-            TimeZone::System => system_unix_at(civil),
+    /// Every instant at which this zone's wall clock reads `civil`, which must
+    /// be a real calendar date and time of day.
+    ///
+    /// The answer is found by trying each offset in force within a day of the
+    /// time and keeping the instants that read back as `civil`, so it does not
+    /// depend on anything converted before it.
+    pub fn resolve(self, civil: CivilTime) -> WallTime {
+        let as_utc = civil.unix_utc();
+        let offset = match self {
+            TimeZone::Fixed(offset) => return WallTime::Once(as_utc.saturating_sub(offset.into())),
+            TimeZone::System => |at: i64| i64::from(self.at(at).offset_seconds),
+        };
+        let mut offsets = [
+            offset(as_utc.saturating_sub(86_400)),
+            offset(as_utc),
+            offset(as_utc.saturating_add(86_400)),
+        ];
+        offsets.sort_unstable();
+        let candidates = offsets.map(|offset| as_utc.saturating_sub(offset));
+        let mut hits: Vec<i64> = candidates
+            .iter()
+            .copied()
+            .filter(|instant| self.at(*instant).civil == civil)
+            .collect();
+        hits.sort_unstable();
+        hits.dedup();
+        match hits.as_slice() {
+            [] => WallTime::Skipped {
+                // The largest offset gives the earliest candidate and the
+                // smallest the latest; the latest reads as the skipped time
+                // pushed forward by the gap's length.
+                after_gap: candidates.into_iter().max().unwrap_or(as_utc),
+            },
+            [once] => WallTime::Once(*once),
+            [earlier, .., later] => WallTime::Twice {
+                earlier: *earlier,
+                later: *later,
+            },
         }
     }
+
+    /// The earliest instant at which the wall clock reads `civil`, by the
+    /// rules of [`resolve`](Self::resolve).
+    pub fn unix_at(self, civil: CivilTime) -> i64 {
+        self.resolve(civil).earliest()
+    }
+
+    /// The first instant after `after` at which the wall clock reads
+    /// `hour:minute`: today when it is still to come (in a repeated hour, the
+    /// first reading of it still to come), otherwise tomorrow.
+    pub fn next_wall_time(self, after: i64, hour: u8, minute: u8) -> NextWallTime {
+        let today = CivilTime {
+            hour,
+            minute,
+            second: 0,
+            ..self.at(after).civil
+        };
+        if let Some(unix_seconds) = self.resolve(today).first_after(after) {
+            return NextWallTime {
+                unix_seconds,
+                tomorrow: false,
+            };
+        }
+        NextWallTime {
+            unix_seconds: self.resolve(today.add_days(1)).earliest(),
+            tomorrow: true,
+        }
+    }
+}
+
+/// The instants at which a wall clock reads one date and time.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WallTime {
+    /// The usual case: one instant.
+    Once(i64),
+    /// A daylight-saving change repeats this time: it happens twice.
+    Twice { earlier: i64, later: i64 },
+    /// A daylight-saving change skips this time. `after_gap` is the instant
+    /// it would have been without the change, which the wall clock reads as
+    /// that time pushed forward by the gap (02:30 becomes 03:30).
+    Skipped { after_gap: i64 },
+}
+
+impl WallTime {
+    pub fn earliest(self) -> i64 {
+        match self {
+            WallTime::Once(at) | WallTime::Skipped { after_gap: at } => at,
+            WallTime::Twice { earlier, .. } => earlier,
+        }
+    }
+
+    /// The first of the instants that is later than `after`.
+    pub fn first_after(self, after: i64) -> Option<i64> {
+        match self {
+            WallTime::Once(at) | WallTime::Skipped { after_gap: at } => (at > after).then_some(at),
+            WallTime::Twice { earlier, later } => {
+                [earlier, later].into_iter().find(|at| *at > after)
+            }
+        }
+    }
+}
+
+/// When a wall-clock time next comes round.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NextWallTime {
+    pub unix_seconds: i64,
+    /// It is not still to come today.
+    pub tomorrow: bool,
 }
 
 impl LocalTime {
@@ -208,6 +365,15 @@ impl CivilTime {
         )
     }
 
+    /// Whether this is a real calendar date and time of day.
+    pub fn is_valid(&self) -> bool {
+        (1..=12).contains(&self.month)
+            && (1..=days_in_month(self.year, self.month)).contains(&self.day)
+            && self.hour < 24
+            && self.minute < 60
+            && self.second < 61
+    }
+
     /// Reads [`iso_text`](Self::iso_text)'s form back. Seconds may be left
     /// out; anything out of range is refused rather than normalized.
     pub fn parse_iso(text: &str) -> Option<Self> {
@@ -235,12 +401,7 @@ impl CivilTime {
             minute,
             second,
         };
-        let valid = (1..=12).contains(&month)
-            && (1..=days_in_month(year, month)).contains(&day)
-            && hour < 24
-            && minute < 60
-            && second < 61;
-        valid.then_some(civil)
+        civil.is_valid().then_some(civil)
     }
 }
 
@@ -269,13 +430,10 @@ fn system_at(unix_seconds: i64) -> Option<LocalTime> {
     let time = libc::time_t::try_from(unix_seconds).ok()?;
     // SAFETY: `tm` is a plain C struct for which all-zero is a valid value.
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    // SAFETY: `tzset` takes no arguments and synchronizes internally;
-    // `localtime_r` writes only into the `tm` this frame owns and reads only
-    // the `time_t` passed by reference.
-    let result = unsafe {
-        tzset();
-        libc::localtime_r(&time, &mut tm)
-    };
+    refresh_zone();
+    // SAFETY: `localtime_r` writes only into the `tm` this frame owns and
+    // reads only the `time_t` passed by reference.
+    let result = unsafe { libc::localtime_r(&time, &mut tm) };
     if result.is_null() {
         return None;
     }
@@ -311,31 +469,6 @@ fn system_at(unix_seconds: i64) -> Option<LocalTime> {
         offset_seconds: offset,
         utc_fallback,
     })
-}
-
-fn system_unix_at(civil: CivilTime) -> Option<i64> {
-    // SAFETY: as in `system_at`; `mktime` only reads and normalizes the
-    // struct it is given.
-    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    tm.tm_year = i32::try_from(civil.year - 1900).ok()?;
-    tm.tm_mon = i32::from(civil.month) - 1;
-    tm.tm_mday = i32::from(civil.day);
-    tm.tm_hour = i32::from(civil.hour);
-    tm.tm_min = i32::from(civil.minute);
-    tm.tm_sec = i32::from(civil.second);
-    // Let the C library decide whether daylight saving applied then.
-    tm.tm_isdst = -1;
-    // SAFETY: `tm` is a valid, initialized struct owned by this frame.
-    let seconds = unsafe {
-        tzset();
-        libc::mktime(&mut tm)
-    };
-    // -1 is also one second before the epoch; nothing here asks for 1969.
-    // `time_t` is `i64` on every architecture Better OS ships; the conversion
-    // stays so a narrower one would still compile.
-    #[allow(clippy::useless_conversion)]
-    let seconds = i64::from(seconds);
-    (seconds != -1).then_some(seconds)
 }
 
 /// Whether the C library's answer is its UTC fallback rather than a zone.
@@ -450,11 +583,45 @@ mod tests {
     fn a_fixed_zone_reads_a_wall_clock_back() {
         let taipei = TimeZone::Fixed(8 * 3_600);
         let civil = taipei.at(1_700_000_000).civil;
-        assert_eq!(taipei.unix_at(civil), Some(1_700_000_000));
+        assert_eq!(taipei.unix_at(civil), 1_700_000_000);
+        assert_eq!(taipei.unix_at(civil.add_days(1)), 1_700_000_000 + 86_400);
+        assert_eq!(taipei.resolve(civil), WallTime::Once(1_700_000_000));
+    }
+
+    #[test]
+    fn the_next_wall_time_is_today_when_still_to_come_and_tomorrow_otherwise() {
+        // 2023-11-14 22:13:20 UTC.
+        let now = 1_700_000_000;
+        let midnight = now - (22 * 3_600 + 13 * 60 + 20);
+        let later = TimeZone::UTC.next_wall_time(now, 23, 0);
         assert_eq!(
-            taipei.unix_at(civil.add_days(1)),
-            Some(1_700_000_000 + 86_400)
+            later,
+            NextWallTime {
+                unix_seconds: midnight + 23 * 3_600,
+                tomorrow: false
+            }
         );
+        let morning = TimeZone::UTC.next_wall_time(now, 7, 30);
+        assert!(morning.tomorrow);
+        assert_eq!(morning.unix_seconds, midnight + 86_400 + 7 * 3_600 + 1_800);
+        // The minute it is now is not still to come.
+        assert!(TimeZone::UTC.next_wall_time(now - 20, 22, 13).tomorrow);
+    }
+
+    #[test]
+    fn the_instants_of_a_wall_time_choose_the_first_still_to_come() {
+        let twice = WallTime::Twice {
+            earlier: 100,
+            later: 3_700,
+        };
+        assert_eq!(twice.earliest(), 100);
+        assert_eq!(twice.first_after(99), Some(100));
+        assert_eq!(twice.first_after(100), Some(3_700));
+        assert_eq!(twice.first_after(3_700), None);
+        let skipped = WallTime::Skipped { after_gap: 500 };
+        assert_eq!(skipped.earliest(), 500);
+        assert_eq!(skipped.first_after(499), Some(500));
+        assert_eq!(WallTime::Once(7).first_after(7), None);
     }
 
     #[test]

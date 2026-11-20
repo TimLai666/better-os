@@ -747,6 +747,26 @@ fn clone_plans_and_names() {
     assert_eq!(crate::publish::current_year(1_780_000_000), 2026);
 }
 
+/// Ticket 146: the licence year is the local calendar year, exact at the
+/// turn of the year. The average-year approximation it replaced called the
+/// last second of 2025 UTC 2026 and the first of 2024 UTC 2023.
+#[test]
+fn the_licence_year_turns_at_local_midnight() {
+    use crate::publish::current_year_in;
+    use better_core::local_time::TimeZone;
+    let utc = TimeZone::UTC;
+    let taipei = TimeZone::Fixed(8 * 3_600);
+    // 2026-01-01T00:00:00Z.
+    assert_eq!(current_year_in(1_767_225_599, utc), 2025);
+    assert_eq!(current_year_in(1_767_225_600, utc), 2026);
+    // 2024-01-01T00:00:00Z.
+    assert_eq!(current_year_in(1_704_067_200, utc), 2024);
+    // Local midnight in Taipei is 16:00Z the day before.
+    assert_eq!(current_year_in(1_767_196_799, taipei), 2025);
+    assert_eq!(current_year_in(1_767_196_800, taipei), 2026);
+    assert_eq!(current_year_in(1_767_196_800, utc), 2025);
+}
+
 #[test]
 fn trust_lists_the_programs_a_repository_names() {
     let tmp = tempfile::TempDir::new().unwrap();

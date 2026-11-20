@@ -23,6 +23,27 @@ const FORBIDDEN: &[(&str, &str)] = &[
     ("fn utc_time", "the command line's old UTC-only helper"),
     ("fn clock_time", "a clock formatter of its own"),
     ("fn calendar_time", "a calendar formatter of its own"),
+    ("localtime(", "a C library conversion of its own"),
+    ("gmtime", "a C library conversion of its own"),
+    ("timegm", "a C library conversion of its own"),
+    ("strftime", "a C library formatter of its own"),
+    ("719468", "a copy of the civil-date arithmetic"),
+    (
+        "31_556_952",
+        "an average-year approximation of the calendar",
+    ),
+    ("31556952", "an average-year approximation of the calendar"),
+    ("365.2425", "an average-year approximation of the calendar"),
+    ("div_euclid(86_400)", "a calendar day derived by hand"),
+    ("div_euclid(86400)", "a calendar day derived by hand"),
+    (
+        "rem_euclid(86_400)",
+        "a time of day derived by hand from shifted seconds",
+    ),
+    (
+        "rem_euclid(86400)",
+        "a time of day derived by hand from shifted seconds",
+    ),
 ];
 
 /// The one implementation, and this file, which has to name what it forbids.

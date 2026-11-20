@@ -413,7 +413,7 @@ fn percent_encode(path: &Path) -> String {
 /// that way), into the instant it names in `zone`.
 fn parse_deletion_date(value: &str, zone: TimeZone) -> Option<FileTime> {
     let civil = CivilTime::parse_iso(value)?;
-    Some(FileTime::new(zone.unix_at(civil)?, 0))
+    Some(FileTime::new(zone.unix_at(civil), 0))
 }
 
 /// Formats an instant the way `.trashinfo` wants it: the wall clock in

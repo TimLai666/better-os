@@ -16,6 +16,8 @@ test = false
 bench = false
 
 [dependencies]
+# The one local-time conversion (`better_core::local_time`, ticket 146).
+better-core.workspace = true
 better-ui.workspace = true
 git-core.workspace = true
 git-platform.workspace = true

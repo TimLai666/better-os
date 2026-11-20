@@ -130,6 +130,13 @@ and ends in ` UTC`, never a guessed offset. A trash entry's `DeletionDate` is
 the trashing person's local time, as the trash specification says and every
 file manager writes it, so it is read and written in local time too.
 
+One known effect: Better Files and Better Git 0.2.16 and older wrote that
+stamp in UTC. An item they trashed now reads as if the stamp were local, so its
+deleted time shows shifted by the machine's UTC offset (eight hours early in
+Taipei). Nothing is lost and restore is unaffected, because the stamp only
+orders and labels the item. The record carries nothing that tells an old stamp
+from a new one, so no entry is guessed at and corrected.
+
 ## Opening a file is a typed intent, not a launch
 
 `files_core::open_intent` decides what opening an entry means, as a closed enum

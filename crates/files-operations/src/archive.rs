@@ -668,16 +668,19 @@ pub(crate) fn dos_time(seconds: i64) -> zip::DateTime {
 }
 
 /// The Unix time a zip timestamp names, read as local time the way it was
-/// written. `None` for a date the C library cannot place.
+/// written. A time a daylight-saving change repeats is taken at its earlier
+/// instant, and one it skips just past the gap (`TimeZone::resolve`).
 pub(crate) fn unix_time_of(time: zip::DateTime) -> Option<i64> {
-    TimeZone::System.unix_at(CivilTime {
+    let civil = CivilTime {
         year: i64::from(time.year()),
         month: time.month(),
         day: time.day(),
         hour: time.hour(),
         minute: time.minute(),
         second: time.second(),
-    })
+    };
+    // Only a real calendar date names an instant.
+    civil.is_valid().then(|| TimeZone::System.unix_at(civil))
 }
 
 #[cfg(test)]

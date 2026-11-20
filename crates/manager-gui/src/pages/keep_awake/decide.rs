@@ -13,7 +13,7 @@ use better_ui::fluent::time_picker::Time;
 
 use super::copy::{Copy, PageCopy, fill};
 use super::model::{ReasonRow, StatusView, remaining_label};
-use better_core::local_time::{CivilTime, TimeZone, clock_time};
+use better_core::local_time::{TimeZone, clock_time};
 
 /// The newest protocol the page needs: the quick-session offer is version 4.
 pub(crate) const REQUIRED_PROTOCOL: u32 = awake_ipc::PROTOCOL_VERSION;
@@ -306,27 +306,21 @@ pub(crate) struct Until {
     pub(crate) tomorrow: bool,
 }
 
-///
-/// Each day's time is read back through the zone on its own, so "07:30
-/// tomorrow" across a daylight-saving change is 07:30 on the wall clock and not
-/// an hour off.
+/// The first time the wall clock reads `time` after now, by
+/// `TimeZone::next_wall_time`: in an hour a daylight-saving change repeats,
+/// the first reading still to come; in one it skips, just past the gap; and
+/// tomorrow's `time` read on tomorrow's clock, not today's plus a day of
+/// seconds.
 pub(crate) fn until(now_unix_seconds: u64, zone: TimeZone, time: Time) -> Until {
     let now = i64::try_from(now_unix_seconds).unwrap_or(i64::MAX / 2);
-    let today = CivilTime {
-        hour: (time.minutes() / 60) as u8,
-        minute: (time.minutes() % 60) as u8,
-        second: 0,
-        ..zone.at(now).civil
-    };
-    let at_on = |day: CivilTime| zone.unix_at(day).unwrap_or(now);
-    let mut at = at_on(today);
-    let tomorrow = at <= now;
-    if tomorrow {
-        at = at_on(today.add_days(1));
-    }
+    let next = zone.next_wall_time(
+        now,
+        (time.minutes() / 60) as u8,
+        (time.minutes() % 60) as u8,
+    );
     Until {
-        unix_seconds: u64::try_from(at).unwrap_or(0),
-        tomorrow,
+        unix_seconds: u64::try_from(next.unix_seconds).unwrap_or(0),
+        tomorrow: next.tomorrow,
     }
 }
 
