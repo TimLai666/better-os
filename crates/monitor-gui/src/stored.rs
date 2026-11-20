@@ -15,9 +15,9 @@ use better_ui::fluent::info_bar::{InfoBar, Severity};
 use better_ui::fluent::settings_card::{SettingsExpander, SettingsRow};
 use better_ui::fluent::tabs::{SelectorBar, SelectorItem};
 use better_ui::fluent::{BODY, BODY_STRONG, CAPTION, label, palette, spacing};
+use better_ui::icon_set::Picture;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
-use gpui_component::IconName;
 use monitor_core::{EntityKind, MetricId};
 use monitor_store::{
     Detection, GapReason, Incident, Sample, Sensitivity, SlowdownResource, SlowdownRules,
@@ -437,7 +437,7 @@ impl MonitorApp {
             .unwrap_or(0);
         let open = self.slowdown_rules_open.unwrap_or(incidents.is_empty());
         let intro = SettingsExpander::new("slowdown-rules", c.events_rules_title, open)
-            .icon(IconName::Info)
+            .icon(Picture::About)
             .description(c.events_intro_title)
             .on_toggle(Self::act_with(cx, |this, open: bool, _, _| {
                 this.slowdown_rules_open = Some(open)
@@ -680,7 +680,7 @@ impl MonitorApp {
             },
             !changes.is_empty(),
         )
-        .icon(IconName::Calendar);
+        .icon(Picture::Calendar);
         for (name, change) in changes {
             expander = expander.row(SettingsRow::new(name).description(change));
         }

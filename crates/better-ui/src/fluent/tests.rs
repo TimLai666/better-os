@@ -20,8 +20,8 @@ use super::list::{
 };
 use super::menu::{EntryShape, MenuAction, MenuEntry, MenuItem, MenuOpen, MenuPath, shapes};
 use super::navigation::{
-    NavEntry, NavItem, SearchSlot, content_offset, floats_over_content, is_menu_key, item_fill,
-    nav_step, pane_width, search_slot, toggle_tooltip,
+    NavEntry, NavItem, PaneChoice, PaneLayout, SearchSlot, content_offset, floats_over_content,
+    is_menu_key, item_fill, nav_step, pane_width, search_slot, toggle_tooltip,
 };
 use super::progress::{fraction, indeterminate_arc, indeterminate_segment};
 use super::selection::{ComboOutcome, SliderModel, combo_key};
@@ -1078,7 +1078,11 @@ fn a_desktop_accent_replaces_only_the_accent_roles() {
     let on = hex(0xffffff);
     let p = super::with_accent(&LIGHT, fill, on);
     assert_eq!(p.accent, fill);
-    assert_eq!(p.accent_text, fill);
+    // GNOME's blue is 3.6:1 on a light window, short of body text's 4.5:1,
+    // so its text is the nearest darker blue that reads.
+    assert_eq!(p.accent_text, super::accent_text_for(&LIGHT, fill));
+    assert_ne!(p.accent_text, fill);
+    assert!(p.accent_text.b > p.accent_text.r);
     assert_eq!(p.text_on_accent, on);
     assert_eq!(p.window_background, LIGHT.window_background);
     assert_eq!(p.text_primary, LIGHT.text_primary);
@@ -1407,6 +1411,48 @@ fn an_open_pane_in_a_narrow_window_floats_over_the_content() {
     assert_eq!(content_offset(true, true), px(48.0));
     assert_eq!(content_offset(false, false), px(320.0));
     assert_eq!(content_offset(true, false), px(48.0));
+}
+
+/// The pane rule Better Manager, Better Awake and Better Touchpad share: a
+/// wide window's pane is open unless closed with ☰ and pushes the content;
+/// a narrow window's is compact unless opened, and then floats over the
+/// content, so opening it never pushes the page 320px aside. The two
+/// choices are kept apart, and choosing a page closes a narrow pane.
+#[test]
+fn a_pane_floats_when_opened_narrow_and_pushes_when_wide() {
+    let mut choice = PaneChoice::default();
+    assert_eq!(
+        choice.layout(true),
+        PaneLayout {
+            compact: true,
+            overlay: true
+        }
+    );
+    assert_eq!(
+        choice.layout(false),
+        PaneLayout {
+            compact: false,
+            overlay: false
+        }
+    );
+    choice.toggle(false, true);
+    let open_narrow = choice.layout(true);
+    assert!(floats_over_content(
+        open_narrow.compact,
+        open_narrow.overlay
+    ));
+    assert_eq!(
+        content_offset(open_narrow.compact, open_narrow.overlay),
+        px(48.0)
+    );
+    // Opening it narrow says nothing about the wide window's pane.
+    assert!(!choice.layout(false).compact);
+    choice.toggle(true, false);
+    assert!(choice.layout(false).compact);
+    assert!(!choice.layout(true).compact);
+    choice.page_chosen();
+    assert!(choice.layout(true).compact);
+    assert!(choice.layout(false).compact);
 }
 
 #[test]

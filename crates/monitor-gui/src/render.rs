@@ -8,8 +8,9 @@ use better_ui::fluent::menu::{ContextMenu, MenuEntry, MenuItem};
 use better_ui::fluent::navigation::{NavEntry, NavItem, NavigationView};
 use better_ui::fluent::text_box::TextBox;
 use better_ui::fluent::{BODY, TITLE, label, palette, spacing};
+use better_ui::icon_set::{self, Picture};
 use gpui::*;
-use gpui_component::{Icon, IconName};
+use gpui_component::IconName;
 use monitor_core::ProcessAction;
 
 use crate::app::{Dialog, EndTarget, MenuTarget, MonitorApp, Page};
@@ -33,18 +34,18 @@ pub(crate) fn page_title(page: Page, c: &'static Copy) -> &'static str {
     }
 }
 
-fn page_icon(page: Page) -> IconName {
+fn page_icon(page: Page) -> Picture {
     match page {
-        Page::Overview => IconName::LayoutDashboard,
-        Page::Processes => IconName::GalleryVerticalEnd,
-        Page::Details => IconName::SquareTerminal,
-        Page::Performance => IconName::ChartPie,
-        Page::Startup => IconName::Play,
-        Page::Services => IconName::Settings2,
-        Page::History => IconName::Calendar,
-        Page::Events => IconName::Bell,
-        Page::SystemInfo => IconName::Info,
-        Page::Settings => IconName::Settings,
+        Page::Overview => Picture::Dashboard,
+        Page::Processes => Picture::ProcessList,
+        Page::Details => Picture::Table,
+        Page::Performance => Picture::Chart,
+        Page::Startup => Picture::Startup,
+        Page::Services => Picture::Services,
+        Page::History => Picture::History,
+        Page::Events => Picture::Bell,
+        Page::SystemInfo => Picture::About,
+        Page::Settings => Picture::Settings,
     }
 }
 
@@ -93,10 +94,7 @@ impl Render for MonitorApp {
             // The window frame paints the window background, with the
             // desktop's top corners (ticket 108).
             .text_color(p.text_primary)
-            .child(
-                TitleBar::new(c.app_name)
-                    .icon(Icon::new(IconName::Cpu).size(px(16.0)).text_color(p.accent)),
-            )
+            .child(TitleBar::new(c.app_name).icon(icon_set::picture(Picture::Chart, 16.0)))
             .child(div().flex_1().min_h_0().child(nav))
             .children(dialog)
             .children(menu)
@@ -113,7 +111,7 @@ impl MonitorApp {
             Page::Processes => {
                 let target = self.selected_app_target();
                 commands.push(
-                    Command::new(c.end_task, IconName::CircleX)
+                    Command::new(c.end_task, Picture::EndTask)
                         .disabled(!end_offered(self.paused, target.is_some()))
                         .on_click(Self::act(cx, move |this, _, cx| {
                             if let Some(target) = this.selected_app_target() {
@@ -126,7 +124,7 @@ impl MonitorApp {
                     _ => None,
                 };
                 commands.push(
-                    Command::new(c.properties, IconName::Info)
+                    Command::new(c.properties, Picture::Properties)
                         .disabled(pid.is_none())
                         .on_click(Self::act(cx, move |this, _, cx| {
                             if let Some(pid) = pid {
@@ -140,7 +138,7 @@ impl MonitorApp {
                 let target = selected.map(|process| (process.pid, process.display_name()));
                 let end = target.clone();
                 commands.push(
-                    Command::new(c.end_task, IconName::CircleX)
+                    Command::new(c.end_task, Picture::EndTask)
                         .disabled(!end_offered(self.paused, target.is_some()))
                         .on_click(Self::act(cx, move |this, _, cx| {
                             if let Some((pid, name)) = end.clone() {
@@ -150,7 +148,7 @@ impl MonitorApp {
                 );
                 let tree = target.clone();
                 commands.push(
-                    Command::new(c.end_process_tree, IconName::ChevronsUpDown)
+                    Command::new(c.end_process_tree, Picture::EndTask)
                         .disabled(!end_offered(self.paused, target.is_some()))
                         .on_click(Self::act(cx, move |this, _, cx| {
                             if let Some((pid, name)) = tree.clone() {
@@ -159,7 +157,7 @@ impl MonitorApp {
                         })),
                 );
                 commands.push(
-                    Command::new(c.properties, IconName::Info)
+                    Command::new(c.properties, Picture::Properties)
                         .disabled(target.is_none())
                         .on_click(Self::act(cx, move |this, _, cx| {
                             if let Some(pid) = this.selected_pid {
@@ -168,7 +166,7 @@ impl MonitorApp {
                         })),
                 );
                 commands.push(
-                    Command::new(c.tree_view, IconName::ChevronsUpDown)
+                    Command::new(c.tree_view, Picture::TreeView)
                         .checked(self.processes.tree_mode())
                         .on_click(Self::act(cx, |this, _, cx| this.toggle_tree_mode(cx))),
                 );
@@ -183,7 +181,7 @@ impl MonitorApp {
                 });
                 let (on, off) = (selected.clone(), selected.clone());
                 commands.push(
-                    Command::new(c.enable, IconName::CircleCheck)
+                    Command::new(c.enable, Picture::Enable)
                         .disabled(!matches!(selected, Some((_, false))))
                         .on_click(Self::act(cx, move |this, _, cx| {
                             if let Some((file, _)) = on.clone() {
@@ -192,7 +190,7 @@ impl MonitorApp {
                         })),
                 );
                 commands.push(
-                    Command::new(c.disable, IconName::CircleX)
+                    Command::new(c.disable, Picture::Disable)
                         .disabled(!matches!(selected, Some((_, true))))
                         .on_click(Self::act(cx, move |this, _, cx| {
                             if let Some((file, _)) = off.clone() {
@@ -201,8 +199,7 @@ impl MonitorApp {
                         })),
                 );
                 commands.push(
-                    Command::new(c.refresh, IconName::Redo)
-                        .icon_path(better_ui::fluent::glyphs::REFRESH)
+                    Command::new(c.refresh, Picture::Refresh)
                         .on_click(Self::act(cx, |this, _, cx| this.reload_startup(cx))),
                 );
             }
@@ -222,7 +219,7 @@ impl MonitorApp {
                     switchable.map(|s| s.unit.clone()),
                 );
                 commands.push(
-                    Command::new(c.enable, IconName::CircleCheck)
+                    Command::new(c.enable, Picture::Enable)
                         .disabled(enabled != Some(false))
                         .on_click(Self::act(cx, move |this, _, cx| {
                             if let Some(unit) = on.clone() {
@@ -231,7 +228,7 @@ impl MonitorApp {
                         })),
                 );
                 commands.push(
-                    Command::new(c.disable, IconName::CircleX)
+                    Command::new(c.disable, Picture::Disable)
                         .disabled(enabled != Some(true))
                         .on_click(Self::act(cx, move |this, _, cx| {
                             if let Some(unit) = off.clone() {
@@ -240,8 +237,7 @@ impl MonitorApp {
                         })),
                 );
                 commands.push(
-                    Command::new(c.refresh, IconName::Redo)
-                        .icon_path(better_ui::fluent::glyphs::REFRESH)
+                    Command::new(c.refresh, Picture::Refresh)
                         .on_click(Self::act(cx, |this, _, cx| this.reload_services(cx))),
                 );
             }
@@ -260,9 +256,9 @@ impl MonitorApp {
                         c.pause_updates
                     },
                     if self.paused {
-                        IconName::Play
+                        Picture::Play
                     } else {
-                        IconName::Pause
+                        Picture::Pause
                     },
                 )
                 .on_click(Self::act(cx, |this, _, cx| this.toggle_pause(cx))),
@@ -472,7 +468,7 @@ impl MonitorApp {
                 let first = row.group.pids().next();
                 let mut entries = vec![
                     MenuItem::new(c.end_task)
-                        .icon(IconName::CircleX)
+                        .icon(Picture::EndTask)
                         .disabled(!end_offered(self.paused, true))
                         .on_select(Self::act(cx, move |this, _, cx| {
                             this.request_end(target.clone(), cx)
@@ -482,7 +478,7 @@ impl MonitorApp {
                 if let Some(pid) = first {
                     entries.push(
                         MenuItem::new(c.open_file_location)
-                            .icon(IconName::FolderOpen)
+                            .icon(Picture::OpenFolder)
                             .on_select(Self::act(cx, move |this, _, cx| {
                                 this.open_location(pid, cx)
                             }))
@@ -490,7 +486,7 @@ impl MonitorApp {
                     );
                     entries.push(
                         MenuItem::new(c.go_to_details)
-                            .icon(IconName::SquareTerminal)
+                            .icon(Picture::Table)
                             .on_select(Self::act(cx, move |this, _, cx| {
                                 this.selected_pid = Some(pid);
                                 this.navigate(Page::Details, cx);
@@ -513,9 +509,9 @@ impl MonitorApp {
                 vec![
                     MenuItem::new(if enabled { c.disable } else { c.enable })
                         .icon(if enabled {
-                            IconName::CircleX
+                            Picture::Disable
                         } else {
-                            IconName::CircleCheck
+                            Picture::Enable
                         })
                         .on_select(Self::act(cx, move |this, _, cx| {
                             this.switch_startup(file.clone(), !enabled, cx)
@@ -534,9 +530,9 @@ impl MonitorApp {
                 vec![
                     MenuItem::new(if enabled { c.disable } else { c.enable })
                         .icon(if enabled {
-                            IconName::CircleX
+                            Picture::Disable
                         } else {
-                            IconName::CircleCheck
+                            Picture::Enable
                         })
                         .disabled(service.lock().is_some())
                         .on_select(Self::act(cx, move |this, _, cx| {
@@ -575,7 +571,7 @@ impl MonitorApp {
         };
         Some(vec![
             MenuItem::new(c.end_task)
-                .icon(IconName::CircleX)
+                .icon(Picture::EndTask)
                 .disabled(blocked(ProcessAction::Terminate) || !end_offered(list_paused, true))
                 .on_select(Self::act(cx, move |this, _, cx| {
                     this.request_end(
@@ -588,7 +584,7 @@ impl MonitorApp {
                 }))
                 .entry(),
             MenuItem::new(c.end_process_tree)
-                .icon(IconName::ChevronsUpDown)
+                .icon(Picture::EndTask)
                 .disabled(blocked(ProcessAction::Terminate) || !end_offered(list_paused, true))
                 .on_select(Self::act(cx, move |this, _, cx| {
                     this.request_end(
@@ -607,9 +603,9 @@ impl MonitorApp {
                 c.pause_process
             })
             .icon(if paused {
-                IconName::Play
+                Picture::Play
             } else {
-                IconName::Pause
+                Picture::Pause
             })
             .disabled(blocked(pause_action))
             .on_select(Self::act(cx, move |this, _, cx| {
@@ -625,13 +621,13 @@ impl MonitorApp {
                 .entry(),
             MenuEntry::Separator,
             MenuItem::new(c.open_file_location)
-                .icon(IconName::FolderOpen)
+                .icon(Picture::OpenFolder)
                 .on_select(Self::act(cx, move |this, _, cx| {
                     this.open_location(pid, cx)
                 }))
                 .entry(),
             MenuItem::new(c.properties)
-                .icon(IconName::Info)
+                .icon(Picture::Properties)
                 .on_select(Self::act(cx, move |this, _, cx| {
                     this.show_properties(pid, cx)
                 }))

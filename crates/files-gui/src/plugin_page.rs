@@ -5,9 +5,9 @@
 //! go while it is open. Nothing on it can be copied, renamed, pinned or
 //! previewed, so none of that is offered.
 
+use better_ui::icon_set::Picture;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
-use gpui_component::{Icon, IconName};
 
 use better_ui::fluent::{self, BODY, BODY_STRONG, CAPTION};
 
@@ -23,15 +23,15 @@ pub(crate) struct PluginPage {
     pub selected: Option<usize>,
 }
 
-/// The icon a plugin's item names, among the kit's.
-pub(crate) fn item_icon(icon: Option<&str>) -> IconName {
+/// The picture a plugin's item names, among the icon set's.
+pub(crate) fn item_icon(icon: Option<&str>) -> Picture {
     match icon {
-        Some("peer" | "tailnet") => IconName::Globe,
-        Some("drive") => IconName::HardDrive,
+        Some("peer" | "tailnet") => Picture::RemoteComputer,
+        Some("drive") => Picture::Drive,
         Some("folder" | "documents" | "downloads" | "pictures" | "music" | "videos") => {
-            IconName::Folder
+            Picture::Folder
         }
-        _ => IconName::File,
+        _ => Picture::File,
     }
 }
 
@@ -163,11 +163,10 @@ impl FilesApp {
                 .rounded(fluent::radius::SM)
                 .when(chosen, |row| row.bg(palette.subtle_fill))
                 .hover(move |row| row.bg(palette.subtle_fill))
-                .child(
-                    Icon::new(item_icon(item.icon.as_deref()))
-                        .size(px(16.0))
-                        .text_color(palette.text_secondary),
-                )
+                .child(better_ui::icon_set::picture(
+                    item_icon(item.icon.as_deref()),
+                    16.0,
+                ))
                 .child(fluent::label(item.name.clone(), BODY, palette.text_primary).flex_1())
                 .child(fluent::label(subtitle, CAPTION, palette.text_secondary))
                 .on_click(move |event, _window, cx| {

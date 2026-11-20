@@ -31,31 +31,15 @@ use crate::{Appearance, StartOptions};
 pub(crate) const MIN_WINDOW_WIDTH: f32 = 960.0;
 pub(crate) const MIN_WINDOW_HEIGHT: f32 = 600.0;
 
-/// The branch glyph. gpui-component's icon set has none, so the window
-/// carries its own, drawn in the same 24px, 2px-stroke grid as Lucide.
-pub(crate) const BRANCH_ICON: &str = "better-git/branch.svg";
-const BRANCH_SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="7" r="2"/><path d="M6 7v10"/><path d="M18 9c0 5-12 3-12 8"/></svg>"#;
-
-/// The worktree glyph, for the toolbar's worktree cell and its rows: a
-/// folder with a branch in its corner, on the same grid.
-pub(crate) const WORKTREE_ICON: &str = "better-git/worktree.svg";
-const WORKTREE_SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 20H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v2"/><circle cx="15" cy="13" r="1.5"/><circle cx="15" cy="21" r="1.5"/><circle cx="21" cy="14" r="1.5"/><path d="M15 14.5v5"/><path d="M21 15.5c0 2.5-6 1.5-6 4"/></svg>"#;
-
 struct GitAssets;
 
 impl AssetSource for GitAssets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
-        if path == BRANCH_ICON {
-            return Ok(Some(Cow::Borrowed(BRANCH_SVG.as_bytes())));
+        if let Some(svg) = better_ui::icon_set::load(path) {
+            return Ok(Some(Cow::Borrowed(svg)));
         }
         if let Some(svg) = better_ui::fluent::glyphs::load(path) {
             return Ok(Some(Cow::Borrowed(svg)));
-        }
-        if path == WORKTREE_ICON {
-            return Ok(Some(Cow::Borrowed(WORKTREE_SVG.as_bytes())));
-        }
-        if path == crate::graph_pane::TAG_ICON {
-            return Ok(Some(Cow::Borrowed(crate::graph_pane::TAG_SVG.as_bytes())));
         }
         gpui_component_assets::Assets.load(path)
     }

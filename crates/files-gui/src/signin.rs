@@ -2,6 +2,7 @@
 //! where the folder will be: the sign-in form, a host key it does not know,
 //! or any other question, in the Fluent look.
 
+use better_ui::icon_set::{Glyph, Picture, Placement};
 use gpui::*;
 use gpui_component::IconName;
 
@@ -83,21 +84,21 @@ impl FilesApp {
         let c = copy(self.locale());
         let p = fluent::palette(cx);
         let server = server_name(&ask.address);
-        let (icon, title, body): (IconName, String, AnyElement) = match &ask.prompt {
+        let (icon, title, body): (Glyph, String, AnyElement) = match &ask.prompt {
             Prompt::SignIn {
                 message,
                 fields,
                 again,
                 ..
             } => (
-                IconName::User,
+                Picture::User.into(),
                 c.server_sign_in_to.replace("{server}", &server),
                 self.sign_in_form(message, *fields, *again, cx),
             ),
             Prompt::Question { message, choices } => {
                 match HostKeyQuestion::read(&ask.address, message, choices) {
                     Some(HostKeyQuestion::Unknown { fingerprint }) => (
-                        IconName::Info,
+                        IconName::Info.into(),
                         c.server_key_unknown_title.replace("{server}", &server),
                         self.host_key_body(
                             c.server_key_unknown_body.replace("{server}", &server),
@@ -107,7 +108,7 @@ impl FilesApp {
                         ),
                     ),
                     Some(HostKeyQuestion::Mismatch) => (
-                        IconName::TriangleAlert,
+                        IconName::TriangleAlert.into(),
                         c.server_key_mismatch_title.replace("{server}", &server),
                         self.host_key_body(
                             c.server_key_mismatch_body.replace("{server}", &server),
@@ -117,14 +118,14 @@ impl FilesApp {
                         ),
                     ),
                     None => (
-                        IconName::Info,
+                        IconName::Info.into(),
                         c.server_question_title.replace("{server}", &server),
                         self.question_body(message, choices, cx),
                     ),
                 }
             }
         };
-        let warning = matches!(icon, IconName::TriangleAlert);
+        let warning = matches!(icon, Glyph::Symbol(IconName::TriangleAlert));
         Some(
             div()
                 .id("server-prompt")
@@ -146,9 +147,15 @@ impl FilesApp {
                                 .items_center()
                                 .gap(px(12.0))
                                 .child(
-                                    gpui_component::Icon::new(icon)
-                                        .size(px(24.0))
-                                        .text_color(if warning { p.caution } else { p.accent }),
+                                    div()
+                                        .flex()
+                                        .text_color(if warning { p.caution } else { p.accent })
+                                        .child(icon.element(
+                                            px(24.0),
+                                            Placement::Labelled,
+                                            p,
+                                            false,
+                                        )),
                                 )
                                 .child(
                                     fluent::label(title, SUBTITLE, p.text_primary)

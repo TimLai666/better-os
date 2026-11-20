@@ -12,6 +12,7 @@ use better_ui::fluent::selection::{ComboBox, ComboItem};
 use better_ui::fluent::settings_card::{DeviceBanner, SettingsCard, SettingsExpander, SettingsRow};
 use better_ui::fluent::toggle::ToggleSwitch;
 use better_ui::fluent::{BODY, BODY_STRONG, TITLE, label, palette, with_focus_ring};
+use better_ui::icon_set::Picture;
 use gpui::*;
 use gpui_component::{ActiveTheme as _, IconName};
 use manager_core::catalog::now_unix_seconds;
@@ -147,7 +148,7 @@ impl ManagerApp {
 
         let device = &self.device;
         let mut banner = DeviceBanner::new(
-            IconName::PanelBottom,
+            Picture::Computer,
             device
                 .product
                 .clone()
@@ -160,10 +161,10 @@ impl ManagerApp {
         ));
         if let Some(battery) = device.battery {
             let icon = match battery.status {
-                home::BatteryStatus::Charging => IconName::BatteryCharging,
-                _ if battery.percent >= 90 => IconName::BatteryFull,
-                _ if battery.percent >= 40 => IconName::BatteryMedium,
-                _ => IconName::BatteryLow,
+                home::BatteryStatus::Charging => Picture::BatteryCharging,
+                _ if battery.percent >= 90 => Picture::BatteryFull,
+                _ if battery.percent >= 40 => Picture::BatteryMedium,
+                _ => Picture::BatteryLow,
             };
             banner = banner.trailing(
                 div()
@@ -171,7 +172,7 @@ impl ManagerApp {
                     .items_center()
                     .gap(px(8.0))
                     .text_color(p.text_secondary)
-                    .child(gpui_component::Icon::new(icon).size(px(20.0)))
+                    .child(better_ui::icon_set::picture(icon, 20.0))
                     .child(label(
                         home::battery_line(self.locale, battery),
                         BODY,
@@ -336,7 +337,7 @@ impl ManagerApp {
             .map(ComboItem::new)
             .collect();
         SettingsCard::new(id, s.appearance)
-            .icon(IconName::Palette)
+            .icon(Picture::Palette)
             .description(s.appearance_description)
             .content(
                 ComboBox::new(
@@ -377,7 +378,7 @@ impl ManagerApp {
                 CARD_GAP,
                 card::LANGUAGE,
                 SettingsCard::new("language", s.language)
-                    .icon(IconName::Globe)
+                    .icon(Picture::Globe)
                     .description(s.language_description)
                     .content(
                         ComboBox::new(
@@ -400,7 +401,7 @@ impl ManagerApp {
                 CARD_GAP,
                 card::CHECK_UPDATES,
                 SettingsCard::new("check-updates", s.check_updates)
-                    .icon(IconName::ArrowDown)
+                    .icon(Picture::Updates)
                     .content(
                         ToggleSwitch::new(
                             "check-updates-switch",
@@ -416,7 +417,7 @@ impl ManagerApp {
                 CARD_GAP,
                 card::UPDATE_CHANNEL,
                 SettingsCard::new("update-channel", s.update_channel)
-                    .icon(IconName::Inbox)
+                    .icon(Picture::Package)
                     .description(s.update_channel_description)
                     .content(label(
                         s.update_channel_stable,
@@ -428,7 +429,7 @@ impl ManagerApp {
                 CARD_GAP,
                 card::ABOUT,
                 SettingsExpander::new("about", s.about, self.about_expanded)
-                    .icon(IconName::Info)
+                    .icon(Picture::About)
                     .description(s.privacy)
                     .on_toggle(Self::act_with(cx, |this, open: bool, _, cx| {
                         this.about_expanded = open;

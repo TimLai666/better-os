@@ -19,9 +19,9 @@ use better_ui::fluent::staged_bar::StagedChangesBar;
 use better_ui::fluent::tabs::{SelectorBar, SelectorItem};
 use better_ui::fluent::toggle::ToggleSwitch;
 use better_ui::fluent::{BODY, BODY_STRONG, CAPTION, TITLE, label, palette, radius};
+use better_ui::icon_set::Picture;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
-use gpui_component::IconName;
 use touchpad_core::{
     AccelerationProfile, ClickMethod, HealthState, RestoreScope, RunState, Section, SettingId,
     SettingValue,
@@ -93,7 +93,7 @@ impl TouchpadPage {
         if let Availability::Blocked(state) = view::availability(installed) {
             let described = states::describe(locale, &state);
             let mut card =
-                SettingsCard::new("touchpad-component", described.text).icon(IconName::Frame);
+                SettingsCard::new("touchpad-component", described.text).icon(Picture::Touchpad);
             if let Some(action) = described.action {
                 card = card.content(
                     Button::accent("touchpad-component-action", action)
@@ -145,10 +145,10 @@ impl TouchpadPage {
             rows.push(Row::new(
                 0.0,
                 SettingsCard::new("touchpad-none", c.no_devices)
-                    .icon(IconName::Frame)
+                    .icon(Picture::Touchpad)
                     .content(
                         Button::standard("touchpad-none-refresh", c.refresh)
-                            .icon(IconName::Redo)
+                            .icon(Picture::Refresh)
                             .on_click(Self::act(cx, |this, cx| this.refresh(cx))),
                     ),
             ));
@@ -239,14 +239,14 @@ impl TouchpadPage {
         let adapter = view::adapter_words(&self.gestures.adapter().describe(), self.locale);
         let health = facts.health;
         SettingsExpander::new("touchpad-this-card", pc.this_touchpad, self.this_expanded)
-            .icon(IconName::Frame)
+            .icon(Picture::Touchpad)
             .description(format!("{} · {health}", facts.device))
             // The page's one command: read every value and device again. It
             // sits on the card it refreshes, so the selector bar keeps its
             // whole width at 960px in either language.
             .content(
                 Button::standard("touchpad-refresh", c.refresh)
-                    .icon(IconName::Redo)
+                    .icon(Picture::Refresh)
                     .on_click(Self::act(cx, |this, cx| this.refresh(cx))),
             )
             .on_toggle(Self::act_with(cx, |this, open: bool, cx| {
@@ -316,7 +316,7 @@ impl TouchpadPage {
             GROUP_GAP,
             div().flex().child(
                 Button::standard("touchpad-restore-section", c.restore_section)
-                    .icon(IconName::Undo)
+                    .icon(Picture::Restore)
                     .disabled(self.model.state().backup().is_none() || self.model.safe_mode())
                     .on_click(Self::act(cx, move |this, cx| {
                         this.restore_section(section, cx);
@@ -570,7 +570,7 @@ impl TouchpadPage {
                 view::friendly_name(&device.name),
                 self.device_details == Some(index),
             )
-            .icon(IconName::Frame)
+            .icon(Picture::Touchpad)
             .description(format!("{state} · {capabilities}"))
             .on_toggle(Self::act_with(cx, move |this, open: bool, cx| {
                 this.device_details = open.then_some(index);
@@ -687,7 +687,7 @@ impl TouchpadPage {
             })
             .collect();
         let restore = SettingsCard::new(card::RESTORE, pc.captured_values)
-            .icon(IconName::Undo)
+            .icon(Picture::Restore)
             .description(if has_capture {
                 c.captured_before
             } else {
@@ -719,7 +719,7 @@ impl TouchpadPage {
             CARD_GAP,
             card::SAFE_MODE,
             SettingsCard::new("touchpad-safe-mode-card", pc.safe_mode_card)
-                .icon(IconName::TriangleAlert)
+                .icon(Picture::Shield)
                 .description(pc.safe_mode_description)
                 .content(
                     ToggleSwitch::new("touchpad-safe-mode-switch", self.model.safe_mode())
@@ -736,7 +736,7 @@ impl TouchpadPage {
         let lines = self.gestures.diagnostics_lines(c);
         let adapter = view::adapter_words(&self.gestures.adapter().describe(), self.locale);
         let mut gestures = SettingsExpander::new("touchpad-gesture-diagnostics", adapter, false)
-            .icon(IconName::Maximize)
+            .icon(Picture::Gesture)
             .description(self.gestures.preset_card(c).status_label);
         if lines.is_empty() {
             gestures = gestures.row(SettingsRow::new(c.test_no_events));

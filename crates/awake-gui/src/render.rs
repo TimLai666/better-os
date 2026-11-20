@@ -2,7 +2,7 @@
 //! could decide; this file routes and lays out.
 
 use gpui::*;
-use gpui_component::{ActiveTheme, *};
+use gpui_component::{ActiveTheme, StyledExt as _, v_flex};
 
 use crate::{
     app::AwakeApp, i18n::copy, layout::COMPACT_VIEWPORT_WIDTH, model::Section, shell::actions,
@@ -29,7 +29,7 @@ impl Render for AwakeApp {
             .use_keyed_state("page-scroll", cx, |_, _| ScrollHandle::new())
             .read(cx)
             .clone();
-        let compact = window.viewport_size().width < px(COMPACT_VIEWPORT_WIDTH);
+        let narrow = window.viewport_size().width < px(COMPACT_VIEWPORT_WIDTH);
         let section = self.render_section(window, cx);
 
         div()
@@ -70,68 +70,46 @@ impl Render for AwakeApp {
             // window draws its own or it cannot be closed, minimized,
             // maximized or moved.
             .child(better_ui::window_chrome::title_bar(
-                Icon::new(IconName::Sun).small(),
+                better_ui::icon_set::picture(better_ui::icon_set::Picture::KeepAwake, 16.0),
                 copy(self.locale).application_name,
                 cx.theme().foreground,
             ))
-            .child(
-                div().flex_1().min_h_0().child(
-                    h_flex()
+            .child(div().flex_1().min_h_0().child({
+                // The page keeps 20px from its sides, clear of the window's
+                // bottom trailing corner it reaches; its scrollbar's track
+                // ends above the curve (ticket 141).
+                let page = better_ui::window_chrome::corner_clip(
+                    px(20.0),
+                    v_flex()
                         .size_full()
                         .min_w_0()
-                        // The body's fill follows the window's bottom corners
-                        // (ticket 141).
-                        .relative()
-                        .child(better_ui::window_chrome::corner_fill(cx.theme().secondary))
-                        .child(self.sidebar(compact, cx))
-                        // The page keeps 20px from its sides, clear of the
-                        // window's bottom trailing corner; its scrollbar's
-                        // track ends above the curve (ticket 141).
-                        .child(better_ui::window_chrome::corner_clip(
-                            px(20.0),
-                            v_flex()
-                                .h_full()
+                        .child(self.top_bar(cx))
+                        .child(
+                            div()
+                                .relative()
                                 .flex_1()
-                                .min_w_0()
-                                .child(self.top_bar(cx))
+                                .min_h_0()
                                 .child(
                                     div()
-                                        .relative()
-                                        .flex_1()
-                                        .min_h_0()
-                                        .child(
-                                            div()
-                                                .id("page-scroll")
-                                                .size_full()
-                                                .overflow_y_scroll()
-                                                .track_scroll(&page_scroll)
-                                                .p_5()
-                                                .child(
-                                                    div().w_full().flex().justify_center().child(
-                                                        div()
-                                                            .w_full()
-                                                            .max_w(px(1320.0))
-                                                            .child(section),
-                                                    ),
-                                                ),
-                                        )
-                                        .child(better_ui::window_chrome::corner_scrollbar(
-                                            &page_scroll,
-                                            window,
-                                            cx,
+                                        .id("page-scroll")
+                                        .size_full()
+                                        .overflow_y_scroll()
+                                        .track_scroll(&page_scroll)
+                                        .p_5()
+                                        .child(div().w_full().flex().justify_center().child(
+                                            div().w_full().max_w(px(1320.0)).child(section),
                                         )),
-                                ),
-                        )),
-                ),
-            )
-            .children(self.update_restart.toast_layer(
-                match self.locale.resolved() {
-                    crate::i18n::Locale::ZhTw => {
-                        better_ui::fluent::words::Locale::TraditionalChinese
-                    }
-                    _ => better_ui::fluent::words::Locale::English,
-                },
-                cx,
-            ))
+                                )
+                                .child(better_ui::window_chrome::corner_scrollbar(
+                                    &page_scroll,
+                                    window,
+                                    cx,
+                                )),
+                        ),
+                )
+                .into_any_element();
+                self.navigation(page, narrow, cx)
+            }))
+            .children(self.update_restart.toast_layer(self.kit_locale(), cx))
     }
 }

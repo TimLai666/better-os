@@ -76,7 +76,7 @@ impl Render for Harness {
                 let this = cx.entity().downgrade();
                 let entries = (0..40)
                     .map(|i| {
-                        NavItem::new(format!("Item {i}"), gpui_component::IconName::Folder).entry()
+                        NavItem::new(format!("Item {i}"), crate::icon_set::Picture::Folder).entry()
                     })
                     .collect();
                 NavigationView::new("nav", entries, None)

@@ -193,30 +193,16 @@ pub(crate) fn landing(route: Route) -> Page {
     route.landing()
 }
 
-/// How the pane is drawn at one window width.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct PaneLayout {
-    /// 48px, icons only.
-    pub(crate) compact: bool,
-    /// When open, the pane floats over the content instead of pushing it.
-    pub(crate) overlay: bool,
-}
+pub(crate) use better_ui::fluent::navigation::PaneLayout;
 
-/// The pane at `width` logical pixels. A wide window's pane is open unless
-/// the person closed it with ☰; a narrow window's is compact unless the
-/// person opened it, and then it floats so the content keeps its width.
+/// The pane at `width` logical pixels, by the kit's rule every window with
+/// a pane shares (`PaneChoice::layout`).
 pub(crate) fn pane_layout(width: f32, wide_collapsed: bool, narrow_open: bool) -> PaneLayout {
-    if width < COMPACT_BELOW {
-        PaneLayout {
-            compact: !narrow_open,
-            overlay: true,
-        }
-    } else {
-        PaneLayout {
-            compact: wide_collapsed,
-            overlay: false,
-        }
+    better_ui::fluent::navigation::PaneChoice {
+        wide_collapsed,
+        narrow_open,
     }
+    .layout(is_narrow(width))
 }
 
 /// Whether a logical width is a narrow window's.

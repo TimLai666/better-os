@@ -9,9 +9,9 @@ use better_ui::{StatusPill, StatusTone};
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
-    ActiveTheme, IconName,
+    ActiveTheme, Disableable as _, IconName, Selectable as _, StyledExt as _,
     button::{Button, ButtonVariants},
-    *,
+    h_flex, v_flex,
 };
 
 use crate::{
@@ -359,7 +359,12 @@ impl AwakeApp {
                                         "add-preset-{}",
                                         preset_key(length)
                                     )))
-                                    .icon(IconName::Plus)
+                                    .icon(crate::components::action_icon(
+                                        better_ui::icon_set::Picture::Add,
+                                        false,
+                                        false,
+                                        cx,
+                                    ))
                                     .label(length.label(c))
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         this.add_preset(length, cx)
@@ -423,12 +428,18 @@ impl AwakeApp {
                     .gap_2()
                     .flex_wrap()
                     .child(
-                        Button::new(SharedString::from(format!("preset-start-{index}")))
-                            .primary()
-                            .icon(IconName::Play)
-                            .on_click(
-                                cx.listener(move |this, _, _, cx| this.start_preset(index, cx)),
-                            ),
+                        crate::components::square_icon_button(Button::new(SharedString::from(
+                            format!("preset-start-{index}"),
+                        )))
+                        .primary()
+                        .child(crate::components::action_alone(
+                            better_ui::icon_set::Picture::Play,
+                            true,
+                            false,
+                            cx,
+                        ))
+                        .tooltip(c.start_this_session)
+                        .on_click(cx.listener(move |this, _, _, cx| this.start_preset(index, cx))),
                     )
                     .when(!is_default, |row| {
                         row.child(
@@ -458,14 +469,20 @@ impl AwakeApp {
                             ),
                     )
                     .child(
-                        Button::new(SharedString::from(format!("preset-remove-{index}")))
-                            .icon(IconName::Delete)
-                            // The menu must keep one length, or it offers a
-                            // submenu that starts nothing.
-                            .disabled(count <= 1)
-                            .on_click(
-                                cx.listener(move |this, _, _, cx| this.remove_preset(index, cx)),
-                            ),
+                        crate::components::square_icon_button(Button::new(SharedString::from(
+                            format!("preset-remove-{index}"),
+                        )))
+                        .child(crate::components::action_alone(
+                            better_ui::icon_set::Picture::Delete,
+                            false,
+                            count <= 1,
+                            cx,
+                        ))
+                        .tooltip(c.delete)
+                        // The menu must keep one length, or it offers a
+                        // submenu that starts nothing.
+                        .disabled(count <= 1)
+                        .on_click(cx.listener(move |this, _, _, cx| this.remove_preset(index, cx))),
                     ),
             )
             .into_any_element()

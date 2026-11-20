@@ -9,10 +9,11 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use better_ui::icon_set::{self, Picture, Placement};
 use git_core::{Commit, CommitFile, ConflictKind, DiffLineKind, FileDiff, Operation};
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
-use gpui_component::{ActiveTheme as _, Icon, IconName, Sizable as _};
+use gpui_component::{ActiveTheme as _, Icon, IconName};
 
 use better_ui::fluent::button::{Button, ButtonKind, MenuSegment};
 use better_ui::fluent::dialog::{
@@ -33,7 +34,7 @@ use better_ui::fluent::{
     chrome::TitleBar, label, radius, spacing, with_alpha,
 };
 
-use crate::app::{BRANCH_ICON, ContextTarget, Flyout as Open, GitApp};
+use crate::app::{ContextTarget, Flyout as Open, GitApp};
 use crate::changes::{Badge, Row as ChangeRow};
 use crate::dialogs::{BranchPurpose, CloneTab, Dialog};
 use crate::github::SignIn;
@@ -352,7 +353,7 @@ impl Render for GitApp {
             )
             .child(
                 TitleBar::new(c.app_name)
-                    .icon(Icon::empty().path(BRANCH_ICON).small().text_color(p.accent))
+                    .icon(icon_set::picture(Picture::Branch, 16.0))
                     .middle(self.menu_bar(c, cx)),
             )
             .child(content)
@@ -406,7 +407,7 @@ impl GitApp {
         title: &str,
         value: String,
         tooltip: String,
-        icon: Icon,
+        icon: Picture,
         open: bool,
         quiet: bool,
         captions: bool,
@@ -440,7 +441,7 @@ impl GitApp {
             .when(!open, |d| {
                 d.tooltip(better_ui::fluent::dialog::tooltip_builder(tooltip.into()))
             })
-            .child(icon.size(px(16.0)).text_color(p.text_secondary))
+            .child(icon_set::picture(icon, 16.0))
             .child(
                 v_stack()
                     .flex_1()
@@ -498,7 +499,7 @@ impl GitApp {
                 repo_name.clone(),
                 repo.map(|r| r.root.display().to_string())
                     .unwrap_or(repo_name),
-                Icon::new(IconName::Folder),
+                Picture::Folder,
                 self.flyout == Some(Open::Repositories),
                 false,
                 captions,
@@ -526,7 +527,7 @@ impl GitApp {
                     c.current_worktree(),
                     names.worktree.clone(),
                     repo.root.display().to_string(),
-                    Icon::empty().path(crate::app::WORKTREE_ICON),
+                    Picture::Worktree,
                     self.flyout == Some(Open::Worktrees),
                     names.only_main,
                     captions,
@@ -551,7 +552,7 @@ impl GitApp {
                     c.current_branch,
                     branch.clone(),
                     branch,
-                    Icon::empty().path(BRANCH_ICON),
+                    Picture::Branch,
                     self.flyout == Some(Open::Branches),
                     false,
                     captions,
@@ -597,7 +598,7 @@ impl GitApp {
         }
         bar.child(
             div().flex_none().px(spacing::SM).child(
-                Button::icon_button("settings-button", IconName::Settings, c.settings)
+                Button::icon_button("settings-button", Picture::Settings, c.settings)
                     .on_click(Self::act(cx, |this, _, _| this.session.open_settings())),
             ),
         )
@@ -645,29 +646,24 @@ impl GitApp {
             .map(|t| fill(c.last_fetched, &[("when", &c.ago(now - t))]))
             .unwrap_or_else(|| c.never_fetched.to_string());
         let (title, icon, counts) = match action {
-            SyncAction::PublishRepository => {
-                (c.publish_repository, IconName::ArrowUp, String::new())
-            }
-            SyncAction::PublishBranch => (c.publish_branch, IconName::ArrowUp, String::new()),
+            SyncAction::PublishRepository => (c.publish_repository, Picture::Push, String::new()),
+            SyncAction::PublishBranch => (c.publish_branch, Picture::Push, String::new()),
             SyncAction::Pull { behind, ahead } => (
                 c.pull_origin,
-                IconName::ArrowDown,
+                Picture::Pull,
                 if ahead > 0 {
                     format!("↓{behind} ↑{ahead}")
                 } else {
                     format!("↓{behind}")
                 },
             ),
-            SyncAction::Push { ahead } => (c.push_origin, IconName::ArrowUp, format!("↑{ahead}")),
-            SyncAction::Fetch | SyncAction::None => (c.fetch_origin, IconName::Redo, String::new()),
+            SyncAction::Push { ahead } => (c.push_origin, Picture::Push, format!("↑{ahead}")),
+            SyncAction::Fetch | SyncAction::None => {
+                (c.fetch_origin, Picture::Refresh, String::new())
+            }
         };
         // Fetch reads as a refresh of what the remote has, not as Redo: the
-        // shared two-arrow glyph, as GitHub Desktop's fetch is.
-        let icon = if matches!(action, SyncAction::Fetch | SyncAction::None) {
-            Icon::empty().path(better_ui::fluent::glyphs::REFRESH)
-        } else {
-            Icon::new(icon)
-        };
+        // two-arrow picture, as GitHub Desktop's fetch is.
         let title = match (busy, repo.busy) {
             (true, Some(crate::session::OpKind::Pull)) => c.pulling,
             (true, Some(crate::session::OpKind::Push | crate::session::OpKind::ForcePush)) => {
@@ -693,9 +689,7 @@ impl GitApp {
                     .size(px(16.0))
                     .into_any_element()
             } else {
-                icon.size(px(16.0))
-                    .text_color(p.text_secondary)
-                    .into_any_element()
+                icon_set::action(icon, Placement::Labelled, p, false).into_any_element()
             })
             .child(
                 v_stack()
@@ -786,18 +780,18 @@ impl GitApp {
                 entries.push(MenuEntry::Separator);
             }
             let icon = match row.action {
-                MenuAction::Pull { .. } => Some(IconName::ArrowDown),
+                MenuAction::Pull { .. } => Some(Picture::Pull),
                 MenuAction::Push { .. }
                 | MenuAction::ForcePush { .. }
                 | MenuAction::PublishBranch
-                | MenuAction::PublishRepository => Some(IconName::ArrowUp),
+                | MenuAction::PublishRepository => Some(Picture::Push),
                 MenuAction::Fetch => None,
             };
             let mut item = MenuItem::new(crate::remote::menu_label(&row, &upstream, &remote, c))
                 .disabled(!row.enabled() || busy);
             item = match icon {
                 Some(icon) => item.icon(icon),
-                None => item.icon_path(better_ui::fluent::glyphs::REFRESH),
+                None => item.icon(Picture::Refresh),
             };
             let action = row.action;
             entries.push(
@@ -847,7 +841,7 @@ impl GitApp {
             let rerun = if roomy {
                 Button::standard("rerun-checks", c.rerun_checks)
             } else {
-                Button::icon_button("rerun-checks", IconName::Redo, c.rerun_checks)
+                Button::icon_button("rerun-checks", Picture::Refresh, c.rerun_checks)
             };
             item =
                 item.child(rerun.on_click(Self::act(cx, |this, _, _| this.session.rerun_checks())));
@@ -856,7 +850,7 @@ impl GitApp {
             let url = pull.html_url.clone();
             item = item.child(
                 Button::subtle("view-pull", format!("#{}", pull.number))
-                    .icon(IconName::ExternalLink)
+                    .icon(Picture::OpenExternal)
                     .tooltip(c.view_pull)
                     .on_click(Self::act(cx, move |this, _, _| this.open_url(&url))),
             );
@@ -1045,19 +1039,16 @@ impl GitApp {
             let menu_path = r.path.clone();
             let mut item = row(("repo", index), r.current, TALL_ROW, p)
                 .children(self.highlight_ring(index, p))
-                .child(
-                    Icon::new(if r.missing {
-                        IconName::TriangleAlert
-                    } else {
-                        IconName::Folder
-                    })
-                    .size(px(16.0))
-                    .text_color(if r.missing {
-                        p.caution
-                    } else {
-                        p.text_secondary
-                    }),
-                )
+                // A repository that is gone keeps its warning mark; one that
+                // is there is a folder.
+                .child(if r.missing {
+                    Icon::new(IconName::TriangleAlert)
+                        .size(px(16.0))
+                        .text_color(p.caution)
+                        .into_any_element()
+                } else {
+                    icon_set::picture(Picture::Folder, 16.0).into_any_element()
+                })
                 .child(
                     v_stack()
                         .flex_1()
@@ -1234,12 +1225,7 @@ impl GitApp {
                 list = list.child(
                     row(("branch", index), b.current, ROW_HEIGHT, p)
                         .children(self.highlight_ring(index, p))
-                        .child(
-                            Icon::empty()
-                                .path(BRANCH_ICON)
-                                .size(px(14.0))
-                                .text_color(p.text_secondary),
-                        )
+                        .child(icon_set::picture(Picture::Branch, 14.0))
                         .child(
                             label(
                                 b.name.clone(),
@@ -1314,7 +1300,7 @@ impl GitApp {
                         )
                         .child(
                             Button::standard("new-branch", c.new_branch)
-                                .icon(IconName::Plus)
+                                .icon(Picture::Add)
                                 .on_click(Self::act(cx, |this, w, cx| {
                                     this.flyout = None;
                                     this.run_action(Action::NewBranch, w, cx)
@@ -1379,7 +1365,7 @@ impl GitApp {
                     .child(
                         Button::icon_button(
                             ("view-pull", index),
-                            IconName::ExternalLink,
+                            Picture::OpenExternal,
                             c.view_pull_short,
                         )
                         .kind(ButtonKind::Subtle)
@@ -1526,19 +1512,19 @@ impl GitApp {
             (
                 "welcome-clone",
                 c.clone_repository,
-                IconName::Globe,
+                Picture::Download,
                 Action::CloneRepository,
             ),
             (
                 "welcome-new",
                 c.new_repository,
-                IconName::Plus,
+                Picture::Add,
                 Action::NewRepository,
             ),
             (
                 "welcome-add",
                 c.add_local,
-                IconName::FolderOpen,
+                Picture::OpenFolder,
                 Action::AddLocalRepository,
             ),
         ] {
@@ -1554,7 +1540,7 @@ impl GitApp {
         if self.session.github.account.is_none() {
             actions = actions.child(
                 SettingsCard::new("welcome-sign-in", c.sign_in)
-                    .icon(IconName::User)
+                    .icon(Picture::User)
                     .description(if self.session.sign_in_available() {
                         c.welcome_signed_out
                     } else {
@@ -1571,11 +1557,7 @@ impl GitApp {
             let open = path.clone();
             recent = recent.child(
                 row(("welcome-recent", index), false, TALL_ROW, p)
-                    .child(
-                        Icon::new(IconName::Folder)
-                            .size(px(16.0))
-                            .text_color(p.text_secondary),
-                    )
+                    .child(icon_set::picture(Picture::Folder, 16.0))
                     .child(
                         v_stack()
                             .min_w_0()
@@ -1923,7 +1905,7 @@ impl GitApp {
                 .flex_1(),
             )
             .child(
-                Button::icon_button("toggle-filter", IconName::Search, c.toggle_filter)
+                Button::icon_button("toggle-filter", Picture::Filter, c.toggle_filter)
                     .checked(self.show_filter)
                     .on_click(Self::act(cx, |this, _, _| {
                         this.show_filter = !this.show_filter
@@ -1968,11 +1950,7 @@ impl GitApp {
                 row("stash-row", selected, ROW_HEIGHT, p)
                     .border_t_1()
                     .border_color(p.divider)
-                    .child(
-                        Icon::new(IconName::Inbox)
-                            .size(px(16.0))
-                            .text_color(p.text_secondary),
-                    )
+                    .child(icon_set::picture(Picture::Inbox, 16.0))
                     .child(label(c.stashed_changes, BODY, p.text_primary).flex_1())
                     .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                         if event.is_keyboard() {
@@ -2184,7 +2162,7 @@ impl GitApp {
                         ),
                     )
                     .child(
-                        Button::icon_button("commit-options", IconName::Settings, c.commit_options)
+                        Button::icon_button("commit-options", Picture::Settings, c.commit_options)
                             .checked(self.show_commit_options)
                             .on_click(Self::act(cx, |this, _, _| {
                                 this.show_commit_options = !this.show_commit_options
@@ -2550,12 +2528,7 @@ impl GitApp {
                 let name = branch.name.clone();
                 strip = strip.child(
                     row(("drop-branch", i), false, px(28.0), p)
-                        .child(
-                            Icon::empty()
-                                .path(BRANCH_ICON)
-                                .size(px(12.0))
-                                .text_color(p.text_secondary),
-                        )
+                        .child(icon_set::picture(Picture::Branch, 12.0))
                         .child(label(branch.name.clone(), BODY, p.text_primary))
                         .drag_over::<DraggedCommit>(move |s, _, _, _| {
                             s.bg(with_alpha(p.accent, 0.25))
@@ -2807,14 +2780,14 @@ impl GitApp {
                     .when(commit.is_merge(), |d| d.child(caption(c.merge_commit, p)))
                     .child(
                         Button::subtle("copy-sha", c.copy_sha)
-                            .icon(IconName::Copy)
+                            .icon(Picture::Copy)
                             .on_click(Self::act(cx, move |this, _, cx| {
                                 this.copy_text(sha.clone(), cx)
                             })),
                     )
                     .children(url.map(|url| {
                         Button::subtle("commit-on-github", c.view_on_github_commit)
-                            .icon(IconName::ExternalLink)
+                            .icon(Picture::OpenExternal)
                             .on_click(Self::act(cx, move |this, _, _| this.open_url(&url)))
                     })),
             )
@@ -3511,15 +3484,14 @@ impl GitApp {
                                 let is = selected.as_deref() == Some(url.as_str());
                                 list = list.child(
                                     row(("clone-repo", i), is, ROW_HEIGHT, p)
-                                        .child(
-                                            Icon::new(if r.private {
-                                                IconName::EyeOff
+                                        .child(icon_set::picture(
+                                            if r.private {
+                                                Picture::Lock
                                             } else {
-                                                IconName::Globe
-                                            })
-                                            .size(px(14.0))
-                                            .text_color(p.text_secondary),
-                                        )
+                                                Picture::Globe
+                                            },
+                                            14.0,
+                                        ))
                                         .child(
                                             label(r.full_name.clone(), BODY, p.text_primary)
                                                 .truncate(),
@@ -3789,12 +3761,7 @@ impl GitApp {
                         let is = selected.as_deref() == Some(name.as_str());
                         list = list.child(
                             row(("pick", i), is, ROW_HEIGHT, p)
-                                .child(
-                                    Icon::empty()
-                                        .path(BRANCH_ICON)
-                                        .size(px(14.0))
-                                        .text_color(p.text_secondary),
-                                )
+                                .child(icon_set::picture(Picture::Branch, 14.0))
                                 .child(label(b.name.clone(), BODY, p.text_primary).truncate())
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.session.dialog = Some(Dialog::PickBranch {
@@ -4363,12 +4330,12 @@ impl GitApp {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let entries = vec![
-            NavItem::new(c.settings_accounts, IconName::User).entry(),
-            NavItem::new(c.settings_integrations, IconName::SquareTerminal).entry(),
-            NavItem::new(c.settings_git, IconName::Settings2).entry(),
-            NavItem::new(c.settings_appearance, IconName::Palette).entry(),
-            NavItem::new(c.settings_prompts, IconName::Info).entry(),
-            NavItem::new(c.keyboard_shortcuts, IconName::ALargeSmall).entry(),
+            NavItem::new(c.settings_accounts, Picture::User).entry(),
+            NavItem::new(c.settings_integrations, Picture::Terminal).entry(),
+            NavItem::new(c.settings_git, Picture::Branch).entry(),
+            NavItem::new(c.settings_appearance, Picture::Palette).entry(),
+            NavItem::new(c.settings_prompts, Picture::About).entry(),
+            NavItem::new(c.keyboard_shortcuts, Picture::Keyboard).entry(),
         ];
         let s = &self.session.settings;
         let mut page = v_stack().gap(px(4.0)).p(spacing::XL).max_w(px(900.0));
@@ -4380,7 +4347,7 @@ impl GitApp {
                     page.child(label(c.settings_accounts, TITLE, p.text_primary).mb(spacing::LG));
                 page = page.child(match account {
                     Some(a) => card("account", "GitHub")
-                        .icon(IconName::User)
+                        .icon(Picture::User)
                         .description(fill(
                             c.signed_in_as,
                             &[("login", &a.login), ("host", &a.host.name)],
@@ -4390,7 +4357,7 @@ impl GitApp {
                                 .on_click(Self::act(cx, |this, _, _| this.session.sign_out())),
                         ),
                     None => card("account", "GitHub")
-                        .icon(IconName::User)
+                        .icon(Picture::User)
                         .description(if self.session.sign_in_available() {
                             c.not_signed_in
                         } else {
@@ -4423,7 +4390,7 @@ impl GitApp {
                     .child(label(c.settings_integrations, TITLE, p.text_primary).mb(spacing::LG))
                     .child(
                         card("editor", c.editor)
-                            .icon(IconName::File)
+                            .icon(Picture::CodeEditor)
                             .description(c.editor_hint)
                             .content(
                                 div()
@@ -4433,7 +4400,7 @@ impl GitApp {
                     )
                     .child(
                         card("terminal", c.terminal)
-                            .icon(IconName::SquareTerminal)
+                            .icon(Picture::Terminal)
                             .description(c.terminal_hint)
                             .content(
                                 div()
@@ -4519,7 +4486,7 @@ impl GitApp {
                 page = page
                     .child(label(c.settings_appearance, TITLE, p.text_primary).mb(spacing::LG))
                     .child(
-                        card("theme", c.theme).icon(IconName::Palette).content(
+                        card("theme", c.theme).icon(Picture::Palette).content(
                             RadioButtons::new(
                                 "theme-choice",
                                 vec![
@@ -4539,7 +4506,7 @@ impl GitApp {
                         ),
                     )
                     .child(
-                        card("language", c.language).icon(IconName::Globe).content(
+                        card("language", c.language).icon(Picture::Globe).content(
                             RadioButtons::new(
                                 "language-choice",
                                 better_ui::fluent::words::language_choices(self.words())

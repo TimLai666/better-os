@@ -548,7 +548,7 @@ fn every_built_in_component_has_its_own_glyph() {
         .map(|manifest| {
             let glyph =
                 first_party_glyph(manifest.id.as_str()).unwrap_or(manifest_glyph(manifest.icon));
-            gpui_component::IconNamed::path(glyph).to_string()
+            glyph.path().to_string()
         })
         .collect();
     let mut unique = glyphs.clone();
