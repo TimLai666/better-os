@@ -55,6 +55,20 @@ pub const SERVICE_BUS_NAME: &str = "org.betteros.TouchpadGestures1";
 /// session could take it first.
 pub const SERVICE_EXECUTABLE: &str = "/usr/bin/better-touchpad-gestured";
 
+/// Where the gesture service answers what it can and cannot do right now:
+/// `Status() -> (b watching, s problem)`. `watching` is false while it cannot
+/// watch its configuration (a change then waits for the watch to come back),
+/// and `problem` says why.
+pub const SERVICE_OBJECT_PATH: &str = "/org/betteros/TouchpadGestures1";
+pub const SERVICE_INTERFACE: &str = "org.betteros.TouchpadGestures1";
+
+/// What the gesture service reports about itself.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ServiceStatus {
+    pub watching: bool,
+    pub problem: String,
+}
+
 /// Every method the extension serves, and every signal it emits. The names are
 /// here once so that the client, the tests, and the interface XML can be
 /// checked against each other rather than against memory.

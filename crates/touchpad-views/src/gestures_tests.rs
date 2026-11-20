@@ -102,6 +102,83 @@ fn a_stale_conflict_from_an_older_model_is_corrected_when_the_screen_opens() {
     );
 }
 
+/// Review of ticket 131: an edit that moves a gesture onto GNOME's three
+/// fingers is marked as colliding at once, and moving it back clears it,
+/// through the one annotating function.
+#[test]
+fn an_edit_onto_or_off_three_fingers_is_re_annotated_at_once() {
+    let mut screen = screen();
+    screen.preview_preset();
+    screen.confirm(true);
+    screen.apply_plan(None).unwrap();
+    assert!(!screen.collides_with_gnome());
+
+    screen.edit(&id("overview"));
+    screen.editor_mut().unwrap().contacts = 3;
+    screen.commit_edit(None).unwrap();
+    assert!(screen.collides_with_gnome());
+    assert!(
+        screen
+            .config()
+            .get(&id("overview"))
+            .unwrap()
+            .conflict
+            .conflicts()
+    );
+
+    screen.edit(&id("overview"));
+    screen.editor_mut().unwrap().contacts = 4;
+    screen.commit_edit(None).unwrap();
+    assert!(!screen.collides_with_gnome());
+}
+
+/// Review of ticket 131: the gesture service turned gestures off after a
+/// failing adapter while this window was open. An edit made here afterwards
+/// lands, and the switch stays off: the window writes its own change onto
+/// the file as it is now, not its stale copy.
+#[test]
+fn an_edit_in_an_open_window_keeps_a_switch_the_service_turned_off() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = GestureStore::at(directory.path());
+    store.save_config(&mac_style()).unwrap();
+    let mut screen = screen_with(store.load_profiles().unwrap(), None);
+
+    // The service, from its own copy, turns the switch off.
+    let service_base = store.load_profiles().unwrap();
+    let mut service_ours = service_base.clone();
+    service_ours.global.enabled = false;
+    store.save_changes(&service_base, &service_ours).unwrap();
+
+    screen.set_enabled(&id("launcher"), false, Some(&store));
+    let stored = store.load_config().unwrap();
+    assert!(!stored.enabled, "the window wrote its stale switch back");
+    assert!(!stored.get(&id("launcher")).unwrap().enabled);
+    // And the window now shows the file as it is.
+    assert!(!screen.config().enabled);
+}
+
+/// Review of ticket 131: a window follows the file when another process
+/// writes it, and an edit open in the editor stays open.
+#[test]
+fn a_window_follows_the_file_and_keeps_an_edit_in_progress() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = GestureStore::at(directory.path());
+    store.save_config(&mac_style()).unwrap();
+    let mut screen = screen_with(store.load_profiles().unwrap(), None);
+    screen.edit(&id("overview"));
+    screen.editor_mut().unwrap().contacts = 5;
+
+    let mut off = mac_style();
+    off.enabled = false;
+    store.save_config(&off).unwrap();
+
+    assert!(screen.reload(&store));
+    assert!(!screen.config().enabled);
+    assert_eq!(screen.editor().unwrap().contacts, 5);
+    // Reading the same file again changes nothing.
+    assert!(!screen.reload(&store));
+}
+
 #[test]
 fn a_stopped_gesture_service_is_said_and_an_unknown_one_is_not() {
     let mut screen = screen();

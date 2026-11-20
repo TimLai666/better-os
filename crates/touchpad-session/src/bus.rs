@@ -24,8 +24,9 @@ use tokio::runtime::Runtime;
 use zbus::Connection;
 
 use crate::gnome::{
-    BUS_NAME, INTERFACE_NAME, InputDeviceNode, OBJECT_PATH, SERVICE_BUS_NAME, SessionEvent,
-    ShellBridge, ShellCapabilities, ShellError, ShellEvents, ShellGestureEvent, ShellRequest,
+    BUS_NAME, INTERFACE_NAME, InputDeviceNode, OBJECT_PATH, SERVICE_BUS_NAME, SERVICE_INTERFACE,
+    SERVICE_OBJECT_PATH, ServiceStatus, SessionEvent, ShellBridge, ShellCapabilities, ShellError,
+    ShellEvents, ShellGestureEvent, ShellRequest,
 };
 
 fn unreachable(error: impl std::fmt::Display) -> ShellError {
@@ -108,6 +109,26 @@ impl SessionBusShell {
     /// this so a dead service is never shown as connected.
     pub fn gesture_service_running(&self) -> bool {
         self.name_has_owner(SERVICE_BUS_NAME)
+    }
+
+    /// What the gesture service says about itself, or `None` when it does
+    /// not answer (not running, or a build from before it could say).
+    pub fn gesture_service_status(&self) -> Option<ServiceStatus> {
+        let connection = self.connection();
+        self.runtime.block_on(async {
+            let reply = connection
+                .call_method(
+                    Some(SERVICE_BUS_NAME),
+                    SERVICE_OBJECT_PATH,
+                    Some(SERVICE_INTERFACE),
+                    "Status",
+                    &(),
+                )
+                .await
+                .ok()?;
+            let (watching, problem): (bool, String) = reply.body().deserialize().ok()?;
+            Some(ServiceStatus { watching, problem })
+        })
     }
 
     fn name_has_owner(&self, name: &str) -> bool {
@@ -364,6 +385,27 @@ pub struct ServiceBus {
     adapter: String,
     sender: std::sync::mpsc::Sender<SessionEvent>,
     receiver: std::sync::mpsc::Receiver<SessionEvent>,
+    status: Arc<std::sync::Mutex<ServiceStatus>>,
+    refused: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+/// `org.betteros.TouchpadGestures1` on the service's own name: what a window
+/// asks to say whether the service can follow its configuration.
+struct StatusInterface {
+    status: Arc<std::sync::Mutex<ServiceStatus>>,
+}
+
+#[zbus::interface(name = "org.betteros.TouchpadGestures1")]
+impl StatusInterface {
+    /// `(watching, problem)`.
+    fn status(&self) -> (bool, String) {
+        let status = self
+            .status
+            .lock()
+            .map(|status| status.clone())
+            .unwrap_or_default();
+        (status.watching, status.problem)
+    }
 }
 
 impl Drop for ServiceBus {
@@ -397,6 +439,13 @@ impl ServiceBus {
             .map_err(service_bus)?;
         let (sender, receiver) = std::sync::mpsc::channel();
         let adapter_name = adapter.to_string();
+        let status = Arc::new(std::sync::Mutex::new(ServiceStatus {
+            watching: true,
+            problem: String::new(),
+        }));
+        let status_for_bus = status.clone();
+        let refused = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let refused_by_check = refused.clone();
         let connection = runtime.block_on(async {
             let connection = match address {
                 Some(address) => {
@@ -423,8 +472,19 @@ impl ServiceBus {
             let owners = zbus::MessageStream::for_match_rule(owners, &connection, Some(16))
                 .await
                 .map_err(service_bus)?;
+            // The sender is in the rule, so the bus delivers only the
+            // signals of whoever owns the adapter's name when each is sent
+            // (ticket 131): a forged one never wakes this process, costs
+            // nothing, and cannot push a real one out of the queue. The
+            // well-known name rather than the owner's unique one, because the
+            // bus resolves it at the moment of sending, so there is no
+            // re-subscription after an owner change and no gap in which the
+            // new owner's first signals could be missed. The owner check in
+            // `forward_gestures` stays as a second line.
             let gestures = zbus::MatchRule::builder()
                 .msg_type(zbus::message::Type::Signal)
+                .sender(adapter_name.as_str())
+                .map_err(service_bus)?
                 .interface(INTERFACE_NAME)
                 .map_err(service_bus)?
                 .path(OBJECT_PATH)
@@ -450,7 +510,18 @@ impl ServiceBus {
                 owner,
                 connection.clone(),
                 adapter_name.clone(),
+                refused_by_check.clone(),
             ));
+            connection
+                .object_server()
+                .at(
+                    SERVICE_OBJECT_PATH,
+                    StatusInterface {
+                        status: status_for_bus.clone(),
+                    },
+                )
+                .await
+                .map_err(service_bus)?;
 
             let reply = match connection
                 .request_name_with_flags(service, zbus::fdo::RequestNameFlags::DoNotQueue.into())
@@ -472,7 +543,29 @@ impl ServiceBus {
             adapter: adapter.to_string(),
             sender,
             receiver,
+            status,
+            refused,
         })
+    }
+
+    /// What `Status()` answers from now on.
+    pub fn set_status(&self, status: ServiceStatus) {
+        if let Ok(mut slot) = self.status.lock() {
+            *slot = status;
+        }
+    }
+
+    /// A handle `Status()` answers from, for a thread that learns the
+    /// watch's state.
+    pub fn status_handle(&self) -> Arc<std::sync::Mutex<ServiceStatus>> {
+        self.status.clone()
+    }
+
+    /// How many gesture signals reached this process from a sender that was
+    /// not the adapter's owner. The match rule keeps them out, so this stays
+    /// zero unless a bus ignores the rule's sender.
+    pub fn signals_refused(&self) -> usize {
+        self.refused.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// The connection is only ever `None` inside [`Drop`].
@@ -587,6 +680,7 @@ async fn forward_gestures(
     owner: Owner,
     connection: Connection,
     adapter: String,
+    refused: Arc<std::sync::atomic::AtomicUsize>,
 ) {
     while let Some(message) = gestures.next().await {
         let Ok(message) = message else { break };
@@ -601,6 +695,7 @@ async fn forward_gestures(
             let trusted = now.as_deref() == Some(from.as_str());
             set_owner(&owner, now);
             if !trusted {
+                refused.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 continue;
             }
         }

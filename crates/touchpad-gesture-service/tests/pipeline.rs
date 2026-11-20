@@ -684,6 +684,9 @@ fn a_forged_gesture_signal_from_another_connection_is_ignored() {
         None,
         "a forged signal reached the service"
     );
+    // And the bus kept it out: the second-line owner check never saw it, so
+    // it woke nothing and took no place in the queue (review of ticket 131).
+    assert_eq!(service.signals_refused(), 0);
 
     // The adapter's own still does.
     extension.swipe(0, 4, 0.0, 0.0, 2);

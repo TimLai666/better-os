@@ -149,6 +149,9 @@ pub(crate) struct TouchpadPage {
     pub(crate) store: TouchpadStore,
     pub(crate) gestures: GestureScreen,
     pub(crate) gesture_store: GestureStore,
+    /// Follows `gestures.json` as the gesture service and the other window
+    /// write it (ticket 131). `None` in the demo.
+    pub(crate) gesture_watch: Option<touchpad_gestures::ConfigurationWatch>,
     pub(crate) sub_page: SubPage,
     pub(crate) pointer: PointerTrace,
     /// The pointer test surface's bounds, refreshed every frame by a canvas
@@ -243,6 +246,7 @@ impl TouchpadPage {
             store,
             gestures,
             gesture_store,
+            gesture_watch: None,
             sub_page,
             pointer: PointerTrace::idle(),
             surface: Rc::new(Cell::new(Bounds::default())),
@@ -262,6 +266,7 @@ impl TouchpadPage {
         };
         page.share_facts();
         page.find_competitors(cx);
+        page.follow_gestures(cx);
         page
     }
 
@@ -625,6 +630,41 @@ impl TouchpadPage {
             }
         }
         cx.notify();
+    }
+
+    /// Reads the gesture file again whenever another process writes it, so
+    /// this page never saves a stale copy over the gesture service's
+    /// automatic disable or the other window (ticket 131). An edit open in the
+    /// editor stays open. A demo page follows nothing.
+    fn follow_gestures(&mut self, cx: &mut Context<Self>) {
+        if self.in_memory {
+            return;
+        }
+        let (sender, receiver) = smol::channel::unbounded::<()>();
+        self.gesture_watch = Some(touchpad_gestures::ConfigurationWatch::start(
+            &[self.gesture_store.config_path()],
+            touchpad_gestures::watch::RETRY,
+            move || {
+                let _ = sender.send_blocking(());
+            },
+            |_| {},
+        ));
+        cx.spawn(async move |this, cx| {
+            while receiver.recv().await.is_ok() {
+                // A burst of events is one read.
+                while receiver.try_recv().is_ok() {}
+                let followed = this.update(cx, |page, cx| {
+                    if page.gestures.reload(&page.gesture_store) {
+                        page.share_facts();
+                        cx.notify();
+                    }
+                });
+                if followed.is_err() {
+                    return;
+                }
+            }
+        })
+        .detach();
     }
 
     /// Looks for X11 Gestures, Touchégg, and fusuma, off the UI thread. A

@@ -187,27 +187,8 @@ pub(crate) fn test_reach(locale: Locale, live: bool, attempted: usize, performed
 /// not on screen). An unknown key is shown as it is, since it names a check
 /// a newer Better Touchpad added.
 pub(crate) fn check_words(id: &str, locale: Locale) -> String {
-    let zh = locale.resolved() == Locale::ZhTw;
-    let words = match (id, zh) {
-        ("touchpad.configuration", true) => "設定檔",
-        ("touchpad.configuration", false) => "Settings file",
-        ("touchpad.backend", true) => "桌面設定",
-        ("touchpad.backend", false) => "Desktop settings",
-        ("touchpad.device", true) => "觸控板",
-        ("touchpad.device", false) => "Touchpad",
-        ("touchpad.capabilities", true) => "可變更的項目",
-        ("touchpad.capabilities", false) => "What can be changed",
-        ("touchpad.capture", true) => "變更前的記錄",
-        ("touchpad.capture", false) => "Values captured before changes",
-        ("touchpad.safe_mode", true) => "安全模式",
-        ("touchpad.safe_mode", false) => "Safe mode",
-        ("touchpad.integration", true) => "Better Touchpad 整合",
-        ("touchpad.integration", false) => "Better Touchpad integration",
-        ("touchpad.gesture_bridge", true) => "手勢連線",
-        ("touchpad.gesture_bridge", false) => "Gesture connection",
-        _ => return id.to_string(),
-    };
-    words.to_string()
+    // One place words the checks for both windows (ticket 131).
+    touchpad_views::health_words::check_name(id, super::view::views_locale(locale))
 }
 
 /// The competing-tools card's words (ticket 88).

@@ -261,6 +261,9 @@ pub struct GesturePipeline {
     told_waiting_for_evidence: bool,
     /// Journal lines not yet handed out, in order.
     journal: Vec<String>,
+    /// The document as this pipeline last read or wrote it: what its own
+    /// changes are measured against when it writes (ticket 131).
+    base: GestureProfiles,
 }
 
 impl GesturePipeline {
@@ -294,6 +297,7 @@ impl GesturePipeline {
         adapter: Box<dyn SessionAdapter>,
         identities: Box<dyn DeviceIdentities>,
     ) -> Self {
+        let base = profiles.clone();
         profiles.annotate_conflicts();
         let mut suppression = SuppressionState::new();
         suppression.adopt_reported(adapter.reported_built_in_suppression());
@@ -311,6 +315,7 @@ impl GesturePipeline {
             events_seen: false,
             told_waiting_for_evidence: false,
             journal: Vec::new(),
+            base,
         };
         if pipeline.suppression.is_suppressed() {
             pipeline.note(
@@ -330,10 +335,13 @@ impl GesturePipeline {
     /// everything is verified again, and GNOME's gestures are taken or given
     /// back for what now collides.
     pub fn replace_profiles(&mut self, mut profiles: GestureProfiles) -> bool {
+        let read = profiles.clone();
         profiles.annotate_conflicts();
         if profiles == self.profiles {
+            self.base = read;
             return false;
         }
+        self.base = read;
         self.profiles = profiles;
         self.live = None;
         // Turning gestures back on after the automatic disable starts the
@@ -724,14 +732,10 @@ impl GesturePipeline {
             "gestures.adapter_disabled_after_failures:{}",
             self.failures.consecutive()
         ));
-        // The switch and nothing else, on the file as it is now: whatever the
-        // window saved since this service read it stays (ticket 131).
-        self.update_stored(|stored| {
-            stored.global.enabled = false;
-            for profile in stored.devices.values_mut() {
-                profile.enabled = false;
-            }
-        });
+        // Written by the same merge the window uses, so only the switch moves
+        // on the file as it is now: whatever a window saved since this
+        // service read it stays (ticket 131).
+        self.save();
         // The profiles only say gestures are off. The marker says why, so
         // Better Manager's Home can tell the person after the fact.
         if let Err(error) = self.store.record_turned_off(self.failures.consecutive()) {
@@ -744,44 +748,21 @@ impl GesturePipeline {
         self.restore_built_in_gestures(SuppressionEvent::Disabled);
     }
 
-    /// Writes what this pipeline found back into the stored document.
+    /// Writes this pipeline's own changes onto the stored document as it is
+    /// now (ticket 131).
     ///
-    /// Only the fields the service owns are written, on the document as it is
-    /// now (ticket 131): each gesture's verification result and conflict
-    /// annotation, matched by profile and gesture id. Everything the person
-    /// chose (which gestures exist, their shapes and actions, the switches,
-    /// the selected pad) is left as the file has it, so a window that saved
-    /// since this service read the file is never overwritten.
+    /// What changed between the document as this pipeline read it and its own
+    /// copy (verification results, conflict annotations, the switch the
+    /// automatic disable turns off) is merged onto what the file holds now,
+    /// under the lock every writer of the file takes, by the one merge the
+    /// windows use too ([`GestureStore::save_changes`]). A window that
+    /// saved since this service read the file is never overwritten, and a
+    /// file that will not parse is never written over.
     fn save(&mut self) {
-        let global = self.profiles.global.clone();
-        let devices = self.profiles.devices.clone();
-        self.update_stored(move |stored| {
-            copy_findings(&global, &mut stored.global);
-            for (identity, ours) in &devices {
-                if let Some(slot) = stored.devices.get_mut(identity) {
-                    copy_findings(ours, slot);
-                }
-            }
-        });
-    }
-
-    /// Reads the stored document, changes it, and writes it back. A document
-    /// that cannot be read is never written over: it is the only copy.
-    fn update_stored(&mut self, change: impl FnOnce(&mut GestureProfiles)) {
-        let mut stored = match self.store.load_profiles() {
-            Ok(stored) => stored,
-            Err(error) => {
-                self.problem = Some(error.to_string());
-                return;
-            }
-        };
-        let before = stored.clone();
-        change(&mut stored);
-        if stored == before {
-            return;
-        }
-        if let Err(error) = self.store.save_profiles(&stored) {
-            self.problem = Some(error.to_string());
+        let ours = self.profiles.clone();
+        match self.store.save_changes(&self.base, &ours) {
+            Ok(_) => self.base = ours,
+            Err(error) => self.problem = Some(error.to_string()),
         }
     }
 
@@ -794,17 +775,6 @@ impl GesturePipeline {
             }
         }
         StopReason::StreamEnded
-    }
-}
-
-/// Copies the service's findings for each gesture of `ours` onto the gesture
-/// with the same id in `stored`.
-fn copy_findings(ours: &GestureConfig, stored: &mut GestureConfig) {
-    for found in &ours.gestures {
-        if let Some(slot) = stored.get_mut(&found.id) {
-            slot.last_verification = found.last_verification.clone();
-            slot.conflict = found.conflict.clone();
-        }
     }
 }
 
@@ -1080,64 +1050,6 @@ pub fn read_configuration(settings: &TouchpadStore, gestures: &GestureStore) -> 
     match gestures.load_profiles() {
         Ok(profiles) => Configuration::Profiles(profiles),
         Err(error) => Configuration::Unreadable(error.to_string()),
-    }
-}
-
-/// Keeps a watch on the gesture configuration and the safe mode marker.
-///
-/// A file watch rather than a "reload" call from the window over the
-/// service's bus name, because the file is the one place every writer meets:
-/// Better Touchpad's window, Better Manager's Touchpad page, an import, the
-/// safe mode entry from a text console (`better-touchpad --safe-mode`), and a
-/// person with an editor. A call would have to be added to each and could be
-/// forgotten by the next; a watch cannot be (ticket 131). The writes are
-/// atomic renames, so the directory is watched and events for other names are
-/// dropped.
-pub struct ConfigurationWatch {
-    _watcher: notify::RecommendedWatcher,
-}
-
-impl ConfigurationWatch {
-    /// Sends [`SessionEvent::ConfigurationChanged`] on every event that
-    /// touches one of `files`, all of which must be in one directory.
-    pub fn start(
-        files: &[PathBuf],
-        events: std::sync::mpsc::Sender<SessionEvent>,
-    ) -> Result<Self, notify::Error> {
-        use notify::{RecursiveMode, Watcher as _};
-        let directory = files
-            .first()
-            .and_then(|file| file.parent())
-            .map(std::path::Path::to_path_buf)
-            .ok_or_else(|| notify::Error::generic("nothing to watch"))?;
-        std::fs::create_dir_all(&directory).map_err(notify::Error::io)?;
-        let names: Vec<std::ffi::OsString> = files
-            .iter()
-            .filter_map(|file| file.file_name().map(|name| name.to_os_string()))
-            .collect();
-        let mut watcher =
-            notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-                let touches = match &event {
-                    // An error from the watcher is a reason to read again.
-                    Err(_) => true,
-                    Ok(event) => {
-                        event.need_rescan()
-                            || event.paths.iter().any(|path| {
-                                path.file_name()
-                                    .is_some_and(|name| names.iter().any(|known| known == name))
-                            })
-                    }
-                };
-                let changed = match &event {
-                    Ok(event) => !event.kind.is_access(),
-                    Err(_) => true,
-                };
-                if touches && changed {
-                    let _ = events.send(SessionEvent::ConfigurationChanged);
-                }
-            })?;
-        watcher.watch(&directory, RecursiveMode::NonRecursive)?;
-        Ok(Self { _watcher: watcher })
     }
 }
 

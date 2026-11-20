@@ -107,7 +107,7 @@ impl Startup {
             Err(error) => (GestureProfiles::default(), Some(error.to_string())),
         };
         let captured = gesture_store.load_capture().ok().flatten();
-        let (adapter, bridge, service_running) = build_session_adapter(&options);
+        let (adapter, bridge, service_running, watch_problem) = build_session_adapter(&options);
         if let Some(fact) = bridge {
             let anything_configured = std::iter::once(&gesture_profiles.global)
                 .chain(gesture_profiles.devices.values())
@@ -115,6 +115,7 @@ impl Startup {
             model.set_gesture_bridge(gesture_connection(
                 fact,
                 service_running,
+                watch_problem,
                 store.safe_mode_enabled(),
                 anything_configured,
             ));
@@ -185,10 +186,16 @@ enum AdapterFact {
 fn gesture_connection(
     adapter: AdapterFact,
     service_running: Option<bool>,
+    watch_problem: Option<String>,
     safe_mode: bool,
     anything_configured: bool,
 ) -> GestureBridge {
     match (adapter, service_running) {
+        (AdapterFact::Answered { .. }, Some(true)) if watch_problem.is_some() => {
+            GestureBridge::NotWatching {
+                problem: watch_problem.unwrap_or_default(),
+            }
+        }
         (AdapterFact::Missing { all_extensions_off }, _) => {
             GestureBridge::AdapterMissing { all_extensions_off }
         }
@@ -202,13 +209,19 @@ fn gesture_connection(
     }
 }
 
-/// The route, the bridge fact, and whether the gesture service owns its name
-/// (`None` when nobody looked).
-type SessionRoute = (Box<dyn SessionAdapter>, Option<AdapterFact>, Option<bool>);
+/// The route, the bridge fact, whether the gesture service owns its name
+/// (`None` when nobody looked), and why it cannot watch its configuration,
+/// when it says it cannot.
+type SessionRoute = (
+    Box<dyn SessionAdapter>,
+    Option<AdapterFact>,
+    Option<bool>,
+    Option<String>,
+);
 
 fn build_session_adapter(options: &StartupOptions) -> SessionRoute {
     if options.offline || options.in_memory {
-        return (Box::new(MockSessionAdapter::new()), None, None);
+        return (Box::new(MockSessionAdapter::new()), None, None, None);
     }
     let shell = match SessionBusShell::connect() {
         Ok(shell) if shell.is_reachable() => shell,
@@ -221,6 +234,7 @@ fn build_session_adapter(options: &StartupOptions) -> SessionRoute {
                 // The missing adapter is the reason to show; the service
                 // waits for it either way.
                 None,
+                None,
             );
         }
         Err(error) => {
@@ -228,10 +242,15 @@ fn build_session_adapter(options: &StartupOptions) -> SessionRoute {
                 Box::new(MockSessionAdapter::new()),
                 Some(AdapterFact::Failed(error.to_string())),
                 None,
+                None,
             );
         }
     };
     let service_running = Some(shell.gesture_service_running());
+    let watch_problem = shell
+        .gesture_service_status()
+        .filter(|status| !status.watching)
+        .map(|status| status.problem);
     // The window never takes GNOME's gestures itself: the service does, once
     // gestures arrive, and the extension refuses anyone else (ticket 131).
     let adapter = match GnomeShellAdapter::connect(Box::new(shell)) {
@@ -241,6 +260,7 @@ fn build_session_adapter(options: &StartupOptions) -> SessionRoute {
                 Box::new(MockSessionAdapter::new()),
                 Some(AdapterFact::Failed(error.to_string())),
                 service_running,
+                watch_problem,
             );
         }
     };
@@ -259,6 +279,7 @@ fn build_session_adapter(options: &StartupOptions) -> SessionRoute {
         Box::new(RoutingAdapter::new(routes)),
         Some(fact),
         service_running,
+        watch_problem,
     )
 }
 
@@ -329,7 +350,7 @@ mod gesture_connection_tests {
 
     #[test]
     fn a_dead_gesture_service_is_not_connected_even_with_the_adapter_there() {
-        let bridge = gesture_connection(answered(), Some(false), false, true);
+        let bridge = gesture_connection(answered(), Some(false), None, false, true);
         assert_eq!(bridge, GestureBridge::ServiceStopped);
         assert!(!bridge.connected());
         let english = bridge.words(Locale::EnUs);
@@ -340,7 +361,7 @@ mod gesture_connection_tests {
 
     #[test]
     fn both_halves_there_is_connected() {
-        let bridge = gesture_connection(answered(), Some(true), false, true);
+        let bridge = gesture_connection(answered(), Some(true), None, false, true);
         assert!(bridge.connected());
         assert!(bridge.words(Locale::EnUs).contains("listening"));
     }
@@ -349,15 +370,36 @@ mod gesture_connection_tests {
     /// and the check says so rather than "listening" or "not running".
     #[test]
     fn a_resident_idle_service_is_said_to_be_idle() {
-        let safe = gesture_connection(answered(), Some(true), true, true);
+        let safe = gesture_connection(answered(), Some(true), None, true, true);
         assert_eq!(safe, GestureBridge::SafeMode);
         assert!(safe.connected());
         assert!(safe.words(Locale::EnUs).contains("safe mode"));
         assert!(safe.words(Locale::ZhTw).contains("安全模式"));
 
-        let idle = gesture_connection(answered(), Some(true), false, false);
+        let idle = gesture_connection(answered(), Some(true), None, false, false);
         assert_eq!(idle, GestureBridge::NothingConfigured);
         assert!(idle.words(Locale::EnUs).contains("waits for a gesture"));
+    }
+
+    /// Review of ticket 131: a watch that cannot be made costs no gesture,
+    /// and the check says why changes are slow to arrive, in both languages.
+    #[test]
+    fn a_service_that_cannot_watch_is_degraded_and_says_why() {
+        let bridge = gesture_connection(
+            answered(),
+            Some(true),
+            Some("inotify instances used up".to_string()),
+            false,
+            true,
+        );
+        assert!(!bridge.connected());
+        assert!(
+            bridge
+                .words(Locale::EnUs)
+                .contains("inotify instances used up")
+        );
+        assert!(bridge.words(Locale::EnUs).contains("every minute"));
+        assert!(bridge.words(Locale::ZhTw).contains("無法追蹤設定檔"));
     }
 
     #[test]
@@ -366,6 +408,7 @@ mod gesture_connection_tests {
             AdapterFact::Missing {
                 all_extensions_off: true,
             },
+            None,
             None,
             false,
             true,
@@ -376,6 +419,7 @@ mod gesture_connection_tests {
             AdapterFact::Missing {
                 all_extensions_off: false,
             },
+            None,
             None,
             false,
             true,

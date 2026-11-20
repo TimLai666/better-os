@@ -20,13 +20,12 @@ use std::sync::mpsc;
 
 use touchpad_core::TouchpadStore;
 use touchpad_gesture_service::{
-    ConfigurationWatch, GesturePipeline, ServiceExit, SysfsDeviceIdentities, read_configuration,
-    serve,
+    GesturePipeline, ServiceExit, SysfsDeviceIdentities, read_configuration, serve,
 };
-use touchpad_gestures::{GestureProfiles, GestureStore};
+use touchpad_gestures::{ConfigurationWatch, GestureProfiles, GestureStore, WatchState};
 use touchpad_session::{
-    LauncherActivationAdapter, RoutingAdapter, ServiceBus, ServiceBusError, SessionAdapter,
-    SessionEvent,
+    LauncherActivationAdapter, RoutingAdapter, ServiceBus, ServiceBusError, ServiceStatus,
+    SessionAdapter, SessionEvent,
 };
 
 fn main() -> ExitCode {
@@ -76,19 +75,44 @@ fn main() -> ExitCode {
             let _ = to_bus.send(SessionEvent::Stop);
         }
     });
-    let _watch = match ConfigurationWatch::start(
+    // A watch that cannot be made (the person's inotify instances used up)
+    // must not cost the gestures: the service keeps working on what it read,
+    // says so in the journal and in its Status, and tries again on a slow
+    // timer (ticket 131).
+    let changes = bus.stop_sender();
+    let status = bus.status_handle();
+    let _watch = ConfigurationWatch::start(
         &[gestures.config_path(), settings.safe_mode_path()],
-        bus.stop_sender(),
-    ) {
-        Ok(watch) => watch,
-        Err(error) => {
-            // Without the watch a change would wait for the next restart,
-            // which is the defect this service exists to avoid; failing lets
-            // systemd try again and Better Manager say so.
-            eprintln!("the gesture configuration cannot be watched: {error}");
-            return ExitCode::FAILURE;
-        }
-    };
+        touchpad_gestures::watch::RETRY,
+        move || {
+            let _ = changes.send(SessionEvent::ConfigurationChanged);
+        },
+        move |state| {
+            let reported = match &state {
+                WatchState::Watching => {
+                    eprintln!("watching the gesture configuration");
+                    ServiceStatus {
+                        watching: true,
+                        problem: String::new(),
+                    }
+                }
+                WatchState::Unavailable(problem) => {
+                    eprintln!(
+                        "not watching the gesture configuration ({problem}); gestures keep \
+                         working as read, a change reaches them when the watch is back, \
+                         which is tried again every minute"
+                    );
+                    ServiceStatus {
+                        watching: false,
+                        problem: problem.clone(),
+                    }
+                }
+            };
+            if let Ok(mut slot) = status.lock() {
+                *slot = reported;
+            }
+        },
+    );
 
     let mut configuration = || read_configuration(&settings, &gestures);
     let mut pipeline_for =

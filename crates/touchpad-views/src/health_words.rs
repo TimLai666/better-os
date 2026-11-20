@@ -25,6 +25,11 @@ pub enum GestureBridge {
     /// Both are there, and no gesture is switched on: the service runs and
     /// waits for one.
     NothingConfigured,
+    /// The service runs and recognizes gestures, and cannot watch its
+    /// configuration (the person's inotify instances used up, for one): a
+    /// change made here reaches it once the watch is back, which it tries
+    /// every minute (ticket 131).
+    NotWatching { problem: String },
     /// The adapter answered and the service is not on the bus at all.
     ServiceStopped,
     /// The adapter extension is not on the session bus.
@@ -55,6 +60,11 @@ impl GestureBridge {
             Self::NothingConfigured => "the gesture service is running and waits for a \
                                         gesture to be switched on"
                 .to_string(),
+            Self::NotWatching { problem } => format!(
+                "the gesture service is recognizing gestures but cannot watch its settings \
+                 ({problem}), so a change made here reaches it only once the watch is back; \
+                 it tries again every minute"
+            ),
             Self::ServiceStopped => "the GNOME Shell adapter answered, but the gesture \
                                      service (better-touchpad-gestures.service) is not \
                                      running, so no gesture is recognized and GNOME keeps \
@@ -80,6 +90,9 @@ impl GestureBridge {
             }
             Self::SafeMode => "手勢服務正在執行，但安全模式開啟期間不會辨識任何手勢".to_string(),
             Self::NothingConfigured => "手勢服務正在執行，等你開啟任何一個手勢".to_string(),
+            Self::NotWatching { problem } => format!(
+                "手勢服務正在辨識手勢，但無法追蹤設定檔（{problem}），所以這裡的變更要等它恢復追蹤後才會生效；它每分鐘會再試一次"
+            ),
             Self::ServiceStopped => "GNOME Shell 轉接器有回應，但手勢服務（better-touchpad-gestures.service）沒有在執行，所以不會辨識任何手勢，GNOME 會保留自己的手勢。在 Better Manager 對 Better Touchpad 按「重新檢查」就會啟動它".to_string(),
             Self::AdapterMissing {
                 all_extensions_off: true,
@@ -99,7 +112,48 @@ impl GestureBridge {
     }
 }
 
+/// A health check's name, from its stable key: the one place both windows
+/// word it. An unknown key is shown as it is, since it names a check a newer
+/// Better Touchpad added.
+pub fn check_name(id: &str, locale: Locale) -> String {
+    let zh = locale.resolved() == Locale::ZhTw;
+    let words = match (id, zh) {
+        ("touchpad.configuration", true) => "設定檔",
+        ("touchpad.configuration", false) => "Settings file",
+        ("touchpad.backend", true) => "桌面設定",
+        ("touchpad.backend", false) => "Desktop settings",
+        ("touchpad.device", true) => "觸控板",
+        ("touchpad.device", false) => "Touchpad",
+        ("touchpad.capabilities", true) => "可變更的項目",
+        ("touchpad.capabilities", false) => "What can be changed",
+        ("touchpad.capture", true) => "變更前的記錄",
+        ("touchpad.capture", false) => "Values captured before changes",
+        ("touchpad.safe_mode", true) => "安全模式",
+        ("touchpad.safe_mode", false) => "Safe mode",
+        ("touchpad.integration", true) => "Better Touchpad 整合",
+        ("touchpad.integration", false) => "Better Touchpad integration",
+        ("touchpad.gesture_bridge", true) => "手勢連線",
+        ("touchpad.gesture_bridge", false) => "Gesture connection",
+        _ => return id.to_string(),
+    };
+    words.to_string()
+}
+
 impl TouchpadModel {
+    /// The backend's own line, in the window's language: the same words the
+    /// `touchpad.backend` check's detail has.
+    pub fn backend_words(&self, locale: Locale) -> String {
+        match self
+            .health()
+            .checks
+            .iter()
+            .find(|check| check.id == "touchpad.backend")
+        {
+            Some(check) => self.check_detail(check, locale),
+            None => self.backend_status().detail.clone(),
+        }
+    }
+
     /// A check's detail in the window's language.
     pub fn check_detail(&self, check: &HealthCheck, locale: Locale) -> String {
         if locale.resolved() != Locale::ZhTw {

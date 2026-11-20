@@ -436,6 +436,10 @@ pub struct GestureScreen {
     /// desktop while the service is dead, and then no gesture is recognized
     /// at all, which the screen has to say (ticket 131).
     service_running: Option<bool>,
+    /// The document as this screen last read or wrote it: what its own
+    /// changes are measured against when it saves, so it never writes a stale
+    /// copy over another writer (ticket 131).
+    base: GestureProfiles,
 }
 
 impl GestureScreen {
@@ -462,8 +466,10 @@ impl GestureScreen {
         // The same correction the gesture service makes, through the same
         // function, so a stale "conflict" from an older model is neither shown
         // nor written back (ticket 131).
+        let base = profiles.clone();
         profiles.annotate_conflicts();
         Self {
+            base,
             profiles,
             device,
             known_shortcuts: KnownShortcuts::default(),
@@ -1040,12 +1046,54 @@ impl GestureScreen {
         state
     }
 
+    /// Writes what the person changed here onto the file as it is now, with
+    /// the merge and the lock the gesture service uses too
+    /// ([`GestureStore::save_changes`]), and then shows the file as it is
+    /// (ticket 131). A switch the service turned off after this screen read
+    /// the file stays off when the person edits something else.
+    ///
+    /// Conflict annotations are worked out again first, through the one
+    /// function the service uses, so an edit that moves a gesture onto or off
+    /// GNOME's three fingers says so at once.
     fn save(&mut self, store: Option<&GestureStore>) {
-        if let Some(store) = store
-            && let Err(error) = store.save_profiles(&self.document())
-        {
-            self.problem = Some(error.to_string());
+        self.profiles.annotate_conflicts();
+        let Some(store) = store else {
+            return;
+        };
+        match store.save_changes(&self.base, &self.document()) {
+            Ok(written) => self.adopt(written),
+            Err(error) => self.problem = Some(error.to_string()),
         }
+    }
+
+    /// Follows the file after another process wrote it: the gesture service's
+    /// verification or automatic disable, the other window, an import
+    /// (ticket 131). An edit open in the editor stays open, and anything this
+    /// screen changed and has not saved yet is kept on top of what the file
+    /// now holds. Returns whether what the screen shows changed.
+    pub fn reload(&mut self, store: &GestureStore) -> bool {
+        let theirs = match store.load_profiles() {
+            Ok(theirs) => theirs,
+            Err(error) => {
+                self.problem = Some(error.to_string());
+                return false;
+            }
+        };
+        let mut shown = touchpad_gestures::merge_profiles(&self.base, &self.document(), &theirs);
+        shown.annotate_conflicts();
+        self.base = theirs;
+        if shown == self.profiles {
+            return false;
+        }
+        self.profiles = shown;
+        true
+    }
+
+    fn adopt(&mut self, written: GestureProfiles) {
+        let mut shown = written.clone();
+        shown.annotate_conflicts();
+        self.base = written;
+        self.profiles = shown;
     }
 
     pub fn edit(&mut self, id: &GestureId) {

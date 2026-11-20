@@ -47,9 +47,9 @@ pub use adapter::{
     SessionAdapter, SuppressionOutcome, VerificationResult,
 };
 pub use gnome::{
-    FakeShellBridge, GnomeShellAdapter, InputDeviceNode, RecordedShellEvents, SessionEvent,
-    ShellBridge, ShellCapabilities, ShellError, ShellEvents, ShellGestureEvent, ShellRequest,
-    WorkspaceDirection,
+    FakeShellBridge, GnomeShellAdapter, InputDeviceNode, RecordedShellEvents, ServiceStatus,
+    SessionEvent, ShellBridge, ShellCapabilities, ShellError, ShellEvents, ShellGestureEvent,
+    ShellRequest, WorkspaceDirection,
 };
 pub use mock::{Invocation, MockSessionAdapter};
 pub use routing::RoutingAdapter;
