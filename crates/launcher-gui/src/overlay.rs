@@ -32,6 +32,7 @@ use better_ui::fluent::theme::Appearance;
 use better_ui::fluent::{
     BODY, BODY_STRONG, CAPTION, Palette, SUBTITLE, TITLE, label, palette, radius, spacing,
 };
+use better_ui::icon_set::{Glyph, Picture};
 use better_ui::icons::IconSearch;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
@@ -722,17 +723,17 @@ fn result_lines(model: &OverlayModel) -> Vec<ResultLine> {
 }
 
 /// The glyph beside a command.
-fn command_icon(command: &Command) -> IconName {
+fn command_icon(command: &Command) -> Glyph {
     match command {
-        Command::Open | Command::OpenPath => IconName::ExternalLink,
-        Command::RunInTerminal => IconName::SquareTerminal,
-        Command::PinToStart => IconName::Star,
-        Command::UnpinFromStart => IconName::StarOff,
-        Command::MoveToFront => IconName::ArrowLeft,
-        Command::RemoveFromList => IconName::Close,
-        Command::OpenFileLocation | Command::OpenContainingFolder => IconName::FolderOpen,
-        Command::Uninstall(_) => IconName::Delete,
-        Command::CopyResult => IconName::Copy,
+        Command::Open | Command::OpenPath => Picture::OpenExternal.into(),
+        Command::RunInTerminal => Picture::Terminal.into(),
+        Command::PinToStart => Picture::Pin.into(),
+        Command::UnpinFromStart => Picture::Unpin.into(),
+        Command::MoveToFront => IconName::ArrowLeft.into(),
+        Command::RemoveFromList => Picture::Remove.into(),
+        Command::OpenFileLocation | Command::OpenContainingFolder => Picture::OpenFolder.into(),
+        Command::Uninstall(_) => Picture::Delete.into(),
+        Command::CopyResult => Picture::Copy.into(),
     }
 }
 
@@ -1108,9 +1109,9 @@ impl LauncherOverlay {
             }
             SearchItem::Path(hit) => ListRow::new(id, hit.name())
                 .glyph(if hit.kind == PathKind::Folder {
-                    IconName::Folder
+                    Picture::Folder
                 } else {
-                    IconName::File
+                    Picture::File
                 })
                 .caption(crate::ranking::display_path(
                     &hit.path,
@@ -1165,13 +1166,14 @@ impl LauncherOverlay {
                 format!("{} · {}", c.kind_calculation, calculation.expression),
             ),
             SearchItem::Path(hit) => (
-                gpui_component::Icon::new(if hit.kind == PathKind::Folder {
-                    IconName::FolderOpen
-                } else {
-                    IconName::File
-                })
-                .size(px(64.0))
-                .text_color(p.text_secondary)
+                better_ui::icon_set::picture(
+                    if hit.kind == PathKind::Folder {
+                        Picture::FolderOpen
+                    } else {
+                        Picture::File
+                    },
+                    64.0,
+                )
                 .into_any_element(),
                 hit.name(),
                 if hit.kind == PathKind::Folder {
@@ -1393,7 +1395,7 @@ impl LauncherOverlay {
             item.entry()
         })
         .collect();
-        let button = Button::icon_button("appearance", IconName::Palette, c.appearance).on_click({
+        let button = Button::icon_button("appearance", Picture::Palette, c.appearance).on_click({
             let open = open.clone();
             move |window, cx| {
                 if open.read(cx).is_open() {
