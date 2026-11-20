@@ -31,3 +31,18 @@ splash, especially after Restart, once for good (forced power-off).
   and fix at the cause; if a Better OS unit is involved, fix it there.
 - Ask the owner whether Ctrl+Alt+F3 reaches a text login when stuck.
 - Turn GDM debug logging back off once the cause is known.
+
+## Notes
+
+- 2026-11-21 (read only): every boot since GDM debug logging came on (boot
+  IDs `ea8d30f6`, `a7a3f9da`, `9ea9b8c6`) opened the greeter 3–4 s after
+  `gdm.service` started. No stuck boot has happened with debug logging on, so
+  the ticket still waits for one.
+- `journalctl -b -N` offsets do not match `journalctl --list-boots` on this
+  machine (the clock is unreliable: the current boot lists as starting on
+  2026-10-12), so name a boot by its ID (`journalctl -b <boot-id>`), never by
+  an offset.
+- The login screen watch from ticket 140 is not installed here; it is not
+  released yet.
+- Boot `a7a3f9da`'s last journal line is `PM: suspend entry (s2idle)` with no
+  resume after it. The cause is unknown.

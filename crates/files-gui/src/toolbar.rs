@@ -185,26 +185,3 @@ fn expand_home(input: &str, home: Option<&Path>) -> Result<PathBuf, PathRejectio
     }
     Ok(PathBuf::from(input))
 }
-
-/// The breadcrumb for a local path: each ancestor with the location it opens.
-///
-/// Built from the path's own components rather than from the history, so it
-/// stays correct after a jump that skipped the intermediate folders.
-pub fn breadcrumb(location: &Location) -> Vec<(String, Location)> {
-    let Some(path) = location.as_local_path() else {
-        return vec![(location.display_name(), location.clone())];
-    };
-    let mut crumbs = Vec::new();
-    let mut current = PathBuf::from("/");
-    crumbs.push(("/".to_string(), Location::Local(LocalPath::root())));
-    for component in path.as_path().components().skip(1) {
-        current.push(component.as_os_str());
-        if let Ok(step) = LocalPath::new(current.clone()) {
-            crumbs.push((
-                component.as_os_str().to_string_lossy().into_owned(),
-                Location::Local(step),
-            ));
-        }
-    }
-    crumbs
-}

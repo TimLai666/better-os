@@ -29,4 +29,4 @@ pub use overview::{
     CollectorStatus, CoverageSummary, MemorySummary, OverviewModel, ResourceSummary,
     ResourceVerdict, ThrottlingState, ThroughputSummary,
 };
-pub use process_table::{ProcessColumn, ProcessTableModel, SortDirection, VisibleRow};
+pub use process_table::{ProcessColumn, ProcessKey, ProcessTableModel, SortDirection, VisibleRow};

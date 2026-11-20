@@ -73,6 +73,36 @@ Dragging a favourite between two other favourites to reorder is modelled
 (`BookmarkFile::move_to`) and reachable from the buttons and the keyboard. The
 pointer reorder gesture inside the sidebar is not wired yet.
 
+## The sidebar's order
+
+Owner, 2026-11-16 (ticket 132). Top to bottom: the places (Home, the
+person's folders, Recent, Trash), Favorites, Applications, Dropbox, each
+plugin's section, Devices (This PC and the drives), the tailnet's machines.
+The drives sit above the other computers. `sidebar::NAV_ORDER` is the one
+place the order is written; the pane draws its groups in that order, and the
+keyboard moves through them in the order they are drawn.
+
+## The system drive is named after the running system
+
+Owner, 2026-11-16 (ticket 138). The drive the running system lives on
+(`DriveKind::System`, the one mounted at `/`) is called what the running
+system calls itself: `NAME` in its os-release ("Zorin OS"), or `PRETTY_NAME`
+when there is no `NAME`, whatever its filesystem label says. The file is read
+only by `better_core::host` (`/etc/os-release`, and `/usr/lib/os-release`
+when that is missing, as os-release(5) orders them). When neither names a
+system, the drive is "System drive" / 「系統磁碟」, never a guessed
+distribution. Every other drive keeps its label, or is named by its size;
+another Linux install on another partition is not looked into.
+
+`drive_mounts::listing::Drive::naming` decides the name, so the sidebar, the
+This PC tiles, the path bar's root crumb (which opens `/`), search's "in …"
+at `/`, the drive's dialogs and notices, and Better Manager's Drives section
+all say the same thing. A storage-service device that the drive listing also
+has (`drives::is_device`: the same block or the same mount point, such as the
+running system on an external SSD) is drawn as that drive, and its toasts and
+confirmations use the drive's name too. No Properties view for a drive exists
+yet; one built later takes its name from `Drive::naming`.
+
 ## Devices without the storage service
 
 Ticket 35 connected the Devices section to the storage layer, and
@@ -119,13 +149,23 @@ Manager's System page (Drives), which read and change the same thing.
 - A change that is refused, dismissed at the password prompt, or fails is
   said in the window with its reason; a dismissed prompt says nothing.
 
-## Times are shown in UTC
+## Times are shown in local time
 
-The modified column formats timestamps as `YYYY-MM-DD HH:MM` in UTC. There is no
-time-zone database in this workspace, and deriving one from `TZ` alone would be
-wrong for half the year in most of the world. This is the one display value that
-is not yet in the user's local time; fixing it needs a decision about a time-zone
-dependency.
+The modified and deleted columns format timestamps as `YYYY-MM-DD HH:MM` on the
+local wall clock, through `better_core::local_time`, the one conversion every
+Better OS program shares (ticket 146). It asks the C library, which reads `TZ`
+and `/etc/localtime` and their daylight-saving rules, so each timestamp gets
+the offset in force at it. On a machine with no readable zone the time is UTC
+and ends in ` UTC`, never a guessed offset. A trash entry's `DeletionDate` is
+the trashing person's local time, as the trash specification says and every
+file manager writes it, so it is read and written in local time too.
+
+One known effect: Better Files and Better Git 0.2.16 and older wrote that
+stamp in UTC. An item they trashed now reads as if the stamp were local, so its
+deleted time shows shifted by the machine's UTC offset (eight hours early in
+Taipei). Nothing is lost and restore is unaffected, because the stamp only
+orders and labels the item. The record carries nothing that tells an old stamp
+from a new one, so no entry is guessed at and corrected.
 
 ## Opening a file is a typed intent, not a launch
 

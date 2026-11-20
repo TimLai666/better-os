@@ -14,7 +14,7 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{ActiveTheme as _, Icon, IconName, Sizable as _};
 
-use better_ui::fluent::button::{Button, ButtonKind};
+use better_ui::fluent::button::{Button, ButtonKind, MenuSegment};
 use better_ui::fluent::dialog::{
     ContentDialog, DefaultButton, DialogButtons, DialogResult, Flyout,
 };
@@ -702,7 +702,6 @@ impl GitApp {
         // split button offers (ticket 123).
         let state = self.sync_menu.clone();
         let open = state.read(cx).is_open();
-        let opener = state.clone();
         div()
             .id("toolbar-sync")
             .relative()
@@ -716,32 +715,18 @@ impl GitApp {
             .border_r_1()
             .border_color(p.divider)
             .child(main)
+            // The divider and everything after it open the menu, the
+            // cell's full height, and Escape gives focus back (ticket 130).
             .child(
-                div()
-                    .flex_none()
-                    .h_full()
-                    .flex()
-                    .items_center()
-                    .px(px(2.0))
-                    .border_l_1()
-                    .border_color(p.divider)
-                    .child(
-                        // Its tooltip only while the menu is shut: open, the
-                        // menu itself says what is there.
-                        Button::new("sync-more", ButtonKind::Subtle)
-                            .icon(IconName::ChevronDown)
-                            .when(!open, |b| b.tooltip(c.sync_more))
-                            .disabled(busy)
-                            .on_click(move |window, cx| open_menu(&opener, None, window, cx)),
-                    ),
+                MenuSegment::new("sync-more", state)
+                    .entries(if open {
+                        self.sync_menu_entries(repo, c, cx)
+                    } else {
+                        Vec::new()
+                    })
+                    .tooltip(c.sync_more)
+                    .disabled(busy),
             )
-            .when(open, |d| {
-                d.child(
-                    MenuFlyout::new("sync-menu", self.sync_menu_entries(repo, c, cx))
-                        .align_right()
-                        .state(state),
-                )
-            })
     }
 
     /// The rows of the sync button's arrow menu: what each does and how many

@@ -709,3 +709,35 @@ fn a_click_method_choice_offers_every_method_and_no_others() {
     assert_eq!(row.control, Control::Choice);
     assert_eq!(row.requested_label, copy(Locale::EnUs).method_default);
 }
+
+/// Ticket 131: the Diagnostics table shows every check's detail in the
+/// window's language, the gesture connection's included, while the report
+/// keeps the English one.
+#[test]
+fn every_check_detail_is_shown_in_traditional_chinese() {
+    use crate::health_words::GestureBridge;
+    let mut model = model_with(
+        Capabilities::everything_immediate(),
+        fixture("one-touchpad"),
+        Locale::ZhTw,
+    );
+    model.set_gesture_bridge(GestureBridge::ServiceStopped);
+    model.set_safe_mode(true);
+    let health = model.health();
+    for check in &health.checks {
+        let shown = model.check_detail(check, Locale::ZhTw);
+        assert!(
+            !shown.is_ascii(),
+            "{} is shown in English: {shown}",
+            check.id
+        );
+        assert_eq!(model.check_detail(check, Locale::EnUs), check.detail);
+    }
+    let bridge = health.check("touchpad.gesture_bridge").unwrap();
+    assert!(bridge.detail.contains("not running"));
+    assert!(
+        model
+            .check_detail(bridge, Locale::ZhTw)
+            .contains("手勢服務")
+    );
+}

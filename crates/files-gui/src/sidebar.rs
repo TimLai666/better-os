@@ -28,7 +28,8 @@ use storage_core::{DeviceStateKind, IdentityKey};
 use crate::bookmarks::BookmarkFile;
 use crate::i18n::{Copy, user_directory_label};
 
-/// The four sections, in the order they are drawn.
+/// The four kinds of row [`build_rows`] makes. The order the navigation pane
+/// draws its groups in is [`NAV_ORDER`], not this enum's.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum SidebarSection {
     Places,
@@ -53,6 +54,53 @@ impl SidebarSection {
             SidebarSection::Favorites => c.sidebar_favorites,
         }
     }
+}
+
+/// One group of lines in the navigation pane, under its own header or
+/// separator.
+///
+/// The pane draws more than the four row sections: the Dropbox folder, each
+/// plugin's section, and the tailnet's machines come from elsewhere, and they
+/// are ordered here with the rest so the order is decided once.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum NavGroup {
+    /// Home, the person's folders, Recent, Trash.
+    Places,
+    /// The pinned folders.
+    Favorites,
+    /// The Applications view, after a separator.
+    Applications,
+    /// The Dropbox folder, when Dropbox is installed.
+    Dropbox,
+    /// Each plugin's section, while it has items.
+    Plugins,
+    /// This PC and every drive.
+    Devices,
+    /// The tailnet's online machines.
+    Tailnet,
+}
+
+/// The navigation pane's groups, top to bottom, and the only place that
+/// order is written. Drives sit above the tailnet's machines (ticket 132):
+/// the disks in the computer come before other computers. Keyboard
+/// navigation moves through the lines in the order they are drawn, so it
+/// follows this too.
+pub const NAV_ORDER: [NavGroup; 7] = [
+    NavGroup::Places,
+    NavGroup::Favorites,
+    NavGroup::Applications,
+    NavGroup::Dropbox,
+    NavGroup::Plugins,
+    NavGroup::Devices,
+    NavGroup::Tailnet,
+];
+
+/// The navigation pane's lines: `lines_of` builds one group's lines, and is
+/// asked for every group once, in [`NAV_ORDER`]; the result is those lines
+/// in that order. `FilesApp::nav_targets` is this call, so the order a
+/// window draws is the order tested here.
+pub fn in_nav_order<T>(mut lines_of: impl FnMut(NavGroup) -> Vec<T>) -> Vec<T> {
+    NAV_ORDER.into_iter().flat_map(&mut lines_of).collect()
 }
 
 /// Whether the row can be opened right now.

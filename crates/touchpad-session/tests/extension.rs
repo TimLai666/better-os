@@ -209,12 +209,128 @@ fn the_extension_reports_the_device_node_and_nothing_else_about_the_device() {
         fields,
         vec![
             "_capturedId",
+            "_counterpart",
             "_exported",
             "_nameId",
             "_suppressed",
-            "_trackerState"
+            "_watchId"
         ]
     );
+}
+
+/// The types an XML signal declares, in order, as one GVariant tuple string.
+fn declared_signature(xml: &str, signal: &str) -> String {
+    let start = xml
+        .find(&format!("<signal name=\"{signal}\""))
+        .unwrap_or_else(|| panic!("{signal} is not declared"));
+    let end = xml[start..].find("</signal>").expect("a closed signal") + start;
+    let body = &xml[start..end];
+    let types: String = body
+        .match_indices("type=\"")
+        .map(|(index, _)| {
+            let rest = &body[index + 6..];
+            &rest[..rest.find('"').expect("a closing quote")]
+        })
+        .collect();
+    format!("({types})")
+}
+
+/// Every signal the extension emits carries exactly the signature the XML
+/// declares for it.
+///
+/// GJS builds the variant from the type string written beside the emit and
+/// never checks it against the interface: `PinchGesture` went out as
+/// `(uuddt)` with six values, GJS dropped the device node, and the Rust side
+/// quietly read every pinch as coming from an unknown device (ticket 131).
+#[test]
+fn every_emitted_signal_has_the_signature_the_interface_declares() {
+    let xml = read("org.betteros.TouchpadAdapter1.xml");
+    let extension = code("extension.js");
+    let mut emitted = Vec::new();
+    for (index, _) in extension.match_indices("emit_signal('") {
+        let rest = &extension[index + "emit_signal('".len()..];
+        let name = &rest[..rest.find('\'').expect("a closing quote")];
+        let variant = rest
+            .find("new GLib.Variant('")
+            .unwrap_or_else(|| panic!("{name} is emitted without a variant"));
+        let rest = &rest[variant + "new GLib.Variant('".len()..];
+        let signature = &rest[..rest.find('\'').expect("a closing quote")];
+        assert_eq!(
+            signature,
+            declared_signature(&xml, name),
+            "{name} is emitted with a signature the interface does not declare"
+        );
+        // And with as many values as the signature has types.
+        let values_start = rest.find('[').expect("a value list");
+        let values_end = rest.find("]))").expect("the end of the value list");
+        let values = rest[values_start + 1..values_end]
+            .split(',')
+            .filter(|value| !value.trim().is_empty())
+            .count();
+        assert_eq!(
+            values,
+            signature.len() - 2,
+            "{name} carries {values} values"
+        );
+        emitted.push(name.to_string());
+    }
+    emitted.sort();
+    let mut expected: Vec<String> = SIGNALS.iter().map(|name| name.to_string()).collect();
+    expected.sort();
+    assert_eq!(emitted, expected, "every declared signal is emitted once");
+}
+
+/// Ticket 131: GNOME's swipe trackers stay off only while the gesture service
+/// is on the bus, the rule ADR 0018 set for a relay and its counterpart.
+#[test]
+fn gnome_gets_its_gestures_back_when_the_gesture_service_leaves_the_bus() {
+    let extension = code("extension.js");
+    assert!(
+        extension.contains(&format!(
+            "const COUNTERPART = '{}';",
+            touchpad_session::gnome::SERVICE_BUS_NAME
+        )),
+        "the extension watches a name the service does not own"
+    );
+    assert!(extension.contains(
+        "Gio.bus_watch_name(\n            Gio.BusType.SESSION,\n            COUNTERPART,"
+    ));
+    // The vanished callback puts the trackers back, and nothing else.
+    assert!(extension.contains(
+        "() => {\n                this._counterpart = null;\n                this._restoreBuiltInGestures();\n            });"
+    ));
+    // The appeared callback forgets the previous owner and accepts the new
+    // one only through the check that its process runs the packaged service
+    // (ADR 0035, in ADR 0018's form).
+    assert!(extension.contains(
+        "(connection, _name, owner) => {\n                this._counterpart = null;\n                this._acceptIfPackaged(connection, owner);"
+    ));
+    assert_eq!(extension.matches("this._counterpart = owner").count(), 1);
+    // And disable stops watching as well as restoring.
+    assert!(extension.contains("Gio.bus_unwatch_name(this._watchId);"));
+}
+
+/// Only the gesture service's current owner can turn GNOME's gestures off;
+/// anyone can put them back.
+#[test]
+fn only_the_gesture_service_can_take_gnomes_gestures() {
+    let extension = code("extension.js");
+    let start = extension
+        .find("SuppressBuiltInGesturesAsync([suppress], invocation) {")
+        .expect("the suppression method takes its invocation");
+    let body = &extension[start..start + extension[start..].find("\n    }\n").unwrap()];
+    let check = body
+        .find("invocation.get_sender() !== this._counterpart")
+        .expect("the caller is checked against the counterpart");
+    let refusal = body.find("return_dbus_error(").expect("a refusal");
+    let suppress = body
+        .find("this._suppressBuiltInGestures();")
+        .expect("a suppression");
+    assert!(check < refusal && refusal < suppress, "{body}");
+    assert!(body.contains("this._counterpart === null ||"), "{body}");
+    // A plain `SuppressBuiltInGestures(suppress)` would take a request from
+    // anyone on the bus.
+    assert!(!extension.contains("SuppressBuiltInGestures(suppress) {"));
 }
 
 #[test]
@@ -268,4 +384,57 @@ fn the_extension_is_valid_javascript() {
         reported.is_empty() || reported.contains("resource:///org/gnome/shell"),
         "gjs reported something other than the expected missing shell import:\n{reported}"
     );
+}
+
+/// The body of one method of the extension's class, up to its closing brace.
+fn method_body(extension: &str, name: &str) -> String {
+    let start = extension
+        .find(&format!("\n    {name}("))
+        .unwrap_or_else(|| panic!("{name} is not defined"));
+    let end = extension[start..]
+        .find("\n    }\n")
+        .unwrap_or_else(|| panic!("{name} is not closed"))
+        + start;
+    extension[start..end].to_string()
+}
+
+/// ADR 0035: the name's owner becomes the counterpart only when the kernel
+/// says its process runs the packaged service, the same check ADR 0018 and the
+/// shared extension make. Without it any program of the person's could take
+/// the name first and be obeyed.
+#[test]
+fn the_counterpart_is_accepted_only_when_it_runs_the_packaged_service() {
+    let extension = code("extension.js");
+    assert!(extension.contains(&format!(
+        "const COUNTERPART_EXECUTABLE = '{}';",
+        touchpad_session::gnome::SERVICE_EXECUTABLE
+    )));
+    let accept = method_body(&extension, "_acceptIfPackaged");
+    assert!(accept.contains("'GetConnectionCredentials'"), "{accept}");
+    assert!(accept.contains("credentials.ProcessID"), "{accept}");
+    assert!(accept.contains(
+        "if (GLib.file_read_link(`/proc/${pid}/exe`) === COUNTERPART_EXECUTABLE)\n                        this._counterpart = owner;"
+    ));
+    // The one assignment of an owner is inside that check.
+    assert_eq!(extension.matches("this._counterpart = owner").count(), 1);
+    // And `/proc` is read for that link alone.
+    assert_eq!(extension.matches("/proc/").count(), 1);
+}
+
+/// Ticket 131: a restore writes what GNOME keeps when nothing is under way,
+/// `true`, never a value captured at suppression time, which could be GNOME's
+/// own `false` from the middle of a workspace animation.
+#[test]
+fn a_restore_writes_enabled_rather_than_a_captured_value() {
+    let extension = code("extension.js");
+    let restore = method_body(&extension, "_restoreBuiltInGestures");
+    assert!(
+        restore.contains(
+            "for (const tracker of this._swipeTrackers())\n            tracker.enabled = true;"
+        ),
+        "{restore}"
+    );
+    assert!(!extension.contains("const was = tracker.enabled"));
+    let suppress = method_body(&extension, "_suppressBuiltInGestures");
+    assert!(suppress.contains("tracker.enabled = false;"), "{suppress}");
 }

@@ -652,13 +652,42 @@ mod tests {
             .collect()
     }
 
+    /// The Mac-style preset with its four swipes moved to three fingers, where
+    /// GNOME 46's own trackers are. The preset itself collides with nothing on
+    /// GNOME 46 (ticket 131), and these tests are about a plan that does.
+    fn colliding_preset() -> GestureConfig {
+        let mut config = mac_style();
+        for gesture in &mut config.gestures {
+            if gesture.shape == crate::definition::GestureShape::Swipe
+                && gesture.contacts.get() == 4
+            {
+                gesture.contacts = ContactCount::new(3).unwrap();
+            }
+        }
+        config
+    }
+
     fn plan_for(adapter: &dyn SessionAdapter) -> PresetPlan {
         PresetPlan::build(
             &GestureConfig::default(),
-            &mac_style(),
+            &colliding_preset(),
             GNOME_46_GESTURES,
             adapter,
         )
+    }
+
+    #[test]
+    fn the_shipped_preset_previews_no_conflict_on_gnome_46() {
+        let adapter = MockSessionAdapter::new();
+        let plan = PresetPlan::build(
+            &GestureConfig::default(),
+            &mac_style(),
+            GNOME_46_GESTURES,
+            &adapter,
+        );
+        assert!(plan.conflicts.is_empty());
+        let approved = plan.approve(&BTreeMap::new(), true).unwrap();
+        assert!(!approved.suppression_wanted());
     }
 
     #[test]

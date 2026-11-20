@@ -23,9 +23,13 @@
       <arg type="i" name="direction" direction="in"/>
     </method>
     <!--
-      Disables GNOME Shell's own three- and four-finger swipe trackers, or puts
-      them back. The extension restores them on disable whatever was last
-      asked, so an uninstall can never leave the desktop without its gestures.
+      Disables GNOME Shell's own three-finger swipe trackers, or puts them
+      back. Disabling is accepted only from the current owner of
+      org.betteros.TouchpadGestures1, the gesture service, and anyone else gets
+      org.freedesktop.DBus.Error.AccessDenied. The extension restores them the
+      moment that name loses its owner, and on disable whatever was last
+      asked, so neither a stopped service nor an uninstall can leave the
+      desktop without its gestures.
     -->
     <method name="SuppressBuiltInGestures">
       <arg type="b" name="suppress" direction="in"/>

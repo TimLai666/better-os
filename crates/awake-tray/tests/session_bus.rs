@@ -2236,7 +2236,7 @@ async fn drive_against_an_old_service(
         &client.status().await.unwrap(),
         awake_tray::QuickOptions::default(),
         Locale::ZhTw,
-        awake_tray::UtcOffset::UTC,
+        awake_tray::TimeZone::UTC,
         false,
     );
     let settings = menu.find_by_label("目前的設定").unwrap();

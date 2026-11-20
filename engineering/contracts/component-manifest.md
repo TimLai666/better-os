@@ -135,7 +135,11 @@ arbitrary asset, path, or command.
   `desktop_entry`.
 - `target.keys` — the exact settings the adapter reads and writes, such as the
   MIME types of a handler group or a dconf path. Never a command.
-- `platforms` and `sessions` — where the declaration applies. Elsewhere the
+- `platforms` and `sessions` — where the declaration applies. A session
+  matches when any desktop `XDG_CURRENT_DESKTOP` lists is one `sessions`
+  names, ignoring case, so `[gnome]` applies to Zorin's `zorin:GNOME` and
+  Ubuntu's `ubuntu:GNOME`; `DESKTOP_SESSION` is read only when that list is
+  empty (`better_core::desktop`, ticket 134). Elsewhere the
   integration reports as unavailable rather than being attempted. So does a
   `target.keys` setting that no installed GSettings schema defines: nothing in
   the session reads it. Such a per-setting gap is shown on its own row and

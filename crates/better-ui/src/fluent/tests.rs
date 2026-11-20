@@ -1193,6 +1193,44 @@ fn a_composition_never_adds_up_to_more_than_the_whole() {
 // The details table's rich cells and keyboard (`list.rs`).
 
 #[test]
+fn right_and_left_follow_tree_views_rule() {
+    use super::list::{TreeStep, tree_step};
+    // Without parents: open and close only.
+    assert_eq!(
+        tree_step(Some(false), None, None, Key::Right),
+        Some(TreeStep::Open(true))
+    );
+    assert_eq!(
+        tree_step(Some(true), None, None, Key::Left),
+        Some(TreeStep::Open(false))
+    );
+    assert_eq!(tree_step(Some(true), None, None, Key::Right), None);
+    assert_eq!(tree_step(Some(false), None, None, Key::Left), None);
+    assert_eq!(tree_step(None, None, None, Key::Right), None);
+    assert_eq!(tree_step(None, None, None, Key::Left), None);
+    // With them: Right on an open row goes to its first child, Left on a
+    // closed row or a leaf goes to its parent, and an open row closes first.
+    assert_eq!(
+        tree_step(Some(true), Some(0), Some(7), Key::Right),
+        Some(TreeStep::Select(7))
+    );
+    assert_eq!(
+        tree_step(Some(false), Some(2), None, Key::Left),
+        Some(TreeStep::Select(2))
+    );
+    assert_eq!(
+        tree_step(None, Some(2), None, Key::Left),
+        Some(TreeStep::Select(2))
+    );
+    assert_eq!(
+        tree_step(Some(true), Some(2), Some(7), Key::Left),
+        Some(TreeStep::Open(false))
+    );
+    assert_eq!(tree_step(None, Some(2), None, Key::Right), None);
+    assert_eq!(tree_step(Some(false), Some(2), Some(7), Key::Enter), None);
+}
+
+#[test]
 fn a_table_cell_carries_its_tone_indent_and_expander() {
     use super::list::{CellTone, TableCell, tone_color};
     let cell = TableCell::new("Files")

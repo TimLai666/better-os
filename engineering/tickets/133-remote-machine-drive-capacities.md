@@ -22,8 +22,9 @@ shared disks — that is why only the root filesystem's capacity appears.
 
 - When a tailnet machine also serves SMB, list its shares (as `smb://<machine>`
   shows them) under the machine, each with its own capacity, as the remote
-  chose them; SFTP stays available for the whole filesystem. Which one a click
-  on the machine opens is an owner decision to record here before building.
+  chose them; SFTP stays available for the whole filesystem. Owner's decision
+  (2026-11-21): a click on the machine opens SFTP as it does today, and its
+  SMB shares are listed under it.
 
 - Decide and record (spec, ADR if it adds a remote probe) how Better Files
   learns a remote machine's mounted filesystems over the existing SFTP

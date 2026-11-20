@@ -46,10 +46,16 @@ pub fn fill_license(text: &str, year: i32, name: &str) -> String {
         .replace("[fullname]", name)
 }
 
-/// The current year, from the clock, in UTC.
+/// The year on the local wall clock at `now`, for a licence's copyright
+/// line: on 1 January it is the new year from local midnight, not from
+/// midnight UTC (ticket 146).
 pub fn current_year(now: i64) -> i32 {
-    // 365.2425 days per year on average; exact enough for a copyright line.
-    1970 + (now as f64 / 31_556_952.0) as i32
+    current_year_in(now, better_core::local_time::TimeZone::System)
+}
+
+/// [`current_year`] in a given zone.
+pub fn current_year_in(now: i64, zone: better_core::local_time::TimeZone) -> i32 {
+    i32::try_from(zone.at(now).civil.year).unwrap_or(i32::MAX)
 }
 
 /// A README for a new repository.

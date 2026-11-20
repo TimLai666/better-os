@@ -12,7 +12,7 @@ use awake_ipc::{
 };
 
 use crate::labels::{Labels, Locale, LocaleLabels};
-use crate::localtime::{UtcOffset, clock_time};
+use better_core::local_time::{TimeZone, clock_time};
 
 /// The lengths offered by Extend session.
 pub const EXTEND_MINUTES: [u64; 3] = [15, 30, 60];
@@ -431,10 +431,10 @@ pub fn build(
     status: &StatusDocument,
     options: QuickOptions,
     locale: Locale,
-    offset: UtcOffset,
+    zone: TimeZone,
     override_armed: bool,
 ) -> Menu {
-    build_offered(status, None, options, locale, offset, override_armed)
+    build_offered(status, None, options, locale, zone, override_armed)
 }
 
 /// The lengths a service that holds no offer gets: one from before protocol
@@ -451,18 +451,18 @@ pub fn build_offered(
     offer: Option<&QuickSessions>,
     options: QuickOptions,
     locale: Locale,
-    offset: UtcOffset,
+    zone: TimeZone,
     override_armed: bool,
 ) -> Menu {
     let labels = locale.labels();
     let mut items = if status.is_active() {
-        active_items(status, offer, labels, locale, offset)
+        active_items(status, offer, labels, locale, zone)
     } else {
         inactive_items(status, offer, options, labels)
     };
 
     items.push(MenuItem::separator());
-    items.push(automatic_rules(status, labels, offset, override_armed));
+    items.push(automatic_rules(status, labels, zone, override_armed));
     items.push(MenuItem::standard(
         labels.open_application,
         MenuAction::OpenApplication,
@@ -606,7 +606,7 @@ fn active_items(
     offer: Option<&QuickSessions>,
     labels: &Labels,
     locale: Locale,
-    offset: UtcOffset,
+    zone: TimeZone,
 ) -> Vec<MenuItem> {
     let session = status
         .manual_session()
@@ -624,7 +624,7 @@ fn active_items(
         MenuItem::info(format!(
             "{}: {}",
             labels.started,
-            clock_time(session.started_at_unix_seconds, offset)
+            clock_time(session.started_at_unix_seconds, zone)
         )),
     ];
 
@@ -695,7 +695,7 @@ fn active_items(
             )),
         ]
         .into_iter()
-        .chain(lid_limit_row(status, labels, locale, offset))
+        .chain(lid_limit_row(status, labels, locale, zone))
         .collect(),
     ));
 
@@ -767,7 +767,7 @@ fn lid_limit_row(
     status: &StatusDocument,
     labels: &Labels,
     locale: Locale,
-    offset: UtcOffset,
+    zone: TimeZone,
 ) -> Option<MenuItem> {
     if !status.effective_policy.prevent_lid_suspend
         || status.unmet_policy.contains(&PolicyGap::LidSwitch)
@@ -783,7 +783,7 @@ fn lid_limit_row(
             .max(1);
         let value = labels
             .lid_stops_at
-            .replace("{time}", &clock_time(stops_at, offset))
+            .replace("{time}", &clock_time(stops_at, zone))
             .replace(
                 "{remaining}",
                 &awake_ipc::notification::limit_words(locale, minutes as u32),
@@ -838,11 +838,11 @@ fn policy_row(name: &str, prevented: bool, unmet: bool, labels: &Labels) -> Menu
 /// rule counts second. A pause applies whatever the counts say, so it is read
 /// first; "no rules yet" and "every rule switched off" are kept apart, because
 /// one of them is answered by writing a rule and the other by switching one on.
-fn rules_state(status: &StatusDocument, labels: &Labels, offset: UtcOffset) -> String {
+fn rules_state(status: &StatusDocument, labels: &Labels, zone: TimeZone) -> String {
     match status.rules_suppression {
         Some(WireSuppression::PausedUntil { unix_seconds }) => labels
             .rules_paused_until
-            .replace("{time}", &clock_time(unix_seconds, offset)),
+            .replace("{time}", &clock_time(unix_seconds, zone)),
         Some(WireSuppression::PausedUntilResumed) => labels.rules_paused_until_resumed.to_string(),
         Some(WireSuppression::Overridden) => labels.rules_overridden.to_string(),
         None if status.rule_summary.total == 0 => labels.no_rules_yet.to_string(),
@@ -859,13 +859,13 @@ fn rules_state(status: &StatusDocument, labels: &Labels, offset: UtcOffset) -> S
 fn automatic_rules(
     status: &StatusDocument,
     labels: &Labels,
-    offset: UtcOffset,
+    zone: TimeZone,
     override_armed: bool,
 ) -> MenuItem {
     let header = format!(
         "{}: {}",
         labels.automatic_rules,
-        rules_state(status, labels, offset)
+        rules_state(status, labels, zone)
     );
     let suppressed = status.rules_suppression.is_some();
     if !suppressed && status.rule_summary.enabled == 0 {
@@ -1081,19 +1081,13 @@ mod tests {
             status,
             QuickOptions::default(),
             locale,
-            UtcOffset::UTC,
+            TimeZone::UTC,
             false,
         )
     }
 
     fn armed_menu(status: &StatusDocument, locale: Locale) -> Menu {
-        build(
-            status,
-            QuickOptions::default(),
-            locale,
-            UtcOffset::UTC,
-            true,
-        )
+        build(status, QuickOptions::default(), locale, TimeZone::UTC, true)
     }
 
     #[test]
@@ -1673,7 +1667,7 @@ mod tests {
                 ..QuickOptions::default()
             },
             Locale::EnUs,
-            UtcOffset::UTC,
+            TimeZone::UTC,
             false,
         );
         assert_eq!(toggled.shape(), menu(&inactive(), Locale::EnUs).shape());
@@ -1760,7 +1754,7 @@ mod tests {
         let mut status = active(WireEnd::Indefinite, WireRemaining::UntilEnded);
         status.effective_policy = SessionPolicy::manual_default();
         status.lid.stops_at_unix_seconds = Some(status.now_unix_seconds + 30 * 60);
-        let at = clock_time(status.now_unix_seconds + 30 * 60, UtcOffset::UTC);
+        let at = clock_time(status.now_unix_seconds + 30 * 60, TimeZone::UTC);
         let rows: Vec<String> = menu(&status, Locale::ZhTw)
             .find_by_label("目前的設定")
             .unwrap()
@@ -1855,7 +1849,7 @@ mod tests {
             Some(offer),
             QuickOptions::default(),
             locale,
-            UtcOffset::UTC,
+            TimeZone::UTC,
             false,
         )
     }
@@ -1954,7 +1948,7 @@ mod tests {
             None,
             QuickOptions::default(),
             Locale::EnUs,
-            UtcOffset::UTC,
+            TimeZone::UTC,
             false,
         );
         assert_eq!(menu, menu_for_build(&inactive()));
