@@ -25,9 +25,12 @@ jobs:
         # The runners have lost name resolution for the Ubuntu mirrors for minutes
         # at a time, which failed this step and so the whole run. `apt-get update`
         # exits 0 with stale lists in that state, so the retry is around both.
+        # `dconf-service` is what the private-bus dconf tests run against
+        # (`defaults_platform::test_support`); under CI they fail without it
+        # rather than skip.
         run: |
           for attempt in 1 2 3 4 5; do
-            if sudo apt-get update && sudo apt-get install -y libfontconfig1-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-base gstreamer1.0-plugins-good dbus locales language-pack-gnome-zh-hant-base; then
+            if sudo apt-get update && sudo apt-get install -y libfontconfig1-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-base gstreamer1.0-plugins-good dbus dconf-service locales language-pack-gnome-zh-hant-base; then
               exit 0
             fi
             echo "apt attempt $attempt failed; waiting before the next" >&2
