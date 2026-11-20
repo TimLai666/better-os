@@ -436,7 +436,8 @@ mod action_button_tests {
 
     /// Every button with an action icon keeps its words in `label`, where
     /// gpui-component takes the accessible name from, and every button with
-    /// an action alone is made square as that kit's icon buttons are.
+    /// an action alone is made square as that kit's icon buttons are and
+    /// names what it does in a tooltip.
     #[test]
     fn action_buttons_keep_their_name_and_their_shape() {
         let mut faults = Vec::new();
@@ -458,6 +459,12 @@ mod action_button_tests {
                     faults.push(format!(
                         "{name}: an action alone on a button not made square"
                     ));
+                }
+                // A button with no words says what it does on hover.
+                let rest = &text[at..];
+                let chain = &rest[..rest.find(".on_click(").unwrap_or(rest.len())];
+                if !chain.contains(".tooltip(") {
+                    faults.push(format!("{name}: an action alone with no tooltip"));
                 }
             }
         }

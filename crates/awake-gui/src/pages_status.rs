@@ -438,6 +438,7 @@ impl AwakeApp {
                             false,
                             cx,
                         ))
+                        .tooltip(c.start_this_session)
                         .on_click(cx.listener(move |this, _, _, cx| this.start_preset(index, cx))),
                     )
                     .when(!is_default, |row| {
