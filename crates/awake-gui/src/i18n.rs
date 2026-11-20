@@ -63,8 +63,6 @@ impl Locale {
 pub(crate) struct Copy {
     // ---- Shell ---------------------------------------------------------
     pub(crate) application_name: &'static str,
-    pub(crate) application_tagline: &'static str,
-    pub(crate) navigation: &'static str,
     pub(crate) keyboard_hint: &'static str,
     pub(crate) refresh: &'static str,
     pub(crate) cancel: &'static str,
@@ -361,8 +359,6 @@ pub(crate) struct Copy {
 
 static EN_US: Copy = Copy {
     application_name: "Better Awake",
-    application_tagline: "Keep this machine awake, on purpose",
-    navigation: "Sections",
     keyboard_hint: "Press Ctrl and a number to jump to a section",
     refresh: "Refresh",
     cancel: "Cancel",
@@ -637,8 +633,6 @@ static EN_US: Copy = Copy {
 
 static ZH_TW: Copy = Copy {
     application_name: "Better Awake",
-    application_tagline: "讓這台電腦有理由地保持清醒",
-    navigation: "區段",
     keyboard_hint: "按 Ctrl 加數字可直接切換區段",
     refresh: "重新讀取",
     cancel: "取消",

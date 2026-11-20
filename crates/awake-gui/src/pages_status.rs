@@ -9,9 +9,9 @@ use better_ui::{StatusPill, StatusTone};
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
-    ActiveTheme, IconName,
+    ActiveTheme, Disableable as _, IconName, Selectable as _, StyledExt as _,
     button::{Button, ButtonVariants},
-    *,
+    h_flex, v_flex,
 };
 
 use crate::{

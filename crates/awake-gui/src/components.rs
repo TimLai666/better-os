@@ -7,9 +7,9 @@
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
-    ActiveTheme, Icon, IconName,
+    ActiveTheme, Icon, IconName, Selectable as _, Sizable as _, StyledExt as _,
     button::{Button, ButtonVariants},
-    *,
+    h_flex, v_flex,
 };
 
 use crate::app::AwakeApp;

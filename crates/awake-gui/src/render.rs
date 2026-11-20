@@ -2,7 +2,7 @@
 //! could decide; this file routes and lays out.
 
 use gpui::*;
-use gpui_component::{ActiveTheme, StyledExt as _, h_flex, scroll::ScrollableElement, v_flex};
+use gpui_component::{ActiveTheme, StyledExt as _, scroll::ScrollableElement, v_flex};
 
 use crate::{
     app::AwakeApp, i18n::copy, layout::COMPACT_VIEWPORT_WIDTH, model::Section, shell::actions,
@@ -70,39 +70,23 @@ impl Render for AwakeApp {
                 copy(self.locale).application_name,
                 cx.theme().foreground,
             ))
-            .child(
-                div().flex_1().min_h_0().child(
-                    h_flex()
-                        .size_full()
-                        .min_w_0()
-                        .bg(cx.theme().secondary)
-                        .child(self.sidebar(compact, cx))
-                        .child(
-                            v_flex()
-                                .h_full()
-                                .flex_1()
-                                .min_w_0()
-                                .child(self.top_bar(cx))
-                                .child(
-                                    div().flex_1().min_h_0().overflow_y_scrollbar().p_5().child(
-                                        div()
-                                            .w_full()
-                                            .flex()
-                                            .justify_center()
-                                            .child(div().w_full().max_w(px(1320.0)).child(section)),
-                                    ),
-                                ),
+            .child(div().flex_1().min_h_0().child({
+                let page = v_flex()
+                    .size_full()
+                    .min_w_0()
+                    .child(self.top_bar(cx))
+                    .child(
+                        div().flex_1().min_h_0().overflow_y_scrollbar().p_5().child(
+                            div()
+                                .w_full()
+                                .flex()
+                                .justify_center()
+                                .child(div().w_full().max_w(px(1320.0)).child(section)),
                         ),
-                ),
-            )
-            .children(self.update_restart.toast_layer(
-                match self.locale.resolved() {
-                    crate::i18n::Locale::ZhTw => {
-                        better_ui::fluent::words::Locale::TraditionalChinese
-                    }
-                    _ => better_ui::fluent::words::Locale::English,
-                },
-                cx,
-            ))
+                    )
+                    .into_any_element();
+                self.navigation(page, compact, cx)
+            }))
+            .children(self.update_restart.toast_layer(self.kit_locale(), cx))
     }
 }

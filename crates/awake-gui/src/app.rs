@@ -57,6 +57,9 @@ pub(crate) struct RuleDraft {
 
 pub(crate) struct AwakeApp {
     pub(crate) section: Section,
+    /// The navigation pane's own button opened or closed it; until then it
+    /// follows the window's width.
+    pub(crate) nav_compact: Option<bool>,
     pub(crate) locale: Locale,
     pub(crate) preferences: Preferences,
     pub(crate) store: PreferencesStore,
@@ -111,6 +114,7 @@ impl AwakeApp {
             .unwrap_or(Section::Status);
         let mut app = Self {
             section,
+            nav_compact: None,
             locale,
             preferences,
             store,
