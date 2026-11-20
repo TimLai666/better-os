@@ -9,7 +9,6 @@ use better_ui::fluent::swatch::ColorSwatch;
 use better_ui::fluent::toggle::{RadioButtons, RadioOption};
 use better_ui::fluent::{BODY, label, palette};
 use gpui::*;
-use gpui_component::IconName;
 use hardware_core::Card;
 use hardware_core::lighting::{
     self, Access, Effect, Interface, LightingChoice, LightingHint, LightingReply, LightingView,
@@ -176,7 +175,7 @@ impl ManagerApp {
         let header = c.header;
         let plain = |description: String, disabled: bool| {
             SettingsCard::new(card::LIGHTING, header)
-                .icon(IconName::Palette)
+                .icon(better_ui::icon_set::Picture::Palette)
                 .description(description)
                 .disabled(disabled)
         };
@@ -237,7 +236,7 @@ impl ManagerApp {
         let base = current.unwrap_or(LightingChoice::starting(Effect::Static));
         let mut expander =
             SettingsExpander::new(card::LIGHTING, c.header, self.system.lighting.open)
-                .icon(IconName::Palette)
+                .icon(better_ui::icon_set::Picture::Palette)
                 .description(description)
                 .content(
                     ComboBox::new("system-lighting-effect", items, selected)
