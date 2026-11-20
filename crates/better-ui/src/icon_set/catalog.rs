@@ -1,0 +1,244 @@
+//! Every picture icon by name: its kind, the asset path a window's
+//! `AssetSource` serves it under, and its SVG. No GPUI here, so the set can
+//! be checked by plain tests.
+//!
+//! Each SVG is its own file under `crates/better-ui/assets/icons/object/` or
+//! `.../action/`, embedded at build time, so a person can open and edit it.
+
+/// What a picture icon stands for (DESIGN.md, Icons).
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum Kind {
+    /// A thing: a place, a device, a file kind, a category. A filled,
+    /// full-colour picture.
+    Object,
+    /// What a button does. A flat filled shape, one colour in at most two
+    /// shades plus white.
+    Action,
+}
+
+impl Kind {
+    /// The folder its files live in, under `assets/icons/`.
+    pub const fn directory(self) -> &'static str {
+        match self {
+            Kind::Object => "object",
+            Kind::Action => "action",
+        }
+    }
+}
+
+/// The prefix every picture's asset path starts with.
+pub const ASSET_PREFIX: &str = "better-ui/icons/";
+
+macro_rules! pictures {
+    (
+        objects { $($object:ident $object_file:literal,)* }
+        actions { $($action:ident $action_file:literal,)* }
+    ) => {
+        /// Every picture icon Better OS draws. Plain symbols (arrows,
+        /// chevrons, close, check, window buttons) are not here: they stay
+        /// the toolkit's 2px line icons.
+        #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+        pub enum Picture {
+            $($object,)*
+            $($action,)*
+        }
+
+        impl Picture {
+            /// Every picture, objects first.
+            pub const ALL: &'static [Picture] = &[
+                $(Picture::$object,)*
+                $(Picture::$action,)*
+            ];
+
+            /// The variant's name, as written in code.
+            pub const fn name(self) -> &'static str {
+                match self {
+                    $(Picture::$object => stringify!($object),)*
+                    $(Picture::$action => stringify!($action),)*
+                }
+            }
+
+            pub const fn kind(self) -> Kind {
+                match self {
+                    $(Picture::$object => Kind::Object,)*
+                    $(Picture::$action => Kind::Action,)*
+                }
+            }
+
+            /// The path a window's `AssetSource` serves it under, for
+            /// `img(path)`.
+            pub const fn path(self) -> &'static str {
+                match self {
+                    $(Picture::$object => concat!("better-ui/icons/object/", $object_file, ".svg"),)*
+                    $(Picture::$action => concat!("better-ui/icons/action/", $action_file, ".svg"),)*
+                }
+            }
+
+            /// The SVG text, as the file under `assets/icons/` holds it.
+            pub const fn svg(self) -> &'static str {
+                match self {
+                    $(Picture::$object => include_str!(concat!(
+                        env!("CARGO_MANIFEST_DIR"), "/assets/icons/object/", $object_file, ".svg"
+                    )),)*
+                    $(Picture::$action => include_str!(concat!(
+                        env!("CARGO_MANIFEST_DIR"), "/assets/icons/action/", $action_file, ".svg"
+                    )),)*
+                }
+            }
+
+            /// The picture served under `path`, if any.
+            pub fn from_path(path: &str) -> Option<Picture> {
+                match path {
+                    $(concat!("better-ui/icons/object/", $object_file, ".svg") => Some(Picture::$object),)*
+                    $(concat!("better-ui/icons/action/", $action_file, ".svg") => Some(Picture::$action),)*
+                    _ => None,
+                }
+            }
+        }
+    };
+}
+
+pictures! {
+    objects {
+        // Places
+        Home "home",
+        Desktop "desktop",
+        Documents "documents",
+        Downloads "downloads",
+        Pictures "pictures",
+        Music "music",
+        Videos "videos",
+        Templates "templates",
+        Public "public",
+        Developer "developer",
+        Trash "trash",
+        Recent "recent",
+        Folder "folder",
+        FolderOpen "folder-open",
+        File "file",
+        Cloud "cloud",
+        Network "network",
+        // Devices
+        Computer "computer",
+        RemoteComputer "remote-computer",
+        SystemDrive "system-drive",
+        Drive "drive",
+        ExternalDrive "external-drive",
+        MemoryCard "memory-card",
+        UsbDrive "usb-drive",
+        Disc "disc",
+        Phone "phone",
+        Touchpad "touchpad",
+        Keyboard "keyboard",
+        Cpu "cpu",
+        Memory "memory",
+        Gpu "gpu",
+        Fan "fan",
+        Thermometer "thermometer",
+        // Power
+        Battery "battery",
+        BatteryFull "battery-full",
+        BatteryMedium "battery-medium",
+        BatteryLow "battery-low",
+        BatteryCharging "battery-charging",
+        Gauge "gauge",
+        Brightness "brightness",
+        Moon "moon",
+        KeepAwake "keep-awake",
+        // Categories and things
+        Settings "settings",
+        Services "services",
+        Terminal "terminal",
+        CodeEditor "code-editor",
+        Window "window",
+        Apps "apps",
+        Dashboard "dashboard",
+        Package "package",
+        Updates "updates",
+        Health "health",
+        Shield "shield",
+        Lock "lock",
+        Fixes "fixes",
+        Diagnostics "diagnostics",
+        Automation "automation",
+        Timer "timer",
+        History "history",
+        Calendar "calendar",
+        Chart "chart",
+        ProcessList "process-list",
+        Table "table",
+        Checklist "checklist",
+        Startup "startup",
+        Restart "restart",
+        Enhance "enhance",
+        Transfers "transfers",
+        Inbox "inbox",
+        Globe "globe",
+        User "user",
+        LoginScreen "login-screen",
+        Bell "bell",
+        Palette "palette",
+        Font "font",
+        Star "star",
+        Tag "tag",
+        Book "book",
+        About "about",
+        Map "map",
+        // Touch input
+        Pointer "pointer",
+        Click "click",
+        Scrolling "scrolling",
+        Gesture "gesture",
+        // Git
+        Branch "branch",
+        Worktree "worktree",
+    }
+    actions {
+        Add "add",
+        NewFolder "new-folder",
+        NewFile "new-file",
+        NewWindow "new-window",
+        Copy "copy",
+        Cut "cut",
+        Paste "paste",
+        Rename "rename",
+        Delete "delete",
+        Remove "remove",
+        Restore "restore",
+        Refresh "refresh",
+        OpenExternal "open-external",
+        OpenFolder "open-folder",
+        Compress "compress",
+        Extract "extract",
+        Pin "pin",
+        Unpin "unpin",
+        SetDefault "set-default",
+        SelectAll "select-all",
+        ShowPane "show-pane",
+        SplitView "split-view",
+        ViewGrid "view-grid",
+        ViewList "view-list",
+        ViewColumns "view-columns",
+        TreeView "tree-view",
+        Eject "eject",
+        Play "play",
+        Pause "pause",
+        EndTask "end-task",
+        Enable "enable",
+        Disable "disable",
+        Search "search",
+        Verify "verify",
+        Properties "properties",
+        Filter "filter",
+        Download "download",
+        Push "push",
+        Pull "pull",
+    }
+}
+
+/// The SVG for a picture's asset path, or `None` for any other path. A
+/// window's `AssetSource` calls this before falling back to the kit's own
+/// assets.
+pub fn load(path: &str) -> Option<&'static [u8]> {
+    Picture::from_path(path).map(|picture| picture.svg().as_bytes())
+}
