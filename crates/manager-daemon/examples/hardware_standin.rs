@@ -18,7 +18,8 @@
 //!     The keyboard (ticket 136) is the owner's LampArray (`hidraw1`, the
 //!     real report descriptor, a fake device behind it), or with
 //!     `BETTER_OS_STANDIN_KEYBOARD=tuf` an asus-wmi `kbd_rgb_mode`, or with
-//!     `white` a LampArray with one level of colour. Point the window's
+//!     `white` a LampArray with no colour channel, or with `chassis` one
+//!     that says it is a chassis light. Point the window's
 //!     `BETTER_OS_DEBUG_SYS_ROOT` at the path this prints.
 //!
 //! Runs until killed. Built only with the `test-support` feature.
@@ -76,6 +77,9 @@ fn lamp_helper() -> Arc<FakeLampHelper> {
         device.levels.red = 0;
         device.levels.green = 0;
         device.levels.blue = 0;
+    }
+    if keyboard() == "chassis" {
+        helper.device.lock().unwrap().kind = 7;
     }
     Arc::new(helper)
 }
