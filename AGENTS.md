@@ -448,7 +448,8 @@ GUI or dependency compiles when the relevant command was not executed.
   the fixes it applied, ticket 90) is run by its maintainer scripts instead,
   as each person in the login range, because Better Manager cannot remove
   itself (`packaging/maintainer/before-removal-accounts.sh`, sharing
-  `accounts.sh` with the autostart postrm). The gesture service's first run puts the Mac-style preset in
+  `accounts.sh` and `account-step.sh` with the autostart postrm: accounts
+  from `getent passwd`, each person's step under `timeout -s KILL 30`). The gesture service's first run puts the Mac-style preset in
   force when no gesture file exists yet. Without both processes the Gestures
   screen and the `touchpad.gesture_bridge` health check say which is missing:
   the service owns `org.betteros.TouchpadGestures1` while it runs, and an
@@ -608,13 +609,19 @@ GUI or dependency compiles when the relevant command was not executed.
   has run its two entries only against fixture machines in scratch
   directories: no agent session may rebuild the person's font cache or write
   their Flatpak overrides. Nobody has watched it find, fix, or undo either
-  fault on a real desktop, and the Mutter scale read has been seen only in a
-  headless GNOME Shell. Removing Better Manager with apt undoes every applied
-  fix that has an undo, as each person, through the package's
-  before-removal program run by its maintainer scripts (a key the person
-  changed afterwards is left and named), and deletes the record; the rebuilt
-  font cache stays. That path has run only in tests and against generated
-  scripts, never through a real `apt remove`.
+  fault on a real desktop; the Mutter scale read has been seen only in a
+  headless GNOME Shell. The Electron fix is offered only at one whole-number
+  scale above 1 (the case ticket 76 verified) and covers every Electron
+  version's way of choosing Wayland; that the override puts an Electron 38
+  or later app on X11 is read from Electron's and Flatpak's sources, not
+  seen. Removing Better Manager with apt undoes every applied fix that has an
+  undo, as each person `getent passwd` lists in the login range, each step
+  under `timeout -s KILL 30`, through the package's before-removal program
+  run by its maintainer scripts (a key the person changed afterwards is left
+  and named, a fix whose undo failed stays recorded), and deletes the record;
+  the rebuilt font cache stays. An encrypted home that is not mounted keeps
+  its fixes. The container check in `packaging/test-daemon-e2e.sh` runs that
+  removal under a real dpkg and `setpriv`; its first run is CI's.
 - The login screen watch (ticket 140, ADR 0033) has run against a real
   systemd, logind, and journal only in CI's container check
   (`packaging/boot-watch/run.sh`, a stand-in `gdm.service` that never opens

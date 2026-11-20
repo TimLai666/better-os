@@ -34,6 +34,10 @@ pub(crate) struct FixesCopy {
     pub(crate) limit_flatpak_only: &'static str,
     pub(crate) limit_base_app: &'static str,
     pub(crate) limit_until_scaled: &'static str,
+    pub(crate) limit_whole_scale: &'static str,
+    pub(crate) electron_version: &'static str,
+    pub(crate) not_offered_fractional: &'static str,
+    pub(crate) not_offered_mixed: &'static str,
 
     // States.
     pub(crate) state_not_present: &'static str,
@@ -55,6 +59,7 @@ pub(crate) struct FixesCopy {
     pub(crate) reason_apps: &'static str,
     pub(crate) reason_file: &'static str,
     pub(crate) reason_not_answered: &'static str,
+    pub(crate) reason_not_on_desktop: &'static str,
 
     // Failures.
     pub(crate) fix_failed: &'static str,
@@ -64,6 +69,10 @@ pub(crate) struct FixesCopy {
     pub(crate) record_unreadable: &'static str,
     pub(crate) record_unsaved: &'static str,
     pub(crate) host_unavailable: &'static str,
+    pub(crate) demo_unavailable: &'static str,
+    pub(crate) program_removed: &'static str,
+    pub(crate) interrupted_one: &'static str,
+    pub(crate) interrupted: &'static str,
 
     // Home.
     pub(crate) home_found_one: &'static str,
@@ -72,7 +81,7 @@ pub(crate) struct FixesCopy {
 }
 
 const EN: FixesCopy = FixesCopy {
-    description: "Better OS checks this PC for known problems. Every fix can be undone.",
+    description: "Better OS checks this PC for known problems. A fix that changes your settings can always be undone.",
     check_again: "Check again",
     last_checked: "Last checked: {time}",
     nothing_found: "No known problems found.",
@@ -95,12 +104,16 @@ const EN: FixesCopy = FixesCopy {
     electron_header: "The pointer is half size over {app}",
     electron_header_any: "The pointer is half size over Electron apps",
     electron_cause: "This app doesn't scale its pointer on Wayland; running it through XWayland fixes it.",
-    electron_change: "Writes a Flatpak override for this app only, in {path}: {keys}",
+    electron_change: "Writes a Flatpak override for this app only, so it runs through XWayland, in {path}: {keys}",
     electron_undo: "Undo removes exactly these settings and leaves anything else in that file alone.",
     electron_restart: "Takes effect the next time {app} starts.",
     limit_flatpak_only: "Verified on Flatpak apps only. Nothing is offered for an app installed another way.",
-    limit_base_app: "Only apps built on Flathub's Electron base are recognized.",
-    limit_until_scaled: "Undo this once the app ships an Electron that scales its pointer.",
+    limit_base_app: "An app is recognized by Electron's own version file or Flathub's Electron base.",
+    limit_until_scaled: "No Electron release says it fixed this pointer on Wayland, so nothing here can tell when the fix is no longer needed. After the app updates, undo it to see whether the pointer is right on its own.",
+    limit_whole_scale: "Offered only when every screen uses the same whole-number scale above 100% (200%, 300%), which is where it was verified.",
+    electron_version: "Uses Electron {version}.",
+    not_offered_fractional: "No fix offered: a screen uses fractional scaling, and through XWayland the app would be drawn blurry.",
+    not_offered_mixed: "No fix offered: your screens use different scales, and XWayland draws the app at one of them, so it would be blurry or the wrong size on the other. This hasn't been verified.",
 
     state_not_present: "This PC doesn't have this problem.",
     state_found: "Found on this PC.",
@@ -120,6 +133,7 @@ const EN: FixesCopy = FixesCopy {
     reason_apps: "The installed Flatpak apps can't be read.",
     reason_file: "This app's Flatpak override file can't be read.",
     reason_not_answered: "The check didn't finish.",
+    reason_not_on_desktop: "this desktop doesn't report its display scale yet.",
 
     fix_failed: "The fix didn't finish.",
     undo_failed: "The undo didn't finish.",
@@ -128,6 +142,10 @@ const EN: FixesCopy = FixesCopy {
     record_unreadable: "The record of applied fixes can't be read, so this page won't fix or undo anything until it can.",
     record_unsaved: "The fix was applied, but its record couldn't be saved, so it may not be possible to undo it later.",
     host_unavailable: "Your home folder isn't known, so nothing can be checked.",
+    demo_unavailable: "Demo mode has no private folder for its example PC, so nothing is checked here.",
+    program_removed: "Better Manager is being removed, so this page changes nothing now.",
+    interrupted_one: "Removing Better Manager didn't finish, and it had already undone 1 fix. If the problem came back, it's listed below.",
+    interrupted: "Removing Better Manager didn't finish, and it had already undone {n} fixes. Any problem that came back is listed below.",
 
     home_found_one: "1 known problem found",
     home_found: "{n} known problems found",
@@ -135,7 +153,7 @@ const EN: FixesCopy = FixesCopy {
 };
 
 const ZH: FixesCopy = FixesCopy {
-    description: "Better OS 會檢查這台電腦有沒有已知的問題。每一項修正都可以復原。",
+    description: "Better OS 會檢查這台電腦有沒有已知的問題。會變更你設定的修正，都可以復原。",
     check_again: "重新檢查",
     last_checked: "上次檢查：{time}",
     nothing_found: "沒有找到已知的問題。",
@@ -158,12 +176,16 @@ const ZH: FixesCopy = FixesCopy {
     electron_header: "{app} 的游標只有一半大",
     electron_header_any: "Electron 應用程式的游標只有一半大",
     electron_cause: "這個應用程式在 Wayland 下不會放大游標，改用 XWayland 執行就正常。",
-    electron_change: "只為這個應用程式寫入 Flatpak 設定，位置在 {path}：{keys}",
+    electron_change: "只為這個應用程式寫入 Flatpak 設定，讓它改用 XWayland 執行，位置在 {path}：{keys}",
     electron_undo: "復原只會移除這幾項設定，那個檔案裡的其他內容都不會動。",
     electron_restart: "下次開啟 {app} 時生效。",
     limit_flatpak_only: "只在 Flatpak 版本驗證過，用其他方式安裝的應用程式不會提供這項修正。",
-    limit_base_app: "只認得用 Flathub Electron 基礎建置的應用程式。",
-    limit_until_scaled: "等這個應用程式換成會放大游標的 Electron 版本，就該復原這項修正。",
+    limit_base_app: "靠 Electron 自己的版本檔或 Flathub 的 Electron 基礎認出應用程式。",
+    limit_until_scaled: "目前沒有 Electron 版本說明已修好 Wayland 下的游標大小，所以這裡無法判斷何時不再需要這項修正。應用程式更新後，可以先復原，看看游標是不是已經正常。",
+    limit_whole_scale: "只在每個螢幕都用同一個整數縮放比例（200%、300%）時提供，這是驗證過的情況。",
+    electron_version: "使用 Electron {version}。",
+    not_offered_fractional: "不提供修正：有螢幕用分數縮放，改用 XWayland 執行會讓應用程式變模糊。",
+    not_offered_mixed: "不提供修正：你的螢幕縮放比例不一樣，XWayland 只會用其中一個比例畫，另一個螢幕上會變模糊或大小不對。這種情況還沒驗證過。",
 
     state_not_present: "這台電腦沒有這個問題。",
     state_found: "這台電腦有這個問題。",
@@ -183,6 +205,7 @@ const ZH: FixesCopy = FixesCopy {
     reason_apps: "讀不到已安裝的 Flatpak 應用程式。",
     reason_file: "讀不到這個應用程式的 Flatpak 設定檔。",
     reason_not_answered: "檢查沒有完成。",
+    reason_not_on_desktop: "這個桌面環境還不能提供螢幕縮放比例。",
 
     fix_failed: "修正沒有完成。",
     undo_failed: "復原沒有完成。",
@@ -191,6 +214,10 @@ const ZH: FixesCopy = FixesCopy {
     record_unreadable: "讀不到已套用修正的紀錄，在讀到之前這一頁不會修正或復原任何東西。",
     record_unsaved: "修正已套用，但紀錄沒有存下來，之後可能無法復原。",
     host_unavailable: "不知道你的家目錄在哪裡，所以無法檢查。",
+    demo_unavailable: "示範模式找不到只屬於你的資料夾來放範例電腦，所以這裡不做任何檢查。",
+    program_removed: "Better Manager 正在被移除，這一頁現在不會變更任何東西。",
+    interrupted_one: "移除 Better Manager 沒有完成，但已經復原了 1 項修正。如果問題又出現，會列在下面。",
+    interrupted: "移除 Better Manager 沒有完成，但已經復原了 {n} 項修正。又出現的問題會列在下面。",
 
     home_found_one: "找到 1 個已知問題",
     home_found: "找到 {n} 個已知問題",

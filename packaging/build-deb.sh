@@ -174,23 +174,52 @@ PACKAGE_AUTOSTART_OVERRIDES=""
 # only files carrying it.
 AUTOSTART_OVERRIDE_MARK='X-BetterOS-HiddenBy=better-touchpad'
 
+# The block a maintainer script uses to act for each person (accounts.sh):
+# it writes accounts.sh, account-step.sh, and one fragment, after their
+# header, into a private temporary library, sources it, makes the call, and
+# removes the library. Each person's step sources the same library in its
+# own timed shell. $1 the fragment's name under packaging/maintainer, $2 its
+# header lines, $3 the call.
+account_block() {
+    local fragment="$1"
+    local header="$2"
+    local call="$3"
+    printf '\n# Acting for each person (packaging/maintainer/accounts.sh).\n'
+    # shellcheck disable=SC2016 # expanded by the maintainer script
+    printf 'better_os_account_lib="$(mktemp "${TMPDIR:-/tmp}/better-os-accounts.XXXXXX")"\n'
+    # shellcheck disable=SC2016 # expanded by the maintainer script
+    printf "cat > \"\$better_os_account_lib\" <<'BETTER_OS_ACCOUNT_LIB'\n"
+    printf "better_os_login_defs='/etc/login.defs'\n"
+    printf "better_os_getent='getent'\n"
+    printf "better_os_setpriv='setpriv'\n"
+    printf "better_os_step_seconds='30'\n"
+    printf '%s\n' "$header"
+    cat "$ROOT_DIR/packaging/maintainer/accounts.sh"
+    cat "$ROOT_DIR/packaging/maintainer/account-step.sh"
+    cat "$ROOT_DIR/packaging/maintainer/$fragment.sh"
+    printf 'BETTER_OS_ACCOUNT_LIB\n'
+    # shellcheck disable=SC2016 # expanded by the maintainer script
+    printf '. "$better_os_account_lib"\n'
+    printf '%s || true\n' "$call"
+    # shellcheck disable=SC2016 # expanded by the maintainer script
+    printf 'rm -f "$better_os_account_lib"\n'
+}
+
 # A package whose window can hide another program's autostart entry gets a
 # postrm built from packaging/maintainer/autostart-overrides.sh, which removes
 # those overrides when the package is removed: nothing a component added
 # outlives it.
 write_autostart_override_postrm() {
     local staging_dir="$1"
-    {
-        printf '#!/bin/sh\nset -e\n\n'
-        printf "better_os_passwd_file='/etc/passwd'\n"
-        printf "better_os_login_defs='/etc/login.defs'\n"
+    local header
+    header="$(
         printf "better_os_override_mark='%s'\n" "$AUTOSTART_OVERRIDE_MARK"
-        printf "better_os_override_files='%s'\n\n" "$PACKAGE_AUTOSTART_OVERRIDES"
-        cat "$ROOT_DIR/packaging/maintainer/accounts.sh"
-        cat "$ROOT_DIR/packaging/maintainer/autostart-overrides.sh"
-        printf '\n'
+        printf "better_os_override_files='%s'" "$PACKAGE_AUTOSTART_OVERRIDES"
+    )"
+    {
+        printf '#!/bin/sh\nset -e\n'
         # shellcheck disable=SC2016 # expanded by the maintainer script
-        printf 'better_os_forget_autostart_overrides "$1" || true\n'
+        account_block autostart-overrides "$header" 'better_os_forget_autostart_overrides "$1"'
     } > "$staging_dir/DEBIAN/postrm"
     chmod 0755 "$staging_dir/DEBIAN/postrm"
 }
@@ -239,23 +268,22 @@ reset_package_inputs() {
 add_before_removal_accounts() {
     local staging_dir="$1"
     local package_name="$2"
-    local script call
+    local script header
+    header="$(
+        printf "better_os_before_removal_program='/usr/lib/better-os/before-removal/%s'\n" "$package_name"
+        printf "better_os_before_removal_leftovers='%s'\n" \
+            ".local/state/better-os/fixes-removal-undo.json .local/state/better-os/fixes-removal-undo.json.tmp"
+        printf "better_os_run_file='/run/better-os/%s-removal-run'" "$package_name"
+    )"
     for script in prerm postinst postrm; do
         if [[ ! -f "$staging_dir/DEBIAN/$script" ]]; then
             printf '#!/bin/sh\nset -e\n' > "$staging_dir/DEBIAN/$script"
             chmod 0755 "$staging_dir/DEBIAN/$script"
         fi
-        # shellcheck disable=SC2016 # expanded by the maintainer script
-        call="better_os_before_removal_$script \"\$1\" || true"
         {
             printf "\n# Ticket 90: what %s changed in the people's files goes back on removal.\n" "$package_name"
-            printf "better_os_passwd_file='/etc/passwd'\n"
-            printf "better_os_login_defs='/etc/login.defs'\n"
-            printf "better_os_before_removal_program='/usr/lib/better-os/before-removal/%s'\n" "$package_name"
-            printf "better_os_before_removal_leftover='.local/state/better-os/fixes-removal-undo.json'\n\n"
-            cat "$ROOT_DIR/packaging/maintainer/accounts.sh"
-            cat "$ROOT_DIR/packaging/maintainer/before-removal-accounts.sh"
-            printf '\n%s\n' "$call"
+            # shellcheck disable=SC2016 # expanded by the maintainer script
+            account_block before-removal-accounts "$header" "better_os_before_removal_$script \"\$1\""
         } >> "$staging_dir/DEBIAN/$script"
     done
 }

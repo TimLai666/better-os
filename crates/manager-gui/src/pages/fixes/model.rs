@@ -62,6 +62,8 @@ pub(crate) struct FaultRow {
     pub(crate) undo_note: &'static str,
     /// When the change takes effect, when that is not right away.
     pub(crate) takes_effect: Option<String>,
+    /// Facts about what was found (the app's Electron version).
+    pub(crate) facts: Vec<String>,
     pub(crate) limits: Vec<&'static str>,
     /// Each key another program changed after the fix, as a line.
     pub(crate) changed_elsewhere: Vec<String>,
@@ -122,6 +124,43 @@ fn limit_text(locale: Locale, limit: Limit) -> &'static str {
         Limit::FlatpakOnly => c.limit_flatpak_only,
         Limit::ElectronBaseAppOnly => c.limit_base_app,
         Limit::UntilTheAppScalesItsPointer => c.limit_until_scaled,
+        Limit::WholeNumberScaleOnly => c.limit_whole_scale,
+    }
+}
+
+/// Why a found fault's fix is not offered, when it is not.
+pub(crate) fn not_offered(
+    instance: &patch_core::Instance,
+) -> Option<patch_core::entry::NotOffered> {
+    match &instance.finding {
+        Some(patch_core::Finding {
+            detail:
+                patch_core::entry::FindingDetail::ElectronCursor {
+                    offer: patch_core::entry::Offer::NotOffered(why),
+                    ..
+                },
+            ..
+        }) => Some(*why),
+        _ => None,
+    }
+}
+
+fn not_offered_text(locale: Locale, why: patch_core::entry::NotOffered) -> &'static str {
+    let c = copy(locale);
+    match why {
+        patch_core::entry::NotOffered::FractionalScale => c.not_offered_fractional,
+        patch_core::entry::NotOffered::MixedScales => c.not_offered_mixed,
+    }
+}
+
+/// The app's Electron, as its own version file says, when known.
+fn electron_of(instance: &patch_core::Instance) -> Option<&str> {
+    match &instance.finding {
+        Some(patch_core::Finding {
+            detail: patch_core::entry::FindingDetail::ElectronCursor { electron, .. },
+            ..
+        }) => electron.as_deref(),
+        _ => None,
     }
 }
 
@@ -143,6 +182,7 @@ pub(crate) fn reason(locale: Locale, reason: &CannotCheck) -> String {
         CannotCheck::FlatpakAppsUnreadable(_) => c.reason_apps.to_string(),
         CannotCheck::FileUnreadable(_) => c.reason_file.to_string(),
         CannotCheck::NotAnswered => c.reason_not_answered.to_string(),
+        CannotCheck::NotOnThisDesktop => c.reason_not_on_desktop.to_string(),
     }
 }
 
@@ -284,6 +324,7 @@ fn fault_row(
             c.no_undo_needed
         },
         takes_effect: app.map(|app| c.electron_restart.replace("{app}", app)),
+        facts: Vec::new(),
         limits: description
             .limits
             .iter()
@@ -314,11 +355,22 @@ pub(crate) fn page_rows(
             let app = instance_app(locale, instance);
             let description = entry.describe(&instance.subject);
             let reversible = description.undo == UndoKind::Reversible;
-            let state = match results.get(&key) {
-                Some(result) => result_line(locale, result),
-                None => state_line(locale, &instance.state),
+            let refused = not_offered(instance);
+            let state = match (results.get(&key), refused) {
+                (Some(result), _) => result_line(locale, result),
+                (None, Some(why)) if instance.record.is_none() => {
+                    (not_offered_text(locale, why).to_string(), Tone::Warning)
+                }
+                (None, _) => state_line(locale, &instance.state),
             };
             let (group_found, actions) = match &instance.state {
+                // Found, and its fix is not offered here: it is listed with
+                // the reason, and nothing to press.
+                EntryState::Found | EntryState::Undone
+                    if refused.is_some() && instance.record.is_none() =>
+                {
+                    (true, Vec::new())
+                }
                 EntryState::Found => (true, vec![RowAction::Fix]),
                 EntryState::Undone if instance.finding.is_some() => (true, vec![RowAction::Fix]),
                 EntryState::AppliedButStillPresent if reversible => (true, vec![RowAction::Undo]),
@@ -338,7 +390,7 @@ pub(crate) fn page_rows(
             if actions.contains(&RowAction::Undo) && !instance.changed_elsewhere.is_empty() {
                 actions.push(RowAction::UndoAll);
             }
-            let row = fault_row(
+            let mut row = fault_row(
                 locale,
                 entry,
                 key,
@@ -348,6 +400,10 @@ pub(crate) fn page_rows(
                 &instance.changed_elsewhere,
                 override_dir,
             );
+            if let Some(version) = electron_of(instance) {
+                row.facts
+                    .push(c.electron_version.replace("{version}", version));
+            }
             if group_found {
                 rows.found.push(row);
             } else {
@@ -389,6 +445,7 @@ pub(crate) fn page_rows(
             EntryId::ElectronCursor => vec![
                 limit_text(locale, Limit::FlatpakOnly),
                 limit_text(locale, Limit::ElectronBaseAppOnly),
+                limit_text(locale, Limit::WholeNumberScaleOnly),
             ],
         };
         rows.all.push(KnownRow {
@@ -428,6 +485,12 @@ impl FixesFacts {
                 let undone_and_back =
                     instance.state == EntryState::Undone && instance.finding.is_some();
                 if !instance.state.needs_attention() && !undone_and_back {
+                    continue;
+                }
+                // A fault whose fix is not offered here is listed on the page
+                // with its reason; Home and the pane count only what the
+                // person can act on.
+                if instance.record.is_none() && not_offered(instance).is_some() {
                     continue;
                 }
                 let app = match (&instance.subject, &instance.finding) {

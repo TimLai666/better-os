@@ -571,13 +571,35 @@ mod tests {
         );
     }
 
-    /// Every page is built; none is the debug-only placeholder ticket 84
-    /// registered (ticket 91's release gate).
+    /// Every page in the pane has content a person can find: a title in
+    /// both languages, and (Home aside, which gathers the other pages' items
+    /// rather than holding cards) search entries for its cards in both
+    /// languages, each naming its own page. Together with the
+    /// exhaustive match in `render::page_rows`, which will not compile with a
+    /// route that draws nothing, this is ticket 91's release gate: no page
+    /// can ship as a placeholder.
     #[test]
-    fn every_page_is_built() {
-        for route in Route::ALL {
-            assert_eq!(module(route).status, PageStatus::Built, "{route:?}");
+    fn every_page_in_the_pane_has_real_content() {
+        for page in &PAGES {
+            for locale in [Locale::EnUs, Locale::ZhTw] {
+                assert!(!(page.title)(shell(locale)).is_empty(), "{:?}", page.route);
+                if page.route == Route::Home {
+                    continue;
+                }
+                let entries = (page.search_entries)(locale);
+                assert!(
+                    !entries.is_empty(),
+                    "{:?} has no search entries",
+                    page.route
+                );
+                for entry in &entries {
+                    assert_eq!(entry.route, page.route);
+                    assert!(!entry.header.is_empty());
+                }
+            }
         }
+        let routes: Vec<Route> = PAGES.iter().map(|page| page.route).collect();
+        assert_eq!(routes, Route::ALL);
     }
 
     #[test]

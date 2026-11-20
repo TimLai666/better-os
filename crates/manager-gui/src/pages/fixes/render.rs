@@ -80,13 +80,38 @@ impl ManagerApp {
                 ),
         ));
 
-        if self.fixes.unavailable {
+        let notices: Vec<(&str, Severity, String)> = [
+            self.fixes.unavailable.as_ref().map(|why| {
+                let text = match why {
+                    super::state::Unavailable::NoHome => c.host_unavailable,
+                    super::state::Unavailable::Demo(_) => c.demo_unavailable,
+                };
+                ("fixes-unavailable", Severity::Warning, text.to_string())
+            }),
+            self.update_restart.program_removed().then(|| {
+                (
+                    "fixes-removed",
+                    Severity::Warning,
+                    c.program_removed.to_string(),
+                )
+            }),
+            self.fixes.interrupted.map(|n| {
+                let text = match n {
+                    1 => c.interrupted_one.to_string(),
+                    n => c.interrupted.replace("{n}", &n.to_string()),
+                };
+                ("fixes-interrupted", Severity::Informational, text)
+            }),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        for (id, severity, text) in notices {
             rows.push(Row::new(
                 0.0,
-                div().pb(px(12.0)).child(
-                    InfoBar::new("fixes-unavailable", Severity::Warning, c.host_unavailable)
-                        .locale(locale.words()),
-                ),
+                div()
+                    .pb(px(12.0))
+                    .child(InfoBar::new(id, severity, text).locale(locale.words())),
             ));
         }
         if let Some(record_error) = &self.fixes.record_error {
@@ -195,7 +220,7 @@ impl ManagerApp {
         let c = copy(locale);
         let p = palette(cx);
         let open = self.fixes.open.contains(&row.key);
-        let can_change = self.fixes.can_change();
+        let can_change = self.fixes.can_change() && !self.update_restart.program_removed();
         let working = match &self.fixes.work {
             Some(Work::Fixing(key)) if key == &row.key => Some(c.fixing),
             Some(Work::Undoing(key)) if key == &row.key => Some(c.undoing),
@@ -267,6 +292,9 @@ impl ManagerApp {
                 }));
         for line in &row.change {
             expander = expander.row(SettingsRow::new(line.clone()));
+        }
+        for fact in &row.facts {
+            expander = expander.row(SettingsRow::new(fact.clone()));
         }
         if let Some(when) = &row.takes_effect {
             expander = expander.row(SettingsRow::new(when.clone()));

@@ -176,6 +176,10 @@ pub struct PackageRecord {
     /// The `Status` field's last word is `installed`: unpacked and configured.
     pub configured: bool,
     pub version: Option<String>,
+    /// The `Status` field's first word (what was asked) is `deinstall` or
+    /// `purge`: the package is being removed, or was, keeping its
+    /// configuration.
+    pub removing: bool,
 }
 
 /// Reads `dpkg-query -W -f='${Status}\n${Version}\n'` output. `None` when it
@@ -192,6 +196,10 @@ pub fn parse_query_output(output: &str) -> Option<PackageRecord> {
         .filter(|version| !version.is_empty())
         .map(str::to_string);
     let configured = status.split_whitespace().last() == Some("installed");
+    let removing = matches!(
+        status.split_whitespace().next(),
+        Some("deinstall" | "purge")
+    );
     // "unknown ok not-installed" is dpkg remembering a name, not a package.
     if status.ends_with("not-installed") && version.is_none() {
         return None;
@@ -199,6 +207,7 @@ pub fn parse_query_output(output: &str) -> Option<PackageRecord> {
     Some(PackageRecord {
         configured,
         version,
+        removing,
     })
 }
 
@@ -265,6 +274,10 @@ pub enum UpdateState {
     /// The new program is in place and configured. `version` is what dpkg
     /// says was installed, when the program comes from a package.
     Ready { version: Option<String> },
+    /// The package is being removed, or is gone, and nothing will replace
+    /// the program: the process keeps running a program that is no longer
+    /// installed and must change nothing it would have to undo.
+    Removed,
 }
 
 /// Follows one program file through an update.
@@ -325,10 +338,27 @@ impl UpdateTracker {
         let identity = match self.program.on_disk() {
             OnDisk::Same => {
                 self.candidate = None;
+                // dpkg asks for a removal before it runs the prerm and long
+                // before the file goes.
+                if self.package_record().is_some_and(|record| record.removing) {
+                    return UpdateState::Removed;
+                }
                 return UpdateState::Current;
             }
             OnDisk::Missing => {
                 self.candidate = None;
+                // Gone with nothing coming: dpkg no longer has the package,
+                // or is removing it. An update keeps asking for `install`.
+                // Only a package dpkg knew when the program started: a
+                // program it never knew (a development build) is being
+                // rebuilt, not removed.
+                if self.package.is_some() && self.start_version.is_some() {
+                    match self.package_record() {
+                        None => return UpdateState::Removed,
+                        Some(record) if record.removing => return UpdateState::Removed,
+                        Some(_) => {}
+                    }
+                }
                 return UpdateState::InProgress;
             }
             OnDisk::Replaced(identity) => identity,
@@ -702,6 +732,17 @@ mod tests {
             inner.1 = Some(PackageRecord {
                 configured,
                 version: Some(version.to_string()),
+                removing: false,
+            });
+        }
+
+        fn set_removing(&self, version: Option<&str>) {
+            let mut inner = self.inner.lock().unwrap();
+            inner.0 += 1;
+            inner.1 = version.map(|version| PackageRecord {
+                configured: false,
+                version: Some(version.to_string()),
+                removing: true,
             });
         }
 
@@ -757,7 +798,8 @@ mod tests {
             parse_query_output("install ok installed\n0.2.13\n"),
             Some(PackageRecord {
                 configured: true,
-                version: Some("0.2.13".into())
+                version: Some("0.2.13".into()),
+                removing: false,
             })
         );
         for status in [
@@ -769,6 +811,19 @@ mod tests {
             assert!(!record.configured, "{status}");
         }
         assert_eq!(parse_query_output("unknown ok not-installed\n\n"), None);
+        for status in [
+            "deinstall ok installed",
+            "deinstall ok config-files",
+            "purge ok half-installed",
+        ] {
+            let record = parse_query_output(&format!("{status}\n0.2.13\n")).unwrap();
+            assert!(record.removing, "{status}");
+        }
+        assert!(
+            !parse_query_output("install ok installed\n0.2.13\n")
+                .unwrap()
+                .removing
+        );
         assert_eq!(parse_query_output(""), None);
     }
 
@@ -808,7 +863,8 @@ mod tests {
             source.record("better-git"),
             Some(PackageRecord {
                 configured: true,
-                version: Some("0.2.12".into())
+                version: Some("0.2.12".into()),
+                removing: false,
             })
         );
         let before = source.marker();
@@ -822,7 +878,8 @@ mod tests {
             source.record("better-git"),
             Some(PackageRecord {
                 configured: false,
-                version: Some("0.2.13".into())
+                version: Some("0.2.13".into()),
+                removing: false,
             })
         );
         assert_eq!(source.record("better-files"), None);
@@ -963,6 +1020,47 @@ mod tests {
                 version: Some("0.2.13".into())
             }
         );
+    }
+
+    #[test]
+    fn a_removal_is_seen_when_dpkg_asks_for_it_and_when_the_package_is_gone() {
+        let tmp = scratch();
+        let path = tmp.path().join("better-git");
+        let _old = install(&path, "old");
+        let dpkg = FakeDpkg::default();
+        dpkg.set(true, "0.2.16");
+        let mut tracker = tracked(&path, &dpkg);
+        let now = Instant::now();
+        assert_eq!(tracker.poll(now), UpdateState::Current);
+        // dpkg asks for the removal before the prerm, with the file there.
+        dpkg.set_removing(Some("0.2.16"));
+        assert_eq!(tracker.poll(now), UpdateState::Removed);
+        // The file gone, and then the package.
+        fs::remove_file(&path).unwrap();
+        assert_eq!(tracker.poll(now), UpdateState::Removed);
+        dpkg.set_removing(None);
+        assert_eq!(tracker.poll(now), UpdateState::Removed);
+        assert_eq!(decide(&UpdateState::Removed, false), RestartDecision::Stay);
+    }
+
+    #[test]
+    fn a_file_gone_during_an_update_is_not_a_removal() {
+        let tmp = scratch();
+        let path = tmp.path().join("better-git");
+        let _old = install(&path, "old");
+        let dpkg = FakeDpkg::default();
+        dpkg.set(true, "0.2.15");
+        let mut tracker = tracked(&path, &dpkg);
+        fs::remove_file(&path).unwrap();
+        dpkg.set(false, "0.2.16");
+        assert_eq!(tracker.poll(Instant::now()), UpdateState::InProgress);
+        // A program dpkg never knew, missing while it is rebuilt.
+        let unknown = FakeDpkg::default();
+        let other = tmp.path().join("dev-build");
+        let _built = install(&other, "built");
+        let mut tracker = tracked(&other, &unknown);
+        fs::remove_file(&other).unwrap();
+        assert_eq!(tracker.poll(Instant::now()), UpdateState::InProgress);
     }
 
     #[test]

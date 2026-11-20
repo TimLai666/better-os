@@ -135,11 +135,12 @@ fn electron_cursor_fix_check_and_undo_leave_the_person_s_own_lines() {
 # My own settings, kept by hand.
 [Context]
 filesystems=~/Projects;
-sockets=x11;!fallback-x11;
+sockets=x11;!fallback-x11;!wayland;
 
 [Environment]
 GTK_THEME=Adwaita:dark
 ELECTRON_OZONE_PLATFORM_HINT=x11
+XDG_SESSION_TYPE=x11
 "
         )
     );
@@ -196,9 +197,13 @@ fn electron_cursor_a_key_changed_after_the_fix_waits_for_confirmation() {
     let finding = report.instances[0].finding.clone().unwrap();
     let outcome = engine::fix(&ElectronCursor, &finding, &mut host, 1).unwrap();
     let path = Paths::under(root.path()).user_override(&app());
+    // The person put the app back on Wayland by hand: the socket, the
+    // session type, and (for this Electron 32) the hint.
     let changed = std::fs::read_to_string(&path)
         .unwrap()
-        .replace("HINT=x11", "HINT=wayland");
+        .replace("!wayland;", "wayland;")
+        .replace("XDG_SESSION_TYPE=x11", "XDG_SESSION_TYPE=wayland")
+        .replace("HINT=x11", "HINT=auto");
     std::fs::write(&path, &changed).unwrap();
 
     let mut records = Records::default();
@@ -206,12 +211,14 @@ fn electron_cursor_a_key_changed_after_the_fix_waits_for_confirmation() {
     let report = engine::check(&ElectronCursor, &mut host, &records, &[]);
     // The changed hint brings the fault back, and the page says why.
     assert_eq!(report.overall(), EntryState::AppliedButStillPresent);
-    assert_eq!(report.instances[0].changed_elsewhere.len(), 1);
+    assert_eq!(report.instances[0].changed_elsewhere.len(), 3);
 
     let undone = engine::undo(&ElectronCursor, &outcome.record, &mut host, false).unwrap();
     assert_eq!(
         override_text(root.path()).as_deref(),
-        Some("[Environment]\nELECTRON_OZONE_PLATFORM_HINT=wayland\n")
+        Some(
+            "[Context]\nsockets=wayland;\n\n[Environment]\nELECTRON_OZONE_PLATFORM_HINT=auto\nXDG_SESSION_TYPE=wayland\n"
+        )
     );
     let mut left = outcome.record.clone();
     left.change = undone.remaining.expect("the changed key stays recorded");

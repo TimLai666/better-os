@@ -123,6 +123,9 @@ pub struct InstalledApp {
     /// Its exported desktop entry, `<id>.desktop`, when it has one.
     pub desktop_entry: Option<String>,
     pub overrides: OverrideLayers,
+    /// The Electron it ships, from the `version` file Electron's own
+    /// release puts beside its binary; `None` when there is none.
+    pub electron_version: Option<String>,
 }
 
 /// The name a desktop entry gives, in the two languages the window speaks.
@@ -132,17 +135,32 @@ pub struct AppName {
     pub zh_tw: Option<String>,
 }
 
+/// The major number of an Electron `version` file's text (`32.3.0`), when
+/// the text is a version at all.
+pub fn electron_major(text: &str) -> Option<u32> {
+    let mut parts = text.trim().split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?;
+    (!minor.is_empty() && minor.chars().all(|c| c.is_ascii_digit())).then_some(major)
+}
+
 /// The Electron base application Flathub's Electron apps are built on.
 pub const ELECTRON_BASE_APP: &str = "org.electronjs.Electron2.BaseApp";
 
 impl InstalledApp {
-    /// Whether it is built on Flathub's Electron base application, as its
-    /// metadata's `[Application] base` says. An app that bundles Electron
-    /// another way is not recognised.
+    /// Whether it is an Electron app: it ships Electron's `version` file, or
+    /// it is built on Flathub's Electron base application (its metadata's
+    /// `[Application] base`).
     pub fn is_electron(&self) -> bool {
-        KeyFile::parse(&self.metadata)
-            .get("Application", "base")
-            .is_some_and(|base| base.split('/').any(|part| part == ELECTRON_BASE_APP))
+        self.electron_version.is_some()
+            || KeyFile::parse(&self.metadata)
+                .get("Application", "base")
+                .is_some_and(|base| base.split('/').any(|part| part == ELECTRON_BASE_APP))
+    }
+
+    /// The major number of its Electron, when known.
+    pub fn electron_major(&self) -> Option<u32> {
+        electron_major(self.electron_version.as_deref()?)
     }
 
     /// The name from its desktop entry.
@@ -243,6 +261,7 @@ ELECTRON_OZONE_PLATFORM_HINT=auto
                 "[Desktop Entry]\nName=GitHub Desktop\nName[zh_TW]=GitHub 桌面版\n".to_string(),
             ),
             overrides,
+            electron_version: None,
         }
     }
 

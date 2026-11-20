@@ -24,28 +24,23 @@ pub(crate) enum HostChoice {
     /// A fixture machine under a directory: the demo window's, a sandbox's,
     /// and a test build's.
     Fixture(PathBuf),
+    /// A demo window with no private place for its fixture machine; why.
+    DemoUnavailable(String),
 }
 
 /// Where a test build's page looks: nowhere that exists, so no test reaches
 /// the person's font cache or Flatpak overrides.
 const TEST_ROOT: &str = "/nonexistent/better-os-test-root";
 
-/// The demo window's fixture machine, seeded once with both faults so a
-/// demo shows the whole flow and never changes this machine.
-fn demo_root() -> PathBuf {
-    static ROOT: OnceLock<PathBuf> = OnceLock::new();
+/// The demo window's fixture machine, under the session's private runtime
+/// directory and nowhere else (`patch_platform::fixture::private_demo_root`),
+/// seeded once with both faults so a demo shows the whole flow and never
+/// changes this machine.
+fn demo_root() -> Result<PathBuf, String> {
+    static ROOT: OnceLock<Result<PathBuf, String>> = OnceLock::new();
     ROOT.get_or_init(|| {
-        let base = std::env::var_os("XDG_RUNTIME_DIR")
-            .map(PathBuf::from)
-            .filter(|path| path.is_absolute())
-            .unwrap_or_else(std::env::temp_dir);
-        let root = base.join("better-os").join("fixes-demo");
-        if !root.join("session").exists()
-            && let Err(error) = fixture::seed(&root, fixture::Seed::BothFaults)
-        {
-            eprintln!("better-manager: the demo fixes machine could not be made: {error}");
-        }
-        root
+        let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from);
+        fixture::private_demo_root(runtime.as_deref())
     })
     .clone()
 }
@@ -63,7 +58,10 @@ pub(crate) fn host_choice(demo: bool) -> HostChoice {
         return HostChoice::Fixture(PathBuf::from(root));
     }
     if demo {
-        return HostChoice::Fixture(demo_root());
+        return match demo_root() {
+            Ok(root) => HostChoice::Fixture(root),
+            Err(why) => HostChoice::DemoUnavailable(why),
+        };
     }
     HostChoice::User
 }
@@ -76,6 +74,7 @@ fn open(choice: &HostChoice) -> Option<(LinuxHost, RecordStore)> {
             Some((host, store))
         }
         HostChoice::Fixture(root) => Some((fixture::host(root), fixture::store(root))),
+        HostChoice::DemoUnavailable(_) => None,
     }
 }
 
@@ -84,6 +83,7 @@ fn override_dir(choice: &HostChoice) -> String {
     let directory = match choice {
         HostChoice::User => patch_platform::Paths::for_user(),
         HostChoice::Fixture(root) => Some(patch_platform::Paths::under(root)),
+        HostChoice::DemoUnavailable(_) => None,
     }
     .map(|paths| paths.user_flatpak.join("overrides"));
     let Some(directory) = directory else {
@@ -96,6 +96,16 @@ fn override_dir(choice: &HostChoice) -> String {
     {
         Some(rest) => format!("~/{}", rest.display()),
         None => directory.display().to_string(),
+    }
+}
+
+/// Leaves, at the default state location, where the record and the
+/// overrides are when they are somewhere else, so removing Better Manager
+/// finds them (`patch_platform::paths::keep_location`).
+fn keep_location(choice: &HostChoice, host: &LinuxHost) -> Result<(), String> {
+    match (choice, home()) {
+        (HostChoice::User, Some(home)) => patch_platform::paths::keep_location(&home, host.paths()),
+        _ => Ok(()),
     }
 }
 
@@ -117,6 +127,25 @@ pub(crate) struct Failure {
 struct Checked {
     reports: Vec<Report>,
     records: Result<Records, StoreError>,
+    /// A removal of Better Manager that did not finish, and how many fixes
+    /// it undid (`patch_platform::removal::interrupted_removal`).
+    interrupted: Option<usize>,
+}
+
+/// Why nothing can be checked.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum Unavailable {
+    /// No home directory.
+    NoHome,
+    /// A demo window with no private runtime directory; why.
+    Demo(String),
+}
+
+/// The person's home, for the files a removal reads at fixed places.
+fn home() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|home| home.is_absolute())
 }
 
 #[derive(Default)]
@@ -127,8 +156,11 @@ pub(crate) struct FixesState {
     /// Set while the record of applied fixes cannot be read; nothing is
     /// fixed or undone then, so the record is never overwritten.
     pub(crate) record_error: Option<String>,
-    /// The host could not be made (no home directory).
-    pub(crate) unavailable: bool,
+    /// Why nothing can be checked, when nothing can.
+    pub(crate) unavailable: Option<Unavailable>,
+    /// A removal of Better Manager that did not finish undid this many
+    /// fixes; said once on the page.
+    pub(crate) interrupted: Option<usize>,
     pub(crate) reading_since: Option<Instant>,
     pub(crate) work: Option<Work>,
     pub(crate) results: BTreeMap<RowKey, RowResult>,
@@ -199,15 +231,39 @@ fn check_all(host: &mut LinuxHost, records: &Records, undone: &[RowKey]) -> Vec<
         .collect()
 }
 
-fn read(choice: &HostChoice, undone: &[RowKey]) -> Option<Checked> {
-    let (mut host, store) = open(choice)?;
+fn read(choice: &HostChoice, undone: &[RowKey]) -> Result<Checked, Unavailable> {
+    if let HostChoice::DemoUnavailable(why) = choice {
+        return Err(Unavailable::Demo(why.clone()));
+    }
+    let (mut host, store) = open(choice).ok_or(Unavailable::NoHome)?;
+    // Only the person's own home can hold what a removal set aside.
+    let interrupted = match choice {
+        HostChoice::User => {
+            home().and_then(|home| patch_platform::removal::interrupted_removal(&home))
+        }
+        _ => None,
+    };
     let records = store.load();
     let reports = check_all(
         &mut host,
         records.as_ref().unwrap_or(&Records::default()),
         undone,
     );
-    Some(Checked { reports, records })
+    Ok(Checked {
+        reports,
+        records,
+        interrupted,
+    })
+}
+
+/// Whether dpkg is removing Better Manager right now: its prerm may already
+/// have undone the fixes, so nothing new may be written.
+fn being_removed(choice: &HostChoice) -> bool {
+    use better_core::self_update::PackageSource as _;
+    *choice == HostChoice::User
+        && better_core::self_update::DpkgSource::system()
+            .record(manager_core::SELF_COMPONENT_ID)
+            .is_some_and(|record| record.removing)
 }
 
 /// How a fix or an undo ended.
@@ -272,9 +328,12 @@ impl ManagerApp {
                 app.fixes.task = None;
                 app.fixes.reading_since = None;
                 match checked {
-                    None => app.fixes.unavailable = true,
-                    Some(checked) => {
-                        app.fixes.unavailable = false;
+                    Err(why) => app.fixes.unavailable = Some(why),
+                    Ok(checked) => {
+                        app.fixes.unavailable = None;
+                        if checked.interrupted.is_some() {
+                            app.fixes.interrupted = checked.interrupted;
+                        }
                         app.fixes.record_error = checked.records.err().map(|e| e.to_string());
                         app.fixes.reports = Some(checked.reports);
                         app.fixes.checked_at = Some(now_unix_seconds());
@@ -301,7 +360,7 @@ impl ManagerApp {
     /// Fixes one fault: plans from a fresh read, changes, records, and
     /// checks, off the UI thread; then checks the page again.
     pub(crate) fn fix_fault(&mut self, key: RowKey, cx: &mut Context<Self>) {
-        if !self.fixes.can_change() {
+        if !self.fixes.can_change() || self.update_restart.program_removed() {
             return;
         }
         let finding = self
@@ -325,6 +384,12 @@ impl ManagerApp {
             let done = cx
                 .background_spawn(async move {
                     let key = task_key;
+                    if being_removed(&choice) {
+                        return Done::Failed(Failure {
+                            summary: super::copy::copy(locale).program_removed,
+                            details: String::new(),
+                        });
+                    }
                     let Some((mut host, store)) = open(&choice) else {
                         return Done::Failed(Failure {
                             summary: super::copy::copy(locale).host_unavailable,
@@ -345,7 +410,9 @@ impl ManagerApp {
                         Ok(outcome) => {
                             records.keep(entry, outcome.record);
                             let saved = if entry.undo_kind() == patch_core::UndoKind::Reversible {
-                                store.save(&records)
+                                store.save(&records).and_then(|()| {
+                                    keep_location(&choice, &host).map_err(StoreError::Unwritable)
+                                })
                             } else {
                                 Ok(())
                             };
@@ -380,7 +447,7 @@ impl ManagerApp {
     /// another program changed after the fix, which the person confirmed by
     /// choosing Undo all.
     pub(crate) fn undo_fix(&mut self, key: RowKey, all: bool, cx: &mut Context<Self>) {
-        if !self.fixes.can_change() {
+        if !self.fixes.can_change() || self.update_restart.program_removed() {
             return;
         }
         let choice = host_choice(self.is_demo());
@@ -393,6 +460,12 @@ impl ManagerApp {
             let done = cx
                 .background_spawn(async move {
                     let key = task_key;
+                    if being_removed(&choice) {
+                        return Done::Failed(Failure {
+                            summary: super::copy::copy(locale).program_removed,
+                            details: String::new(),
+                        });
+                    }
                     let Some((mut host, store)) = open(&choice) else {
                         return Done::Failed(Failure {
                             summary: super::copy::copy(locale).host_unavailable,

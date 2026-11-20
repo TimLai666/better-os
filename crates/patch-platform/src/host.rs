@@ -3,7 +3,7 @@
 use patch_core::{Answer, Change, ChangeError, Host, Read, ReadError};
 
 use crate::command::{CommandRunner, RunError, SystemCommands};
-use crate::display::{DisplayScales, MutterDisplay};
+use crate::display::DisplayScales;
 use crate::flatpak;
 use crate::paths::Paths;
 
@@ -36,7 +36,7 @@ impl LinuxHost {
         Some(Self::new(
             Paths::for_user()?,
             Box::new(SystemCommands),
-            Box::new(MutterDisplay),
+            crate::display::for_desktop(&better_core::CurrentDesktop::from_env()),
             std::env::var("XDG_SESSION_TYPE")
                 .ok()
                 .filter(|value| !value.trim().is_empty()),

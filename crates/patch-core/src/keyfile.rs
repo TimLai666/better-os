@@ -1,20 +1,78 @@
 //! The GLib key file format Flatpak's metadata and override files use, read
-//! and edited line by line.
+//! as GLib reads it and edited in place.
 //!
-//! Editing keeps every line it does not touch exactly as it was: comments,
-//! blank lines, groups and keys in their order, values it does not
-//! understand. That is what lets an undo take out the keys a fix wrote and
-//! leave anything a person added to the same file by hand.
+//! Editing touches only the lines of the keys it is asked to change, and
+//! keeps every other byte as it was: comments, blank lines, spacing around
+//! `=`, repeated keys, repeated groups, line endings (`\r\n` included), and a
+//! last line with no newline. That is what lets an undo take out the keys a
+//! fix wrote and leave anything a person wrote in the same file alone.
+//!
+//! Reading follows GLib: a group that appears twice is one group, and when a
+//! key appears more than once (in one group or across its repeats) the last
+//! one wins. Writing a key therefore changes that last occurrence, which is
+//! the one that takes effect.
 
-/// One line of a key file.
+/// What a line is.
 #[derive(Clone, Debug, Eq, PartialEq)]
-enum Line {
+enum Kind {
     /// `[Group]`.
     Group(String),
-    /// `key=value`, with the spacing around `=` dropped as GLib drops it.
-    Entry { key: String, value: String },
-    /// A comment, a blank line, or anything else, kept verbatim.
-    Other(String),
+    /// `key=value`; the value starts at this byte of the line.
+    Entry { key: String, value_at: usize },
+    /// A comment, a blank line, or anything else.
+    Other,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct Line {
+    /// The line without its ending.
+    text: String,
+    /// `"\n"`, `"\r\n"`, or `""` for a last line with none.
+    ending: &'static str,
+    kind: Kind,
+}
+
+impl Line {
+    fn classify(text: &str) -> Kind {
+        let trimmed = text.trim();
+        if trimmed.starts_with('[') && trimmed.ends_with(']') && trimmed.len() >= 2 {
+            return Kind::Group(trimmed[1..trimmed.len() - 1].to_string());
+        }
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            return Kind::Other;
+        }
+        match text.find('=') {
+            Some(at) => {
+                let rest = &text[at + 1..];
+                let skipped = rest.len() - rest.trim_start_matches([' ', '\t']).len();
+                Kind::Entry {
+                    key: text[..at].trim().to_string(),
+                    value_at: at + 1 + skipped,
+                }
+            }
+            None => Kind::Other,
+        }
+    }
+
+    fn new(text: String, ending: &'static str) -> Self {
+        let kind = Self::classify(&text);
+        Self { text, ending, kind }
+    }
+
+    fn value(&self) -> Option<&str> {
+        match &self.kind {
+            Kind::Entry { value_at, .. } => Some(&self.text[*value_at..]),
+            _ => None,
+        }
+    }
+
+    fn is_entry(&self, wanted: &str) -> bool {
+        matches!(&self.kind, Kind::Entry { key, .. } if key == wanted)
+    }
+
+    fn is_blank(&self) -> bool {
+        matches!(self.kind, Kind::Other) && self.text.trim().is_empty()
+    }
 }
 
 /// A key file, as its lines.
@@ -25,187 +83,198 @@ pub struct KeyFile {
 
 impl KeyFile {
     pub fn parse(text: &str) -> Self {
-        let lines = text
-            .lines()
-            .map(|line| {
-                let trimmed = line.trim();
-                if trimmed.starts_with('[') && trimmed.ends_with(']') && trimmed.len() >= 2 {
-                    Line::Group(trimmed[1..trimmed.len() - 1].to_string())
-                } else if trimmed.starts_with('#') || trimmed.is_empty() {
-                    Line::Other(line.to_string())
-                } else if let Some((key, value)) = line.split_once('=') {
-                    Line::Entry {
-                        key: key.trim().to_string(),
-                        value: value.trim_start().to_string(),
-                    }
-                } else {
-                    Line::Other(line.to_string())
+        let mut lines = Vec::new();
+        let mut rest = text;
+        while !rest.is_empty() {
+            let (line, ending, next) = match rest.find('\n') {
+                Some(at) if at > 0 && rest.as_bytes()[at - 1] == b'\r' => {
+                    (&rest[..at - 1], "\r\n", &rest[at + 1..])
                 }
-            })
-            .collect();
+                Some(at) => (&rest[..at], "\n", &rest[at + 1..]),
+                None => (rest, "", ""),
+            };
+            lines.push(Line::new(line.to_string(), ending));
+            rest = next;
+        }
         Self { lines }
     }
 
-    /// The text, one line each, ending with a newline when there is any.
+    /// The text, every untouched line exactly as it was read.
     pub fn to_text(&self) -> String {
         let mut text = String::new();
         for line in &self.lines {
-            match line {
-                Line::Group(name) => {
-                    text.push('[');
-                    text.push_str(name);
-                    text.push(']');
-                }
-                Line::Entry { key, value } => {
-                    text.push_str(key);
-                    text.push('=');
-                    text.push_str(value);
-                }
-                Line::Other(other) => text.push_str(other),
-            }
-            text.push('\n');
+            text.push_str(&line.text);
+            text.push_str(line.ending);
         }
         text
     }
 
-    /// The index range of a group's lines after its header: from the line
-    /// after `[group]` to the next header. The first such group when a file
-    /// repeats one, as GLib merges repeats into the first.
-    fn group_range(&self, group: &str) -> Option<(usize, usize)> {
-        let header = self
-            .lines
-            .iter()
-            .position(|line| matches!(line, Line::Group(name) if name == group))?;
-        let end = self.lines[header + 1..]
-            .iter()
-            .position(|line| matches!(line, Line::Group(_)))
-            .map_or(self.lines.len(), |offset| header + 1 + offset);
-        Some((header + 1, end))
+    /// The line ending new lines get: the file's own, `\r\n` when it uses
+    /// that, `\n` otherwise.
+    fn ending(&self) -> &'static str {
+        if self.lines.iter().any(|line| line.ending == "\r\n") {
+            "\r\n"
+        } else {
+            "\n"
+        }
     }
 
-    /// Whether the file has the group.
-    pub fn has_group(&self, group: &str) -> bool {
-        self.group_range(group).is_some()
-    }
-
-    /// A key's value; the last one when a key is repeated, as GLib reads it.
-    pub fn get(&self, group: &str, key: &str) -> Option<&str> {
-        let (start, end) = self.group_range(group)?;
-        self.lines[start..end]
+    /// The group each line is in, `None` before the first header.
+    fn groups_of_lines(&self) -> Vec<Option<&str>> {
+        let mut current = None;
+        self.lines
             .iter()
-            .rev()
-            .find_map(|line| match line {
-                Line::Entry { key: k, value } if k == key => Some(value.as_str()),
-                _ => None,
-            })
-    }
-
-    /// Every key of a group, in order.
-    pub fn keys(&self, group: &str) -> Vec<&str> {
-        let Some((start, end)) = self.group_range(group) else {
-            return Vec::new();
-        };
-        self.lines[start..end]
-            .iter()
-            .filter_map(|line| match line {
-                Line::Entry { key, .. } => Some(key.as_str()),
-                _ => None,
+            .map(|line| {
+                if let Kind::Group(name) = &line.kind {
+                    current = Some(name.as_str());
+                    // The header itself belongs to no group's body.
+                    return None;
+                }
+                current
             })
             .collect()
     }
 
-    /// Sets a key: in place when it is there (dropping repeats of it), at
-    /// the end of its group otherwise, and in a new group at the end of the
-    /// file when the group is missing.
-    pub fn set(&mut self, group: &str, key: &str, value: &str) {
-        let Some((start, end)) = self.group_range(group) else {
-            if self
-                .lines
-                .last()
-                .is_some_and(|line| !matches!(line, Line::Other(text) if text.trim().is_empty()))
+    /// The index ranges of each repeat of a group's body, in order.
+    fn sections(&self, group: &str) -> Vec<(usize, usize)> {
+        let mut sections = Vec::new();
+        let mut index = 0;
+        while index < self.lines.len() {
+            if matches!(&self.lines[index].kind, Kind::Group(name) if name == group) {
+                let start = index + 1;
+                let end = self.lines[start..]
+                    .iter()
+                    .position(|line| matches!(line.kind, Kind::Group(_)))
+                    .map_or(self.lines.len(), |offset| start + offset);
+                sections.push((start, end));
+                index = end;
+            } else {
+                index += 1;
+            }
+        }
+        sections
+    }
+
+    /// The indices of every line of a key in a group, in file order.
+    fn entries(&self, group: &str, key: &str) -> Vec<usize> {
+        let groups = self.groups_of_lines();
+        (0..self.lines.len())
+            .filter(|&index| groups[index] == Some(group) && self.lines[index].is_entry(key))
+            .collect()
+    }
+
+    /// Whether the file has the group.
+    pub fn has_group(&self, group: &str) -> bool {
+        !self.sections(group).is_empty()
+    }
+
+    /// A key's value as GLib reads it: the last occurrence.
+    pub fn get(&self, group: &str, key: &str) -> Option<&str> {
+        self.entries(group, key)
+            .last()
+            .and_then(|&index| self.lines[index].value())
+    }
+
+    /// Every key of a group, once each, in the order they first appear.
+    pub fn keys(&self, group: &str) -> Vec<&str> {
+        let groups = self.groups_of_lines();
+        let mut keys: Vec<&str> = Vec::new();
+        for (index, line) in self.lines.iter().enumerate() {
+            if groups[index] != Some(group) {
+                continue;
+            }
+            if let Kind::Entry { key, .. } = &line.kind
+                && !keys.contains(&key.as_str())
             {
-                self.lines.push(Line::Other(String::new()));
+                keys.push(key);
             }
-            self.lines.push(Line::Group(group.to_string()));
-            self.lines.push(Line::Entry {
-                key: key.to_string(),
-                value: value.to_string(),
-            });
+        }
+        keys
+    }
+
+    /// Makes the end of the file a complete line, before something is added
+    /// after it.
+    fn end_last_line(&mut self) {
+        let ending = self.ending();
+        if let Some(last) = self.lines.last_mut()
+            && last.ending.is_empty()
+        {
+            last.ending = ending;
+        }
+    }
+
+    /// Sets a key. The occurrence that takes effect (the last) gets the new
+    /// value, keeping the key and the spacing before the value as written;
+    /// earlier repeats are left. A key that is not there is added after the
+    /// last entry of the group's last repeat, and a missing group is added at
+    /// the end of the file.
+    pub fn set(&mut self, group: &str, key: &str, value: &str) {
+        if let Some(&index) = self.entries(group, key).last() {
+            let line = &mut self.lines[index];
+            if let Kind::Entry { value_at, .. } = line.kind {
+                line.text.truncate(value_at);
+                line.text.push_str(value);
+            }
             return;
-        };
-        let positions: Vec<usize> = (start..end)
-            .filter(|&index| matches!(&self.lines[index], Line::Entry { key: k, .. } if k == key))
-            .collect();
-        match positions.split_last() {
-            Some((&last, earlier)) => {
-                self.lines[last] = Line::Entry {
-                    key: key.to_string(),
-                    value: value.to_string(),
-                };
-                for &index in earlier.iter().rev() {
-                    self.lines.remove(index);
-                }
-            }
-            None => {
-                // After the group's last entry, so blank lines that separate
-                // it from the next group stay where they were.
+        }
+        let ending = self.ending();
+        let entry = Line::new(format!("{key}={value}"), ending);
+        match self.sections(group).last() {
+            Some(&(start, end)) => {
                 let insert_at = (start..end)
                     .rev()
-                    .find(|&index| matches!(self.lines[index], Line::Entry { .. }))
+                    .find(|&index| matches!(self.lines[index].kind, Kind::Entry { .. }))
                     .map_or(start, |index| index + 1);
-                self.lines.insert(
-                    insert_at,
-                    Line::Entry {
-                        key: key.to_string(),
-                        value: value.to_string(),
-                    },
-                );
+                if insert_at == self.lines.len() {
+                    self.end_last_line();
+                }
+                self.lines.insert(insert_at, entry);
+            }
+            None => {
+                self.end_last_line();
+                if self.lines.last().is_some_and(|line| !line.is_blank()) {
+                    self.lines.push(Line::new(String::new(), ending));
+                }
+                self.lines.push(Line::new(format!("[{group}]"), ending));
+                self.lines.push(entry);
             }
         }
     }
 
-    /// Removes a key and any repeats of it.
+    /// Removes every line of a key in a group.
     pub fn remove(&mut self, group: &str, key: &str) {
-        let Some((start, end)) = self.group_range(group) else {
-            return;
-        };
-        for index in (start..end).rev() {
-            if matches!(&self.lines[index], Line::Entry { key: k, .. } if k == key) {
-                self.lines.remove(index);
-            }
+        for index in self.entries(group, key).into_iter().rev() {
+            self.lines.remove(index);
         }
     }
 
-    /// Removes a group's header when nothing but blank lines follow it, and
-    /// the blank line before it that `set` added. A group holding a comment
-    /// or a key someone wrote stays.
+    /// Removes each repeat of a group that has nothing but blank lines under
+    /// its header, and the blank line before it when that one only separated
+    /// it from what came before. A repeat holding a comment or a key stays.
     pub fn remove_group_if_empty(&mut self, group: &str) {
-        let Some((start, end)) = self.group_range(group) else {
-            return;
-        };
-        let empty = self.lines[start..end]
-            .iter()
-            .all(|line| matches!(line, Line::Other(text) if text.trim().is_empty()));
-        if !empty {
-            return;
-        }
-        let header = start - 1;
-        self.lines.drain(header..end);
-        if header > 0
-            && matches!(&self.lines[header - 1], Line::Other(text) if text.trim().is_empty())
-            && (header == self.lines.len()
-                || matches!(self.lines.get(header), Some(Line::Group(_))))
-        {
-            self.lines.remove(header - 1);
+        for (start, end) in self.sections(group).into_iter().rev() {
+            if !self.lines[start..end].iter().all(Line::is_blank) {
+                continue;
+            }
+            let header = start - 1;
+            self.lines.drain(header..end);
+            let at_end_or_group = header == self.lines.len()
+                || matches!(
+                    self.lines.get(header).map(|line| &line.kind),
+                    Some(Kind::Group(_))
+                );
+            if header > 0 && self.lines[header - 1].is_blank() && at_end_or_group {
+                self.lines.remove(header - 1);
+            }
         }
     }
 
     /// Whether the file says nothing: no key and no comment.
     pub fn is_blank(&self) -> bool {
-        self.lines.iter().all(|line| match line {
-            Line::Group(_) => true,
-            Line::Entry { .. } => false,
-            Line::Other(text) => text.trim().is_empty(),
+        self.lines.iter().all(|line| match &line.kind {
+            Kind::Group(_) => true,
+            Kind::Entry { .. } => false,
+            Kind::Other => line.text.trim().is_empty(),
         })
     }
 }
@@ -231,7 +300,7 @@ pub fn list(value: &str) -> Vec<String> {
     if !current.is_empty() {
         items.push(current);
     }
-    items.retain(|item| !item.is_empty());
+    items.retain(|item| !item.trim().is_empty());
     items
 }
 
@@ -261,23 +330,46 @@ MY_VAR=1
 
     #[test]
     fn an_untouched_file_reads_back_byte_for_byte() {
-        assert_eq!(KeyFile::parse(OVERRIDE).to_text(), OVERRIDE);
-        assert_eq!(KeyFile::parse("").to_text(), "");
+        for text in [
+            OVERRIDE,
+            "",
+            "[A]\r\nk = v\r\n",
+            "[A]\nk=v",
+            "[A]\nk=1\nk=2\n[B]\n[A]\nk=3\n",
+            "  [A]  \n\tk\t=\tv \n",
+        ] {
+            assert_eq!(KeyFile::parse(text).to_text(), text);
+        }
     }
 
     #[test]
-    fn get_reads_the_last_repeat_in_its_group_only() {
-        let file = KeyFile::parse("[A]\nk=1\nk=2\n[B]\nk=3\n");
-        assert_eq!(file.get("A", "k"), Some("2"));
+    fn get_reads_as_glib_does_the_last_occurrence_across_repeated_groups() {
+        let file = KeyFile::parse("[A]\nk=1\nk=2\n[B]\nk=3\n[A]\nk=4\nj=5\n");
+        assert_eq!(file.get("A", "k"), Some("4"));
+        assert_eq!(file.get("A", "j"), Some("5"));
         assert_eq!(file.get("B", "k"), Some("3"));
         assert_eq!(file.get("C", "k"), None);
-        assert_eq!(file.keys("A"), ["k", "k"]);
+        assert_eq!(file.keys("A"), ["k", "j"]);
+        assert_eq!(
+            KeyFile::parse("[A]\nk = v x \n").get("A", "k"),
+            Some("v x ")
+        );
     }
 
     #[test]
-    fn set_replaces_in_place_appends_to_the_group_or_adds_a_group() {
+    fn set_changes_only_the_line_that_takes_effect() {
+        let mut file = KeyFile::parse("[A]\nk=1\nother=2\nk = 3\n[A]\nk=4\n");
+        file.set("A", "k", "9");
+        assert_eq!(file.to_text(), "[A]\nk=1\nother=2\nk = 3\n[A]\nk=9\n");
+        let mut spaced = KeyFile::parse("[A]\r\nk = old\r\n");
+        spaced.set("A", "k", "new");
+        assert_eq!(spaced.to_text(), "[A]\r\nk = new\r\n");
+    }
+
+    #[test]
+    fn set_appends_to_the_last_repeat_or_adds_a_group() {
         let mut file = KeyFile::parse(OVERRIDE);
-        file.set("Context", "sockets", "wayland;x11;");
+        file.set("Context", "devices", "dri;");
         file.set("Environment", "NEW", "x");
         file.set("Session Bus Policy", "org.example", "talk");
         assert_eq!(
@@ -286,7 +378,8 @@ MY_VAR=1
 # my own note
 [Context]
 filesystems=~/Projects;
-sockets=wayland;x11;
+sockets=wayland;
+devices=dri;
 
 [Environment]
 MY_VAR=1
@@ -296,29 +389,42 @@ NEW=x
 org.example=talk
 "
         );
+        let mut repeated = KeyFile::parse("[A]\nx=1\n[B]\ny=2\n[A]\nz=3\n");
+        repeated.set("A", "w", "4");
+        assert_eq!(repeated.to_text(), "[A]\nx=1\n[B]\ny=2\n[A]\nz=3\nw=4\n");
     }
 
     #[test]
-    fn a_new_group_in_an_empty_file_has_no_leading_blank_line() {
-        let mut file = KeyFile::parse("");
-        file.set("Context", "sockets", "x11;");
-        assert_eq!(file.to_text(), "[Context]\nsockets=x11;\n");
+    fn new_lines_use_the_file_s_line_ending_and_end_a_last_line_first() {
+        let mut crlf = KeyFile::parse("[A]\r\nk=v\r\n");
+        crlf.set("B", "j", "w");
+        assert_eq!(crlf.to_text(), "[A]\r\nk=v\r\n\r\n[B]\r\nj=w\r\n");
+        let mut open = KeyFile::parse("[A]\nk=v");
+        open.set("A", "j", "w");
+        assert_eq!(open.to_text(), "[A]\nk=v\nj=w\n");
+        let mut empty = KeyFile::parse("");
+        empty.set("Context", "sockets", "x11;");
+        assert_eq!(empty.to_text(), "[Context]\nsockets=x11;\n");
     }
 
     #[test]
-    fn set_drops_repeats_of_the_key() {
-        let mut file = KeyFile::parse("[A]\nk=1\nother=2\nk=3\n");
-        file.set("A", "k", "9");
-        assert_eq!(file.to_text(), "[A]\nother=2\nk=9\n");
-    }
-
-    #[test]
-    fn removing_the_last_key_and_then_the_empty_group_restores_the_file() {
-        let mut file = KeyFile::parse(OVERRIDE);
-        file.set("Extra", "k", "v");
-        file.remove("Extra", "k");
-        file.remove_group_if_empty("Extra");
-        assert_eq!(file.to_text(), OVERRIDE);
+    fn removing_what_was_added_restores_the_file_byte_for_byte() {
+        for original in [OVERRIDE, "[A]\r\nk = v\r\n# note\r\n", "[A]\nk=v"] {
+            let mut file = KeyFile::parse(original);
+            file.set("Extra", "k", "v");
+            file.remove("Extra", "k");
+            file.remove_group_if_empty("Extra");
+            let restored = file.to_text();
+            // A file with no final newline gets one when a group was added
+            // after it; everything else is byte for byte.
+            assert_eq!(
+                restored.trim_end_matches('\n'),
+                original.trim_end_matches('\n')
+            );
+            if original.ends_with('\n') {
+                assert_eq!(restored, original);
+            }
+        }
     }
 
     #[test]

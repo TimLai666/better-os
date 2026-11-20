@@ -63,6 +63,8 @@ pub enum ReadError {
     TimedOut,
     /// Anything else, verbatim, for the error's details.
     Failed(String),
+    /// This desktop has nothing to read it from.
+    NotOnThisDesktop,
 }
 
 impl fmt::Display for ReadError {
@@ -71,6 +73,7 @@ impl fmt::Display for ReadError {
             ReadError::NotInstalled(program) => write!(f, "{program} is not installed"),
             ReadError::TimedOut => f.write_str("it did not answer in time"),
             ReadError::Failed(reason) => f.write_str(reason),
+            ReadError::NotOnThisDesktop => f.write_str("this desktop does not report it"),
         }
     }
 }
@@ -129,6 +132,9 @@ pub enum CannotCheck {
     FlatpakAppsUnreadable(String),
     /// A file the check needs could not be read.
     FileUnreadable(String),
+    /// The desktop has no way to report what the check needs (the display
+    /// scale outside GNOME, for now).
+    NotOnThisDesktop,
     /// The host gave no answer to a read the entry asked for; a fault in
     /// the host, never a guess.
     NotAnswered,
@@ -155,7 +161,38 @@ pub enum FindingDetail {
     /// Every query was answered with this file and no style.
     FontCache { file: String },
     /// An Electron app on native Wayland at a scale above 1.
-    ElectronCursor { name: AppName, scale: f64 },
+    ElectronCursor {
+        name: AppName,
+        /// Every logical monitor's scale.
+        scales: Vec<f64>,
+        /// The app's Electron, from the `version` file Electron ships beside
+        /// its binary, when there is one.
+        electron: Option<String>,
+        /// Whether the verified fix is offered for these scales.
+        offer: Offer,
+    },
+}
+
+/// Whether a finding's fix is offered.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Offer {
+    /// The fix was verified for this case.
+    Fix,
+    /// The fault is there, and the fix is not offered, for this reason.
+    NotOffered(NotOffered),
+}
+
+/// Why a fix is not offered for a fault that is there.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NotOffered {
+    /// A monitor is scaled by a fraction (125%, 150%): through XWayland
+    /// GNOME 46 draws the app at 1x and stretches it, so the whole window
+    /// turns blurry. Ticket 76 verified the fix at 200% only.
+    FractionalScale,
+    /// Monitors are scaled differently (200% and 100%): XWayland draws the
+    /// app at one scale, so it is blurry or the wrong size on one of them.
+    /// Not verified.
+    MixedScales,
 }
 
 /// Whether a fix can be taken back, and whether it needs to be.
@@ -175,8 +212,12 @@ pub enum Limit {
     /// The fix should be undone once the app ships an Electron that scales
     /// its pointer on Wayland, which nothing here can tell.
     UntilTheAppScalesItsPointer,
-    /// Recognised only on Flathub's Electron base application.
+    /// Recognised only on Flathub's Electron base application or by the
+    /// version file Electron ships.
     ElectronBaseAppOnly,
+    /// Offered only where every monitor has the same whole-number scale
+    /// above 1, the case ticket 76 verified.
+    WholeNumberScaleOnly,
 }
 
 /// One line of "the exact change it makes".
@@ -255,6 +296,8 @@ pub enum PlanError {
     CannotRead(CannotCheck),
     /// Everything the fix would set is already set.
     NothingToChange,
+    /// The fault is there and its fix is not offered here.
+    NotOffered(NotOffered),
     /// The finding is not one this entry makes.
     NotThisEntry,
 }

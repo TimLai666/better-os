@@ -66,15 +66,63 @@ fn apps_in(
             user_global: read_optional(&paths.user_flatpak.join("overrides/global"))?,
             user_app: read_optional(&paths.user_override(&id))?,
         };
+        let electron_version = electron_version(&active.join("files"));
         apps.push(InstalledApp {
             id,
             installation,
             metadata,
             desktop_entry,
             overrides,
+            electron_version,
         });
     }
     Ok(apps)
+}
+
+/// The Electron an app ships: the `version` file Electron's release puts
+/// beside its binary and its `resources.pak`, looked for in the app's files
+/// and up to two folders down (`/app/<name>/`, `/app/lib/<name>/`), in name
+/// order. `None` when there is none, or it does not hold a version.
+pub fn electron_version(files: &Path) -> Option<String> {
+    let mut candidates = vec![files.to_path_buf()];
+    let mut level = vec![files.to_path_buf()];
+    for _ in 0..2 {
+        let mut next = Vec::new();
+        for directory in &level {
+            let Ok(entries) = std::fs::read_dir(directory) else {
+                continue;
+            };
+            let mut found: Vec<PathBuf> = entries
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+                .map(|entry| entry.path())
+                .collect();
+            found.sort();
+            next.extend(found);
+        }
+        candidates.extend(next.iter().cloned());
+        level = next;
+    }
+    candidates.into_iter().find_map(|directory| {
+        if !directory.join("resources.pak").is_file() {
+            return None;
+        }
+        let text = read_small(&directory.join("version"))?;
+        let version = text.lines().next()?.trim().to_string();
+        patch_core::flatpak::electron_major(&version).map(|_| version)
+    })
+}
+
+/// A file of at most a few bytes, as text.
+fn read_small(path: &Path) -> Option<String> {
+    use std::io::Read as _;
+    let mut text = String::new();
+    std::fs::File::open(path)
+        .ok()?
+        .take(64)
+        .read_to_string(&mut text)
+        .ok()?;
+    Some(text)
 }
 
 /// Every installed application, the person's installation first, so an
@@ -136,10 +184,15 @@ pub fn write_user_override(
             let directory = path.parent().expect("an override has a directory");
             std::fs::create_dir_all(directory).map_err(|error| failed(directory, error))?;
             let temporary = temporary_beside(&path);
+            // The file keeps the permissions it had.
+            let permissions = std::fs::metadata(&path).ok().map(|m| m.permissions());
             let written = (|| {
                 let mut file = std::fs::File::create(&temporary)?;
                 file.write_all(text.as_bytes())?;
                 file.sync_all()?;
+                if let Some(permissions) = permissions {
+                    std::fs::set_permissions(&temporary, permissions)?;
+                }
                 std::fs::rename(&temporary, &path)
             })();
             if let Err(error) = written {
@@ -227,6 +280,24 @@ mod tests {
     }
 
     #[test]
+    fn the_electron_version_is_read_beside_its_resources() {
+        let root = tempfile::tempdir().unwrap();
+        let files = root.path().join("files");
+        put(&files.join("github-desktop/version"), "32.3.0");
+        put(&files.join("github-desktop/resources.pak"), "");
+        // A version file with no Electron beside it is not Electron's.
+        put(&files.join("aaa/version"), "1.0");
+        assert_eq!(electron_version(&files).as_deref(), Some("32.3.0"));
+        put(&files.join("lib/app/version"), "38.1.2\n");
+        put(&files.join("lib/app/resources.pak"), "");
+        std::fs::remove_dir_all(files.join("github-desktop")).unwrap();
+        assert_eq!(electron_version(&files).as_deref(), Some("38.1.2"));
+        put(&files.join("lib/app/version"), "not a version");
+        assert_eq!(electron_version(&files), None);
+        assert_eq!(electron_version(&root.path().join("missing")), None);
+    }
+
+    #[test]
     fn no_flatpak_at_all_is_no_apps() {
         let root = tempfile::tempdir().unwrap();
         assert!(
@@ -258,6 +329,20 @@ mod tests {
             .unwrap()
             .collect();
         assert!(left.is_empty());
+    }
+
+    #[test]
+    fn a_rewrite_keeps_the_file_s_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let paths = Paths::under(root.path());
+        let id = app("org.example.App");
+        write_user_override(&paths, &id, None, Some("[A]\nk=1\n")).unwrap();
+        let path = paths.user_override(&id);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        write_user_override(&paths, &id, Some("[A]\nk=1\n"), Some("[A]\nk=2\n")).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
     }
 
     #[test]

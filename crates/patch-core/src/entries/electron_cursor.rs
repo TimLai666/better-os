@@ -4,26 +4,39 @@
 //! 32 window on a display scaled to 200%, the pointer was half size. On
 //! native Wayland that Electron does not scale its pointer, and
 //! `XCURSOR_SIZE` changes nothing. Running the app through XWayland fixed it
-//! with the picture still sharp. For a Flatpak that is a per-user override:
-//! `--nosocket=fallback-x11 --socket=x11` and
-//! `ELECTRON_OZONE_PLATFORM_HINT=x11`. `--socket=x11` alone leaves `DISPLAY`
-//! empty while `fallback-x11` is granted.
+//! with the picture still sharp.
 //!
-//! Limits, which the page states: it was verified on a Flatpak only, so an
-//! app installed any other way is offered nothing; only apps built on
-//! Flathub's Electron base application are recognised; an app runs natively
-//! on Wayland here only when it is granted the Wayland socket and its
-//! Electron hint is `auto` or `wayland`, the configuration observed; and the
-//! override should be undone once the app ships an Electron that scales its
-//! pointer, which nothing here can tell.
+//! How an Electron picks Wayland changed (Electron's breaking changes,
+//! <https://github.com/electron/electron/blob/main/docs/breaking-changes.md>,
+//! "Removed: `ELECTRON_OZONE_PLATFORM_HINT` environment variable" under 38.0,
+//! read 2026-11-21): up to 37 it follows `ELECTRON_OZONE_PLATFORM_HINT`; from
+//! 38 the variable is gone and it runs on Wayland when `XDG_SESSION_TYPE` is
+//! `wayland`; the newest releases first check which display servers are
+//! reachable and use the only one there is (electron/electron#54523,
+//! `docs/api/command-line-switches.md`). So the override does all three:
+//! it takes the Wayland socket away (Flatpak then unsets `WAYLAND_DISPLAY`
+//! and binds no Wayland socket, `common/flatpak-run-wayland.c`), grants X11
+//! and denies `fallback-x11` (with `fallback-x11` granted, `--socket=x11`
+//! alone leaves `DISPLAY` empty), and sets both
+//! `ELECTRON_OZONE_PLATFORM_HINT=x11` and `XDG_SESSION_TYPE=x11`.
+//!
+//! Detection reads the app's Electron version from the `version` file
+//! Electron ships beside its binary. Without one, an app is counted as on
+//! Wayland only when its hint asks for it, the configuration ticket 76 saw.
+//!
+//! The fix is offered only where it was verified: every monitor at the same
+//! whole-number scale above 1. At a fractional scale GNOME 46 draws an
+//! XWayland window at 1x and stretches it, so the app turns blurry; with
+//! monitors at different scales XWayland draws at one of them. Both are
+//! found and explained, and not fixed.
 
 use crate::command::Command;
 use crate::entry::{
     Answer, Answers, CannotCheck, Change, ChangeLine, CheckOutcome, Description, Detection, Entry,
-    EntryId, Finding, FindingDetail, Limit, Plan, PlanError, Read, ReadError, Subject, UndoKind,
-    UndoPlan,
+    EntryId, Finding, FindingDetail, Limit, NotOffered, Offer, Plan, PlanError, Read, ReadError,
+    Subject, UndoKind, UndoPlan,
 };
-use crate::flatpak::{AppId, Effective};
+use crate::flatpak::{AppId, Effective, InstalledApp};
 use crate::keyfile::{self, KeyFile};
 use crate::record::{AppliedRecord, ChangedElsewhere, KeyChange, KeyValue, OverrideKey, Recorded};
 
@@ -45,21 +58,74 @@ pub fn fix_keys() -> Vec<(OverrideKey, KeyValue)> {
     vec![
         (OverrideKey::Socket("x11".into()), KeyValue::Granted),
         (OverrideKey::Socket("fallback-x11".into()), KeyValue::Denied),
+        (OverrideKey::Socket("wayland".into()), KeyValue::Denied),
         (
             OverrideKey::Environment(HINT.into()),
+            KeyValue::Value("x11".into()),
+        ),
+        (
+            OverrideKey::Environment(SESSION_TYPE.into()),
             KeyValue::Value("x11".into()),
         ),
     ]
 }
 
+/// The session type an app sees.
+pub const SESSION_TYPE: &str = "XDG_SESSION_TYPE";
+
+/// The first Electron whose platform does not follow [`HINT`].
+pub const HINT_REMOVED_IN: u32 = 38;
+
 /// Whether an app with these sockets and this environment runs on Wayland
-/// itself rather than through XWayland.
-pub fn runs_natively_on_wayland(effective: &Effective) -> bool {
-    effective.grants("wayland")
-        && effective
-            .environment
-            .get(HINT)
-            .is_some_and(|hint| matches!(hint.trim(), "auto" | "wayland"))
+/// itself rather than through XWayland, in a Wayland session. `electron` is
+/// its Electron's major version, when known.
+pub fn runs_natively_on_wayland(effective: &Effective, electron: Option<u32>) -> bool {
+    if !effective.grants("wayland") {
+        // No socket, no WAYLAND_DISPLAY: every Electron picks X11 or fails.
+        return false;
+    }
+    let session = effective
+        .environment
+        .get(SESSION_TYPE)
+        .map(|value| value.trim());
+    if session.is_some_and(|session| session != "wayland") {
+        return false;
+    }
+    let hint = effective.environment.get(HINT).map(|value| value.trim());
+    let hint_asks_for_wayland = hint.is_some_and(|hint| matches!(hint, "auto" | "wayland"));
+    match electron {
+        Some(major) if major >= HINT_REMOVED_IN => true,
+        Some(_) => hint_asks_for_wayland,
+        // Unknown: only the configuration ticket 76 saw.
+        None => hint_asks_for_wayland,
+    }
+}
+
+/// Whether the fix is offered for these monitor scales; `None` when no
+/// monitor is above 1, so there is no fault.
+pub fn offer_for(scales: &[f64]) -> Option<Offer> {
+    if !scales.iter().any(|scale| *scale > 1.0 + SCALE_EPSILON) {
+        return None;
+    }
+    let whole = |scale: &f64| (scale - scale.round()).abs() <= SCALE_EPSILON;
+    if !scales.iter().all(whole) {
+        return Some(Offer::NotOffered(NotOffered::FractionalScale));
+    }
+    let first = scales[0];
+    if scales
+        .iter()
+        .any(|scale| (scale - first).abs() > SCALE_EPSILON)
+    {
+        return Some(Offer::NotOffered(NotOffered::MixedScales));
+    }
+    Some(Offer::Fix)
+}
+
+/// What an app runs with once the person's override says `user_app`.
+fn effective_with(app: &InstalledApp, user_app: Option<String>) -> Effective {
+    let mut app = app.clone();
+    app.overrides.user_app = user_app;
+    app.effective()
 }
 
 fn group_of(key: &OverrideKey) -> &'static str {
@@ -182,13 +248,11 @@ impl Entry for ElectronCursor {
             }
             _ => return Detection::CannotCheck(crate::engine::not_answered()),
         };
-        let mut candidates = Vec::new();
+        let mut candidates: Vec<&InstalledApp> = Vec::new();
         for app in apps {
             if app.is_electron()
-                && runs_natively_on_wayland(&app.effective())
-                && !candidates
-                    .iter()
-                    .any(|seen: &&crate::flatpak::InstalledApp| seen.id == app.id)
+                && runs_natively_on_wayland(&app.effective(), app.electron_major())
+                && !candidates.iter().any(|seen| seen.id == app.id)
             {
                 candidates.push(app);
             }
@@ -196,8 +260,11 @@ impl Entry for ElectronCursor {
         if candidates.is_empty() {
             return Detection::Checked(Vec::new());
         }
-        let scale = match answers.get(&Read::DisplayScales) {
-            Some(Answer::Scales(Ok(scales))) => scales.iter().copied().fold(0.0_f64, f64::max),
+        let scales = match answers.get(&Read::DisplayScales) {
+            Some(Answer::Scales(Ok(scales))) => scales.clone(),
+            Some(Answer::Scales(Err(ReadError::NotOnThisDesktop))) => {
+                return Detection::CannotCheck(CannotCheck::NotOnThisDesktop);
+            }
             Some(Answer::Scales(Err(error))) => {
                 return Detection::CannotCheck(CannotCheck::DisplayScaleUnreadable(
                     error.to_string(),
@@ -205,9 +272,9 @@ impl Entry for ElectronCursor {
             }
             _ => return Detection::CannotCheck(crate::engine::not_answered()),
         };
-        if scale <= 1.0 + SCALE_EPSILON {
+        let Some(offer) = offer_for(&scales) else {
             return Detection::Checked(Vec::new());
-        }
+        };
         Detection::Checked(
             candidates
                 .into_iter()
@@ -215,7 +282,9 @@ impl Entry for ElectronCursor {
                     subject: Subject::FlatpakApp(app.id.clone()),
                     detail: FindingDetail::ElectronCursor {
                         name: app.name(),
-                        scale,
+                        scales: scales.clone(),
+                        electron: app.electron_version.clone(),
+                        offer: offer.clone(),
                     },
                 })
                 .collect(),
@@ -236,6 +305,7 @@ impl Entry for ElectronCursor {
             limits: vec![
                 Limit::FlatpakOnly,
                 Limit::ElectronBaseAppOnly,
+                Limit::WholeNumberScaleOnly,
                 Limit::UntilTheAppScalesItsPointer,
             ],
         }
@@ -250,6 +320,13 @@ impl Entry for ElectronCursor {
 
     fn plan(&self, finding: &Finding, answers: &Answers) -> Result<Plan, PlanError> {
         let app = app_of(finding)?;
+        if let FindingDetail::ElectronCursor {
+            offer: Offer::NotOffered(why),
+            ..
+        } = &finding.detail
+        {
+            return Err(PlanError::NotOffered(*why));
+        }
         let before = override_text(answers, app)?;
         let mut file = KeyFile::parse(before.as_deref().unwrap_or(""));
         let mut created_groups: Vec<String> = Vec::new();
@@ -294,15 +371,18 @@ impl Entry for ElectronCursor {
 
     fn check_reads(&self, record: &AppliedRecord) -> Vec<Read> {
         match &record.change {
-            Recorded::OverrideKeys { app, .. } => {
-                vec![Read::Command(Command::ShowFlatpakOverride(app.clone()))]
-            }
+            Recorded::OverrideKeys { app, .. } => vec![
+                Read::Command(Command::ShowFlatpakOverride(app.clone())),
+                Read::FlatpakApps,
+            ],
             Recorded::RebuiltFontCache => Vec::new(),
         }
     }
 
     /// The override as Flatpak itself reads it holds every key the fix
-    /// wrote.
+    /// wrote, and with it the app no longer runs on Wayland: its metadata,
+    /// every other override layer, and its Electron version, taken together
+    /// as the app will start.
     fn check(&self, record: &AppliedRecord, answers: &Answers) -> CheckOutcome {
         let Recorded::OverrideKeys { app, keys, .. } = &record.change else {
             return CheckOutcome::CannotCheck(crate::engine::not_answered());
@@ -317,13 +397,35 @@ impl Entry for ElectronCursor {
             }
             _ => return CheckOutcome::CannotCheck(crate::engine::not_answered()),
         };
-        if keys
+        if !keys
             .iter()
             .all(|change| current(&shown, &change.key) == change.written)
         {
-            CheckOutcome::Passed
-        } else {
+            return CheckOutcome::StillPresent;
+        }
+        let shown_text =
+            match answers.get(&Read::Command(Command::ShowFlatpakOverride(app.clone()))) {
+                Some(Answer::Output(Ok(text))) => text.clone(),
+                _ => String::new(),
+            };
+        let installed = match answers.get(&Read::FlatpakApps) {
+            Some(Answer::Apps(Ok(apps))) => apps.iter().find(|installed| &installed.id == app),
+            Some(Answer::Apps(Err(error))) => {
+                return CheckOutcome::CannotCheck(CannotCheck::FlatpakAppsUnreadable(
+                    error.to_string(),
+                ));
+            }
+            _ => return CheckOutcome::CannotCheck(crate::engine::not_answered()),
+        };
+        // An app that is gone cannot run on Wayland either.
+        let Some(installed) = installed else {
+            return CheckOutcome::Passed;
+        };
+        let effective = effective_with(installed, Some(shown_text));
+        if runs_natively_on_wayland(&effective, installed.electron_major()) {
             CheckOutcome::StillPresent
+        } else {
+            CheckOutcome::Passed
         }
     }
 
@@ -449,6 +551,7 @@ sockets=x11;wayland;fallback-x11;
                 user_app: user_override.map(str::to_string),
                 ..OverrideLayers::default()
             },
+            electron_version: None,
         }
     }
 
@@ -486,21 +589,91 @@ sockets=x11;wayland;fallback-x11;
         let Detection::Checked(findings) = ElectronCursor.detect(&answers) else {
             unreachable!()
         };
-        let FindingDetail::ElectronCursor { name, scale } = &findings[0].detail else {
+        let FindingDetail::ElectronCursor {
+            name,
+            scales,
+            offer,
+            ..
+        } = &findings[0].detail
+        else {
             panic!("electron finding");
         };
         assert_eq!(name.default.as_deref(), Some("GitHub Desktop"));
-        assert_eq!(*scale, 2.0);
+        assert_eq!(scales, &[1.0, 2.0]);
+        // Monitors at different scales: found, and not offered.
+        assert_eq!(offer, &Offer::NotOffered(NotOffered::MixedScales));
     }
 
     #[test]
-    fn a_fractional_scale_above_one_counts() {
+    fn the_fix_is_offered_only_at_one_whole_number_scale() {
+        assert_eq!(offer_for(&[1.0]), None);
+        assert_eq!(offer_for(&[]), None);
+        assert_eq!(offer_for(&[2.0]), Some(Offer::Fix));
+        assert_eq!(offer_for(&[2.0, 2.0]), Some(Offer::Fix));
+        assert_eq!(offer_for(&[3.0]), Some(Offer::Fix));
+        assert_eq!(
+            offer_for(&[1.25]),
+            Some(Offer::NotOffered(NotOffered::FractionalScale))
+        );
+        assert_eq!(
+            offer_for(&[2.0, 1.5]),
+            Some(Offer::NotOffered(NotOffered::FractionalScale))
+        );
+        assert_eq!(
+            offer_for(&[2.0, 1.0]),
+            Some(Offer::NotOffered(NotOffered::MixedScales))
+        );
+        // Not offered means no plan: nothing is written.
+        let finding = Finding {
+            subject: Subject::FlatpakApp(id(DESKTOP)),
+            detail: FindingDetail::ElectronCursor {
+                name: Default::default(),
+                scales: vec![1.25],
+                electron: None,
+                offer: Offer::NotOffered(NotOffered::FractionalScale),
+            },
+        };
+        assert_eq!(
+            ElectronCursor.plan(&finding, &Answers::new()),
+            Err(PlanError::NotOffered(NotOffered::FractionalScale))
+        );
+    }
+
+    fn with_electron(version: &str, metadata: &str) -> InstalledApp {
+        let mut app = installed(DESKTOP, metadata, None);
+        app.electron_version = Some(version.to_string());
+        app
+    }
+
+    #[test]
+    fn electron_38_and_later_is_on_wayland_without_the_hint() {
+        let no_hint = ELECTRON.replace("ELECTRON_OZONE_PLATFORM_HINT=auto\n", "");
+        let x11_hint = ELECTRON.replace("HINT=auto", "HINT=x11");
+        for (app, on_wayland) in [
+            (with_electron("38.1.0", &no_hint), true),
+            (with_electron("38.1.0", &x11_hint), true),
+            (with_electron("32.3.0", &no_hint), false),
+            (with_electron("32.3.0", &x11_hint), false),
+            (with_electron("32.3.0", ELECTRON), true),
+            (installed(DESKTOP, &no_hint, None), false),
+        ] {
+            let answers = machine(Some("wayland"), vec![2.0], vec![app.clone()]);
+            assert_eq!(
+                !found(&answers).is_empty(),
+                on_wayland,
+                "{:?} {:?}",
+                app.electron_version,
+                app.effective().environment
+            );
+        }
+        // A session type the person set for the app decides too.
+        let x11_session = format!("{ELECTRON}XDG_SESSION_TYPE=x11\n");
         let answers = machine(
             Some("wayland"),
-            vec![1.25],
-            vec![installed(DESKTOP, ELECTRON, None)],
+            vec![2.0],
+            vec![with_electron("38.1.0", &x11_session)],
         );
-        assert_eq!(found(&answers).len(), 1);
+        assert!(found(&answers).is_empty());
     }
 
     #[test]
@@ -540,15 +713,18 @@ sockets=x11;wayland;fallback-x11;
             .is_empty()
         );
         // The fix's override is already there.
-        let fixed = "[Context]\nsockets=x11;!fallback-x11;\n\n[Environment]\nELECTRON_OZONE_PLATFORM_HINT=x11\n";
         assert!(
             found(&machine(
                 Some("wayland"),
                 vec![2.0],
-                vec![installed(DESKTOP, ELECTRON, Some(fixed))]
+                vec![installed(DESKTOP, ELECTRON, Some(FIXED_FILE))]
             ))
             .is_empty()
         );
+        // And for an Electron that ignores the hint.
+        let mut new = with_electron("39.0.0", ELECTRON);
+        new.overrides.user_app = Some(FIXED_FILE.to_string());
+        assert!(found(&machine(Some("wayland"), vec![2.0], vec![new])).is_empty());
         // No Flatpak apps at all.
         assert!(found(&machine(Some("wayland"), vec![2.0], Vec::new())).is_empty());
     }
@@ -579,6 +755,19 @@ sockets=x11;wayland;fallback-x11;
         assert_eq!(
             ElectronCursor.detect(&answers),
             Detection::CannotCheck(CannotCheck::FlatpakAppsUnreadable("denied".into()))
+        );
+        let mut answers = machine(
+            Some("wayland"),
+            vec![],
+            vec![installed(DESKTOP, ELECTRON, None)],
+        );
+        answers.insert(
+            Read::DisplayScales,
+            Answer::Scales(Err(ReadError::NotOnThisDesktop)),
+        );
+        assert_eq!(
+            ElectronCursor.detect(&answers),
+            Detection::CannotCheck(CannotCheck::NotOnThisDesktop)
         );
     }
 
@@ -648,7 +837,7 @@ sockets=x11;wayland;fallback-x11;
         engine::fix(&ElectronCursor, &finding, host, 7).unwrap()
     }
 
-    const FIXED_FILE: &str = "[Context]\nsockets=x11;!fallback-x11;\n\n[Environment]\nELECTRON_OZONE_PLATFORM_HINT=x11\n";
+    const FIXED_FILE: &str = "[Context]\nsockets=x11;!fallback-x11;!wayland;\n\n[Environment]\nELECTRON_OZONE_PLATFORM_HINT=x11\nXDG_SESSION_TYPE=x11\n";
 
     #[test]
     fn the_fix_writes_the_override_ticket_76_verified_and_checks_it() {
@@ -667,7 +856,7 @@ sockets=x11;wayland;fallback-x11;
         };
         assert!(created_file);
         assert_eq!(created_groups, &["Context", "Environment"]);
-        assert_eq!(keys.len(), 3);
+        assert_eq!(keys.len(), 5);
         assert!(keys.iter().all(|k| k.previous == KeyValue::Absent));
         // And the fault is gone as detection sees it.
         let mut records = Records::default();
@@ -699,11 +888,12 @@ MY_THEME=dark
 # added by hand
 [Context]
 filesystems=~/Projects;
-sockets=wayland;x11;!fallback-x11;
+sockets=!wayland;x11;!fallback-x11;
 
 [Environment]
 MY_THEME=dark
 ELECTRON_OZONE_PLATFORM_HINT=x11
+XDG_SESSION_TYPE=x11
 "
             )
         );
@@ -794,7 +984,7 @@ ELECTRON_OZONE_PLATFORM_HINT=x11
         assert_eq!(
             written(&host).as_deref(),
             Some(
-                "[Context]\nsockets=x11;wayland;!fallback-x11;\n\n[Environment]\nELECTRON_OZONE_PLATFORM_HINT=x11\n"
+                "[Context]\nsockets=x11;!wayland;!fallback-x11;\n\n[Environment]\nELECTRON_OZONE_PLATFORM_HINT=x11\nXDG_SESSION_TYPE=x11\n"
             )
         );
         engine::undo(&ElectronCursor, &outcome.record, &mut host, false).unwrap();
@@ -819,7 +1009,9 @@ ELECTRON_OZONE_PLATFORM_HINT=x11
             subject: Subject::FlatpakApp(id(DESKTOP)),
             detail: FindingDetail::ElectronCursor {
                 name: Default::default(),
-                scale: 2.0,
+                scales: vec![2.0],
+                electron: None,
+                offer: Offer::Fix,
             },
         };
         let mut answers = Answers::new();
@@ -838,6 +1030,10 @@ ELECTRON_OZONE_PLATFORM_HINT=x11
         answers.insert(
             Read::Command(Command::ShowFlatpakOverride(id(DESKTOP))),
             Answer::Output(Ok("[Context]\nsockets=x11;\n".into())),
+        );
+        answers.insert(
+            Read::FlatpakApps,
+            Answer::Apps(Ok(vec![installed(DESKTOP, ELECTRON, None)])),
         );
         assert_eq!(
             ElectronCursor.check(&outcome.record, &answers),

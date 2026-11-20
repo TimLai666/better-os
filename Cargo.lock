@@ -5710,6 +5710,7 @@ dependencies = [
 name = "patch-platform"
 version = "0.2.16"
 dependencies = [
+ "better-core",
  "patch-core",
  "serde",
  "serde_json",

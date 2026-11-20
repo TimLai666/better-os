@@ -95,8 +95,9 @@ fn both_faults_are_found_with_their_words_and_a_fix_button() {
     assert_eq!(
         electron.change,
         [format!(
-            "Writes a Flatpak override for this app only, in {DIR}/{SEEDED_APP}: \
-             --socket=x11 --nosocket=fallback-x11 --env=ELECTRON_OZONE_PLATFORM_HINT=x11"
+            "Writes a Flatpak override for this app only, so it runs through XWayland, in \
+             {DIR}/{SEEDED_APP}: --socket=x11 --nosocket=fallback-x11 --nosocket=wayland \
+             --env=ELECTRON_OZONE_PLATFORM_HINT=x11 --env=XDG_SESSION_TYPE=x11"
         )]
     );
     assert_eq!(
@@ -150,7 +151,7 @@ fn all_known_problems_lists_every_entry_with_its_state() {
             ),
         ]
     );
-    assert_eq!(rows.all[1].limits.len(), 2);
+    assert_eq!(rows.all[1].limits.len(), 3);
     let zh = page_rows(Locale::ZhTw, &reports, &BTreeMap::new(), DIR);
     assert_eq!(zh.all[1].header, "Electron 應用程式的游標只有一半大");
     assert_eq!(zh.all[0].state.0, "這台電腦沒有這個問題。");
@@ -245,7 +246,14 @@ fn a_fix_that_did_not_help_says_so_and_offers_undo_or_another_try() {
     let path =
         patch_platform::Paths::under(root.path()).user_override(&AppId::parse(SEEDED_APP).unwrap());
     let text = std::fs::read_to_string(&path).unwrap();
-    std::fs::write(&path, text.replace("HINT=x11", "HINT=auto")).unwrap();
+    // Put back on Wayland by hand: the socket, the session type, the hint.
+    std::fs::write(
+        &path,
+        text.replace("HINT=x11", "HINT=auto")
+            .replace("!wayland;", "wayland;")
+            .replace("XDG_SESSION_TYPE=x11", "XDG_SESSION_TYPE=wayland"),
+    )
+    .unwrap();
     let reports = check(root.path(), &records, &[]);
     let rows = page_rows(Locale::EnUs, &reports, &results, DIR);
     let found: Vec<(&str, Vec<RowAction>)> = rows
@@ -266,12 +274,10 @@ fn a_fix_that_did_not_help_says_so_and_offers_undo_or_another_try() {
             ),
         ]
     );
-    assert_eq!(
-        rows.found[1].changed_elsewhere,
-        [
-            "ELECTRON_OZONE_PLATFORM_HINT (--env=ELECTRON_OZONE_PLATFORM_HINT=auto): Changed by another program; confirm it to replace"
-        ]
-    );
+    assert_eq!(rows.found[1].changed_elsewhere.len(), 3);
+    assert!(rows.found[1].changed_elsewhere.contains(
+        &"ELECTRON_OZONE_PLATFORM_HINT (--env=ELECTRON_OZONE_PLATFORM_HINT=auto): Changed by another program; confirm it to replace".to_string()
+    ));
     // The font cache has no undo; without a record it is simply found again.
     assert_eq!(reports[0].instances[0].state, patch_core::EntryState::Found);
     let zh = page_rows(Locale::ZhTw, &reports, &results, DIR);
@@ -302,6 +308,81 @@ fn an_undone_fix_reads_undone_and_offers_the_fix_again() {
             .found
             .iter()
             .any(|fault| fault.entry == EntryId::ElectronCursor)
+    );
+}
+
+#[test]
+fn a_fault_whose_fix_is_not_offered_says_why_and_offers_nothing() {
+    for (scale, en, zh) in [
+        (
+            "1.25\n",
+            "No fix offered: a screen uses fractional scaling, and through XWayland the app would be drawn blurry.",
+            "不提供修正：有螢幕用分數縮放，改用 XWayland 執行會讓應用程式變模糊。",
+        ),
+        (
+            "2 1\n",
+            "No fix offered: your screens use different scales, and XWayland draws the app at one of them, so it would be blurry or the wrong size on the other. This hasn't been verified.",
+            "不提供修正：你的螢幕縮放比例不一樣，XWayland 只會用其中一個比例畫，另一個螢幕上會變模糊或大小不對。這種情況還沒驗證過。",
+        ),
+    ] {
+        let root = machine(Seed::BothFaults);
+        std::fs::write(root.path().join("scale"), scale).unwrap();
+        let reports = check(root.path(), &Records::default(), &[]);
+        let rows = page_rows(Locale::EnUs, &reports, &BTreeMap::new(), DIR);
+        let electron = rows.found.iter().find(|r| r.key == electron_key()).unwrap();
+        assert_eq!(electron.state, (en.to_string(), Tone::Warning));
+        assert!(electron.actions.is_empty());
+        let zh_rows = page_rows(Locale::ZhTw, &reports, &BTreeMap::new(), DIR);
+        let electron = zh_rows
+            .found
+            .iter()
+            .find(|r| r.key == electron_key())
+            .unwrap();
+        assert_eq!(electron.state.0, zh);
+        // Home and the pane count only what can be acted on: the font cache.
+        let facts = FixesFacts::of(&reports);
+        assert_eq!(facts.found.len(), 1);
+        assert_eq!(facts.found[0].entry, EntryId::FontconfigCache);
+    }
+}
+
+#[test]
+fn the_card_says_which_electron_the_app_uses() {
+    let root = machine(Seed::BothFaults);
+    let reports = check(root.path(), &Records::default(), &[]);
+    let rows = page_rows(Locale::EnUs, &reports, &BTreeMap::new(), DIR);
+    let electron = rows.found.iter().find(|r| r.key == electron_key()).unwrap();
+    assert_eq!(electron.facts, ["Uses Electron 32.3.0."]);
+    let zh = page_rows(Locale::ZhTw, &reports, &BTreeMap::new(), DIR);
+    let electron = zh.found.iter().find(|r| r.key == electron_key()).unwrap();
+    assert_eq!(electron.facts, ["使用 Electron 32.3.0。"]);
+}
+
+#[test]
+fn off_gnome_the_entry_cannot_check_on_this_desktop_yet() {
+    use super::model::state_line;
+    let state = patch_core::EntryState::CannotCheck(patch_core::CannotCheck::NotOnThisDesktop);
+    assert_eq!(
+        state_line(Locale::EnUs, &state).0,
+        "Can't check: this desktop doesn't report its display scale yet."
+    );
+    assert_eq!(
+        state_line(Locale::ZhTw, &state).0,
+        "無法檢查：這個桌面環境還不能提供螢幕縮放比例。"
+    );
+}
+
+#[test]
+fn the_page_says_only_settings_changing_fixes_can_be_undone() {
+    let en = super::copy::copy(Locale::EnUs);
+    let zh = super::copy::copy(Locale::ZhTw);
+    assert_eq!(
+        en.description,
+        "Better OS checks this PC for known problems. A fix that changes your settings can always be undone."
+    );
+    assert_eq!(
+        zh.description,
+        "Better OS 會檢查這台電腦有沒有已知的問題。會變更你設定的修正，都可以復原。"
     );
 }
 

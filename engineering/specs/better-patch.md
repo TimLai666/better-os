@@ -57,8 +57,19 @@ recorded, and whether it was just undone:
 | Undone | The fix was undone in this window, until Check again | 已復原。 / Undone. |
 | Cannot check | A read failed. This outranks a record: a fix whose fault can't be checked is never called fixed | 無法檢查：{reason} / Can't check: {reason} |
 
+A fault can be found and its fix not offered (entry 2 at a fractional scale,
+or with screens at different scales). The card says why, in place of the
+state, and has no button.
+
 Found and applied-but-still-present need the person: they are the pane's
-count and Home's "{n} known problems found".
+count and Home's "{n} known problems found". A found fault whose fix is not
+offered is listed on the page and not counted, since there is nothing to
+press.
+
+The page's description promises an undo only for what changes a setting:
+會變更你設定的修正，都可以復原。 / A fix that changes your settings can always
+be undone. The font cache fix changes no setting (it repairs a cache) and its
+card says it needs no undo.
 
 ## The record
 
@@ -81,7 +92,18 @@ whether the fix created the file and which groups it added.
   shown until the next Check again.
 - The override file is written only while it still holds what the plan read
   (otherwise "changed while it was being fixed"). It is written beside the
-  old file and renamed over it, and it is refused when it is a link.
+  old file and renamed over it, keeping the file's permissions, and it is
+  refused when it is a link.
+- Editing touches only the lines of the keys the fix owns. Everything else
+  stays byte for byte: comments, spacing around `=`, `\r\n` line endings, a
+  last line with no newline, repeated keys and repeated groups. Reading
+  follows GLib: a repeated group is one group and the last occurrence of a
+  key wins, so the fix writes the occurrence that takes effect.
+- When the record or the overrides are not at the default places (a custom
+  `XDG_STATE_HOME`, `XDG_DATA_HOME`, or `FLATPAK_USER_DIR`), the window
+  also keeps `~/.local/state/better-os/fixes-location.json` saying where
+  they are, so removing Better Manager can find them; it is removed again
+  when everything is at the defaults.
 
 ## Entry 1: blank text from a damaged fontconfig cache
 
@@ -102,51 +124,112 @@ blank, and every font query answered with one file and an unknown style.
 
 ## Entry 2: half-size pointer over an Electron app
 
-Reproduced on 2026-11-11 (ticket 76) with an Electron 32 Flatpak at 200%.
+Reproduced on 2026-11-11 (ticket 76) with GitHub Desktop, Electron 32.3.0,
+as a Flatpak at 200%: the pointer was half size, and running the app
+through XWayland fixed it with the picture still sharp.
+
+How Electron chooses Wayland changed, and the entry follows each version:
+
+- Up to 37, Electron follows `ELECTRON_OZONE_PLATFORM_HINT` (`auto` or
+  `wayland` puts it on Wayland in a Wayland session).
+- In 38 the variable was removed: Electron runs on Wayland when
+  `XDG_SESSION_TYPE` is `wayland`. Source: Electron's breaking changes,
+  <https://github.com/electron/electron/blob/main/docs/breaking-changes.md>,
+  "Removed: `ELECTRON_OZONE_PLATFORM_HINT` environment variable" under
+  "Breaking API Changes (38.0)", read 2026-11-21. The fix that made 38 read
+  `XDG_SESSION_TYPE` is electron/electron#48301 (merged 2025-09-12).
+- The newest releases first look at which display servers are reachable
+  (`WAYLAND_SOCKET`, `WAYLAND_DISPLAY`, a `wayland-0` socket; `DISPLAY`),
+  use the only one there is, and fall back to `XDG_SESSION_TYPE` when both
+  or neither are: `docs/api/command-line-switches.md` and
+  electron/electron#54523 (merged 2026-10-08), from Chromium 157 on main and
+  backported by hand.
 
 - **Detect.** All of these must hold:
   - the session is Wayland (`XDG_SESSION_TYPE`);
-  - an installed Flatpak app is built on `org.electronjs.Electron2.BaseApp`
-    (its metadata's `[Application] base`);
+  - an installed Flatpak app is Electron: it ships Electron's own `version`
+    file beside its `resources.pak` (in its files or up to two folders
+    down), or it is built on `org.electronjs.Electron2.BaseApp`;
   - with its metadata and every override layered as Flatpak layers them
     (system global, system app, user global, user app), it is granted the
-    `wayland` socket and its `ELECTRON_OZONE_PLATFORM_HINT` is `auto` or
+    `wayland` socket, its `XDG_SESSION_TYPE` is not overridden to something
+    else, and: with Electron 38 or later, nothing more; with an older
+    Electron, or none known, its `ELECTRON_OZONE_PLATFORM_HINT` is `auto` or
     `wayland`;
   - some logical monitor's scale, from Mutter's
     `org.gnome.Mutter.DisplayConfig.GetCurrentState`, is above 1.
 
-  The scale is read only when there is a candidate app. A missing session
-  type, unreadable apps, or (with a candidate) an unreadable scale means
-  cannot check.
+  The scale is read only when there is a candidate app, and Mutter has five
+  seconds to answer. Outside GNOME (the Better OS session on cosmic-comp is
+  coming) nothing reports the scale yet, and the entry says at once
+  無法檢查：這個桌面環境還不能提供螢幕縮放比例。 / Can't check: this desktop
+  doesn't report its display scale yet. A missing session type, unreadable
+  apps, or (with a candidate) an unreadable scale means cannot check.
+- **Offered only where verified.** The fix is offered when every monitor
+  has the same whole-number scale above 1 (200%, 300%). With a fractional
+  scale (125%, 150%) GNOME 46 draws an XWayland window at 1x and stretches
+  it, so the whole app turns blurry: the fault is listed with that reason and
+  no Fix. With monitors at different whole-number scales (200% and 100%)
+  XWayland draws the app at one scale, so it is blurry or the wrong size on
+  the other; that case was not verified, and the fault is listed with that
+  reason and no Fix either.
 - **Fix.** Writes the person's own override file for that app only,
-  `$XDG_DATA_HOME/flatpak/overrides/<app-id>`. It is the same file
-  `flatpak override --user --nosocket=fallback-x11 --socket=x11
-  --env=ELECTRON_OZONE_PLATFORM_HINT=x11 <app-id>` would write, and every
-  other line stays as it was. The change takes effect the next time the app
-  starts, and the card says so.
+  `$XDG_DATA_HOME/flatpak/overrides/<app-id>`: the same keys `flatpak
+  override --user --socket=x11 --nosocket=fallback-x11 --nosocket=wayland
+  --env=ELECTRON_OZONE_PLATFORM_HINT=x11 --env=XDG_SESSION_TYPE=x11
+  <app-id>` would write, each one doing a part:
+  - without the `wayland` socket Flatpak unsets `WAYLAND_DISPLAY` and
+    `WAYLAND_SOCKET` and binds no Wayland socket
+    (`common/flatpak-run-wayland.c`, `flatpak_run_add_wayland_args`), so the
+    newest Electron finds only X11;
+  - `XDG_SESSION_TYPE=x11` decides it for Electron 38 and later;
+  - `ELECTRON_OZONE_PLATFORM_HINT=x11` decides it up to 37;
+  - `x11` granted with `fallback-x11` denied gives the app a `DISPLAY`
+    (with `fallback-x11` granted, `--socket=x11` alone leaves it empty).
+
+  Every other line of the file stays as it was. The change takes effect the
+  next time the app starts, and the card says so.
 - **Check.** `flatpak override --user --show -- <app-id>`, Flatpak's own
-  reading of the file, holds every key the fix wrote.
+  reading of the file, holds every key the fix wrote, and with the app's
+  metadata, every other override layer, and its Electron version taken
+  together as the app will start, it no longer runs on Wayland.
 - **Undo.** Removes exactly those keys, or puts back the values they had. It
   removes the groups the fix added when they are left empty, and the file
   when the fix created it and it is left saying nothing.
+
+When the fix stops being needed: no Electron release note or issue found on
+2026-11-21 says the pointer size on Wayland was fixed (searched
+electron/electron issues and pull requests for the pointer and cursor on
+Wayland), so the entry cannot tell when the override can go. It reads the
+app's Electron version from its `version` file and shows it on the card
+(使用 Electron {version}。 / Uses Electron {version}.), and the card says to
+undo the fix by hand after the app updates to see whether its pointer is
+right on its own.
 
 Limits, which the page states:
 
 - It was verified on a Flatpak only. An app installed any other way is
   offered nothing.
-- Only apps built on Flathub's Electron base app are recognized.
-- An app with no Electron hint is not reported. Older Electron then runs
-  through XWayland on its own. Whether a newer Electron that defaults to
-  Wayland shows the fault is unverified.
-- The override should be undone once the app ships an Electron that scales
-  its pointer. Nothing here can tell when that happens, so the card says it.
+- An app is recognized by Electron's own version file or Flathub's
+  Electron base app; one that ships Electron any other way is not.
+- Offered only at one whole-number scale above 1, as above.
+- With no known Electron version and no hint, an app is not reported: an
+  older Electron runs through XWayland on its own, and a newer one would
+  have shipped its version file.
 
 ## Where the page checks
 
 - A real window checks the person's machine.
 - A demo window (`BETTER_MANAGER_EXECUTION=mock`) checks a fixture machine
   seeded with both faults under `$XDG_RUNTIME_DIR/better-os/fixes-demo`, so
-  a demo never changes this machine.
+  a demo never changes this machine. The runtime directory must be a real
+  directory the person owns with no access for others, and the two folders
+  below it are made 0700 or must be theirs and closed to others' writes
+  (`patch_platform::fixture::private_demo_root`). There is no shared fallback
+  such as `/tmp`, where another account could lay links in advance for a Fix
+  to follow: without a private runtime directory the demo checks nothing and
+  says 示範模式找不到只屬於你的資料夾來放範例電腦，所以這裡不做任何檢查。 / Demo
+  mode has no private folder for its example PC, so nothing is checked here.
 - A debug build takes `BETTER_OS_DEBUG_FIXES_ROOT`, a fixture machine for
   sandbox screenshots (`patch_platform::fixture`).
 - A test build checks `/nonexistent/better-os-test-root`, where nothing can
@@ -157,6 +240,15 @@ page is shown, and on Check again, always off the UI thread. A Fix or an Undo
 runs off the UI thread too, and the page checks again afterwards. An update
 restart waits while either is running.
 
+A window is often still open while its package is removed. The update
+watcher reports that state (`better_core::self_update::UpdateState::Removed`:
+dpkg asks for the removal, or the program file is gone and dpkg no longer has
+the package), and the page then changes nothing and says
+Better Manager 正在被移除，這一頁現在不會變更任何東西。 / Better Manager is
+being removed, so this page changes nothing now. A Fix or an Undo also asks
+dpkg right before it writes, and refuses while the removal is under way, so
+nothing is written that the removal has already undone.
+
 ## Removing Better Manager
 
 A fix Better Manager applied is something Better OS added to the machine, so
@@ -164,26 +256,71 @@ it does not outlive Better Manager (AGENTS.md). Better Manager cannot remove
 itself, so apt is how it goes. Its package ships the before-removal program
 `/usr/lib/better-os/before-removal/better-manager`
 (`patch_platform::removal`), and its maintainer scripts run it once per
-person (`packaging/maintainer/before-removal-accounts.sh`):
+person (`packaging/maintainer/before-removal-accounts.sh`, with
+`accounts.sh` and `account-step.sh`):
 
-- **prerm remove** runs the program as each person, with only `HOME`, a
-  fixed `PATH` and `LC_ALL=C` in its environment. It sets the record and each
-  override file a fix wrote aside in
-  `~/.local/state/better-os/fixes-removal-undo.json`. Then it undoes every
-  recorded fix that has an undo, through the page's own undo path and rule:
-  a key the person changed after the fix is left as they made it and named
-  on the terminal, and the program exits 3. Last, it deletes the record.
-- **postinst abort-remove** runs it with `--undo`: every override file and
-  the record go back to what they were before the prerm.
-- **postrm remove or purge** deletes the set-aside file, as the person.
+- **Who.** Every account in the login range (`UID_MIN`..`UID_MAX` from
+  `/etc/login.defs`, 1000..60000 by default) that `getent passwd` lists, so
+  LDAP, sssd, and systemd-homed accounts are reached, whose home is an
+  absolute, real directory it owns.
+- **Time limit.** Each person's whole step, root's own checks of the home
+  included, runs in its own shell under `timeout -s KILL 30`, and the listing
+  under the same limit. A home on a dead NFS server or a hung FUSE mount
+  costs 30 seconds and a line naming the account; the removal goes on and
+  dpkg's lock is let go.
+- **How.** As the person (`setpriv`), in a session of its own (`setsid`),
+  with standard input from `/dev/null`, its output through a pipe, and only
+  `HOME`, a fixed `PATH`, `LC_ALL=C`, and the run's stamp in its
+  environment, so it holds nothing of the terminal apt runs in.
+- **prerm remove** makes up a stamp for this dpkg run, keeps it in
+  `/run/better-os/better-manager-removal-run`, and runs the program. The
+  program finds the record and the overrides at the defaults or where the
+  location file says, following it only when every path it names stays
+  inside that person's home. It sets the record and each override file a fix
+  wrote aside in `~/.local/state/better-os/fixes-removal-undo.json`, stamped.
+  Then it undoes every recorded fix that has an undo, through the page's own
+  undo path and rule: a key the person changed after the fix is left as they
+  made it and named. A fix whose undo fails (the file became a link, changed
+  meanwhile, cannot be written) stays recorded and its file is named; the
+  rest of the record is deleted. Anything left or named makes it exit 3,
+  which is a warning, never a reason to stop the removal.
+- **postinst abort-remove** runs it with `--undo` and the stamp: only a
+  set-aside file with this run's stamp is put back (every override file and
+  the record as they were before the prerm). One with another stamp, or with
+  none, is stale and deleted unused.
+- **postrm remove or purge** deletes the set-aside file and what an
+  interrupted write of it can leave, as the person, and the stamp.
+
+A removal that fails after the prerm (dpkg does not call abort-remove then)
+leaves Better Manager installed with its fixes undone and the record gone.
+At its next start the window finds the set-aside file with the package still
+installed, deletes it, and says on the Fixes page how many fixes that removal
+undid (移除 Better Manager 沒有完成，但已經復原了 {n} 項修正。… / Removing Better
+Manager didn't finish, and it had already undone {n} fixes. …); each fault
+that came back is found again by the next check and can be fixed again.
+Nothing is reapplied from a file that might be older than this installation.
 
 A fix with no undo (the rebuilt font cache) keeps no record and is left: it
 restored the machine rather than adding to it. The program needs no session,
-so it never exits 4. A record it cannot read is kept, not deleted, and the
-program exits 3. A person whose `XDG_DATA_HOME` or `XDG_STATE_HOME` is not
-the default keeps their fixes, because a maintainer script cannot see those
-variables. Only the user and the system Flatpak installations are read;
-those listed in `/etc/flatpak/installations.d` are not.
+so it never exits 4.
+
+What removal still does not reach:
+
+- An encrypted home that is not mounted (an fscrypt or ecryptfs home of a
+  person who is not logged in, a systemd-homed home that is not active): its
+  files cannot be read, so its fixes stay until the person's next login,
+  when there is no Better Manager left to undo them. The override is then
+  the person's to remove (`flatpak override --user --reset <app-id>` removes
+  all of that app's overrides).
+- `getent passwd` lists only what the directory service enumerates; sssd
+  with enumeration off lists local accounts only.
+- Only the user and the system Flatpak installations are read; those listed
+  in `/etc/flatpak/installations.d` are not.
+
+The removal has been run only by tests and by a container check in CI
+(`packaging/test-daemon-e2e.sh`: an account with uid 1000, a record and an
+override, `apt-get remove better-manager` under a time limit); that check's
+first run is CI's.
 
 ## Candidate faults, not built
 

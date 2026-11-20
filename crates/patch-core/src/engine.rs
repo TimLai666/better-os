@@ -174,6 +174,7 @@ impl FixError {
             FixError::Plan(PlanError::NotThisEntry) => {
                 "the finding belongs to another entry".into()
             }
+            FixError::Plan(PlanError::NotOffered(why)) => format!("not offered: {why:?}"),
             FixError::Plan(PlanError::CannotRead(reason)) => format!("{reason:?}"),
             FixError::Change { error, .. } => error.to_string(),
         }

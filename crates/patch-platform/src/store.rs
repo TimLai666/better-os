@@ -6,6 +6,9 @@ use std::path::{Path, PathBuf};
 use patch_core::Records;
 use patch_core::record::RECORDS_SCHEMA_VERSION;
 
+/// What an interrupted save can leave beside the record.
+pub const RECORDS_TEMPORARY: &str = ".fixes.json.tmp";
+
 /// `$XDG_STATE_HOME/better-os/fixes.json`.
 #[derive(Clone, Debug)]
 pub struct RecordStore {
@@ -83,9 +86,8 @@ impl RecordStore {
             .expect("the records file has a directory");
         std::fs::create_dir_all(directory).map_err(failed)?;
         let text = serde_json::to_string_pretty(records).expect("records serialize");
-        let temporary = self
-            .path
-            .with_file_name(format!(".fixes.json.{}.tmp", std::process::id()));
+        // A fixed name, so removal knows what an interrupted save can leave.
+        let temporary = self.path.with_file_name(RECORDS_TEMPORARY);
         let written = (|| {
             let mut file = std::fs::File::create(&temporary)?;
             file.write_all(text.as_bytes())?;

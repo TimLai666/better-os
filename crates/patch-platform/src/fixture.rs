@@ -110,6 +110,57 @@ impl DisplayScales for FixtureDisplay {
     }
 }
 
+/// The demo window's fixture machine: `<runtime>/better-os/fixes-demo`,
+/// under the session's private runtime directory and nowhere else.
+///
+/// A fixture machine's files are written and copied by a Fix, so its root
+/// must be the person's alone: the runtime directory has to be a real
+/// directory (not a link) they own with no access for anyone else, and the
+/// two folders below it are made 0700 or, when they exist, must be real
+/// directories they own that nobody else can write. There is no shared
+/// fallback such as `/tmp`, where another account could have laid links in
+/// advance; without a private runtime directory the demo offers no fix and
+/// says why.
+pub fn private_demo_root(runtime: Option<&Path>) -> Result<PathBuf, String> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+    let runtime = runtime
+        .filter(|path| path.is_absolute())
+        .ok_or_else(|| "there is no private runtime directory (XDG_RUNTIME_DIR)".to_string())?;
+    let me = std::fs::metadata("/proc/self")
+        .map_err(|error| format!("/proc/self: {error}"))?
+        .uid();
+    let private = |path: &Path, strict: bool| -> Result<(), String> {
+        let metadata = std::fs::symlink_metadata(path)
+            .map_err(|error| format!("{}: {error}", path.display()))?;
+        if !metadata.file_type().is_dir() {
+            return Err(format!("{} is not a directory", path.display()));
+        }
+        if metadata.uid() != me {
+            return Err(format!("{} is not yours", path.display()));
+        }
+        let forbidden = if strict { 0o077 } else { 0o022 };
+        if metadata.mode() & forbidden != 0 {
+            return Err(format!("{} is open to others", path.display()));
+        }
+        Ok(())
+    };
+    private(runtime, true)?;
+    let mut path = runtime.to_path_buf();
+    for part in ["better-os", "fixes-demo"] {
+        path.push(part);
+        match std::fs::DirBuilder::new().mode(0o700).create(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(format!("{}: {error}", path.display())),
+        }
+        private(&path, false)?;
+    }
+    if !path.join("session").exists() {
+        seed(&path, Seed::BothFaults).map_err(|error| format!("{}: {error}", path.display()))?;
+    }
+    Ok(path)
+}
+
 /// A host over a fixture root.
 pub fn host(root: &Path) -> LinuxHost {
     let session = std::fs::read_to_string(root.join("session"))
@@ -221,6 +272,10 @@ pub fn seed(root: &Path, seed: Seed) -> std::io::Result<()> {
                 &app.join(format!("export/share/applications/{SEEDED_APP}.desktop")),
                 "[Desktop Entry]\nType=Application\nName=GitHub Desktop\n",
             )?;
+            // Electron's own version file, beside its binary, as GitHub
+            // Desktop ships it (Electron 32, from before the hint was removed).
+            write(&app.join("files/github-desktop/version"), "32.3.0")?;
+            write(&app.join("files/github-desktop/resources.pak"), "")?;
         }
         Seed::Healthy => {
             write(&root.join(FONTS), &healthy_fonts())?;
@@ -228,4 +283,56 @@ pub fn seed(root: &Path, seed: Seed) -> std::io::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn runtime() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        dir
+    }
+
+    #[test]
+    fn the_demo_machine_is_made_private_under_the_runtime_directory() {
+        let dir = runtime();
+        let root = private_demo_root(Some(dir.path())).unwrap();
+        assert_eq!(root, dir.path().join("better-os/fixes-demo"));
+        let mode = std::fs::metadata(&root).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700);
+        assert!(root.join("fonts.tsv").is_file());
+        // Again: the same machine, not reseeded.
+        std::fs::write(root.join("fonts.tsv"), "kept").unwrap();
+        private_demo_root(Some(dir.path())).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(root.join("fonts.tsv")).unwrap(),
+            "kept"
+        );
+    }
+
+    #[test]
+    fn no_private_runtime_directory_means_no_demo_machine() {
+        assert!(private_demo_root(None).is_err());
+        assert!(private_demo_root(Some(Path::new("relative"))).is_err());
+        let open = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(open.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(private_demo_root(Some(open.path())).is_err());
+    }
+
+    #[test]
+    fn a_link_laid_in_advance_is_refused() {
+        let dir = runtime();
+        let elsewhere = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(elsewhere.path(), dir.path().join("better-os")).unwrap();
+        assert!(private_demo_root(Some(dir.path())).is_err());
+        assert!(
+            std::fs::read_dir(elsewhere.path())
+                .unwrap()
+                .next()
+                .is_none()
+        );
+    }
 }

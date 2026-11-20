@@ -368,7 +368,9 @@ mod tests {
             subject: Subject::Machine,
             detail: FindingDetail::ElectronCursor {
                 name: Default::default(),
-                scale: 2.0,
+                scales: vec![2.0],
+                electron: None,
+                offer: crate::entry::Offer::Fix,
             },
         };
         assert_eq!(

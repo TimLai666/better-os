@@ -692,7 +692,7 @@ decides it lives here and how entries are written).
 | Element | zh-TW | English |
 | --- | --- | --- |
 | Title | 修正 | Fixes |
-| Description | Better OS 會檢查這台電腦有沒有已知的問題。每一項修正都可以復原。 | Better OS checks this PC for known problems. Every fix can be undone. |
+| Description | Better OS 會檢查這台電腦有沒有已知的問題。會變更你設定的修正，都可以復原。 | Better OS checks this PC for known problems. A fix that changes your settings can always be undone. |
 | Command bar | 重新檢查 | Check again |
 | Last checked (Caption) | 上次檢查：{time} | Last checked: {time} |
 | Nothing found | 沒有找到已知的問題。 | No known problems found. |
@@ -705,6 +705,14 @@ expanded the exact change it makes, with 修正 / Fix (accent) or 復原 / Undo.
 After Fix the page runs the entry's check and says 已修正，檢查通過。 / Fixed
 and checked. or 已套用，但問題還在。 / Applied, but the problem is still
 there. with Undo offered.
+
+Not every fix changes a setting: rebuilding the font cache only repairs a
+cache and has nothing of the person's to put back, so the description
+promises an undo for every fix that changes a setting, and the font cache
+card says it needs none. A fault whose fix is not offered in this case (the
+Electron pointer at a fractional scale, or with screens at different scales)
+is listed with the reason and no button. The exact copy of every state is in
+`engineering/specs/better-patch.md`.
 
 The two entries ticket 76 records, each reproduced and fixed on the owner's
 machine:
