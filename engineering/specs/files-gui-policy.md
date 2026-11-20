@@ -95,10 +95,13 @@ distribution. Every other drive keeps its label, or is named by its size;
 another Linux install on another partition is not looked into.
 
 `drive_mounts::listing::Drive::naming` decides the name, so the sidebar, the
-This PC tiles, the path bar's root crumb (which opens `/`), the drive's
-dialogs and notices, and Better Manager's Drives section all say the same
-thing. The details (Properties) pane describes the entry under the cursor,
-and `/` is never an entry of a folder, so it never names the system drive.
+This PC tiles, the path bar's root crumb (which opens `/`), search's "in …"
+at `/`, the drive's dialogs and notices, and Better Manager's Drives section
+all say the same thing. A storage-service device that the drive listing also
+has (`drives::is_device`: the same block or the same mount point, such as the
+running system on an external SSD) is drawn as that drive, and its toasts and
+confirmations use the drive's name too. No Properties view for a drive exists
+yet; one built later takes its name from `Drive::naming`.
 
 ## Devices without the storage service
 

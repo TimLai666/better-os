@@ -29,8 +29,8 @@ use crate::i18n::{Copy, Locale, copy};
 use crate::keys::Focus;
 use crate::prefs::{ItemScale, ViewMode};
 use crate::sidebar::{
-    FilesystemProbe, NAV_ORDER, NavGroup, NoDeviceStates, SidebarInputs, SidebarRow,
-    SidebarSection, build_rows, shown_rows,
+    FilesystemProbe, NavGroup, NoDeviceStates, SidebarInputs, SidebarRow, SidebarSection,
+    build_rows, shown_rows,
 };
 use crate::toolbar::toolbar_state;
 
@@ -829,7 +829,6 @@ impl FilesApp {
             };
             shown_rows(build_rows(&inputs, c))
         };
-        let mut out: Vec<(NavEntry, Option<NavTarget>)> = Vec::new();
         let row_item = |row: &SidebarRow| {
             let mut item = NavItem::new(row.label.clone(), icon_for_row(row));
             let (glyph, emblem) = sidebar_row_icon(&self.session, row);
@@ -854,8 +853,10 @@ impl FilesApp {
             }
             item.entry()
         };
-        // The groups in the one order the pane has (ticket 132).
-        for group in NAV_ORDER {
+        // The groups in the one order the pane has (ticket 132): each arm
+        // builds one group, and `in_nav_order` puts them in NAV_ORDER.
+        crate::sidebar::in_nav_order(|group| {
+            let mut out: Vec<(NavEntry, Option<NavTarget>)> = Vec::new();
             match group {
                 NavGroup::Places => {
                     for row in rows
@@ -985,11 +986,9 @@ impl FilesApp {
                     }
                     let mut shown_devices: Vec<String> = Vec::new();
                     for drive in &drives {
-                        let device = devices.iter().find(|device| {
-                            drive.object_path.as_deref() == Some(device.object_path.as_str())
-                                || (drive.mount_point.is_some()
-                                    && drive.mount_point == device.mount_point)
-                        });
+                        let device = devices
+                            .iter()
+                            .find(|device| crate::drives::is_device(drive, device));
                         if let Some(device) = device {
                             shown_devices.push(device.object_path.clone());
                         }
@@ -1034,8 +1033,8 @@ impl FilesApp {
                     }
                 }
             }
-        }
-        out
+            out
+        })
     }
 
     /// One drive's row: its icon, its name, how full it is with a bar, and

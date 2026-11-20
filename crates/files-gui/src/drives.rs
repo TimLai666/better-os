@@ -70,6 +70,15 @@ pub fn name_words(name: DriveName<'_>, c: &crate::i18n::Copy) -> String {
     }
 }
 
+/// Whether the storage service's `device` is this drive: the same UDisks2
+/// block, or the same mount point. The sidebar draws such a pair as one row
+/// named by the drive, so everything else that names the device (its toasts,
+/// its dialogs) finds the drive the same way.
+pub fn is_device(drive: &Drive, device: &crate::devices::DeviceRow) -> bool {
+    drive.object_path.as_deref() == Some(device.object_path.as_str())
+        || (drive.mount_point.is_some() && drive.mount_point == device.mount_point)
+}
+
 /// What the drive the running system is on is called: the root crumb of the
 /// path bar names it the way the sidebar does.
 pub fn system_drive_name(system: Option<&str>, c: &crate::i18n::Copy) -> String {
@@ -980,8 +989,8 @@ impl DriveSources {
     }
 }
 
-/// The system drive when only the mount table knows it: `/`, named by its
-/// size, never ejectable.
+/// The system drive when only the mount table knows it: `/`, named after the
+/// running system like any system drive (`Drive::naming`), never ejectable.
 fn system_drive_from_mounts() -> Drive {
     Drive {
         key: "/".to_string(),

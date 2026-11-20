@@ -95,6 +95,14 @@ pub const NAV_ORDER: [NavGroup; 7] = [
     NavGroup::Tailnet,
 ];
 
+/// The navigation pane's lines: `lines_of` builds one group's lines, and is
+/// asked for every group once, in [`NAV_ORDER`]; the result is those lines
+/// in that order. `FilesApp::nav_targets` is this call, so the order a
+/// window draws is the order tested here.
+pub fn in_nav_order<T>(mut lines_of: impl FnMut(NavGroup) -> Vec<T>) -> Vec<T> {
+    NAV_ORDER.into_iter().flat_map(&mut lines_of).collect()
+}
+
 /// Whether the row can be opened right now.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Availability {

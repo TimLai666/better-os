@@ -1071,6 +1071,77 @@ fn eject_is_available_and_reports_what_actually_happened() {
     assert!(!session.device_rows()[0].is_mounted());
 }
 
+/// The running system on an external SSD: the storage service reports its
+/// USB drive (UDisks2 does not mark a removable USB drive as a system device,
+/// `storage_platform::model::PlatformDevice::classify`), and the drive
+/// listing has the same block as the system drive. The sidebar draws the
+/// pair as one row named after the system; every toast and confirmation
+/// says the same name (ticket 138 review).
+#[test]
+fn a_device_the_drive_listing_has_is_named_as_its_sidebar_row_names_it() {
+    use crate::drives::{Drive, DriveKind, DriveSources, DriveText as _};
+    let (rig, mut session) = plain();
+    rig.link.push(DeviceNotice::Inventory(vec![
+        report("/dev/system", Some("/"), ready()),
+        report("/dev/stick", Some("/media/PHOTOS"), ready()),
+    ]));
+    session.pump();
+
+    let mut sources = DriveSources::with_udisks(None);
+    sources.changes = None;
+    sources.system_files = Arc::new(|| {
+        drive_mounts::choice::SystemFiles::read(
+            std::path::Path::new("/nonexistent/fstab"),
+            std::path::Path::new("/nonexistent/rules"),
+        )
+    });
+    sources.fixture = Some(Arc::new(|| {
+        vec![Drive {
+            key: "/dev/system".to_string(),
+            label: Some("rootfs".to_string()),
+            kind: DriveKind::System,
+            mount_point: Some(PathBuf::from("/")),
+            object_path: Some("/dev/system".to_string()),
+            device_path: Some("/dev/sdb2".to_string()),
+            drive_object: None,
+            backing: None,
+            locked: false,
+            uuid: None,
+            size: 1,
+            ejectable: false,
+            capacity: None,
+            auto_mount: None,
+            form: None,
+        }]
+    }));
+    session.set_drive_sources(sources);
+    assert!(
+        pump_until(&mut session, |session| !session.drives().is_empty()),
+        "the fixture drive never arrived"
+    );
+    let system = session.drives()[0].name(&EN_US);
+    assert_ne!(
+        system, "rootfs",
+        "the system drive is not named by its label"
+    );
+
+    rig.link.push(DeviceNotice::PolicyRefused {
+        object_path: "/dev/system".to_string(),
+        detail: "refused".to_string(),
+    });
+    session.pump();
+    assert_eq!(
+        session.notice,
+        Some(Notice::Device(Box::new(DeviceEvent::PolicyRefused {
+            label: system.clone(),
+            detail: "refused".to_string(),
+        })))
+    );
+    assert_eq!(session.device_label("/dev/system"), system);
+    // A device the listing does not have keeps the service's own name.
+    assert_eq!(session.device_label("/dev/stick"), "PHOTOS");
+}
+
 /// Pumps until `done` holds or five seconds pass.
 fn pump_until(session: &mut FilesSession, done: impl Fn(&FilesSession) -> bool) -> bool {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -1517,6 +1588,39 @@ fn the_search_scope_is_named_in_the_ui() {
     assert!(label.starts_with("in "), "the scope is stated: {label}");
     assert!(label.contains("Documents"));
     let _ = rig;
+}
+
+#[test]
+fn a_search_at_the_root_names_the_systems_drive_as_the_path_bar_does() {
+    let mut state = crate::search::SearchState::default();
+    let root = Location::local("/").unwrap();
+    state.set_text("notes", &root);
+    assert_eq!(
+        state.scope_label_on(&root, &EN_US, Some("Zorin OS")),
+        "in Zorin OS"
+    );
+    assert_eq!(
+        state.scope_label_on(&root, &crate::i18n::ZH_TW, None),
+        format!("{} 系統磁碟", crate::i18n::ZH_TW.search_in)
+    );
+    let crumb = crate::pathbar::crumbs_named(
+        &root,
+        None,
+        &EN_US,
+        &files_platform::UserDirectories::default(),
+        Some("Zorin OS"),
+    );
+    assert!(
+        state
+            .scope_label_on(&root, &EN_US, Some("Zorin OS"))
+            .ends_with(&crumb[0].label)
+    );
+    // Anywhere else, the folder's own name.
+    let usr = Location::local("/usr").unwrap();
+    assert_eq!(
+        state.scope_label_on(&usr, &EN_US, Some("Zorin OS")),
+        "in usr"
+    );
 }
 
 #[test]

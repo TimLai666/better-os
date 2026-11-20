@@ -41,10 +41,20 @@ distribution it is.
   the root crumb, unlock dialog and notices) and Better Manager's Drives
   section cannot disagree. The label itself is untouched, because the fstab
   and udev matching reads it.
-- Properties: the details pane describes the entry under the cursor, and `/`
-  is never an entry of any folder, so no Properties view names the system
-  drive today; the spec says so. When a drive Properties view is built it
-  takes its name from `Drive::naming` like the rest.
+- Properties: no Properties view for a drive exists today. The sidebar's
+  drive menu has no Properties, the This PC tiles have no menu, and the file
+  Properties panel is not built (the details pane describes the entry under
+  the cursor, and `/` is never one). So there is nothing to apply the name to
+  yet. The rule lives in `Drive::naming`, and a drive Properties view built
+  later takes its name from there.
+- Review follow-up: every Rust reader of os-release now goes through
+  `better_core::host::read_os_release_under` (the daemon, the client's host
+  probe, Better Manager's home banner, Better Monitor's audit), `install.sh`
+  falls back to `/usr/lib/os-release` the same way with CI fixtures, and
+  `crates/better-core/tests/os_release_readers.rs` fails when another crate
+  names the path. Search's "in …" at `/`, and the toasts and confirmations
+  for a storage-service device the drive listing also has (the running
+  system on an external SSD), use the same name.
 - The fallback wording is proved by tests only; the screenshots show the
   machine's own os-release (`Zorin OS`), since the file is not redirected in
   a sandbox. Screens are in `better-os-evidence/138/`: This PC, the root
