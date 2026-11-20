@@ -11,7 +11,7 @@
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
-    ActiveTheme, Icon, IconName,
+    ActiveTheme, IconName,
     button::{Button, ButtonVariants},
     scroll::ScrollableElement,
     sidebar::{
@@ -69,7 +69,10 @@ impl TouchpadApp {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .child(Icon::new(IconName::Frame)),
+                            .child(better_ui::icon_set::picture(
+                                better_ui::icon_set::Picture::Touchpad,
+                                20.0,
+                            )),
                     )
                     .when(!compact, |header| {
                         header.child(
@@ -93,7 +96,10 @@ impl TouchpadApp {
                         .min_w_0()
                         .items_center()
                         .gap_2()
-                        .child(Icon::new(IconName::Settings).small())
+                        .child(better_ui::icon_set::picture(
+                            better_ui::icon_set::Picture::Settings,
+                            16.0,
+                        ))
                         .when(!compact, |row| {
                             row.child(
                                 v_flex()
@@ -944,7 +950,7 @@ impl Render for TouchpadApp {
             .relative()
             .size_full()
             .child(better_ui::window_chrome::title_bar(
-                Icon::new(IconName::Frame).small(),
+                better_ui::icon_set::picture(better_ui::icon_set::Picture::Touchpad, 16.0),
                 format!("{} {}", c.brand, c.application),
                 cx.theme().foreground,
             ))
