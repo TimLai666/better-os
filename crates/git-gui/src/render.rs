@@ -362,6 +362,28 @@ impl Render for GitApp {
     }
 }
 
+/// The bar of branches a dragged commit can be dropped on, over the foot
+/// of the History and Graph lists. It reaches the window's bottom leading
+/// corner, so its fill and top edge follow the corner (ticket 141); the
+/// branches in it keep 8px from its sides, clear of the curve.
+pub(crate) fn drop_bar(strip: impl IntoElement, p: &'static Palette) -> Div {
+    div()
+        .absolute()
+        .bottom_0()
+        .left_0()
+        .right_0()
+        .border_t_1()
+        .border_color(gpui::transparent_black())
+        .child(window_chrome::corner_fill(p.flyout).border(
+            gpui::Edges {
+                top: px(1.0),
+                ..gpui::Edges::default()
+            },
+            p.flyout_stroke,
+        ))
+        .child(strip)
+}
+
 fn v_stack() -> Div {
     div().flex().flex_col()
 }
@@ -2589,17 +2611,7 @@ impl GitApp {
             })
             // Over the list's foot, so the rows under the pointer do not move
             // when a drag starts.
-            .children(drop_branches.map(|strip| {
-                div()
-                    .absolute()
-                    .bottom_0()
-                    .left_0()
-                    .right_0()
-                    .bg(p.flyout)
-                    .border_t_1()
-                    .border_color(p.flyout_stroke)
-                    .child(strip)
-            }))
+            .children(drop_branches.map(|strip| crate::render::drop_bar(strip, p)))
     }
 
     // --- the right side ---------------------------------------------------------

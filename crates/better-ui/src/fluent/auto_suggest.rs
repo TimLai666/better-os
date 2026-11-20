@@ -17,8 +17,8 @@ use std::rc::Rc;
 
 use gpui::{
     App, ElementId, Entity, Focusable as _, InteractiveElement, IntoElement, MouseButton,
-    ParentElement, Pixels, RenderOnce, SharedString, Styled, Window, anchored, deferred, div,
-    prelude::FluentBuilder as _, px, relative,
+    ParentElement, Pixels, RenderOnce, SharedString, StatefulInteractiveElement as _, Styled,
+    Window, anchored, deferred, div, prelude::FluentBuilder as _, px, relative,
 };
 use gpui_component::input::{self, InputState};
 
@@ -264,6 +264,8 @@ impl RenderOnce for AutoSuggestBox {
         let list =
             (open && (!self.suggestions.is_empty() || self.empty_text.is_some())).then(|| {
                 let mut list = panel_frame(div().id("suggestions"), p)
+                    .max_h(super::window_frame::overlay_max_height(window, cx))
+                    .overflow_y_scroll()
                     .child(super::light_dismiss::panel_marker(
                         &super::light_dismiss::PanelOrder::default(),
                     ))

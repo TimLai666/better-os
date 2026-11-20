@@ -624,7 +624,8 @@ fn item_row(
     let mut hit = hit_row(
         ElementId::named_usize("nav-item", index),
         RowInset::NAVIGATION,
-    );
+    )
+    .debug_selector(|| format!("nav-item-{index}"));
     if c.compact {
         let tip = match &item.caption {
             Some(caption) => SharedString::from(format!("{} · {}", item.label, caption)),
@@ -650,6 +651,47 @@ fn item_row(
     }
     hit.child(with_focus_ring(row, ring, radius::SM, p))
         .into_any_element()
+}
+
+/// The vertical scroll offset that shows an item spanning `top` to `bottom`
+/// whole in a view spanning `view_top` to `view_bottom` (all as laid out at
+/// `offset`), moving as little as possible; GPUI's offset is 0 at the top
+/// and down to `-max` at the end.
+pub fn reveal_offset(
+    top: f32,
+    bottom: f32,
+    view_top: f32,
+    view_bottom: f32,
+    offset: f32,
+    max: f32,
+) -> f32 {
+    let mut next = offset;
+    if bottom > view_bottom {
+        next -= bottom - view_bottom;
+    }
+    if top + (next - offset) < view_top {
+        next = offset + (view_top - top);
+    }
+    next.clamp(-max.max(0.0), 0.0)
+}
+
+/// Scrolls the list so its item `index` is whole above `end`, the padding
+/// the list keeps over the window's rounded corner.
+fn reveal(scroll: &gpui::ScrollHandle, index: usize, end: Pixels) {
+    let Some(item) = scroll.bounds_for_item(index) else {
+        return;
+    };
+    let view = scroll.bounds();
+    let offset = scroll.offset();
+    let y = reveal_offset(
+        f32::from(item.top()),
+        f32::from(item.bottom()),
+        f32::from(view.top()),
+        f32::from(view.bottom() - end),
+        f32::from(offset.y),
+        f32::from(scroll.max_offset().y),
+    );
+    scroll.set_offset(gpui::point(offset.x, px(y)));
 }
 
 /// Fixed in size, like the rows: in a pane that overflows and scrolls, a
@@ -834,6 +876,8 @@ impl RenderOnce for NavigationView {
         let handler = self.on_select.clone();
         let context = self.on_context.clone();
         let key_cursor = cursor.clone();
+        let key_scroll = scroll.clone();
+        let key_list_end = list_end;
         let selected = self.selected;
         let mut pane = div()
             .id(self.id.clone())
@@ -948,6 +992,11 @@ impl RenderOnce for NavigationView {
                     }
                 } else if let Some(next) = nav_step(now, &all, key) {
                     cx.stop_propagation();
+                    // The item the cursor moves to scrolls fully into view,
+                    // above the curve's depth the list keeps at its end.
+                    if next < main_len {
+                        reveal(&key_scroll, next, key_list_end);
+                    }
                     key_cursor.update(cx, |c, cx| {
                         c.0 = Some(next);
                         cx.notify();

@@ -208,6 +208,10 @@ pub fn cut(rendered: &Rendered) -> FrameImages {
     }
 }
 
+/// The deferred layer the outline is drawn in: above every other one the kit
+/// uses (menus 1-3, dialogs 2, toasts 3).
+pub const OUTLINE_PRIORITY: usize = 1000;
+
 /// How many logical pixels in from the window's edge the outline's edge
 /// pieces reach: libadwaita's is 1px at `outline-offset: -1px`.
 const OUTLINE_DEPTH: u32 = 2;
@@ -231,6 +235,15 @@ impl Global for LastLooks {}
 struct WindowShapes(HashMap<WindowId, WindowShape>);
 
 impl Global for WindowShapes {}
+
+/// Gives the window a shape as its frame would, for a test whose window GPUI
+/// decorates itself (the test platform has no client decorations).
+#[cfg(test)]
+pub fn set_window_shape(window: &Window, cx: &mut App, shape: WindowShape) {
+    cx.default_global::<WindowShapes>()
+        .0
+        .insert(window.window_handle().window_id(), shape);
+}
 
 /// The rounded shape of the window being drawn, in window coordinates, as
 /// its frame laid it out this frame: `None` for a window with no frame of the
@@ -659,7 +672,10 @@ impl Render for FramedView {
                     .cursor(CursorStyle::Arrow)
                     .child(self.view.clone()),
             )
-            .child(outline)
+            // Last of everything in the window, above the deferred layers
+            // (dialogs' smoke, menus, toasts), as GTK draws a window's outline
+            // over all of its children.
+            .child(gpui::deferred(outline).with_priority(OUTLINE_PRIORITY))
             .children(zones)
             .into_any_element()
     }
@@ -788,6 +804,19 @@ fn paint_frame(
     }
 }
 
+/// Whether a window in `state` with `look` shows the theme's outline: while
+/// it floats, when the theme draws one (libadwaita's; Zorin's has none), and
+/// always with the fallback, which is Adwaita's.
+pub fn outline_visible(look: &FrameLook, state: WindowState) -> bool {
+    if !state.client_decorated || state.maximized || state.tiled.any() {
+        return false;
+    }
+    match look {
+        FrameLook::Gtk(_, images) => images.outline.is_some(),
+        FrameLook::Fallback(_) => true,
+    }
+}
+
 /// Paints the theme's outline over the content: GTK's drawing cut like the
 /// frame, its corners as drawn and its edges stretched along the window, or
 /// for the fallback Adwaita's `outline: 1px solid rgba(255, 255, 255, 0.07);
@@ -802,7 +831,7 @@ fn paint_outline(
     state: WindowState,
     window: &mut Window,
 ) {
-    if state.maximized || state.tiled.any() {
+    if !outline_visible(look, state) {
         return;
     }
     let left = bounds.origin.x + px(insets.left);
@@ -1042,6 +1071,7 @@ pub fn corner_scrollbar(
     cx: &App,
 ) -> impl IntoElement {
     div()
+        .debug_selector(|| "corner-scrollbar".into())
         .absolute()
         .top_0()
         .right_0()
@@ -1075,12 +1105,71 @@ pub fn corner_clip(inset: Pixels, child: impl IntoElement) -> CornerClip {
 pub fn inside_window(child: impl IntoElement) -> InsideWindow {
     InsideWindow {
         child: child.into_any_element(),
+        beside: None,
     }
+}
+
+/// The tallest a floating panel, menu, or list may be: the height of the
+/// window's [`WindowShape::overlay_area`], so it fits inside the window and
+/// scrolls instead of being cut. The viewport's height in a window without
+/// the kit's frame.
+pub fn overlay_max_height(window: &Window, cx: &App) -> Pixels {
+    match window_shape(window, cx) {
+        Some(shape) => px(shape.overlay_area().height),
+        None => window.viewport_size().height,
+    }
+}
+
+/// The one way a window floats something at a point (a tooltip or a menu
+/// at the pointer): above the page, kept inside the window's rounded shape.
+/// Windows use this rather than building `anchored()` themselves.
+pub fn float_at(position: gpui::Point<Pixels>, child: impl IntoElement) -> AnyElement {
+    gpui::deferred(
+        gpui::anchored()
+            .position(position)
+            .snap_to_window_with_margin(px(8.0))
+            .child(inside_window(child)),
+    )
+    .with_priority(1)
+    .into_any_element()
+}
+
+/// Where a submenu's parent row is, in window coordinates, recorded while the
+/// row is laid out: `(left, right)`.
+pub type RowSpan = std::rc::Rc<std::cell::Cell<Option<(f32, f32)>>>;
+
+/// Records the bounds of the element it is put in (absolutely, covering it)
+/// into `span`, for a submenu floated beside it ([`InsideWindow::beside`]).
+pub fn row_span_probe(span: RowSpan) -> impl IntoElement {
+    canvas(
+        move |bounds, _, _| {
+            span.set(Some((
+                f32::from(bounds.origin.x),
+                f32::from(bounds.origin.x + bounds.size.width),
+            )))
+        },
+        |_, _, _, _| {},
+    )
+    .absolute()
+    .top_0()
+    .left_0()
+    .size_full()
 }
 
 /// See [`inside_window`].
 pub struct InsideWindow {
     child: AnyElement,
+    beside: Option<RowSpan>,
+}
+
+impl InsideWindow {
+    /// A submenu beside the row `span` records: after it when it fits,
+    /// otherwise on the parent's other side ([`WindowShape::submenu_x`]),
+    /// never pushed over its parent's shortcut column.
+    pub fn beside(mut self, span: RowSpan) -> Self {
+        self.beside = Some(span);
+        self
+    }
 }
 
 impl IntoElement for InsideWindow {
@@ -1126,7 +1215,11 @@ impl Element for InsideWindow {
             self.child.prepaint(window, cx);
             return None;
         };
-        let (dx, dy) = shape.shift_inside(rect(bounds));
+        let (mut dx, dy) = shape.shift_inside(rect(bounds));
+        if let Some((left, right)) = self.beside.as_ref().and_then(|span| span.get()) {
+            dx = shape.submenu_x(left, right, f32::from(bounds.size.width))
+                - f32::from(bounds.origin.x);
+        }
         let mask = ContentMask {
             bounds: bounds_of(shape.rect),
         };

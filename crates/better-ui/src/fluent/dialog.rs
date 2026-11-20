@@ -367,6 +367,8 @@ impl RenderOnce for Flyout {
         let order = PanelOrder::default();
         let out_order = order.clone();
         let panel = panel_frame(div().id(self.id.clone()), p)
+            .max_h(super::window_frame::overlay_max_height(window, cx))
+            .overflow_y_scroll()
             .occlude()
             .child(panel_marker(&order))
             .pt(px(15.0))

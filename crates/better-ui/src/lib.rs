@@ -28,7 +28,7 @@ pub mod window_chrome {
     use super::*;
 
     pub use crate::fluent::window_frame::{
-        corner_clip, corner_depth, corner_fill, corner_scrollbar, follow_desktop_accent,
+        corner_clip, corner_depth, corner_fill, corner_scrollbar, float_at, follow_desktop_accent,
         inside_window, root, watch_desktop, window_shape,
     };
     pub use crate::system_frame::CornerRadii;

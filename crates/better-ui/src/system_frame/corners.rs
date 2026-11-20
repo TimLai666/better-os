@@ -405,6 +405,22 @@ impl WindowShape {
         )
     }
 
+    /// Where a submenu `width` wide goes beside its parent row, which spans
+    /// `row_left` to `row_right`: after the row when it fits in
+    /// [`Self::overlay_area`], else before it (on the parent's other side,
+    /// as a menu at the window's trailing edge opens its submenus), else
+    /// wherever it overlaps the parent least while inside the area.
+    pub fn submenu_x(&self, row_left: f32, row_right: f32, width: f32) -> f32 {
+        let area = self.overlay_area();
+        if row_right + width <= area.right() {
+            row_right
+        } else if row_left - width >= area.x {
+            row_left - width
+        } else {
+            (area.right() - width).max(area.x)
+        }
+    }
+
     /// The parts of the window's rectangle outside its rounded corners, one
     /// logical pixel row at a time: `(corner, row)`. A row holds every pixel
     /// whose centre is outside the curve.
@@ -822,6 +838,24 @@ mod tests {
         // A square window keeps 4px.
         let square = WindowShape::new(s.rect, CornerRadii::SQUARE);
         assert_eq!(square.overlay_area(), Rect::new(44.0, 44.0, 792.0, 592.0));
+    }
+
+    #[test]
+    fn a_submenu_that_does_not_fit_opens_on_its_parents_other_side() {
+        let s = WindowShape::new(
+            Rect::new(40.0, 40.0, 800.0, 600.0),
+            CornerRadii::uniform(15.0),
+        );
+        // The area runs 45 to 835.
+        // Room after the row: there.
+        assert_eq!(s.submenu_x(300.0, 500.0, 200.0), 500.0);
+        // No room after a row at the trailing edge: before it, clear of the
+        // parent's shortcut column and arrow.
+        assert_eq!(s.submenu_x(600.0, 800.0, 200.0), 400.0);
+        // Room on neither side: inside the area, as far right as it fits.
+        assert_eq!(s.submenu_x(100.0, 800.0, 200.0), 635.0);
+        // Wider than the window: its leading edge stays in.
+        assert_eq!(s.submenu_x(100.0, 800.0, 900.0), 45.0);
     }
 
     #[test]
