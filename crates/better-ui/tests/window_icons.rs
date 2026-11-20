@@ -223,16 +223,25 @@ fn no_window_reaches_a_toolkit_icon_another_way() {
         if FIXTURES.contains(&file.as_str()) {
             continue;
         }
-        for (at, _) in text.match_indices("use gpui_component::") {
+        // Every statement that brings the toolkit crate in, however it is
+        // spelled: `use gpui_component::…`, `use ::gpui_component…`,
+        // `use gpui_component as gc`, `extern crate gpui_component as gc`.
+        let starts = [
+            "use gpui_component",
+            "use ::gpui_component",
+            "crate gpui_component",
+        ];
+        for (at, _) in starts.iter().flat_map(|start| text.match_indices(start)) {
             let statement = &text[at..text[at..].find(';').map_or(text.len(), |end| at + end)];
-            let glob = statement
-                .split(|c: char| c == ',' || c == '{' || c == '}' || c.is_whitespace())
-                .any(|part| part == "*" || part.ends_with("::*"));
-            if glob {
-                let line = text[..at].lines().count() + 1;
-                offences.push(format!("{file}:{line}: glob-imports the toolkit"));
+            let line = text[..at].lines().count() + 1;
+            for offence in import_offences(statement) {
+                offences.push(format!("{file}:{line}: {offence}"));
             }
         }
+        // What this cannot see: a path to the kit's icons built at run time
+        // (`format!("icons/{name}.svg")`, a constant joined to a name). Only
+        // a literal `"icons/<name>.svg"` is read below; a built path reaches
+        // the toolkit's file unseen, and review has to catch it.
         for (index, line) in text.lines().enumerate() {
             let at = format!("{file}:{}", index + 1);
             let code = line.trim_start();
@@ -270,6 +279,82 @@ fn no_window_reaches_a_toolkit_icon_another_way() {
         offences.is_empty(),
         "toolkit icons reached another way: {offences:#?}"
     );
+}
+
+/// What is wrong with one statement that brings the toolkit crate in: a
+/// glob; a renamed crate (`gpui_component as gc`, `{self as gc}`), which
+/// lets `gc::IconName` and `use gc::*` past every other check; or
+/// `IconName::{self as N}`, which renames the type as `IconName as N` does.
+fn import_offences(statement: &str) -> Vec<&'static str> {
+    let mut found = Vec::new();
+    let compact: String = statement.chars().filter(|c| !c.is_whitespace()).collect();
+    let glob = statement
+        .split(|c: char| c == ',' || c == '{' || c == '}' || c.is_whitespace())
+        .any(|part| part == "*" || part.ends_with("::*"));
+    if glob {
+        found.push("glob-imports the toolkit");
+    }
+    let top = compact
+        .find("gpui_component::{")
+        .map(|open| &compact[open + "gpui_component::{".len()..])
+        .unwrap_or("");
+    if compact.contains("gpui_componentas") || top.starts_with("selfas") || top.contains(",selfas")
+    {
+        found.push("renames the toolkit crate");
+    }
+    let renames_icon_name = compact.contains("IconNameas")
+        || compact.find("IconName::{").is_some_and(|open| {
+            let inner = &compact[open + "IconName::{".len()..];
+            let inner = &inner[..inner.find('}').unwrap_or(inner.len())];
+            inner.split(',').any(|part| part.starts_with("selfas"))
+        });
+    if renames_icon_name {
+        found.push("renames IconName");
+    }
+    found
+}
+
+#[test]
+fn every_way_round_the_import_checks_is_caught() {
+    for (statement, expected) in [
+        ("use gpui_component::*", "glob-imports the toolkit"),
+        (
+            "use gpui_component::{\n    button::*,\n}",
+            "glob-imports the toolkit",
+        ),
+        ("use gpui_component as gc", "renames the toolkit crate"),
+        ("use ::gpui_component as gc", "renames the toolkit crate"),
+        (
+            "use gpui_component::{self as gc, Sizable}",
+            "renames the toolkit crate",
+        ),
+        (
+            "use gpui_component::{Sizable, self as gc}",
+            "renames the toolkit crate",
+        ),
+        ("crate gpui_component as gc", "renames the toolkit crate"),
+        ("use gpui_component::IconName as N", "renames IconName"),
+        (
+            "use gpui_component::IconName::{self as N}",
+            "renames IconName",
+        ),
+        (
+            "use gpui_component::{IconName::{ self  as N }, Sizable}",
+            "renames IconName",
+        ),
+    ] {
+        assert!(
+            import_offences(statement).contains(&expected),
+            "{statement:?} is not caught as {expected:?}"
+        );
+    }
+    for clean in [
+        "use gpui_component::{Sizable as _, StyledExt as _}",
+        "use gpui_component::IconName",
+        "use gpui_component::{self, IconName}",
+    ] {
+        assert!(import_offences(clean).is_empty(), "{clean:?} is caught");
+    }
 }
 
 #[test]
