@@ -1,5 +1,6 @@
 //! Shared domain types and validation for Better OS components.
 
+pub mod app_unit;
 pub mod defaults;
 pub mod desktop;
 pub mod host;

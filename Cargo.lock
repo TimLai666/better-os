@@ -4925,6 +4925,7 @@ dependencies = [
 name = "monitor-views"
 version = "0.2.16"
 dependencies = [
+ "better-core",
  "monitor-collectors-linux",
  "monitor-core",
 ]
