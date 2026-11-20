@@ -139,7 +139,7 @@ A selected row in a list has a subtle fill across the row and a 3px accent bar, 
 
 ## Icons
 
-The owner decided on 2026-11-21 that icons inside a window are full-colour pictures, as in Windows 11's File Explorer and Settings, and no longer the single-colour line icons the toolkit brings with it. `design/design-demos/icon-directions.html` shows the old icons beside the chosen ones.
+The owner decided on 2026-11-21 that icons inside a window are full-colour pictures, as in Windows 11's File Explorer and Settings, and no longer the single-colour line icons the toolkit brings with it. `design/design-demos/icon-set.html` shows every icon at its sizes in both appearances, and so does the Icons page of `better-fluent-gallery`.
 
 There are three kinds, told apart by what the icon stands for.
 
@@ -156,7 +156,8 @@ There are three kinds, told apart by what the icon stands for.
 - The main layer draws the body of the thing in the full colour: the front sheet of copy, the pencil's shaft, the folder, the whole bin. The second layer draws only a minor part in a lighter shade of the same colour: the sheet behind, the pencil's tip, the folder's tab, the two slots on the bin. The body is never the lighter layer.
 - The two layers do not overlap. Where one sits behind the other, only its visible part is drawn, with a gap between them. The lighter shade is a colour of its own in each appearance, not the full colour made transparent, which turns muddy on a dark background.
 - A mark on top of a shape, such as the plus on the new-folder icon, is cut out of it.
-- The colour depends on where the icon is. Alone, as in a toolbar button, it is the accent and drawn at 18px. Beside a text label, as in a menu row, it is the secondary text colour and drawn at 16px, so the words lead. Delete, and any other action that destroys something, is the critical colour in both places.
+- The colour depends on where the icon is. Alone, as in a toolbar button, it is the icon accent and drawn at 18px. Beside a text label, as in a menu row or a labelled button, it is a quiet grey of its own (`#77736c` light, `#a9a59d` dark) and drawn at 16px, so the words lead. On a button filled with the accent it is the colour of that button's text. Delete, and any other action that destroys something, is the critical colour wherever it is. A control that has an icon slot of its own size, such as a settings card's 20px slot, draws the icon at that size.
+- An icon is never drawn in a colour that does not show. The icon accent is the desktop's accent when that has at least 3:1 contrast against every fill an icon sits on, and otherwise the accent moved toward the primary text colour until it does; a desktop theme made for a dark desktop can hand a light window an accent as pale as `#bde6fb`. The second layer keeps 1.5:1 from the main layer and from the fill behind it. Fills, selection, and focus still use the desktop's accent itself.
 
 Four other treatments were tried on 2026-11-21 and the owner turned each down: a line icon with one coloured part reads as neither line nor colour; a detailed, shaded picture is too realistic for a button; a flat shape in its own bright colour per action looks childish in a row; and accent-coloured icons beside menu labels are too heavy.
 
