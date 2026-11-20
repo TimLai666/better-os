@@ -746,9 +746,32 @@ impl ManagerApp {
             return rows;
         };
         let names = self.defaults_names();
-        let results = result_rows(locale, outcome, &|component| {
-            component_name(&names, component)
-        });
+        let declared: std::collections::BTreeMap<_, _> = self
+            .manager
+            .manifests()
+            .flat_map(|manifest| {
+                manifest
+                    .default_integrations
+                    .iter()
+                    .map(|integration| {
+                        (
+                            (manifest.id.clone(), integration.id.clone()),
+                            integration.kind,
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        let results = result_rows(
+            locale,
+            outcome,
+            &|component| component_name(&names, component),
+            &|component, integration| {
+                declared
+                    .get(&(component.clone(), integration.clone()))
+                    .copied()
+            },
+        );
         rows.push(Row::new(
             0.0,
             div().pb(px(12.0)).child(

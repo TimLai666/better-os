@@ -47,7 +47,8 @@ required_executables() {
             printf '%s\n' \
                 usr/bin/better-files \
                 usr/bin/better-files-preview \
-                usr/lib/better-os/before-removal/better-files
+                usr/lib/better-os/before-removal/better-files \
+                usr/lib/better-os/on-disable/better-files
             ;;
         better-git)
             printf '%s\n' usr/bin/better-git
@@ -525,6 +526,21 @@ for package_name in \
                     exit 1
                 fi
             done
+            # Ticket 129: removal by any means takes the user-level activation
+            # file Better Defaults wrote out of every account.
+            control="$WORK_DIR/better-files.control"
+            mkdir -p "$control"
+            dpkg-deb --control "$deb_path" "$control"
+            sh -n "$control/postrm" || {
+                printf 'The Better Files postrm does not parse as sh\n' >&2
+                exit 1
+            }
+            grep -qxF "better_os_activation_name='org.freedesktop.FileManager1'" "$control/postrm" &&
+                grep -qxF "better_os_activation_exec='/usr/bin/better-files --service'" "$control/postrm" &&
+                grep -qxF 'better_os_forget_activation_files "$1" || true' "$control/postrm" || {
+                printf 'The Better Files postrm does not remove its activation file\n' >&2
+                exit 1
+            }
             ;;
         better-git)
             grep -q '^Exec=better-git$' \

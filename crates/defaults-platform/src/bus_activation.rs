@@ -52,7 +52,7 @@ pub fn production_activation(component: &str, name: &str) -> Option<Activation> 
 }
 
 /// The prefix a reading carries when another program owns the name now.
-pub const OWNED_BY: &str = "owned-by:";
+pub const OWNED_BY: &str = better_core::defaults::OWNED_BY_PREFIX;
 
 /// Who owns a bus name now, as the bus says.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -80,6 +80,12 @@ pub struct ZbusSession {
 impl ZbusSession {
     pub fn session() -> Self {
         Self { address: None }
+    }
+
+    /// Whether the bus answers at all: a removal run from outside the
+    /// person's session has none.
+    pub fn reachable(&self) -> bool {
+        self.connect().is_ok()
     }
 
     /// A private bus, for tests.
@@ -121,7 +127,7 @@ impl SessionBus for ZbusSession {
             Err(error) => return NameOwner::Unknown(format!("bus:{error}")),
         };
         match std::fs::read_link(format!("/proc/{pid}/exe")) {
-            Ok(exe) => NameOwner::Program(exe),
+            Ok(exe) => NameOwner::Program(running_program(&exe)),
             Err(error) => NameOwner::Unknown(format!("exe:{error}")),
         }
     }
@@ -132,6 +138,77 @@ impl SessionBus for ZbusSession {
             zbus::blocking::fdo::DBusProxy::new(&connection).map_err(|error| error.to_string())?;
         proxy.reload_config().map_err(|error| error.to_string())
     }
+}
+
+/// The program a process runs, as `/proc/<pid>/exe` names it, without the
+/// ` (deleted)` the kernel adds once an update replaced the file: the same
+/// program, about to restart into its new version.
+pub fn running_program(exe: &Path) -> PathBuf {
+    let text = exe.to_string_lossy();
+    PathBuf::from(text.strip_suffix(" (deleted)").unwrap_or(&text))
+}
+
+/// The file a foreign activation file is kept in while Better OS's stands in
+/// its place, so a restore puts back the person's own file as it was (its
+/// mode included), not only its words.
+fn kept_aside(path: &Path) -> PathBuf {
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    path.with_file_name(format!(".{name}.before-better-os"))
+}
+
+/// Removes the activation files Better OS wrote in `services` for every
+/// name `component` may register, when each is byte for byte Better OS's
+/// own, and asks the bus to read its directories again. A file the person
+/// wrote is left. Returns the names whose file went. This is what the
+/// removal of a component does when there is no record to restore from
+/// (ADR 0041).
+pub fn remove_own_files(
+    services: &Path,
+    component: &str,
+    exec: fn(&str, &str) -> Option<Activation>,
+    bus: &dyn SessionBus,
+) -> Vec<String> {
+    let mut removed = Vec::new();
+    for name in REGISTERED_NAMES {
+        let Some(activation) = exec(component, name) else {
+            continue;
+        };
+        let path = services.join(format!("{name}.service"));
+        let ours = std::fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.is_file())
+            && std::fs::read_to_string(&path)
+                .is_ok_and(|content| content == service_file(name, &activation.exec));
+        if ours && std::fs::remove_file(&path).is_ok() {
+            remove_empty_parents(services);
+            removed.push(name.to_string());
+        }
+    }
+    if !removed.is_empty() {
+        let _ = bus.reload();
+    }
+    removed
+}
+
+/// The names the table in [`exec_for`] knows.
+pub const REGISTERED_NAMES: &[&str] = &["org.freedesktop.FileManager1"];
+
+/// `dbus-1/services` and `dbus-1`, when restoring left them empty.
+fn remove_empty_parents(services: &Path) {
+    if std::fs::remove_dir(services).is_ok()
+        && let Some(parent) = services.parent()
+    {
+        let _ = std::fs::remove_dir(parent);
+    }
+}
+
+/// `$XDG_DATA_HOME/dbus-1/services`, `~/.local/share` when it is not set:
+/// the directory the session bus searches first among those that survive a
+/// sign-out.
+pub fn user_services_dir() -> PathBuf {
+    let data = match std::env::var("XDG_DATA_HOME") {
+        Ok(value) if Path::new(&value).is_absolute() => PathBuf::from(value),
+        _ => PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".local/share"),
+    };
+    data.join("dbus-1/services")
 }
 
 /// Reads and writes the user-level activation file of a bus name.
@@ -160,12 +237,8 @@ impl BusActivationAdapter {
     /// The person's own: the directory the session bus searches first among
     /// those that survive a sign-out, and the session bus.
     pub fn for_user() -> Self {
-        let data = match std::env::var("XDG_DATA_HOME") {
-            Ok(value) if Path::new(&value).is_absolute() => PathBuf::from(value),
-            _ => PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".local/share"),
-        };
         Self::new(
-            data.join("dbus-1/services"),
+            user_services_dir(),
             Box::new(ZbusSession::session()),
             production_activation,
         )
@@ -242,13 +315,39 @@ impl BusActivationAdapter {
         let result = match value {
             WriteValue::Set {
                 value: DefaultsValue::Boolean(true),
-            } => replace(&path, &service_file(name, &activation.exec)),
-            // A foreign file captured before the change, put back whole.
+            } => {
+                let ours = service_file(name, &activation.exec);
+                // Someone's own file is kept aside, whole, for a restore.
+                let foreign = std::fs::symlink_metadata(&path)
+                    .is_ok_and(|metadata| metadata.is_file())
+                    && std::fs::read_to_string(&path).map_or(true, |content| content != ours);
+                if foreign
+                    && !kept_aside(&path).exists()
+                    && let Err(error) = std::fs::rename(&path, kept_aside(&path))
+                {
+                    return WriteOutcome::failed("bus.service_file_unwritable", error.to_string());
+                }
+                replace(&path, &ours)
+            }
+            // A foreign file captured before the change: the very file, as
+            // it was kept aside, or else its words.
             WriteValue::Set {
                 value: DefaultsValue::Text(content),
-            } if !content.starts_with(OWNED_BY) => replace(&path, content),
+            } if !content.starts_with(OWNED_BY) => {
+                let aside = kept_aside(&path);
+                if std::fs::read_to_string(&aside).is_ok_and(|kept| &kept == content) {
+                    std::fs::rename(&aside, &path).map_err(|error| error.to_string())
+                } else {
+                    let _ = std::fs::remove_file(&aside);
+                    replace(&path, content)
+                }
+            }
             WriteValue::Clear => match std::fs::remove_file(&path) {
-                Ok(()) => Ok(()),
+                Ok(()) => {
+                    let _ = std::fs::remove_file(kept_aside(&path));
+                    remove_empty_parents(&self.services);
+                    Ok(())
+                }
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
                 Err(error) => Err(error.to_string()),
             },
@@ -274,6 +373,7 @@ impl BusActivationAdapter {
 /// Writes `content` to `path` through a file beside it and a rename, so the
 /// bus never reads half a file.
 fn replace(path: &Path, content: &str) -> Result<(), String> {
+    use std::io::Write as _;
     let directory = path.parent().ok_or("no directory")?;
     std::fs::create_dir_all(directory).map_err(|error| error.to_string())?;
     let temporary = directory.join(format!(
@@ -281,11 +381,23 @@ fn replace(path: &Path, content: &str) -> Result<(), String> {
         path.file_name().unwrap_or_default().to_string_lossy(),
         std::process::id()
     ));
-    std::fs::write(&temporary, content).map_err(|error| error.to_string())?;
+    let written = std::fs::File::create(&temporary).and_then(|mut file| {
+        file.write_all(content.as_bytes())?;
+        file.sync_all()
+    });
+    if let Err(error) = written {
+        let _ = std::fs::remove_file(&temporary);
+        return Err(error.to_string());
+    }
     std::fs::rename(&temporary, path).map_err(|error| {
         let _ = std::fs::remove_file(&temporary);
         error.to_string()
-    })
+    })?;
+    // The rename itself survives a crash only once the directory is synced.
+    if let Ok(directory) = std::fs::File::open(directory) {
+        let _ = directory.sync_all();
+    }
+    Ok(())
 }
 
 impl DefaultsAdapter for BusActivationAdapter {
@@ -453,5 +565,114 @@ mod tests {
         ));
         assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
         assert_eq!(exec_for("better-files", "org.example.Evil"), None);
+    }
+
+    /// Ticket 129: after an update `/proc/<pid>/exe` ends in ` (deleted)`;
+    /// the running Better Files is still Better Files.
+    #[test]
+    fn a_program_an_update_replaced_is_still_itself() {
+        assert_eq!(
+            running_program(Path::new("/usr/bin/better-files (deleted)")),
+            PathBuf::from("/usr/bin/better-files")
+        );
+        let directory = tempfile::tempdir().unwrap();
+        let bus = FakeBus::default();
+        let mut adapter = BusActivationAdapter::new(
+            directory.path().join("dbus-1/services"),
+            Box::new(bus.clone()),
+            production_activation,
+        );
+        let component = ComponentId::new("better-files").unwrap();
+        let declaration = integration();
+        let request = AdapterRequest::new(&component, &declaration);
+        adapter.apply(&request);
+        *bus.owner.lock().unwrap() = Some(NameOwner::Program(running_program(Path::new(
+            "/usr/bin/better-files (deleted)",
+        ))));
+        assert_eq!(
+            adapter.read(&request).value(),
+            Some(&DefaultsValue::Boolean(true))
+        );
+    }
+
+    /// Ticket 129: a person's own file comes back as it was, its mode
+    /// included; restoring to nothing leaves no empty directories behind.
+    #[test]
+    fn a_foreign_file_comes_back_with_its_mode_and_nothing_leaves_no_directories() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let directory = tempfile::tempdir().unwrap();
+        let services = directory.path().join("dbus-1/services");
+        std::fs::create_dir_all(&services).unwrap();
+        let file = services.join("org.freedesktop.FileManager1.service");
+        let theirs = "[D-BUS Service]\nName=org.freedesktop.FileManager1\nExec=/opt/x\n";
+        std::fs::write(&file, theirs).unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let mut adapter = BusActivationAdapter::new(
+            services.clone(),
+            Box::new(FakeBus::default()),
+            production_activation,
+        );
+        let component = ComponentId::new("better-files").unwrap();
+        let declaration = integration();
+        let request = AdapterRequest::new(&component, &declaration);
+        let captured = adapter.read(&request);
+        adapter.apply(&request);
+        adapter.restore(&request, &captured);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), theirs);
+        let mode = std::fs::metadata(&file).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        assert_eq!(
+            std::fs::read_dir(&services).unwrap().count(),
+            1,
+            "nothing kept aside"
+        );
+
+        let empty = tempfile::tempdir().unwrap();
+        let services = empty.path().join("dbus-1/services");
+        let mut adapter = BusActivationAdapter::new(
+            services.clone(),
+            Box::new(FakeBus::default()),
+            production_activation,
+        );
+        adapter.apply(&request);
+        adapter.restore(&request, &ObservedValue::Unset);
+        assert!(
+            !empty.path().join("dbus-1").exists(),
+            "the directories it made are gone"
+        );
+    }
+
+    /// Ticket 129: with no record to restore from, a removal takes only a
+    /// file that is byte for byte Better OS's.
+    #[test]
+    fn removal_without_a_record_takes_only_better_os_s_own_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let services = directory.path().join("dbus-1/services");
+        std::fs::create_dir_all(&services).unwrap();
+        let file = services.join("org.freedesktop.FileManager1.service");
+        std::fs::write(
+            &file,
+            "[D-BUS Service]\nName=org.freedesktop.FileManager1\nExec=/opt/x\n",
+        )
+        .unwrap();
+        let bus = FakeBus::default();
+        assert!(
+            remove_own_files(&services, "better-files", production_activation, &bus).is_empty()
+        );
+        assert!(file.exists(), "the person's own file stays");
+        std::fs::write(
+            &file,
+            service_file(
+                "org.freedesktop.FileManager1",
+                exec_for("better-files", "org.freedesktop.FileManager1").unwrap(),
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            remove_own_files(&services, "better-files", production_activation, &bus),
+            ["org.freedesktop.FileManager1"]
+        );
+        assert!(!file.exists());
+        assert_eq!(*bus.reloads.lock().unwrap(), 1);
     }
 }

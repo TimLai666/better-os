@@ -195,7 +195,12 @@ impl<'a> DefaultsEngine<'a> {
         let applied_but_not_effective = record.is_some_and(|record| {
             record.applied_value.as_ref() == Some(&integration.target.desired)
         }) && !matches_desired
-            && integration.session_effect != SessionEffect::Immediate;
+            && integration.session_effect != SessionEffect::Immediate
+            // A bus name is waiting only while another program still owns
+            // it; another program's activation file in Better OS's place is
+            // someone else's change (ADR 0041).
+            && (integration.kind != better_core::defaults::IntegrationKind::UserService
+                || current.is_pending_owner());
         if applied_but_not_effective {
             status.state = IntegrationState::NeedsSignOut;
             return status;

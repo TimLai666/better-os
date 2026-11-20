@@ -189,8 +189,18 @@ pub(crate) fn component_rows(
                     integration: status.integration.clone(),
                     kind: status.kind,
                     state: status.state.clone(),
-                    current_owner: observed_for(locale, status.kind, &status.current),
-                    target_owner: value_for(locale, status.kind, &status.desired),
+                    current_owner: observed_for(
+                        locale,
+                        status.kind,
+                        &name_of(&component.component),
+                        &status.current,
+                    ),
+                    target_owner: value_for(
+                        locale,
+                        status.kind,
+                        &name_of(&component.component),
+                        &status.desired,
+                    ),
                     session_effect: status.session_effect,
                     restore_available: status.restore_available,
                     last_verified: verified
@@ -267,12 +277,16 @@ pub(crate) fn value_label(locale: Locale, value: &DefaultsValue) -> String {
 }
 
 /// A desired value in words, for its kind: a bus name Better OS takes over
-/// is named by who answers it, never "On" (ADR 0041).
-pub(crate) fn value_for(locale: Locale, kind: IntegrationKind, value: &DefaultsValue) -> String {
+/// is named by who answers it, the declaring component (`owner`, its display
+/// name), never "On" (ADR 0041).
+pub(crate) fn value_for(
+    locale: Locale,
+    kind: IntegrationKind,
+    owner: &str,
+    value: &DefaultsValue,
+) -> String {
     match (kind, value) {
-        (IntegrationKind::UserService, DefaultsValue::Boolean(true)) => {
-            copy(locale).service_ours.to_string()
-        }
+        (IntegrationKind::UserService, DefaultsValue::Boolean(true)) => owner.to_string(),
         (IntegrationKind::UserService, DefaultsValue::Text(text)) => {
             match text.strip_prefix("owned-by:") {
                 Some(program) => {
@@ -297,6 +311,7 @@ pub(crate) fn value_for(locale: Locale, kind: IntegrationKind, value: &DefaultsV
 pub(crate) fn observed_for(
     locale: Locale,
     kind: IntegrationKind,
+    owner: &str,
     observed: &ObservedValue,
 ) -> String {
     match (kind, observed) {
@@ -304,7 +319,7 @@ pub(crate) fn observed_for(
             copy(locale).service_system.to_string()
         }
         (IntegrationKind::UserService, ObservedValue::Set { value }) => {
-            value_for(locale, kind, value)
+            value_for(locale, kind, owner, value)
         }
         _ => observed_label(locale, observed),
     }
@@ -779,14 +794,25 @@ impl ReviewModel {
 
     fn entry(&self, entry: &PlanEntry) -> ReviewEntry {
         let new_owner = match &entry.action {
-            PlanAction::Apply { to } => value_for(self.locale, entry.kind, to),
-            PlanAction::Restore { to } => observed_for(self.locale, entry.kind, to),
+            PlanAction::Apply { to } => {
+                value_for(self.locale, entry.kind, &self.name(&entry.component), to)
+            }
+            PlanAction::Restore { to } => {
+                observed_for(self.locale, entry.kind, &self.name(&entry.component), to)
+            }
             PlanAction::Skip { .. } => match self.kind {
-                PlanKind::Apply => value_for(self.locale, entry.kind, &entry.desired),
+                PlanKind::Apply => value_for(
+                    self.locale,
+                    entry.kind,
+                    &self.name(&entry.component),
+                    &entry.desired,
+                ),
                 PlanKind::Restore => entry
                     .captured_previous
                     .as_ref()
-                    .map(|value| observed_for(self.locale, entry.kind, value))
+                    .map(|value| {
+                        observed_for(self.locale, entry.kind, &self.name(&entry.component), value)
+                    })
                     .unwrap_or_else(|| copy(self.locale).none.to_string()),
             },
         };
@@ -794,12 +820,16 @@ impl ReviewModel {
             component: entry.component.clone(),
             integration: entry.integration.clone(),
             kind: entry.kind,
-            current_owner: observed_for(self.locale, entry.kind, &entry.current),
+            current_owner: observed_for(
+                self.locale,
+                entry.kind,
+                &self.name(&entry.component),
+                &entry.current,
+            ),
             new_owner,
-            captured_previous: entry
-                .captured_previous
-                .as_ref()
-                .map(|value| observed_for(self.locale, entry.kind, value)),
+            captured_previous: entry.captured_previous.as_ref().map(|value| {
+                observed_for(self.locale, entry.kind, &self.name(&entry.component), value)
+            }),
             session_effect: entry.session_effect,
             // Whether what is there now can be put back later: a value saved
             // by an earlier change, or, the first time Better OS changes this
@@ -1011,12 +1041,15 @@ pub(crate) fn result_rows(
     locale: Locale,
     outcome: &DefaultsOutcome,
     name_of: &dyn Fn(&ComponentId) -> String,
+    kind_of: &dyn Fn(&ComponentId, &IntegrationId) -> Option<IntegrationKind>,
 ) -> Vec<ResultRow> {
     outcome
         .results
         .iter()
         .map(|result| {
-            let (label, tone, detail) = outcome_parts(locale, &result.outcome);
+            let kind = kind_of(&result.component, &result.integration);
+            let owner = name_of(&result.component);
+            let (label, tone, detail) = outcome_parts(locale, kind, &owner, &result.outcome);
             ResultRow {
                 component: result.component.clone(),
                 name: name_of(&result.component),
@@ -1032,9 +1065,21 @@ pub(crate) fn result_rows(
 /// The words, tone, and detail for one outcome.
 fn outcome_parts(
     locale: Locale,
+    kind: Option<IntegrationKind>,
+    owner: &str,
     outcome: &EntryOutcome,
 ) -> (&'static str, ResultTone, Option<String>) {
     let c = copy(locale);
+    // A value in the words its kind has (a bus name by who answers it,
+    // ticket 129); a kind not known here keeps the plain words.
+    let value_label = |locale: Locale, value: &DefaultsValue| match kind {
+        Some(kind) => value_for(locale, kind, owner, value),
+        None => value_label(locale, value),
+    };
+    let observed_label = |locale: Locale, value: &ObservedValue| match kind {
+        Some(kind) => observed_for(locale, kind, owner, value),
+        None => observed_label(locale, value),
+    };
     match outcome {
         EntryOutcome::Applied { value } => (
             c.result_applied,
@@ -1110,7 +1155,7 @@ fn outcome_parts(
                 .map(|key| {
                     let said = match &key.outcome {
                         EntryOutcome::Restored { value } => observed_label(locale, value),
-                        other => match outcome_parts(locale, other) {
+                        other => match outcome_parts(locale, None, "", other) {
                             (label, _, Some(detail)) => format!("{label} ({detail})"),
                             (label, _, None) => label.to_string(),
                         },

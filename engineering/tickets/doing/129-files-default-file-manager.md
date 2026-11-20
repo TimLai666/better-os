@@ -45,12 +45,61 @@ Nautilus activates and Better Files already serves when no one else owns it.
   stand-in Better Files after "Use Better OS defaults", Nautilus after
   Restore and after the removal program, a running Nautilus keeps answering
   until it leaves, and a foreign user file comes back byte for byte.
-- **Left:** screenshots of the Default apps page showing this row, in zh-TW
-  and English, under `/home/tim/Developer/better-os-evidence/129/`. Not
-  taken: the disk on this machine fell below the 8 GB floor during the run,
-  and the page needs its own manager-gui build plus a private session bus
-  and a sandbox home so its production adapters touch nothing of the
-  person's. The row's words are tested
-  (`the_file_manager_row_names_who_answers_show_in_folder`); how it draws is
-  not seen. Also not run: `packaging/build-deb.sh` / `verify-deb.sh` for the
-  new before-removal program, and a real GNOME "Show in folder".
+- 2026-11-21, review fixes (items 7 to 17 of the review): a window a
+  `--service` process opened comes back after an update (the hand-off is
+  taken, `restart::first_window`); a call is answered once its window is
+  open and the name is given back before a service process leaves; removal
+  by any means takes the activation file away (the package's postrm,
+  `packaging/maintainer/files-activation.sh`, for every account; Better
+  Manager's start for an account it could not reach); no session is exit 4
+  with a pending put-back, not "restored"; the removal program remembers
+  what it gave back and `--undo` takes exactly that again; turning Better
+  Files off runs the same program from `/usr/lib/better-os/on-disable/` and
+  turning it on runs its `--undo` (manager-core); only an `owned-by:` reading
+  waits for sign-out, any other file is changed externally and left alone;
+  ` (deleted)` is taken off the owner's executable; the file is synced
+  before its rename, a foreign file is kept aside whole so its mode comes
+  back, and empty `dbus-1` directories go; the page names the declaring
+  component and "what the system starts on its own", and the result page
+  too; `bus_or_skip!` fails in CI (`CI` set; the `rust` job installs
+  `dbus`); ADR 0041 says what was verified about `dbus-daemon` and that
+  `dbus-broker` was not.
+- Seen in a sandbox (2026-11-21): the worktree's `manager-gui --page
+  default-apps`, real execution, in a headless sway with its own HOME, XDG
+  directories, private session bus (`dbus-run-session`), no system bus,
+  `BETTER_OS_TEST_SYSTEMCTL_GUARD` set and a state file holding only Better
+  Files' record. In English and zh-TW: before (Background service / 背景服務
+  "What the system starts on its own" / 「系統原本啟動的程式」, Not default),
+  the review ("After: Better Files", takes effect after signing out), the
+  result, the list after "Use Better OS defaults" (Default / 目前為預設), and
+  Restore's review and result ("What the system starts on its own" again),
+  in `/home/tim/Developer/better-os-evidence/129/`. The activation file was
+  written in the sandbox's data directory only (the person's
+  `~/.local/share/dbus-1` does not exist) and Restore removed it with its
+  empty directories. `en-restore-review` is of the build before the result
+  page's wording fix; every other shot is of the final build.
+- Checks run on the final tree: `cargo fmt --all --check`; `cargo +stable
+  clippy -D warnings --all-targets` and `cargo test --no-fail-fast` for
+  storage-platform, drive-mounts, storage-service, manager-daemon,
+  defaults-platform, defaults-core, manager-platform, manager-core,
+  better-core, files-gui, manager-gui, manager-cli and touchpad-platform
+  (1840 passed, 0 failed); `bash packaging/tests/files-activation.test.sh`;
+  `bash -n` / `sh -n` on every packaging script changed. Not run:
+  `packaging/build-deb.sh` and `verify-deb.sh` (no package was built),
+  `shellcheck` (not installed here; CI runs it).
+- **Left:**
+  - The `dbus-broker` check: on a session whose bus is `dbus-broker` (in
+    Ubuntu 24.04's `universe`, not the default), prove that it searches
+    `$XDG_DATA_HOME/dbus-1/services` before `/usr/share/dbus-1/services` and
+    reads the directory again on `ReloadConfig`, by running
+    `crates/defaults-core/tests/bus_activation.rs` against a
+    `dbus-broker-launch` private bus. Not possible here: `dbus-broker` is
+    not installed and nothing may be installed on this machine, and there is
+    no container or VM image. Ubuntu 22.04's default bus was not read (no
+    22.04 package lists here).
+  - A real GNOME "Show in folder" opening Better Files, and a real Nautilus
+    giving the name up: the owner's, on the machine, once a build with this
+    is installed.
+
+**Blocked:** the two checks above need a `dbus-broker` session and the
+owner's own desktop; everything the ticket builds is done.

@@ -59,12 +59,16 @@ What was read on this machine (Zorin OS 18, GNOME 46), read-only:
   Exec=/usr/bin/better-files --service
   ```
 
-  through a temporary file in the same directory and a rename, then calls
-  `org.freedesktop.DBus.ReloadConfig` so the bus reads it now whether or not
-  the directory was being watched. It shadows Nautilus' file, which stays where
-  the package put it. `better-files --service` starts with no window, serves
-  the name, opens a window for each call, and leaves when its last window
-  closes (or after 30 seconds if no call ever came).
+  through a temporary file in the same directory, synced, and a rename, then
+  calls `org.freedesktop.DBus.ReloadConfig` so the bus reads it now whether
+  or not the directory was being watched. It shadows Nautilus' file, which
+  stays where the package put it. `better-files --service` starts with no
+  window, serves the name, opens a window for each call and answers the call
+  only once the window is open, and leaves when its last window closes (or
+  after 30 seconds if no call ever came), giving the name back first, so a
+  call that comes as it leaves starts a new Better Files rather than being
+  answered by one on its way out. A window an update restarts comes back
+  through the hand-off, `--service` or not.
 - **It is the `user-service` kind, with the `user-service` adapter.** The
   declaration's key is the bus name; its desired value is `boolean: true`,
   "this component is what the session bus starts for this name". The adapter
@@ -76,9 +80,13 @@ What was read on this machine (Zorin OS 18, GNOME 46), read-only:
   show "needs a manual step", as they did for the dead key.
 - **What the adapter reads.** No user file: *unset* (Nautilus' file decides).
   Our exact file: `true` when the name has no owner or its owner's
-  executable is `/usr/bin/better-files`; otherwise the owner, as
+  executable is `/usr/bin/better-files` (with the ` (deleted)` an update
+  leaves on `/proc/<pid>/exe` taken off); otherwise the owner, as
   `text: "owned-by:<executable>"`. Any other user file: its content, as
-  `text`, kept whole so it can be written back byte for byte.
+  `text`, kept whole so it can be written back byte for byte. Only an
+  `owned-by:` reading is "waiting for the current file manager to close";
+  any other file in Better Files' place after the change is someone else's
+  change.
 - **A running owner is never stopped.** Applying while Nautilus (or anything
   else) owns the name writes the file and reloads the bus, and leaves the
   running owner alone: it is a program the person may be using, with windows
@@ -93,24 +101,68 @@ What was read on this machine (Zorin OS 18, GNOME 46), read-only:
   activation Better Files, and nothing else is left for the person to do;
   what is left is a program the person started finishing on its own.
 - **Restore puts back exactly what was there.** The capture before the first
-  change is either *unset* or the foreign file's content. Restore removes our
-  file, or writes the captured content back, then reloads the bus; a running
+  change is either *unset* or the foreign file's content. A foreign file is
+  kept aside whole while Better Files' stands in its place
+  (`.org.freedesktop.FileManager1.service.before-better-os`, a name the bus
+  does not read), so Restore renames the very file back, its mode included;
+  restoring to nothing removes our file and the `dbus-1/services` and
+  `dbus-1` directories when that leaves them empty. Then the bus reloads; a running
   Better Files keeps answering until it exits, and the next call starts
   whatever the restored files say. A file someone else wrote over ours after
   the change is *changed externally* and is not touched without the person
   confirming it, as for every other default.
-- **Uninstalling Better Files restores it.** The package ships
-  `/usr/lib/better-os/before-removal/better-files`, which manager-core runs as
-  the person before the package goes (the mechanism ticket 88 added for
-  Better Touchpad). It runs the same restore for this integration, from the
-  person's defaults snapshot; with no snapshot it removes the file only if it
-  is byte for byte ours. Removal never fails because of it.
+- **Uninstalling Better Files restores it, however it is removed.**
+  - Better Manager's removal runs `/usr/lib/better-os/before-removal/better-files`
+    as the person before the package goes (the mechanism ticket 88 added for
+    Better Touchpad): the same Restore, from the person's defaults snapshot,
+    for every default Better Files declares; with no record, the activation
+    file is removed only when it is byte for byte ours. It remembers what it
+    gave back, and `--undo` (the daemon refused the removal) applies exactly
+    that again. With no session to write in (no desktop named, no session
+    bus) it changes nothing and exits 4; Better Manager finishes it at its
+    next start in that person's session.
+  - `apt remove`, Software and unattended removals never run that program.
+    The package's postrm removes the file from every account in the login
+    range when it is byte for byte ours (as the account, never following a
+    link, like Better Touchpad's autostart overrides), and asks each
+    logged-in person's bus to reload.
+  - Better Manager's start in a person's session finishes a deferred
+    put-back and removes an activation file of ours when Better Files is not
+    installed, for an account the postrm could not reach (a custom
+    `XDG_DATA_HOME`).
+  Removal never fails because of any of them.
+- **Turning Better Files off gives the default back; turning it on takes it
+  again.** The same program ships as `/usr/lib/better-os/on-disable/better-files`;
+  manager-core runs it when the component is turned off and with `--undo`
+  when it is turned on. So while Better Files is off, "Show in folder" starts
+  Nautilus, and AGENTS.md's "it stays off until enabled again" holds for what
+  dpkg cannot see. The other way, a Better Files that declines to start while
+  off, was rejected: the bus would still start it, and "Show in folder" would
+  do nothing at all.
 - **A desktop where another program holds the name from the start of the
   session is not offered.** The declaration lists `sessions: [gnome]`; COSMIC,
   where COSMIC Files' desktop takes the name at login and keeps it, reports
   the integration unavailable rather than writing a file that could never be
   used. Supporting such a desktop needs that desktop's own setting, in a
   later decision.
+
+## Which bus this was verified on
+
+- Verified here: the reference `dbus-daemon` 1.14.10 (Ubuntu 24.04's
+  `dbus-user-session` on Zorin OS 18), its search order and `ReloadConfig`,
+  read from `dbus-daemon(1)` and exercised on a private `dbus-daemon` in
+  `crates/defaults-core/tests/bus_activation.rs`.
+- Ubuntu 24.04 (and Zorin OS 18, which is built on it) ships `dbus-daemon`
+  as the default session bus: `dbus-user-session` provides
+  `default-dbus-session-bus` and depends on `dbus-daemon | dbus-broker`, and
+  `dbus-broker` is in `universe`, not installed by default (read from this
+  machine's package lists, `apt-cache show dbus-user-session` and
+  `apt-cache policy dbus-broker`). Ubuntu 22.04's default was not read here:
+  this machine has no 22.04 package lists.
+- Not verified: `dbus-broker`. A person who installs it gets a broker whose
+  launcher reads the same service directories; that it searches
+  `$XDG_DATA_HOME/dbus-1/services` first and honours `ReloadConfig` the same
+  way has not been run, and is on ticket 129's list of what is left.
 
 ## Consequences
 

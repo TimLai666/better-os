@@ -787,6 +787,17 @@ impl ManagerApp {
                     ) {
                         crate::pages::touchpad::finish_pending_restore(installed_again);
                     }
+                    // The same for Better Files' defaults (ticket 129): a
+                    // session-less removal's put-back, and an activation file
+                    // of Better OS's that `apt remove` left pointing at a
+                    // program that is gone.
+                    if let Some(installed) =
+                        snapshot.installed_by_record_or_dpkg("better-files", &DpkgProbe)
+                        && std::env::var_os(manager_platform::user_units::SYSTEMCTL_GUARD_VARIABLE)
+                            .is_none()
+                    {
+                        let _ = defaults_core::removal::finish_better_files_in_session(installed);
+                    }
                     manager
                         .run_user_unit_healing(&snapshot, &DpkgProbe, &units)
                         .unwrap_or_default()

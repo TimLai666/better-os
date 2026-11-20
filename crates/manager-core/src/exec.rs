@@ -17,7 +17,9 @@ use manager_ipc::{
 };
 use manager_platform::download::HttpDownloader;
 use manager_platform::dpkg::PackageStateProbe;
-use manager_platform::removal_hooks::{HookOutcome, RemovalHookRunner, before_removal_hook};
+use manager_platform::removal_hooks::{
+    HookOutcome, RemovalHookRunner, before_removal_hook, on_disable_hook,
+};
 use manager_platform::shell_extensions::{
     ExtensionFailure, ShellExtensionController, shell_extensions,
 };
@@ -686,6 +688,36 @@ impl<'a> RealDriver<'a> {
         ran
     }
 
+    /// Runs the package's turn-off program (ticket 129): `undo` false when
+    /// the component is turned off, true when it is turned on again. Like a
+    /// before-removal program it can only warn, never fail the operation:
+    /// turning a component off must always be possible.
+    fn run_disable_hook(&mut self, step: &PlanStep, undo: bool) {
+        let Some(runner) = self.removal_hooks else {
+            return;
+        };
+        let Some(program) = self
+            .step_files(step)
+            .ok()
+            .and_then(|files| on_disable_hook(step.component.as_str(), &files))
+        else {
+            return;
+        };
+        match runner.run(&program, undo) {
+            HookOutcome::Restored => {}
+            HookOutcome::Deferred => self.warnings.push((
+                step.component.clone(),
+                "on_disable.deferred: the settings it took over are put back the next time \
+                 Better Manager starts in your session"
+                    .to_string(),
+            )),
+            HookOutcome::NotRestored(reason) => self.warnings.push((
+                step.component.clone(),
+                format!("on_disable.not_restored: settings could not be changed ({reason})"),
+            )),
+        }
+    }
+
     /// Undoes the before-removal programs that ran for a removal that did
     /// not happen, so the component stays exactly as it was.
     fn undo_removal_hooks(&self, ran: &[std::path::PathBuf]) {
@@ -1118,9 +1150,15 @@ impl StageDriver for RealDriver<'_> {
                 }
                 for step in plan.steps() {
                     let result = match step.operation {
-                        DesiredOperation::Disable => self
-                            .disable_units(step)
-                            .and_then(|()| self.disable_extensions(step)),
+                        DesiredOperation::Disable => {
+                            let result = self
+                                .disable_units(step)
+                                .and_then(|()| self.disable_extensions(step));
+                            if result.is_ok() {
+                                self.run_disable_hook(step, false);
+                            }
+                            result
+                        }
                         // The units went before the package did.
                         DesiredOperation::Remove => Ok(()),
                         // The record says this component runs. Making that
@@ -1149,6 +1187,15 @@ impl StageDriver for RealDriver<'_> {
                         DesiredOperation::Restore => self
                             .disable_units(step)
                             .and_then(|()| self.disable_extensions(step)),
+                        DesiredOperation::Enable if step.leaves_enabled => {
+                            let result = self
+                                .enable_units(step)
+                                .and_then(|()| self.enable_extensions(step));
+                            if result.is_ok() {
+                                self.run_disable_hook(step, true);
+                            }
+                            result
+                        }
                         DesiredOperation::Install
                         | DesiredOperation::Update
                         | DesiredOperation::Enable

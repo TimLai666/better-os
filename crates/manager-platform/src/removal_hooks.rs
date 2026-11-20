@@ -52,6 +52,20 @@ pub trait RemovalHookRunner: Send + Sync {
     fn run(&self, program: &Path, undo: bool) -> HookOutcome;
 }
 
+/// Where a package puts the program Better Manager runs when the component
+/// is turned off, and with [`UNDO_ARGUMENT`] when it is turned on again
+/// (ticket 129): what the component took over in the person's session is
+/// given back while it is off, and taken again when it is on, so "it stays
+/// off until enabled again" holds for what dpkg cannot see. The same program
+/// as its before-removal one, with the same exit statuses.
+pub const ON_DISABLE_DIRECTORY: &str = "/usr/lib/better-os/on-disable";
+
+/// The package's turn-off program, when its file list has one.
+pub fn on_disable_hook(package: &str, files: &InstalledFiles) -> Option<PathBuf> {
+    let wanted = Path::new(ON_DISABLE_DIRECTORY).join(package);
+    files.paths.iter().find(|path| **path == wanted).cloned()
+}
+
 /// The package's before-removal program, when its file list has one.
 pub fn before_removal_hook(package: &str, files: &InstalledFiles) -> Option<PathBuf> {
     let wanted = Path::new(BEFORE_REMOVAL_DIRECTORY).join(package);

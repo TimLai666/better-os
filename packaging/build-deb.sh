@@ -194,6 +194,37 @@ write_autostart_override_postrm() {
     chmod 0755 "$staging_dir/DEBIAN/postrm"
 }
 PACKAGE_SYSTEM_FRAGMENT=""
+#   PACKAGE_ACTIVATION_NAME  a session bus name Better Defaults can make this
+#                      package what the bus starts for (ADR 0041), with
+#   PACKAGE_ACTIVATION_EXEC  the exact Exec= line it writes; the postrm built
+#                      from packaging/maintainer/files-activation.sh removes
+#                      that user-level file from every account on removal
+PACKAGE_ACTIVATION_NAME=""
+PACKAGE_ACTIVATION_EXEC=""
+
+# A package Better Defaults can register for a bus name gets a postrm that
+# removes the activation file it wrote, from every account, however the
+# package is removed: nothing a component added outlives it (ADR 0041).
+write_activation_postrm() {
+    local staging_dir="$1"
+    {
+        printf '#!/bin/sh\nset -e\n\n'
+        printf "better_os_passwd_file='/etc/passwd'\n"
+        printf "better_os_login_defs='/etc/login.defs'\n"
+        printf "better_os_override_mark=''\n"
+        printf "better_os_override_files=''\n"
+        printf "better_os_run_user_root='/run/user'\n"
+        printf "better_os_activation_name='%s'\n" "$PACKAGE_ACTIVATION_NAME"
+        printf "better_os_activation_exec='%s'\n\n" "$PACKAGE_ACTIVATION_EXEC"
+        cat "$ROOT_DIR/packaging/maintainer/autostart-overrides.sh"
+        printf '\n'
+        cat "$ROOT_DIR/packaging/maintainer/files-activation.sh"
+        printf '\n'
+        # shellcheck disable=SC2016 # expanded by the maintainer script
+        printf 'better_os_forget_activation_files "$1" || true\n'
+    } > "$staging_dir/DEBIAN/postrm"
+    chmod 0755 "$staging_dir/DEBIAN/postrm"
+}
 #   PACKAGE_DAEMON_HANDOFF  1 for better-manager: ships the privileged service
 #                      handoff (ADR 0028) and the checksums of the service and
 #                      adapter packages built beside it, and its postinst
@@ -220,6 +251,8 @@ reset_package_inputs() {
     PACKAGE_ALWAYS_ON_UNITS=""
     PACKAGE_AUTOSTART_OVERRIDES=""
     PACKAGE_SYSTEM_FRAGMENT=""
+    PACKAGE_ACTIVATION_NAME=""
+    PACKAGE_ACTIVATION_EXEC=""
     PACKAGE_DAEMON_HANDOFF=0
     PACKAGE_RELEASES_KEYBOARD=0
     PACKAGE_HANDOFF_RETRY=0
@@ -503,6 +536,9 @@ make_package() {
     fi
     if [[ -n "$PACKAGE_AUTOSTART_OVERRIDES" ]]; then
         write_autostart_override_postrm "$staging_dir"
+    fi
+    if [[ -n "$PACKAGE_ACTIVATION_NAME" ]]; then
+        write_activation_postrm "$staging_dir"
     fi
     if [[ -n "$PACKAGE_SYSTEM_FRAGMENT" ]]; then
         write_system_fragment "$staging_dir" "$PACKAGE_SYSTEM_FRAGMENT"
@@ -912,11 +948,13 @@ make_package better-launcher \
 # The large preview (Space) is a program of its own, which Better Files
 # looks for beside itself. Removal runs the before-removal program (as the
 # person, before dpkg is asked) to put back the file manager the session bus
-# starts and the folder handler (ADR 0041).
+# starts and the folder handler, and turning Better Files off runs the same
+# program from on-disable (with --undo when it is turned on again) (ADR 0041).
 PACKAGE_BINARIES=(
     "better-files:usr/bin/better-files"
     "better-files-preview:usr/bin/better-files-preview"
     "better-files-before-removal:usr/lib/better-os/before-removal/better-files"
+    "better-files-before-removal:usr/lib/better-os/on-disable/better-files"
 )
 PACKAGE_DATA=(
     "packaging/files/io.betteros.Files.desktop:usr/share/applications/io.betteros.Files.desktop"
@@ -932,6 +970,10 @@ PACKAGE_DATA=(
 # format converters and the common demuxers are plugins, loaded at run time.
 PACKAGE_DEPENDS=("$GRAPHICS_DEPENDS" "gstreamer1.0-plugins-base")
 PACKAGE_RECOMMENDS="udisks2"
+# `defaults_platform::bus_activation::exec_for`'s line; verify-deb.sh and
+# `crates/defaults-platform` hold the two together.
+PACKAGE_ACTIVATION_NAME="org.freedesktop.FileManager1"
+PACKAGE_ACTIVATION_EXEC="/usr/bin/better-files --service"
 make_package better-files \
     'Better OS file manager' \
     'A file manager whose operations are durable jobs and whose devices say when they are safe to unplug.'

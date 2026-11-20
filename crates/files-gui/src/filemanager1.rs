@@ -60,28 +60,72 @@ pub fn local_path(uri: &str) -> Option<std::path::PathBuf> {
     path.is_absolute().then_some(path)
 }
 
+/// One window a call asks for. The call is answered once the window opened
+/// ([`ShowRequest::opened`]), so a call that reaches a process on its way out
+/// fails for the caller rather than being answered and lost (ticket 129).
+#[derive(Debug)]
+pub struct ShowRequest {
+    pub target: StartTarget,
+    opened: smol::channel::Sender<()>,
+}
+
+impl ShowRequest {
+    /// Says the window is open; the call that asked for it is answered.
+    pub fn opened(self) {
+        let _ = self.opened.try_send(());
+    }
+}
+
+/// How long a call waits for its window before it is answered with an
+/// error.
+pub const OPEN_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
+
 struct FileManager1 {
-    sender: Sender<StartTarget>,
+    sender: Sender<ShowRequest>,
+}
+
+impl FileManager1 {
+    async fn show(&self, targets: Vec<StartTarget>) -> zbus::fdo::Result<()> {
+        let mut waiting = Vec::new();
+        for target in targets {
+            let (opened, answer) = smol::channel::bounded(1);
+            self.sender
+                .send(ShowRequest { target, opened })
+                .map_err(|_| zbus::fdo::Error::Failed("Better Files is closing".into()))?;
+            waiting.push(answer);
+        }
+        for answer in waiting {
+            let opened = smol::future::or(async { answer.recv().await.is_ok() }, async {
+                smol::Timer::after(OPEN_WAIT).await;
+                false
+            })
+            .await;
+            if !opened {
+                return Err(zbus::fdo::Error::Failed(
+                    "Better Files did not open the window".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 #[zbus::interface(name = "org.freedesktop.FileManager1")]
 impl FileManager1 {
-    fn show_folders(&self, uris: Vec<String>, _startup_id: String) {
-        for target in targets(&uris, false) {
-            let _ = self.sender.send(target);
-        }
+    async fn show_folders(&self, uris: Vec<String>, _startup_id: String) -> zbus::fdo::Result<()> {
+        self.show(targets(&uris, false)).await
     }
 
-    fn show_items(&self, uris: Vec<String>, _startup_id: String) {
-        for target in targets(&uris, true) {
-            let _ = self.sender.send(target);
-        }
+    async fn show_items(&self, uris: Vec<String>, _startup_id: String) -> zbus::fdo::Result<()> {
+        self.show(targets(&uris, true)).await
     }
 
-    fn show_item_properties(&self, uris: Vec<String>, _startup_id: String) {
-        for target in targets(&uris, true) {
-            let _ = self.sender.send(target);
-        }
+    async fn show_item_properties(
+        &self,
+        uris: Vec<String>,
+        _startup_id: String,
+    ) -> zbus::fdo::Result<()> {
+        self.show(targets(&uris, true)).await
     }
 }
 
@@ -95,7 +139,7 @@ impl FileManager1 {
 /// connection is returned whether or not the name was granted, with the reply.
 pub fn serve_on(
     builder: zbus::blocking::connection::Builder<'_>,
-    sender: Sender<StartTarget>,
+    sender: Sender<ShowRequest>,
 ) -> zbus::Result<(
     zbus::blocking::Connection,
     zbus::Result<zbus::fdo::RequestNameReply>,
@@ -108,11 +152,28 @@ pub fn serve_on(
     Ok((connection, reply))
 }
 
+/// This process's hold on the name, given up before it leaves.
+#[derive(Clone, Default)]
+pub struct NameHold(std::sync::Arc<std::sync::Mutex<Option<zbus::blocking::Connection>>>);
+
+impl NameHold {
+    /// Gives the name back to the bus, so the next call starts a new Better
+    /// Files rather than reaching this one as it leaves.
+    pub fn release(&self) {
+        let connection = self.0.lock().ok().and_then(|mut held| held.take());
+        if let Some(connection) = connection {
+            let _ = connection.release_name(BUS_NAME);
+        }
+    }
+}
+
 /// Serves the interface on the session bus from a thread of its own, sending
 /// each request to `sender`. Does nothing (and says so on stderr) when there
 /// is no session bus or another file manager owns the name: replacing it
 /// would take "Show in folder" away from the one the person chose.
-pub fn serve(sender: Sender<StartTarget>) {
+pub fn serve(sender: Sender<ShowRequest>) -> NameHold {
+    let hold = NameHold::default();
+    let kept = hold.clone();
     let _ = std::thread::Builder::new()
         .name("files-filemanager1".to_string())
         .spawn(move || {
@@ -129,11 +190,11 @@ pub fn serve(sender: Sender<StartTarget>) {
                     return;
                 }
             };
-            // The connection serves on its own executor; this thread only
-            // keeps it alive for the life of the process.
-            let _connection = connection;
-            loop {
-                std::thread::park();
+            // The connection serves on its own executor; the hold keeps it
+            // for the life of the process, or until it is released.
+            if let Ok(mut held) = kept.0.lock() {
+                *held = Some(connection);
             }
         });
+    hold
 }

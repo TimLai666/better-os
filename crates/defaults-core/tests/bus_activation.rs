@@ -20,11 +20,14 @@ use std::time::{Duration, Instant};
 
 use better_core::ComponentManifest;
 use common::*;
+use defaults_core::removal::{PutBack, RemovalState, put_back, session_context, take_again};
 use defaults_core::{
     ComponentReadiness, Confirmations, DefaultsEngine, IntegrationState, Selection, SystemContext,
 };
 use defaults_platform::AdapterSet;
-use defaults_platform::bus_activation::{Activation, BusActivationAdapter, ZbusSession};
+use defaults_platform::bus_activation::{
+    Activation, BusActivationAdapter, ZbusSession, remove_own_files,
+};
 use defaults_store::SnapshotStore;
 
 const NAME: &str = "org.freedesktop.FileManager1";
@@ -276,10 +279,16 @@ impl Run {
     }
 }
 
+/// A private bus, or, where `dbus-daemon` cannot be started, a skip on a
+/// developer's machine and a failure in CI (`CI` is set there, and the `rust`
+/// job installs the `dbus` package): the routing must be proved somewhere.
 macro_rules! bus_or_skip {
     () => {
         match PrivateBus::start() {
             Some(bus) => bus,
+            None if std::env::var_os("CI").is_some() => {
+                panic!("CI has no dbus-daemon to start a private bus with")
+            }
             None => {
                 eprintln!("skipped: no dbus-daemon to start a private bus with");
                 return;
@@ -412,6 +421,128 @@ fn removal_takes_the_activation_file_away_and_nautilus_answers_again() {
         "nautilus file:///tmp/b.txt"
     );
     bus.quit_owner();
+}
+
+fn session() -> Option<SystemContext> {
+    Some(SystemContext::new("zorin", "zorin:GNOME"))
+}
+
+/// The before-removal program's two halves (ticket 129): a removal the
+/// daemon then refused, or Better Files turned off and on again, leaves it
+/// the default exactly as before.
+#[test]
+fn put_back_then_take_again_leaves_better_files_the_default() {
+    let bus = bus_or_skip!();
+    let snapshots = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+    let state = RemovalState::at(state_dir.path(), "better-files");
+    let mut run = Run::new(&bus, snapshots.path());
+    run.apply();
+
+    let manifest = || ComponentManifest::parse_yaml(MANIFEST).unwrap();
+    assert_eq!(
+        put_back(
+            manifest(),
+            session(),
+            &mut run.adapters,
+            &run.store,
+            &state,
+            Vec::new
+        ),
+        PutBack::Done
+    );
+    assert_eq!(
+        bus.show_item("file:///tmp/a.txt"),
+        "nautilus file:///tmp/a.txt"
+    );
+    bus.quit_owner();
+
+    assert_eq!(
+        take_again(manifest(), session(), &mut run.adapters, &run.store, &state),
+        PutBack::Done
+    );
+    assert_eq!(
+        bus.show_item("file:///tmp/b.txt"),
+        "better-files file:///tmp/b.txt"
+    );
+    bus.quit_owner();
+}
+
+/// No session to put anything back in (a removal run from outside the
+/// person's desktop): nothing is touched, the program says so with exit 4,
+/// and Better Manager finishes it at its next start.
+#[test]
+fn a_put_back_with_no_session_is_deferred_not_reported_done() {
+    let bus = bus_or_skip!();
+    let snapshots = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+    let state = RemovalState::at(state_dir.path(), "better-files");
+    let mut run = Run::new(&bus, snapshots.path());
+    run.apply();
+    let outcome = put_back(
+        ComponentManifest::parse_yaml(MANIFEST).unwrap(),
+        session_context("zorin".into(), String::new(), true),
+        &mut run.adapters,
+        &run.store,
+        &state,
+        Vec::new,
+    );
+    assert_eq!(outcome, PutBack::Deferred);
+    assert!(state.is_pending());
+    assert!(bus.user_services().join(format!("{NAME}.service")).exists());
+    assert!(session_context("zorin".into(), "zorin:GNOME".into(), false).is_none());
+}
+
+/// No record to restore from (the snapshots were lost, or another account
+/// applied it): the activation file is removed only when it is byte for
+/// byte Better OS's.
+#[test]
+fn with_no_record_only_better_os_s_own_file_is_taken_away() {
+    let bus = bus_or_skip!();
+    let services = bus.user_services();
+    let file = services.join(format!("{NAME}.service"));
+    let ours = format!(
+        "[D-BUS Service]\nName={NAME}\nExec={}\n",
+        exec_line("helper_better_files")
+    );
+    std::fs::write(&file, &ours).unwrap();
+    let session_bus = ZbusSession::at(bus.address.clone());
+    let removed = remove_own_files(&services, "better-files", test_exec, &session_bus);
+    assert_eq!(removed, [NAME]);
+    assert_eq!(
+        bus.show_item("file:///tmp/a.txt"),
+        "nautilus file:///tmp/a.txt"
+    );
+    bus.quit_owner();
+
+    std::fs::create_dir_all(&services).unwrap();
+    std::fs::write(&file, format!("{ours}# mine\n")).unwrap();
+    assert!(remove_own_files(&services, "better-files", test_exec, &session_bus).is_empty());
+    assert!(file.exists(), "a file that is not exactly ours stays");
+}
+
+/// Ticket 129, review: after "Use Better OS defaults" another program writes
+/// its own activation file in Better Files' place. That is a change someone
+/// else made, not a change waiting for sign-out, and Restore (and the
+/// removal program) leave it alone without the person confirming.
+#[test]
+fn a_file_another_program_wrote_after_apply_is_never_touched_by_restore() {
+    let bus = bus_or_skip!();
+    let snapshots = tempfile::tempdir().unwrap();
+    let mut run = Run::new(&bus, snapshots.path());
+    run.apply();
+    let file = bus.user_services().join(format!("{NAME}.service"));
+    let theirs = format!(
+        "[D-BUS Service]\nName={NAME}\nExec={}\n# another file manager\n",
+        exec_line("helper_nautilus")
+    );
+    std::fs::write(&file, &theirs).unwrap();
+    assert!(matches!(
+        run.state(),
+        IntegrationState::ChangedExternally { .. }
+    ));
+    run.restore();
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), theirs);
 }
 
 // --- The two file managers the bus starts --------------------------------
