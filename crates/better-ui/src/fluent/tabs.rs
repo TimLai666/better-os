@@ -20,6 +20,7 @@
 
 use std::rc::Rc;
 
+use crate::icon_set::{Glyph, Placement};
 use gpui::{
     App, ElementId, InteractiveElement, IntoElement, ParentElement, RenderOnce, SharedString,
     StatefulInteractiveElement, Styled, Window, div, px,
@@ -77,9 +78,8 @@ pub fn after_close(selected: Option<usize>, closed: usize, len: usize) -> Option
 #[derive(Clone)]
 pub struct Tab {
     pub title: SharedString,
-    pub icon: Option<IconName>,
-    /// The window's own SVG, drawn instead of `icon`.
-    pub icon_path: Option<SharedString>,
+    /// A symbol, a window's own SVG, or a picture.
+    pub icon: Option<Glyph>,
     pub closable: bool,
     pub shown: ShownState,
 }
@@ -89,20 +89,19 @@ impl Tab {
         Self {
             title: title.into(),
             icon: None,
-            icon_path: None,
             closable: true,
             shown: ShownState::Live,
         }
     }
 
-    pub fn icon(mut self, icon: IconName) -> Self {
-        self.icon = Some(icon);
+    pub fn icon(mut self, icon: impl Into<Glyph>) -> Self {
+        self.icon = Some(icon.into());
         self
     }
 
     /// Draws the window's own SVG at `path` (a glyph the kit lacks).
     pub fn icon_path(mut self, path: impl Into<SharedString>) -> Self {
-        self.icon_path = Some(path.into());
+        self.icon = Some(Glyph::Path(path.into()));
         self
     }
 
@@ -294,14 +293,14 @@ impl RenderOnce for TabView {
                     .active(move |s| s.bg(pressed).text_color(pressed_text));
             }
             item = item
-                .children(
-                    match (&tab.icon_path, &tab.icon) {
-                        (Some(path), _) => Some(Icon::empty().path(path.clone())),
-                        (None, Some(icon)) => Some(Icon::new(icon.clone())),
-                        (None, None) => None,
-                    }
-                    .map(|icon| div().mr(px(10.0)).child(icon.size(super::size::ICON))),
-                )
+                .children(tab.icon.as_ref().map(|icon| {
+                    div().mr(px(10.0)).flex().child(icon.element(
+                        super::size::ICON,
+                        Placement::Labelled,
+                        p,
+                        false,
+                    ))
+                }))
                 .child(div().flex_1().min_w_0().truncate().child(tab.title.clone()));
             if tab.closable {
                 let mut close =
@@ -390,7 +389,7 @@ impl RenderOnce for TabView {
 #[derive(Clone)]
 pub struct SelectorItem {
     pub label: SharedString,
-    pub icon: Option<IconName>,
+    pub icon: Option<Glyph>,
     pub disabled: bool,
     pub shown: ShownState,
     /// Shown under the pointer, such as the item's keyboard shortcut.
@@ -413,8 +412,8 @@ impl SelectorItem {
         self
     }
 
-    pub fn icon(mut self, icon: IconName) -> Self {
-        self.icon = Some(icon);
+    pub fn icon(mut self, icon: impl Into<Glyph>) -> Self {
+        self.icon = Some(icon.into());
         self
     }
 
@@ -512,7 +511,11 @@ impl RenderOnce for SelectorBar {
                     .text_color(color(forced.unwrap_or(Interaction::Rest))),
                 BODY,
             )
-            .children(item.icon.clone().map(|icon| Icon::new(icon).size(px(13.0))))
+            .children(
+                item.icon
+                    .clone()
+                    .map(|icon| icon.element(px(13.0), Placement::Labelled, p, item.disabled)),
+            )
             .child(div().whitespace_nowrap().child(item.label.clone()));
             if forced.is_none() {
                 cell = cell

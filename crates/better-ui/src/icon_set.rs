@@ -24,14 +24,88 @@ mod tests;
 pub use catalog::{ASSET_PREFIX, Kind, Picture, load};
 
 use gpui::{
-    Div, Img, ObjectFit, ParentElement, Rgba, Styled, StyledImage, div, img,
-    prelude::FluentBuilder, px, svg,
+    AnyElement, Div, Img, IntoElement, ObjectFit, ParentElement, Pixels, Rgba, SharedString,
+    Styled, StyledImage, div, img, prelude::FluentBuilder, px, svg,
 };
+use gpui_component::{Icon, IconName};
 
 use crate::fluent::Palette;
 
 /// How opaque a disabled icon is: the same as disabled text.
 pub const DISABLED_OPACITY: f32 = 0.36;
+
+/// What a kit control draws as its icon. Every control that shows an icon
+/// takes `impl Into<Glyph>`, so a window hands it a toolkit symbol or a
+/// picture from this set the same way.
+#[derive(Clone)]
+pub enum Glyph {
+    /// A toolkit line icon in the control's text colour: a plain symbol
+    /// (arrow, chevron, close, check) or a status mark.
+    Symbol(IconName),
+    /// An SVG the window serves itself, drawn like a symbol.
+    Path(SharedString),
+    /// A toolkit icon already built (sized or coloured by the caller).
+    Icon(Icon),
+    /// An object or action picture from this set.
+    Picture(Picture),
+}
+
+impl From<IconName> for Glyph {
+    fn from(name: IconName) -> Self {
+        Glyph::Symbol(name)
+    }
+}
+
+impl From<Icon> for Glyph {
+    fn from(icon: Icon) -> Self {
+        Glyph::Icon(icon)
+    }
+}
+
+impl From<Picture> for Glyph {
+    fn from(picture: Picture) -> Self {
+        Glyph::Picture(picture)
+    }
+}
+
+impl Glyph {
+    /// The picture, when this is one.
+    pub fn picture(&self) -> Option<Picture> {
+        match self {
+            Glyph::Picture(picture) => Some(*picture),
+            _ => None,
+        }
+    }
+
+    /// The glyph as a control draws it. A symbol or a window's SVG is `size`
+    /// square in the inherited text colour, as the kit always drew it; an
+    /// object picture is `size` square; an action picture takes its
+    /// colours and size from `placement`. `disabled` dims a picture (a
+    /// symbol takes the control's disabled text colour already).
+    pub fn element(
+        &self,
+        size: Pixels,
+        placement: Placement,
+        palette: &Palette,
+        disabled: bool,
+    ) -> AnyElement {
+        match self {
+            Glyph::Symbol(name) => Icon::new(name.clone()).size(size).into_any_element(),
+            Glyph::Path(path) => Icon::empty()
+                .path(path.clone())
+                .size(size)
+                .into_any_element(),
+            Glyph::Icon(icon) => icon.clone().size(size).into_any_element(),
+            Glyph::Picture(picture) => match picture.kind() {
+                Kind::Object if disabled => {
+                    picture_disabled(*picture, f32::from(size)).into_any_element()
+                }
+                Kind::Object => self::picture(*picture, f32::from(size)).into_any_element(),
+                Kind::Action => action(*picture, placement, palette, disabled).into_any_element(),
+            },
+        }
+    }
+}
 
 /// An object icon drawn `size` pixels square. Row icons use 16 or 20.
 pub fn picture(picture: Picture, size: f32) -> Img {
@@ -61,6 +135,9 @@ pub enum Placement {
     /// Beside a text label, as in a menu row or a labelled button: the
     /// secondary text colour, 16px, so the words lead.
     Labelled,
+    /// On an accent-filled button, where the accent would vanish: the text
+    /// on accent colour and a shade of it toward the accent, 16px.
+    OnAccent,
 }
 
 impl Placement {
@@ -68,7 +145,7 @@ impl Placement {
     pub const fn size(self) -> f32 {
         match self {
             Placement::Alone => 18.0,
-            Placement::Labelled => 16.0,
+            Placement::Labelled | Placement::OnAccent => 16.0,
         }
     }
 }
@@ -77,13 +154,14 @@ impl Placement {
 /// layer's lighter shade. A destructive action is the critical colour in
 /// either placement.
 pub fn action_colours(picture: Picture, placement: Placement, palette: &Palette) -> (Rgba, Rgba) {
-    if picture.destructive() {
-        (palette.critical, palette.icon_critical_2)
-    } else {
-        match placement {
-            Placement::Alone => (palette.accent, palette.icon_accent_2),
-            Placement::Labelled => (palette.icon_quiet, palette.icon_quiet_2),
-        }
+    match placement {
+        Placement::OnAccent => (
+            palette.text_on_accent,
+            crate::fluent::mix(palette.text_on_accent, palette.accent, 0.45),
+        ),
+        _ if picture.destructive() => (palette.critical, palette.icon_critical_2),
+        Placement::Alone => (palette.accent, palette.icon_accent_2),
+        Placement::Labelled => (palette.icon_quiet, palette.icon_quiet_2),
     }
 }
 
@@ -202,6 +280,14 @@ mod renderer_tests {
                 action_colours(Picture::Delete, placement, &LIGHT),
                 (LIGHT.critical, LIGHT.icon_critical_2)
             );
+        }
+        // On an accent fill the icon turns over, destructive or not, so it
+        // never sits accent on accent.
+        for picture in [Picture::Copy, Picture::Delete] {
+            let (body, minor) = action_colours(picture, Placement::OnAccent, &LIGHT);
+            assert_eq!(body, LIGHT.text_on_accent);
+            assert_ne!(minor, LIGHT.accent);
+            assert_ne!(minor, body);
         }
         assert_eq!(Placement::Alone.size(), 18.0);
         assert_eq!(Placement::Labelled.size(), 16.0);

@@ -15,6 +15,7 @@
 
 use std::rc::Rc;
 
+use crate::icon_set::{Glyph, Placement};
 use gpui::{
     App, ElementId, InteractiveElement, IntoElement, ParentElement, Pixels, RenderOnce,
     SharedString, Styled, Window, div, prelude::FluentBuilder as _, px,
@@ -51,7 +52,9 @@ pub fn fit_count(widths: &[Pixels], available: Pixels, overflow_width: Pixels) -
 #[derive(Clone)]
 pub struct Command {
     pub label: SharedString,
-    pub icon: IconName,
+    /// A symbol, a window's own SVG, or a picture: an action alone when the
+    /// command is icon-only, beside a label otherwise.
+    pub icon: Glyph,
     /// `Some` for a toggle command (`AppBarToggleButton`).
     pub checked: Option<bool>,
     /// Draw only the icon, with the label as the tooltip.
@@ -62,19 +65,16 @@ pub struct Command {
     pub on_click: Option<Handler>,
     /// Draws a trailing chevron: the command opens a menu.
     chevron: bool,
-    /// An SVG the window serves itself, drawn instead of `icon` in the bar
-    /// (the overflow menu, which takes only kit icons, keeps `icon`).
-    pub icon_path: Option<SharedString>,
     /// A short count on the icon's corner (WinUI's `InfoBadge`), such as how
     /// many jobs are running.
     pub badge: Option<SharedString>,
 }
 
 impl Command {
-    pub fn new(label: impl Into<SharedString>, icon: IconName) -> Self {
+    pub fn new(label: impl Into<SharedString>, icon: impl Into<Glyph>) -> Self {
         Self {
             label: label.into(),
-            icon,
+            icon: icon.into(),
             checked: None,
             icon_only: false,
             shortcut: None,
@@ -82,7 +82,6 @@ impl Command {
             shown: ShownState::Live,
             on_click: None,
             chevron: false,
-            icon_path: None,
             badge: None,
         }
     }
@@ -90,7 +89,7 @@ impl Command {
     /// Draws the window's own SVG at `path` in the bar instead of the kit
     /// icon, for a glyph the kit does not have.
     pub fn icon_path(mut self, path: impl Into<SharedString>) -> Self {
-        self.icon_path = Some(path.into());
+        self.icon = Glyph::Path(path.into());
         self
     }
 
@@ -134,9 +133,6 @@ impl Command {
         let mut item = MenuItem::new(self.label.clone())
             .icon(self.icon.clone())
             .disabled(self.disabled);
-        if let Some(path) = self.icon_path.clone() {
-            item = item.icon_path(path);
-        }
         if let Some(shortcut) = self.shortcut.clone() {
             item = item.shortcut(shortcut);
         }
@@ -272,11 +268,14 @@ impl RenderOnce for AppBarButton {
         if !disabled {
             element = element.track_focus(&focus.tab_index(0).tab_stop(command.shown.is_live()));
         }
-        let icon = match &command.icon_path {
-            Some(path) => Icon::empty().path(path.clone()),
-            None => Icon::new(command.icon.clone()),
-        }
-        .size(super::size::ICON);
+        let placement = if command.icon_only {
+            Placement::Alone
+        } else {
+            Placement::Labelled
+        };
+        let icon = command
+            .icon
+            .element(super::size::ICON, placement, p, disabled);
         // On a checked (accent) button the badge turns over, so it never
         // sits accent on accent.
         let (badge_fill, badge_text) = if command.checked.unwrap_or(false) {
@@ -287,7 +286,7 @@ impl RenderOnce for AppBarButton {
         // Only a command with a badge gets the wrapper the badge hangs on,
         // so every other command's icon is laid out exactly as before.
         let icon = match command.badge.clone() {
-            None => icon.into_any_element(),
+            None => icon,
             Some(badge) => div()
                 .relative()
                 .child(icon)
