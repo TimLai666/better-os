@@ -25,8 +25,8 @@ use storage_platform::model::PlatformDevice;
 // The listing itself is shared with Better Manager's Drives section (ticket
 // 127): which block devices are drives, and their choices.
 pub use drive_mounts::listing::{
-    Capacity, Drive, DriveKind, NEARLY_FULL, RemovableForm, drives_from_devices, is_system_mount,
-    mount_points_of, removable_form,
+    Capacity, Drive, DriveKind, DriveName, NEARLY_FULL, RemovableForm, drives_from_devices,
+    is_system_mount, mount_points_of, removable_form, running_system_name,
 };
 
 /// How long a drive's free space is waited for before it is shown without a
@@ -58,28 +58,40 @@ impl CapacityText for Capacity {
     }
 }
 
+/// A drive's name in the window's language (ticket 138): the running
+/// system's drive by the system's name, any other by its label or its size.
+pub fn name_words(name: DriveName<'_>, c: &crate::i18n::Copy) -> String {
+    match name {
+        DriveName::System(name) | DriveName::Label(name) => name.to_string(),
+        DriveName::UnnamedSystem => c.drive_system_unnamed.to_string(),
+        DriveName::Size(size) => c
+            .drive_of_size
+            .replace("{size}", &crate::format::bytes(size)),
+    }
+}
+
+/// What the drive the running system is on is called: the root crumb of the
+/// path bar names it the way the sidebar does.
+pub fn system_drive_name(system: Option<&str>, c: &crate::i18n::Copy) -> String {
+    name_words(DriveName::of_system(system), c)
+}
+
 impl DriveText for Drive {
     fn name(&self, c: &crate::i18n::Copy) -> String {
-        match &self.label {
-            Some(label) => label.clone(),
-            None => {
-                let size = self
-                    .capacity
-                    .map(|capacity| capacity.total)
-                    .unwrap_or(self.size);
-                c.drive_of_size
-                    .replace("{size}", &crate::format::bytes(size))
-            }
-        }
+        name_words(self.naming(), c)
     }
 
     /// The line under the name: how full it is, or that it is not mounted
     /// or still locked, with its size unless the name already is its size;
     /// nothing when it did not answer.
     fn caption(&self, c: &crate::i18n::Copy) -> Option<String> {
-        let state = |state: &str| match &self.label {
-            Some(_) if self.size > 0 => format!("{} · {state}", crate::format::bytes(self.size)),
-            _ => state.to_string(),
+        let named_by_size = matches!(self.naming(), DriveName::Size(_));
+        let state = |state: &str| {
+            if !named_by_size && self.size > 0 {
+                format!("{} · {state}", crate::format::bytes(self.size))
+            } else {
+                state.to_string()
+            }
         };
         let auto = self.auto_mount.as_ref();
         match (&self.capacity, &self.mount_point) {
@@ -1258,6 +1270,52 @@ mod tests {
         assert_eq!(gvfs[1].kind, DriveKind::Network);
         assert_eq!(gvfs[1].label.as_deref(), Some("photos"));
         assert_eq!(gvfs[2].label.as_deref(), Some("build.local"));
+    }
+
+    #[test]
+    fn the_running_systems_drive_is_named_after_the_system_and_no_other_is() {
+        // The root (unlabelled, as Ubuntu-based installers leave it), another
+        // Linux install on a second partition with a label, and one without.
+        let mut root = partition("/b/root", "/dev/nvme0n1p2", "ext4", None, Some("/"));
+        root.block.size = 263 * 1024 * 1024 * 1024;
+        let devices = vec![
+            root.clone(),
+            partition("/b/fedora", "/dev/nvme0n1p3", "ext4", Some("fedora"), None),
+            partition("/b/other", "/dev/nvme0n1p4", "ext4", None, None),
+        ];
+        let drives = drives_from_devices(&devices, None);
+        let find = |key: &str| drives.iter().find(|drive| drive.key == key).unwrap();
+        let named =
+            |drive: &Drive, system: Option<&str>, c| name_words(drive.naming_with(system), c);
+        assert_eq!(find("/b/root").kind, DriveKind::System);
+        assert_eq!(named(find("/b/root"), Some("Zorin OS"), &EN_US), "Zorin OS");
+        assert_eq!(named(find("/b/root"), Some("Zorin OS"), &ZH_TW), "Zorin OS");
+        assert_eq!(named(find("/b/fedora"), Some("Zorin OS"), &EN_US), "fedora");
+        assert_eq!(
+            named(find("/b/other"), Some("Zorin OS"), &EN_US),
+            "500 GB drive"
+        );
+        // A labelled root takes the system's name too.
+        let mut labelled = root;
+        labelled.block.id_label = Some("rootfs".into());
+        let labelled = drives_from_devices(&[labelled], None).remove(0);
+        assert_eq!(named(&labelled, Some("Zorin OS"), &EN_US), "Zorin OS");
+        // Nothing in os-release: the fixed wording, never a guess.
+        assert_eq!(named(&labelled, None, &EN_US), "System drive");
+        assert_eq!(named(&labelled, None, &ZH_TW), "系統磁碟");
+        assert_eq!(system_drive_name(None, &ZH_TW), "系統磁碟");
+        assert_eq!(system_drive_name(Some("Ubuntu"), &EN_US), "Ubuntu");
+        // Named by the system, the line under it gives its size.
+        let mut unmounted = labelled.clone();
+        unmounted.mount_point = None;
+        unmounted.label = None;
+        assert!(
+            unmounted
+                .caption(&EN_US)
+                .is_some_and(|line| line.starts_with("263 GB · ")),
+            "{:?}",
+            unmounted.caption(&EN_US)
+        );
     }
 
     #[test]

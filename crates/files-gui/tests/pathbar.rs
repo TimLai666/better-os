@@ -1,4 +1,5 @@
-//! The address bar's crumbs: Home first under home, `/` first elsewhere.
+//! The address bar's crumbs: Home first under home, the system's drive
+//! first elsewhere.
 
 use std::fs;
 use std::path::Path;
@@ -40,22 +41,63 @@ fn each_crumb_opens_its_own_folder() {
     assert_eq!(all[2].location, location);
 }
 
+/// The crumbs when the running system calls itself `system`.
+fn labels_on(
+    location: &Location,
+    home: Option<&Path>,
+    c: &'static files_gui::i18n::Copy,
+    system: Option<&str>,
+) -> Vec<String> {
+    files_gui::pathbar::crumbs_named(
+        location,
+        home,
+        c,
+        &files_platform::UserDirectories::default(),
+        system,
+    )
+    .into_iter()
+    .map(|crumb| crumb.label)
+    .collect()
+}
+
 #[test]
-fn a_folder_outside_home_starts_from_the_root() {
+fn a_folder_outside_home_starts_from_the_systems_drive() {
     let location = Location::local("/usr/share").unwrap();
+    let zorin = Some("Zorin OS");
     assert_eq!(
-        labels(&location, Some(Path::new("/home/ann"))),
-        ["/", "usr", "share"]
+        labels_on(&location, Some(Path::new("/home/ann")), &EN_US, zorin),
+        ["Zorin OS", "usr", "share"]
     );
-    assert_eq!(labels(&Location::local("/").unwrap(), None), ["/"]);
+    assert_eq!(
+        labels_on(&Location::local("/").unwrap(), None, &EN_US, zorin),
+        ["Zorin OS"]
+    );
     // A folder whose name only starts like home is not under it.
     assert_eq!(
-        labels(
+        labels_on(
             &Location::local("/home/anna").unwrap(),
-            Some(Path::new("/home/ann"))
+            Some(Path::new("/home/ann")),
+            &EN_US,
+            zorin
         ),
-        ["/", "home", "anna"]
+        ["Zorin OS", "home", "anna"]
     );
+    // The root crumb still opens the root.
+    let all = files_gui::pathbar::crumbs_named(
+        &location,
+        None,
+        &EN_US,
+        &files_platform::UserDirectories::default(),
+        zorin,
+    );
+    assert_eq!(all[0].location, Location::local("/").unwrap());
+}
+
+#[test]
+fn a_system_that_names_nothing_has_its_drive_called_the_system_drive() {
+    let root = Location::local("/").unwrap();
+    assert_eq!(labels_on(&root, None, &EN_US, None), ["System drive"]);
+    assert_eq!(labels_on(&root, None, &ZH_TW, None), ["系統磁碟"]);
 }
 
 #[test]
@@ -179,10 +221,11 @@ fn the_persons_folders_are_named_as_the_sidebar_names_them() {
     fs::create_dir_all(home.path().join("Documents/reports")).unwrap();
     let directories = UserDirectories::from_values(Some(home.path()), None);
     let location = Location::local(home.path().join("Documents/reports")).unwrap();
-    let labels: Vec<String> = crumbs_named(&location, Some(home.path()), &ZH_TW, &directories)
-        .into_iter()
-        .map(|crumb| crumb.label)
-        .collect();
+    let labels: Vec<String> =
+        crumbs_named(&location, Some(home.path()), &ZH_TW, &directories, None)
+            .into_iter()
+            .map(|crumb| crumb.label)
+            .collect();
     assert_eq!(
         labels,
         [

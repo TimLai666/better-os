@@ -2,7 +2,8 @@
 //!
 //! A folder under the home folder reads from Home (`Home › Documents ›
 //! reports`), the way folio's `PathBar.qml` and File Explorer start from a
-//! named place rather than from `/`; anything else reads from the root. Trash
+//! named place rather than from `/`; anything else reads from the root, which
+//! is named after the drive the running system is on ("Zorin OS"). Trash
 //! and Applications are one crumb each. Clicking a crumb opens it; clicking
 //! the empty part of the bar, or `Ctrl+L`, turns it into a text field.
 
@@ -20,27 +21,32 @@ pub struct Crumb {
 }
 
 /// The crumbs for `location`, first to last. `home` is the person's home
-/// folder, when there is one.
+/// folder, when there is one. The root is named after the drive the running
+/// system is on, as the sidebar names it.
 pub fn crumbs(location: &Location, home: Option<&Path>, c: &'static Copy) -> Vec<Crumb> {
     crumbs_named(
         location,
         home,
         c,
         &files_platform::UserDirectories::default(),
+        crate::drives::running_system_name(),
     )
 }
 
 /// The crumbs, with the person's own folders (Documents, Pictures, …)
 /// named as the sidebar names them, in the window's language: 文件, not
-/// the folder's name on disk.
+/// the folder's name on disk. The root crumb is the drive the running system
+/// is on, named as the sidebar names it (ticket 138): `system` is what the
+/// running system calls itself.
 pub fn crumbs_named(
     location: &Location,
     home: Option<&Path>,
     c: &'static Copy,
     directories: &files_platform::UserDirectories,
+    system: Option<&str>,
 ) -> Vec<Crumb> {
     match location {
-        Location::Local(path) => local_crumbs(path.as_path(), home, c, directories),
+        Location::Local(path) => local_crumbs(path.as_path(), home, c, directories, system),
         Location::Trash(_) => vec![Crumb {
             label: c.place_trash.to_string(),
             location: Location::Trash(TrashLocation::Root),
@@ -65,6 +71,7 @@ fn local_crumbs(
     home: Option<&Path>,
     c: &'static Copy,
     directories: &files_platform::UserDirectories,
+    system: Option<&str>,
 ) -> Vec<Crumb> {
     let named = |at: &Path| {
         directories.sidebar().into_iter().find_map(|resolved| {
@@ -87,7 +94,7 @@ fn local_crumbs(
         }
         None => {
             out.push(Crumb {
-                label: "/".to_string(),
+                label: crate::drives::system_drive_name(system, c),
                 location: Location::Local(LocalPath::root()),
             });
             (PathBuf::from("/"), path.strip_prefix("/").unwrap_or(path))

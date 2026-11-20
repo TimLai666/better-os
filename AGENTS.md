@@ -614,7 +614,12 @@ GUI or dependency compiles when the relevant command was not executed.
   resolves the host differently from the service that checks its plan is the
   ticket 43 and ticket 45 defect in both of its forms. `MockPlatform` is the
   demo mode's platform and nothing else: a client that plans from it reports
-  Ubuntu 24.04 amd64 whatever the machine is.
+  Ubuntu 24.04 amd64 whatever the machine is. The running system's name
+  that the drive it lives on is called by, in Better Files and Better
+  Manager's Drives (ticket 138), is also read there:
+  `better_core::host::running_system_name`, through
+  `drive_mounts::listing::Drive::naming`. Better Manager's home banner still
+  reads `PRETTY_NAME` with its own copy in `manager-gui/src/home.rs`.
 - `resolve_distribution_id` returns `/etc/os-release`'s own `ID`, so a Zorin
   host is `zorin` and not the Ubuntu base its release number comes from. That
   went public in v0.2.5 and it is a contract change for manifests, not only an

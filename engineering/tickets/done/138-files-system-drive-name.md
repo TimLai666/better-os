@@ -30,3 +30,22 @@ distribution it is.
   missing NAME falls back to the fixed wording; a second Linux partition is
   not renamed.
 - Screens in zh-TW and English.
+
+## Notes
+
+- `better_core::host` reads the file (`running_system_name`: `/etc/os-release`,
+  else `/usr/lib/os-release`, `NAME` then `PRETTY_NAME`).
+  `drive_mounts::listing::Drive::naming` decides every drive's name
+  (`DriveName::System`, `UnnamedSystem`, `Label`, `Size`), and each window
+  only puts it into its own words, so Better Files (sidebar, This PC tiles,
+  the root crumb, unlock dialog and notices) and Better Manager's Drives
+  section cannot disagree. The label itself is untouched, because the fstab
+  and udev matching reads it.
+- Properties: the details pane describes the entry under the cursor, and `/`
+  is never an entry of any folder, so no Properties view names the system
+  drive today; the spec says so. When a drive Properties view is built it
+  takes its name from `Drive::naming` like the rest.
+- The fallback wording is proved by tests only; the screenshots show the
+  machine's own os-release (`Zorin OS`), since the file is not redirected in
+  a sandbox. Screens are in `better-os-evidence/138/`: This PC, the root
+  crumb with the sidebar, and Better Manager's Drives, in both languages.

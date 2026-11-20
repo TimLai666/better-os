@@ -82,6 +82,24 @@ The drives sit above the other computers. `sidebar::NAV_ORDER` is the one
 place the order is written; the pane draws its groups in that order, and the
 keyboard moves through them in the order they are drawn.
 
+## The system drive is named after the running system
+
+Owner, 2026-11-16 (ticket 138). The drive the running system lives on
+(`DriveKind::System`, the one mounted at `/`) is called what the running
+system calls itself: `NAME` in its os-release ("Zorin OS"), or `PRETTY_NAME`
+when there is no `NAME`, whatever its filesystem label says. The file is read
+only by `better_core::host` (`/etc/os-release`, and `/usr/lib/os-release`
+when that is missing, as os-release(5) orders them). When neither names a
+system, the drive is "System drive" / 「系統磁碟」, never a guessed
+distribution. Every other drive keeps its label, or is named by its size;
+another Linux install on another partition is not looked into.
+
+`drive_mounts::listing::Drive::naming` decides the name, so the sidebar, the
+This PC tiles, the path bar's root crumb (which opens `/`), the drive's
+dialogs and notices, and Better Manager's Drives section all say the same
+thing. The details (Properties) pane describes the entry under the cursor,
+and `/` is never an entry of a folder, so it never names the system drive.
+
 ## Devices without the storage service
 
 Ticket 35 connected the Devices section to the storage layer, and

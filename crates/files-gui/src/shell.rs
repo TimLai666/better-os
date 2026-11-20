@@ -143,6 +143,7 @@ impl FilesApp {
                 home.as_deref(),
                 c,
                 &self.session.directories,
+                crate::drives::running_system_name(),
             );
             let width =
                 (f32::from(self.viewport.width) - self.nav_width() - 180.0 - self.search_width())

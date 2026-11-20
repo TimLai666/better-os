@@ -12,7 +12,7 @@ use better_ui::fluent::toggle::ToggleSwitch;
 use better_ui::fluent::{BODY, label, palette};
 use drive_mounts::choice::{self, FollowUp, Locked, SystemFiles};
 use drive_mounts::client::{self, SetOutcome};
-use drive_mounts::listing::{Drive, DriveKind};
+use drive_mounts::listing::{Drive, DriveKind, DriveName};
 use gpui::*;
 use gpui_component::IconName;
 
@@ -52,6 +52,8 @@ pub(crate) struct Copy {
     pub(crate) unreadable: &'static str,
     /// `{size}`.
     pub(crate) unnamed: &'static str,
+    /// The running system's drive when its os-release names no system.
+    pub(crate) unnamed_system: &'static str,
     pub(crate) system_drive: &'static str,
     pub(crate) internal: &'static str,
     pub(crate) removable: &'static str,
@@ -91,6 +93,7 @@ static EN: Copy = Copy {
     none: "No drives to choose from were found.",
     unreadable: "The drives couldn't be read ({reason}).",
     unnamed: "{size} drive",
+    unnamed_system: "System drive",
     system_drive: "System drive · always mounted",
     internal: "Internal",
     removable: "Removable",
@@ -124,6 +127,7 @@ static ZH_TW: Copy = Copy {
     none: "找不到可以設定的磁碟。",
     unreadable: "無法讀取磁碟（{reason}）。",
     unnamed: "{size} 磁碟",
+    unnamed_system: "系統磁碟",
     system_drive: "系統磁碟・一律掛載",
     internal: "內接",
     removable: "外接",
@@ -191,11 +195,18 @@ pub(crate) fn listed(drives: Vec<Drive>) -> Vec<Drive> {
     drives
 }
 
+/// A drive's name, as Better Files gives it (ticket 138): the running
+/// system's drive by the system's name.
 pub(crate) fn name(drive: &Drive, c: &Copy) -> String {
-    drive
-        .label
-        .clone()
-        .unwrap_or_else(|| c.unnamed.replace("{size}", &bytes(drive.size)))
+    name_words(drive.naming(), c)
+}
+
+fn name_words(name: DriveName<'_>, c: &Copy) -> String {
+    match name {
+        DriveName::System(name) | DriveName::Label(name) => name.to_string(),
+        DriveName::UnnamedSystem => c.unnamed_system.to_string(),
+        DriveName::Size(size) => c.unnamed.replace("{size}", &bytes(size)),
+    }
 }
 
 /// The line under a drive's name.
@@ -513,7 +524,7 @@ impl ManagerApp {
 #[cfg(test)]
 mod tests {
     // Not `super::*`: that brings gpui's own `test` attribute in.
-    use super::{EN, ZH_TW, bytes, description, listed, name, reason};
+    use super::{EN, ZH_TW, bytes, description, listed, name, name_words, reason};
     use drive_mounts::choice::{AutoMount, Locked};
     use drive_mounts::client::SetOutcome;
     use drive_mounts::listing::{Drive, DriveKind};
@@ -580,7 +591,18 @@ mod tests {
                 failure: None,
             });
             assert_eq!(description(&system, c), c.system_drive);
-            assert_eq!(name(&system, c), c.unnamed.replace("{size}", "477 GB"));
+            // Named after the running system, never by its size (ticket 138).
+            assert_ne!(name(&system, c), c.unnamed.replace("{size}", "477 GB"));
+            assert_eq!(
+                name_words(system.naming_with(Some("Zorin OS")), c),
+                "Zorin OS"
+            );
+            assert_eq!(name_words(system.naming_with(None), c), c.unnamed_system);
+            let other_linux = drive(DriveKind::Internal, Some("BB"), None);
+            assert_eq!(
+                name_words(other_linux.naming_with(Some("Zorin OS")), c),
+                c.unnamed.replace("{size}", "477 GB")
+            );
             for outcome in [
                 SetOutcome::NotAllowed,
                 SetOutcome::Absent,
