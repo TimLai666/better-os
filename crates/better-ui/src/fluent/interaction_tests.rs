@@ -687,3 +687,171 @@ fn right_and_left_move_between_a_tree_row_and_its_children(cx: &mut TestAppConte
         assert_eq!(h.expanded, [(0, true), (0, false)]);
     });
 }
+
+/// An expander and a clickable card, each with a button and a switch in its
+/// header (ticket 136's review): a press on a control is the control's.
+struct HeaderHarness {
+    open: bool,
+    card_opened: usize,
+    button: usize,
+    switch: bool,
+}
+
+impl Render for HeaderHarness {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        use super::button::Button;
+        use super::settings_card::{SettingsCard, SettingsExpander, SettingsRow};
+        use super::toggle::ToggleSwitch;
+        let view = cx.entity().downgrade();
+        let on = |f: fn(&mut HeaderHarness)| {
+            let view = view.clone();
+            move |_: &mut Window, cx: &mut App| {
+                let _ = view.update(cx, |h, cx| {
+                    f(h);
+                    cx.notify();
+                });
+            }
+        };
+        let toggle_view = view.clone();
+        let switch_view = view.clone();
+        div()
+            .size_full()
+            .p(px(20.0))
+            .flex()
+            .flex_col()
+            .gap(px(20.0))
+            .child(
+                div().debug_selector(|| "expander".into()).child(
+                    SettingsExpander::new("expander", "Header", self.open)
+                        .content(
+                            div()
+                                .flex()
+                                .gap(px(8.0))
+                                .child(
+                                    div().debug_selector(|| "expander-button".into()).child(
+                                        Button::standard("expander-button", "Act")
+                                            .on_click(on(|h| h.button += 1)),
+                                    ),
+                                )
+                                .child(div().debug_selector(|| "expander-switch".into()).child(
+                                    ToggleSwitch::new("expander-switch", self.switch).on_change(
+                                        move |value: bool, _, cx: &mut App| {
+                                            let _ = switch_view.update(cx, |h, cx| {
+                                                h.switch = value;
+                                                cx.notify();
+                                            });
+                                        },
+                                    ),
+                                )),
+                        )
+                        .row(SettingsRow::new("Row"))
+                        .on_toggle(move |open: bool, _, cx: &mut App| {
+                            let _ = toggle_view.update(cx, |h, cx| {
+                                h.open = open;
+                                cx.notify();
+                            });
+                        }),
+                ),
+            )
+            .child(
+                div().debug_selector(|| "card".into()).child(
+                    SettingsCard::new("card", "Card")
+                        .content(div().debug_selector(|| "card-button".into()).child(
+                            Button::standard("card-button", "Act").on_click(on(|h| h.button += 1)),
+                        ))
+                        .on_click(on(|h| h.card_opened += 1)),
+                ),
+            )
+    }
+}
+
+#[gpui::test]
+fn a_control_in_a_header_acts_alone_and_the_header_still_toggles(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let (view, cx) = cx.add_window_view(|_, _| HeaderHarness {
+        open: false,
+        card_opened: 0,
+        button: 0,
+        switch: false,
+    });
+    cx.run_until_parked();
+    // The keyboard is unchanged: the expander's header is the first stop,
+    // and Space opens and closes it.
+    tab_to_first_stop(cx);
+    cx.simulate_keystrokes("space");
+    view.read_with(cx, |h, _| assert!(h.open, "Space on the header opens it"));
+    cx.simulate_keystrokes("space");
+    view.read_with(cx, |h, _| assert!(!h.open, "and closes it"));
+    press_on(cx, "expander-button");
+    view.read_with(cx, |h, _| {
+        assert_eq!(h.button, 1, "the button acts");
+        assert!(!h.open, "the expander does not move");
+    });
+    press_on(cx, "expander-switch");
+    view.read_with(cx, |h, _| {
+        assert!(h.switch, "the switch turns on");
+        assert!(!h.open, "the expander does not move");
+    });
+    press_on(cx, "card-button");
+    view.read_with(cx, |h, _| {
+        assert_eq!(h.button, 2);
+        assert_eq!(h.card_opened, 0, "the card does not open");
+    });
+    // Elsewhere on the header: it toggles, and the card opens.
+    let header = bounds(cx, "expander");
+    press(cx, point(header.left() + px(40.0), header.top() + px(20.0)));
+    view.read_with(cx, |h, _| assert!(h.open, "the header opens the expander"));
+    let card = bounds(cx, "card");
+    press(cx, point(card.left() + px(40.0), card.center().y));
+    view.read_with(cx, |h, _| assert_eq!(h.card_opened, 1));
+}
+
+/// A colour swatch is a control: a click, or Tab and then Enter or Space,
+/// chooses it (ticket 136's review).
+struct SwatchHarness {
+    chosen: Vec<usize>,
+}
+
+impl Render for SwatchHarness {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        use super::swatch::ColorSwatch;
+        let view = cx.entity().downgrade();
+        let mut row = div()
+            .size_full()
+            .p(px(20.0))
+            .flex()
+            .items_start()
+            .gap(px(6.0));
+        for (index, colour) in [0xFF0000u32, 0x00FF00].into_iter().enumerate() {
+            let view = view.clone();
+            let selector: &'static str = if index == 0 { "swatch-0" } else { "swatch-1" };
+            row = row.child(
+                div().debug_selector(move || selector.into()).child(
+                    ColorSwatch::new(("swatch", index), colour, "Red")
+                        .selected(index == 0)
+                        .on_click(move |_, cx: &mut App| {
+                            let _ = view.update(cx, |h, cx| {
+                                h.chosen.push(index);
+                                cx.notify();
+                            });
+                        }),
+                ),
+            );
+        }
+        row
+    }
+}
+
+#[gpui::test]
+fn a_swatch_is_chosen_by_a_click_and_by_the_keyboard(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let (view, cx) = cx.add_window_view(|_, _| SwatchHarness { chosen: Vec::new() });
+    cx.run_until_parked();
+    press_on(cx, "swatch-1");
+    view.read_with(cx, |h, _| assert_eq!(h.chosen, vec![1]));
+    // The first swatch is the first tab stop.
+    tab_to_first_stop(cx);
+    cx.simulate_keystrokes("enter");
+    cx.simulate_keystrokes("space");
+    view.read_with(cx, |h, _| assert_eq!(h.chosen, vec![1, 0, 0]));
+}

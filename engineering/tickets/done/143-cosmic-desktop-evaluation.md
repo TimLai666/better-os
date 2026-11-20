@@ -101,3 +101,41 @@ For this option, find out and write down:
 
 Until this is decided, each new GNOME-only relay is work that the fourth
 option would not use. Say in the ADR which of tickets 151 to 161 should wait.
+
+## Notes
+
+Delivered on 2026-11-21 as
+[ADR 0038](/engineering/decisions/0038-cosmic-as-the-desktop.md) (proposed),
+in two passes the same day.
+
+The first pass: the research with its sources, every GNOME-specific part with
+what COSMIC offers and the size of the work, installing on Zorin OS 18 and
+Ubuntu (Pop's `noble` repository would replace 566 host packages; pinned, a
+26-package closure), the desktop-icons recommendation ticket 144 waits on, and
+a VM run: Pop!_OS 24.04 build 29 (COSMIC Epoch 1.11.0) with Better OS 0.2.16's
+Files, Git, Monitor, Manager, and Launcher at 100 %, 150 %, and 200 %, the
+trays, the portal file chooser, Zhuyin through Fcitx 5, COSMIC Files' desktop
+mode, and `wayland-info`. Screenshots are in
+`/home/tim/Developer/better-os-evidence/143/`. The windows came from the
+published packages, not this branch: the host's disk could not hold the build
+and the ISO together.
+
+The second pass answers the section "Our own desktop session": option D, a
+Better OS session on `cosmic-comp`, with what is possible from outside and
+what needs a patch (only handing swipes to Better OS; the edge swipe needs the
+evdev route in every option because libinput hides touchpad contacts), what a
+fork costs (503 compositor commits in eleven months, a 400 to 800 line patch,
+upstream refusing machine-written code), what the session needs and who
+provides it, what carries over and what stays on GNOME, GPUI's layer-shell
+surface, the one-click install (a 14-package closure) and removal, the
+gesture requirement on every option (GNOME Shell 45 to 49's private
+transition methods), and which of tickets 150 to 161 wait under each option.
+The owner's decisions are C1 to C9 at the top of the ADR. It also corrects a
+claim of the first pass: COSMIC writes its GTK settings to its own dconf
+database, not GNOME's.
+
+Not run, and left to the chosen option's own first check: COSMIC or the
+Better OS session installed onto Zorin OS 18 or Ubuntu 24.04 with the pin,
+GDM starting either session, switching back and removal, a Better OS window as
+a layer-shell surface, a patched `cosmic-comp`, real hardware, and a touchpad.
+The owner's choice among the options is not part of this ticket.

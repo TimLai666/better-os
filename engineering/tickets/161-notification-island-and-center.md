@@ -3,6 +3,19 @@
 **Blocked by:** none for the design; building is blocked by 151 and 152 (the
 relay and the bar it extends) and by the owner's decisions below
 
+## Under ADR 0038's option D (2026-11-21)
+
+The design (and the owner's N1 to N4) is needed in every option and stays this
+ticket's. Building follows ADR 0038's table: in the Better OS session the
+island and the center are Better OS's own layer surfaces fed by Better OS's own
+`org.freedesktop.Notifications` service (tickets 215 and 216), and the edge
+swipe is the scroll pass-through's (ticket 225, after N3); **the GNOME build
+(the ADR 0036 amendment for more docks, GNOME's banner suppression, the
+relay's notification members) waits** with ticket 151. The design's section
+"How it is built on GNOME 46" is therefore written for both, with the GNOME
+facts left to the GNOME build when it is taken up; the blocker on 151 above
+applies to the GNOME build only.
+
 ## Why
 
 On 2026-11-21 the owner asked for two things, after choosing Better OS's own

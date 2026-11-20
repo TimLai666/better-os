@@ -2,6 +2,13 @@
 
 **Blocked by:** 152, 156, 157, 158, 149
 
+**Blocked:** waits, by ADR 0038 (owner, 2026-11-21: option D). ADR 0038's
+table puts this ticket on **wait**: its Better Defaults entry edits Zorin's
+taskbar, which the Better OS session does not have, and its desktop check is
+of the GNOME bar, which waits with ticket 151. The session's taskbar is ticket
+213 and its bar is checked on the owner's machine in ticket 227. This ticket
+is built when ticket 151 is.
+
 ## Why
 
 `design/top-bar-spec.md` section 10: while the bar is on, the bottom taskbar

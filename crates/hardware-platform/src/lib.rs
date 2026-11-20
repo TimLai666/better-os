@@ -50,6 +50,7 @@ pub fn read_machine(
         battery: sysfs::battery(root),
         brightness,
         keyboard,
+        lighting: sysfs::lighting_hint(root),
         fan: sysfs::fan_mode(root),
         sensors: sysfs::sensors(root),
     }

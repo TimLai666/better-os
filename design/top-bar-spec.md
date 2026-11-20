@@ -987,6 +987,16 @@ Rules that hold in all three:
 
 ## 11. On COSMIC
 
+On 2026-11-21 the owner chose a Better OS session on `cosmic-comp` beside
+GNOME (ADR 0038, option D; `engineering/specs/better-os-session.md`), with no
+COSMIC panel in it, so the question of hiding COSMIC's panel does not arise.
+The bar is built for that session first (ticket 152 on layer-shell, ticket
+160 for the session's sources: focused window from `zcosmic_toplevel_info_v1`,
+window actions through `zcosmic_toplevel_manager_v1`, the input method from
+Fcitx 5, notifications from Better OS's own service, ticket 215), while the
+GNOME relay of section 9 waits (ticket 151). Ticket 160 rewrites this section
+in full; the paragraph below is the text from before the decision.
+
 If ticket 143 makes COSMIC the desktop, the bar becomes simpler: cosmic-comp
 offers layer-shell, on which COSMIC's own panel and its applets are built
 (libcosmic's panel applet chapter), so `better-top-bar-view` would open its
@@ -1053,4 +1063,4 @@ person unticks "Also delete my settings and history".
 | That Mutter draws nothing for an override-redirect container at opacity 0 with an empty input region, and that `GetImage` on a redirected icon window returns its picture under XWayland | 149 |
 | Which programs on the owner's machine dock an XEmbed icon, and that each comes back when the bridge takes the selection | 149, then 159 with the owner |
 | The bar on the owner's desktop, at scale 2, with the person's own taskbar | 159 |
-| The bar on COSMIC | 160, after ticket 143's decision |
+| The bar on COSMIC | 160, in the Better OS session (ADR 0038 option D, 2026-11-21) |

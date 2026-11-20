@@ -45,6 +45,7 @@ pub mod progress;
 pub mod selection;
 pub mod settings_card;
 pub mod staged_bar;
+pub mod swatch;
 pub mod tabs;
 pub mod text_box;
 pub mod theme;

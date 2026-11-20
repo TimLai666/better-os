@@ -38,10 +38,11 @@ zbus_polkit = { version = "5" }
 [features]
 # Fakes for the traits that touch the host or decide authorization. Never
 # enabled for the shipped binary: nothing in `main.rs` can construct them.
-test-support = []
+test-support = ["hardware-core/test-support"]
 
 [dev-dependencies]
 tempfile.workspace = true
+hardware-core = { workspace = true, features = ["test-support"] }
 hardware-platform = { workspace = true, features = ["test-support"] }
 manager-daemon = { path = ".", features = ["test-support"] }
 tokio = { version = "1", features = ["test-util"] }

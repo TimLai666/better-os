@@ -2,6 +2,24 @@
 
 **Blocked by:** 152
 
+## Under ADR 0038's option D (2026-11-21)
+
+Built for the Better OS session first (ticket 152). What changes there:
+
+- **Input method**: in the session the sources are Fcitx 5's (C4), read and
+  switched through ticket 160's Fcitx 5 source; GNOME's relay
+  (`InputSources`, `ActivateInputSource`, `SuppressKeyboardIndicator`) is
+  GNOME's half and waits with ticket 151.
+- **Network**: in the session GNOME Shell is not NetworkManager's secret agent
+  and nothing else is, so the secret prompts are Better OS's own (ticket 217);
+  the flyout's "Enter the password in the dialog" points at that dialog.
+  Bluetooth pairing likewise (ticket 217).
+- **Settings links** open COSMIC Settings' pages in the session (C9, ticket
+  160).
+- Sound and battery are unchanged; the battery draws ticket 170's rule.
+- The headless GNOME Shell check below is done in the session instead (ticket
+  201's VM, fake system services on a private bus).
+
 ## Why
 
 `design/top-bar-spec.md` sections 6.2–6.5: the right side of the bar shows the

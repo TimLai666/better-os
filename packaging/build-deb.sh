@@ -199,6 +199,13 @@ PACKAGE_SYSTEM_FRAGMENT=""
 #                      adapter packages built beside it, and its postinst
 #                      starts the handoff
 PACKAGE_DAEMON_HANDOFF=0
+#   PACKAGE_RELEASES_KEYBOARD  1 for better-manager: its prerm on removal
+#                      gives a keyboard whose colour the System page set back
+#                      to its firmware, gives the battery back the charge
+#                      limit it had before Better OS, and forgets both choices
+#                      (ADR 0034), so none outlives the page; the daemon
+#                      package, which Better Manager only recommends, may stay
+PACKAGE_RELEASES_KEYBOARD=0
 #   PACKAGE_HANDOFF_RETRY  1 for better-shell-adapter: its postinst starts the
 #                      handoff Better Manager installed, which is how a failed
 #                      handoff is retried once Better Manager is current
@@ -214,7 +221,24 @@ reset_package_inputs() {
     PACKAGE_AUTOSTART_OVERRIDES=""
     PACKAGE_SYSTEM_FRAGMENT=""
     PACKAGE_DAEMON_HANDOFF=0
+    PACKAGE_RELEASES_KEYBOARD=0
     PACKAGE_HANDOFF_RETRY=0
+}
+
+# The prerm lines that give the keyboard back when the page that set its
+# colour is removed (ADR 0034). The privileged service does the work: it is
+# root under dpkg, and the same code runs at its own removal.
+add_keyboard_release() {
+    local staging_dir="$1"
+    if [[ ! -f "$staging_dir/DEBIAN/prerm" ]]; then
+        printf '#!/bin/sh\nset -e\n' > "$staging_dir/DEBIAN/prerm"
+        chmod 0755 "$staging_dir/DEBIAN/prerm"
+    fi
+    {
+        printf '\n# ADR 0034: the keyboard and the charge limit go back with the page that set them.\n'
+        # shellcheck disable=SC2016 # expanded by the maintainer script
+        printf 'if [ "$1" = remove ] && [ -x /usr/libexec/better-manager-daemon ]; then\n    /usr/libexec/better-manager-daemon --release-hardware || true\nfi\n'
+    } >> "$staging_dir/DEBIAN/prerm"
 }
 
 # The GPUI toolkit dlopens fontconfig and the Wayland client libraries, so they
@@ -487,6 +511,9 @@ make_package() {
     if ((PACKAGE_DAEMON_HANDOFF == 1)); then
         add_daemon_handoff "$staging_dir"
     fi
+    if ((PACKAGE_RELEASES_KEYBOARD == 1)); then
+        add_keyboard_release "$staging_dir"
+    fi
     if ((PACKAGE_HANDOFF_RETRY == 1)); then
         add_handoff_hook "$staging_dir"
     fi
@@ -695,6 +722,10 @@ PRERM
 if [ "$1" = "remove" ]; then
     if [ -x /usr/libexec/better-manager-daemon ]; then
         /usr/libexec/better-manager-daemon --remove-drive-entries || true
+        # ADR 0034: a keyboard whose colour Better OS set goes back to its
+        # firmware's own lighting, and the battery to the charge limit it had
+        # before Better OS. Nothing is touched when nothing was set.
+        /usr/libexec/better-manager-daemon --release-hardware || true
     fi
     if command -v deb-systemd-helper >/dev/null 2>&1; then
         deb-systemd-helper disable better-hardware-restore.service >/dev/null 2>&1 || true
@@ -715,6 +746,11 @@ set -e
 # and the person ticked nothing to keep them.
 if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
     rm -rf /var/lib/better-os/boot-watch
+    # The keyboard colour and the charge limit (ADR 0034): the prerm gave
+    # both back, so the choices and the limit recorded before Better OS go
+    # too, and the boot-time restore finds nothing to write.
+    rm -f /var/lib/better-os/keyboard-lighting.json \
+        /var/lib/better-os/hardware.json /var/lib/better-os/hardware-before.json
 fi
 
 if [ "$1" = "purge" ]; then
@@ -822,6 +858,7 @@ PACKAGE_RECOMMENDS="better-manager-daemon (= $VERSION), better-shell-adapter (= 
 # it stops and disables it, so nothing it started outlives it.
 PACKAGE_ALWAYS_ON_UNITS="better-window-attention.service"
 PACKAGE_DAEMON_HANDOFF=1
+PACKAGE_RELEASES_KEYBOARD=1
 make_package better-manager \
     'Better OS manager desktop application' \
     'Better OS desktop application built with the shared manager and monitor contracts.'
