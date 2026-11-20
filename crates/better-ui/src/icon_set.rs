@@ -44,8 +44,9 @@ pub enum Glyph {
     Symbol(IconName),
     /// An SVG the window serves itself, drawn like a symbol.
     Path(SharedString),
-    /// A toolkit icon already built (sized or coloured by the caller).
-    Icon(Icon),
+    /// A toolkit icon already built (sized or coloured by the caller),
+    /// boxed because a built `Icon` is large.
+    Icon(Box<Icon>),
     /// An object or action picture from this set.
     Picture(Picture),
 }
@@ -58,7 +59,7 @@ impl From<IconName> for Glyph {
 
 impl From<Icon> for Glyph {
     fn from(icon: Icon) -> Self {
-        Glyph::Icon(icon)
+        Glyph::Icon(Box::new(icon))
     }
 }
 
@@ -95,7 +96,7 @@ impl Glyph {
                 .path(path.clone())
                 .size(size)
                 .into_any_element(),
-            Glyph::Icon(icon) => icon.clone().size(size).into_any_element(),
+            Glyph::Icon(icon) => (**icon).clone().size(size).into_any_element(),
             Glyph::Picture(picture) => match picture.kind() {
                 Kind::Object if disabled => {
                     picture_disabled(*picture, f32::from(size)).into_any_element()

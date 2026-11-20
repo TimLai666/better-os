@@ -474,9 +474,9 @@ fn row(
     icon_column: bool,
     trailing: Option<AnyElement>,
     state: Option<Interaction>,
-    disabled: bool,
     p: &Palette,
 ) -> gpui::Stateful<gpui::Div> {
+    let disabled = state == Some(Interaction::Disabled);
     let (background, foreground) = item_colors(state.unwrap_or(Interaction::Rest), p);
     // The inset shape is drawn inside a hit area that fills the row, so the
     // pixels between two items belong to one of them (`hit_area`).
@@ -615,7 +615,6 @@ impl RenderOnce for MenuPanel {
                         icon_column,
                         shortcut,
                         shown_state,
-                        item.disabled,
                         p,
                     )
                     // For the interaction tests; nothing outside a test build.
@@ -677,7 +676,6 @@ impl RenderOnce for MenuPanel {
                         icon_column,
                         Some(chevron),
                         shown_state,
-                        *disabled,
                         p,
                     )
                     .relative();
@@ -775,7 +773,6 @@ impl RenderOnce for SubmenuPanel {
                         icon_column,
                         shortcut,
                         shown,
-                        item.disabled,
                         p,
                     );
                     if !item.disabled
