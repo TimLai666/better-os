@@ -120,6 +120,8 @@ pub(crate) struct Snapshot {
     /// login screen watch recorded it (ticket 140).
     /// With whether it was cut off on an earlier boot.
     pub(crate) login_screen_late: Option<(manager_core::login_watch::Event, bool)>,
+    /// The known faults Fixes last found (ticket 90).
+    pub(crate) fixes: crate::pages::fixes::FixesFacts,
 }
 
 impl Snapshot {
@@ -136,6 +138,7 @@ impl Snapshot {
             default_apps_changed: 0,
             battery_health: None,
             login_screen_late: None,
+            fixes: Default::default(),
         }
     }
 
@@ -297,6 +300,7 @@ mod tests {
             default_apps_changed: 0,
             battery_health: None,
             login_screen_late: None,
+            fixes: Default::default(),
         }
     }
 

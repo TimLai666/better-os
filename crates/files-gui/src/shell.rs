@@ -18,6 +18,7 @@ use better_ui::fluent::{
     text_box::TextBox,
     words::Locale as KitLocale,
 };
+use better_ui::icon_set::{self, Picture};
 use gpui::*;
 use gpui_component::IconName;
 
@@ -123,12 +124,8 @@ impl FilesApp {
             app.session.go_to_parent();
             app.after_location_change(window);
         }));
-        let reload = Button::icon_button(
-            "reload",
-            gpui_component::Icon::empty().path(better_ui::fluent::glyphs::REFRESH),
-            c.reload,
-        )
-        .on_click(act(cx, |app, _, _| app.session.reload()));
+        let reload = Button::icon_button("reload", Picture::Refresh, c.reload)
+            .on_click(act(cx, |app, _, _| app.session.reload()));
 
         let address: AnyElement = if self.editing_path {
             div()
@@ -198,20 +195,18 @@ impl FilesApp {
                 .border_1()
                 .border_color(p.stroke)
                 .overflow_hidden()
-                .child(
+                .child(icon_set::picture(
                     match self.session.location() {
-                        _ if self.drives_page.is_some() => {
-                            gpui_component::Icon::empty().path(crate::icons::COMPUTER)
-                        }
+                        _ if self.drives_page.is_some() => crate::icons::COMPUTER,
                         location @ (files_core::Location::Local(_)
                         | files_core::Location::Trash(_)
-                        | files_core::Location::Network(_)) => gpui_component::Icon::empty()
-                            .path(self.session.folder_glyph(location).svg()),
-                        other => gpui_component::Icon::new(icon_for_location(other)),
-                    }
-                    .size(px(16.0))
-                    .text_color(p.text_secondary),
-                )
+                        | files_core::Location::Network(_)) => {
+                            self.session.folder_glyph(location).picture()
+                        }
+                        other => icon_for_location(other),
+                    },
+                    16.0,
+                ))
                 .child(div().flex().min_w_0().overflow_hidden().child(bar))
                 .child(div().flex_1().h_full())
                 .tooltip(fluent::dialog::tooltip_builder(c.edit_location.into()))
@@ -280,7 +275,7 @@ impl FilesApp {
 
         let new_menu = vec![
             MenuItem::new(c.new_folder)
-                .icon(IconName::FolderClosed)
+                .icon(Picture::NewFolder)
                 .shortcut("Ctrl+Shift+N")
                 .disabled(!facts.writable)
                 .on_select(act(cx, |app, window, cx| {
@@ -289,7 +284,7 @@ impl FilesApp {
                 }))
                 .entry(),
             MenuItem::new(c.new_file)
-                .icon(IconName::File)
+                .icon(Picture::NewFile)
                 .disabled(!facts.writable)
                 .on_select(act(cx, |app, window, cx| {
                     app.session.dialog = Some(crate::session::PendingDialog::NewFile);
@@ -417,20 +412,20 @@ impl FilesApp {
         if in_trash {
             bar = bar
                 .command(
-                    BarCommand::new(c.restore_from_trash, IconName::Undo2)
+                    BarCommand::new(c.restore_from_trash, Picture::Restore)
                         .disabled(!has_selection)
                         .on_click(act(cx, |app, _, _| {
                             app.session.restore_selection_from_trash()
                         })),
                 )
                 .command(
-                    BarCommand::new(c.delete_permanently, IconName::Delete)
+                    BarCommand::new(c.delete_permanently, Picture::Delete)
                         .disabled(!has_selection)
                         .shortcut("Shift+Delete")
                         .on_click(act(cx, |app, _, _| app.session.request_permanent_delete())),
                 )
                 .command(
-                    BarCommand::new(c.empty_trash, IconName::Delete)
+                    BarCommand::new(c.empty_trash, Picture::Delete)
                         .disabled(!facts.has_items)
                         .on_click(act(cx, |app, window, cx| {
                             let columns = app.columns();
@@ -442,30 +437,30 @@ impl FilesApp {
         } else {
             bar = bar
                 .menu(
-                    BarCommand::new(c.new_menu, IconName::Plus).disabled(!facts.writable),
+                    BarCommand::new(c.new_menu, Picture::Add).disabled(!facts.writable),
                     new_menu,
                 )
                 .separator()
                 .command(
-                    BarCommand::new(c.cut_items, IconName::Frame)
+                    BarCommand::new(c.cut_items, Picture::Cut)
                         .shortcut("Ctrl+X")
                         .disabled(!facts.all_local)
                         .on_click(act(cx, |app, _, _| app.session.cut_selection())),
                 )
                 .command(
-                    BarCommand::new(c.copy_items, IconName::Copy)
+                    BarCommand::new(c.copy_items, Picture::Copy)
                         .shortcut("Ctrl+C")
                         .disabled(!facts.all_local)
                         .on_click(act(cx, |app, _, _| app.session.copy_selection())),
                 )
                 .command(
-                    BarCommand::new(c.paste_items, IconName::Inbox)
+                    BarCommand::new(c.paste_items, Picture::Paste)
                         .shortcut("Ctrl+V")
                         .disabled(!(facts.can_paste && facts.writable))
                         .on_click(act(cx, |app, _, _| app.session.paste())),
                 )
                 .command(
-                    BarCommand::new(c.rename, IconName::ALargeSmall)
+                    BarCommand::new(c.rename, Picture::Rename)
                         .shortcut("F2")
                         .disabled(!(facts.count == 1 && facts.all_local && facts.writable))
                         .on_click(act(cx, |app, window, cx| {
@@ -475,7 +470,7 @@ impl FilesApp {
                         })),
                 )
                 .command(
-                    BarCommand::new(c.move_to_trash, IconName::Delete)
+                    BarCommand::new(c.move_to_trash, Picture::Delete)
                         .shortcut("Delete")
                         .disabled(!(facts.all_local && facts.writable))
                         .on_click(act(cx, |app, _, _| app.session.trash_selection())),
@@ -493,7 +488,7 @@ impl FilesApp {
             )
             .separator()
             .command(
-                BarCommand::new(c.preview_pane, IconName::PanelRight)
+                BarCommand::new(c.preview_pane, Picture::ShowPane)
                     .icon_only()
                     .checked(self.session.preview.open)
                     .on_click(act(cx, |app, _, _| app.session.toggle_preview())),
@@ -505,9 +500,8 @@ impl FilesApp {
                     } else {
                         SharedString::from(c.jobs_panel)
                     },
-                    IconName::ArrowRight,
+                    crate::icons::OPERATIONS,
                 )
-                .icon_path(crate::icons::OPERATIONS)
                 // While jobs run, how many is on the icon; none, nothing.
                 .badge((active_jobs > 0).then(|| active_jobs.to_string()))
                 .icon_only()
@@ -547,7 +541,7 @@ impl FilesApp {
                     .on_click(act(cx, |app, _, _| app.session.redo())),
             )
             .secondary(
-                BarCommand::new(c.new_window, IconName::ExternalLink)
+                BarCommand::new(c.new_window, Picture::NewWindow)
                     .shortcut("Ctrl+N")
                     .on_click(act(cx, |app, _, cx| {
                         crate::app::open_window_at(
@@ -557,14 +551,14 @@ impl FilesApp {
                     })),
             )
             .secondary(
-                BarCommand::new(c.split_view, IconName::PanelRight)
+                BarCommand::new(c.split_view, Picture::SplitView)
                     .shortcut("Ctrl+Alt+N")
                     .checked(self.split.is_some())
                     .on_click(act(cx, |app, window, cx| app.toggle_split(window, cx))),
             )
             .secondary_entry(MenuEntry::Separator)
             .secondary(
-                BarCommand::new(c.select_all, IconName::CircleCheck)
+                BarCommand::new(c.select_all, Picture::SelectAll)
                     .shortcut("Ctrl+A")
                     .on_click(act(cx, |app, _, _| {
                         let columns = app.columns();
@@ -573,35 +567,35 @@ impl FilesApp {
                     })),
             )
             .secondary(
-                BarCommand::new(c.copy_path, IconName::Copy)
+                BarCommand::new(c.copy_path, Picture::Copy)
                     .shortcut("Ctrl+Shift+C")
                     .on_click(act(cx, |app, _, cx| app.copy_path_text(cx))),
             )
             .secondary(
-                BarCommand::new(c.duplicate, IconName::Copy)
+                BarCommand::new(c.duplicate, Picture::Copy)
                     .shortcut("Ctrl+Shift+D")
                     .disabled(!(facts.all_local && facts.writable))
                     .on_click(act(cx, |app, _, _| app.session.duplicate_selection())),
             )
             .secondary(
-                BarCommand::new(c.compress, IconName::Inbox)
+                BarCommand::new(c.compress, Picture::Compress)
                     .shortcut("Ctrl+Shift+P")
                     .disabled(!archive.compress)
                     .on_click(act(cx, |app, _, _| app.session.request_compress())),
             )
             .secondary(
-                BarCommand::new(c.extract, IconName::FolderOpen)
+                BarCommand::new(c.extract, Picture::Extract)
                     .shortcut("Ctrl+Shift+E")
                     .disabled(!archive.extract)
                     .on_click(act(cx, |app, _, _| app.session.extract_selection())),
             )
             .secondary(
-                BarCommand::new(c.pin_to_sidebar, IconName::Star)
+                BarCommand::new(c.pin_to_sidebar, Picture::Pin)
                     .shortcut("Ctrl+P")
                     .on_click(act(cx, |app, _, _| app.session.toggle_pin())),
             )
             .secondary(
-                BarCommand::new(c.open_terminal_here, IconName::SquareTerminal)
+                BarCommand::new(c.open_terminal_here, Picture::OpenTerminal)
                     .disabled(in_trash)
                     .on_click(act(cx, |app, _, _| {
                         app.session.open_terminal_here(&crate::terminal::on_path)
@@ -609,14 +603,14 @@ impl FilesApp {
             )
             .secondary_entry(MenuEntry::Separator)
             .secondary(
-                BarCommand::new(c.show_other_drives, IconName::HardDrive)
+                BarCommand::new(c.show_other_drives, Picture::Drive)
                     .checked(self.session.preferences.show_other_drives)
                     .on_click(act(cx, |app, _, _| app.session.toggle_show_other_drives())),
             )
             .secondary_entry(self.language_menu(c, cx))
             .secondary_entry(self.appearance_menu(c, cx))
             .secondary(
-                BarCommand::new(c.keyboard_shortcuts, IconName::Info)
+                BarCommand::new(c.keyboard_shortcuts, Picture::Keyboard)
                     .shortcut("?")
                     .on_click(act(cx, |app, _, _| app.show_shortcuts = true)),
             );
@@ -778,9 +772,7 @@ impl FilesApp {
         let kit_tabs = tabs
             .iter()
             .map(|(_, title, location)| {
-                Tab::new(title.clone())
-                    .icon(IconName::Folder)
-                    .icon_path(self.session.folder_glyph(location).svg())
+                Tab::new(title.clone()).icon(self.session.folder_glyph(location).picture())
             })
             .collect();
         let select_ids = ids.clone();
@@ -830,11 +822,11 @@ impl FilesApp {
             shown_rows(build_rows(&inputs, c))
         };
         let row_item = |row: &SidebarRow| {
-            let mut item = NavItem::new(row.label.clone(), icon_for_row(row));
             let (glyph, emblem) = sidebar_row_icon(&self.session, row);
-            if let Some(glyph) = glyph {
-                item = item.icon_path(glyph);
-            }
+            let mut item = NavItem::new(
+                row.label.clone(),
+                glyph.unwrap_or_else(|| icon_for_row(row)),
+            );
             if let Some(emblem) = emblem {
                 item = item.emblem(emblem);
             }
@@ -893,7 +885,7 @@ impl FilesApp {
                     if let Some((folder, status)) = self.sharing.dropbox()
                         && let Ok(location) = files_core::Location::local(&folder)
                     {
-                        let mut item = NavItem::new("Dropbox", IconName::Inbox);
+                        let mut item = NavItem::new("Dropbox", Picture::Cloud);
                         if let Some(status) = status {
                             item = item.caption(status);
                         }
@@ -978,9 +970,7 @@ impl FilesApp {
                     {
                         out.push((NavEntry::Header(c.sidebar_devices.into()), None));
                         out.push((
-                            NavItem::new(c.this_pc, IconName::HardDrive)
-                                .icon_path(crate::icons::COMPUTER)
-                                .entry(),
+                            NavItem::new(c.this_pc, crate::icons::COMPUTER).entry(),
                             Some(NavTarget::ThisPc),
                         ));
                     }
@@ -1013,7 +1003,7 @@ impl FilesApp {
                     // before, every one of them unknown.
                     if drives.is_empty() && !self.session.collection.has_states() {
                         for row in mount_rows {
-                            let item = NavItem::new(row.label.clone(), IconName::HardDrive)
+                            let item = NavItem::new(row.label.clone(), Picture::Drive)
                                 .caption(c.device_state_unknown_without_service);
                             out.push((item.entry(), Some(NavTarget::Row(row.clone()))));
                         }
@@ -1026,7 +1016,7 @@ impl FilesApp {
                     if !machines.is_empty() {
                         out.push((NavEntry::Header(c.tailnet.into()), None));
                         for machine in machines {
-                            let item = NavItem::new(machine.name.clone(), IconName::Globe)
+                            let item = NavItem::new(machine.name.clone(), Picture::RemoteComputer)
                                 .caption(machine.address.clone());
                             out.push((item.entry(), Some(NavTarget::Machine(machine))));
                         }
@@ -1045,8 +1035,7 @@ impl FilesApp {
         device: Option<&DeviceRow>,
         c: &'static Copy,
     ) -> NavEntry {
-        let mut item = NavItem::new(drive.name(c), IconName::HardDrive)
-            .icon_path(crate::icons::drive_row_icon(drive));
+        let mut item = NavItem::new(drive.name(c), crate::icons::drive_row_icon(drive));
         let attention =
             device.filter(|device| device.is_warning() || device.unsafe_removal.is_some());
         // Never on the drive the system runs from (Linux on an external SSD,
@@ -1074,7 +1063,7 @@ impl FilesApp {
             let key = drive.key.clone();
             return item
                 .action(NavAction::new(
-                    IconName::Redo,
+                    Picture::Refresh,
                     c.retry_mount,
                     move |_window, cx| {
                         let _ = this.update(cx, |app, cx| {
@@ -1091,7 +1080,7 @@ impl FilesApp {
             let key = drive.key.clone();
             let object_path = device.map(|device| device.object_path.clone());
             item = item.action(NavAction::new(
-                IconName::ArrowUp,
+                Picture::Eject,
                 c.device_eject,
                 move |_window, cx| {
                     let _ = this.update(cx, |app, cx| {
@@ -1117,7 +1106,7 @@ impl FilesApp {
         }
         let object_path = device.object_path.clone();
         let this = self.weak.clone();
-        let item = NavItem::new(device.label.clone(), IconName::HardDrive)
+        let item = NavItem::new(device.label.clone(), Picture::Drive)
             .caption(caption)
             .caption_warning(device.is_warning() || device.unsafe_removal.is_some());
         // Eject only on a drive that holds nothing of the running system
@@ -1126,7 +1115,7 @@ impl FilesApp {
             return item.entry();
         }
         item.action(NavAction::new(
-            IconName::ArrowUp,
+            Picture::Eject,
             c.device_eject,
             move |_window, cx| {
                 let _ = this.update(cx, |app, cx| {
@@ -1398,19 +1387,19 @@ fn sort_icon(direction: files_core::SortDirection) -> IconName {
     }
 }
 
-fn view_icon(mode: ViewMode) -> IconName {
+fn view_icon(mode: ViewMode) -> Picture {
     match mode {
-        ViewMode::Grid => IconName::LayoutDashboard,
-        ViewMode::List => IconName::GalleryVerticalEnd,
-        ViewMode::Columns => IconName::PanelLeft,
+        ViewMode::Grid => Picture::ViewGrid,
+        ViewMode::List => Picture::ViewList,
+        ViewMode::Columns => Picture::ViewColumns,
     }
 }
 
-fn icon_for_location(location: &files_core::Location) -> IconName {
+fn icon_for_location(location: &files_core::Location) -> Picture {
     match location {
-        files_core::Location::Trash(_) => IconName::Delete,
-        files_core::Location::Applications => IconName::LayoutDashboard,
-        _ => IconName::Folder,
+        files_core::Location::Trash(_) => Picture::Trash,
+        files_core::Location::Applications => Picture::Apps,
+        _ => Picture::Folder,
     }
 }
 
@@ -1420,30 +1409,30 @@ fn icon_for_location(location: &files_core::Location) -> IconName {
 pub(crate) fn sidebar_row_icon(
     session: &crate::session::FilesSession,
     row: &SidebarRow,
-) -> (Option<&'static str>, Option<IconName>) {
+) -> (Option<Picture>, Option<Picture>) {
     let glyph = match row.section {
         SidebarSection::Places | SidebarSection::Favorites
             if !matches!(row.location, files_core::Location::Recent) =>
         {
-            Some(session.folder_glyph(&row.location).svg())
+            Some(session.folder_glyph(&row.location).picture())
         }
         _ => None,
     };
-    let emblem = (row.section == SidebarSection::Favorites).then_some(IconName::StarFill);
+    let emblem = (row.section == SidebarSection::Favorites).then_some(Picture::Star);
     (glyph, emblem)
 }
 
-fn icon_for_row(row: &SidebarRow) -> IconName {
+fn icon_for_row(row: &SidebarRow) -> Picture {
     match row.section {
         SidebarSection::Places => match &row.location {
-            files_core::Location::Trash(_) => IconName::Delete,
-            files_core::Location::Recent => IconName::Calendar,
-            _ if row.key == "place-home" => IconName::User,
-            _ => IconName::Folder,
+            files_core::Location::Trash(_) => Picture::Trash,
+            files_core::Location::Recent => Picture::Recent,
+            _ if row.key == "place-home" => Picture::Home,
+            _ => Picture::Folder,
         },
-        SidebarSection::Devices => IconName::HardDrive,
-        SidebarSection::Applications => IconName::LayoutDashboard,
-        SidebarSection::Favorites => IconName::Star,
+        SidebarSection::Devices => Picture::Drive,
+        SidebarSection::Applications => Picture::Apps,
+        SidebarSection::Favorites => Picture::Star,
     }
 }
 

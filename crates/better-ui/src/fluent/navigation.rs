@@ -37,12 +37,13 @@
 
 use std::rc::Rc;
 
+use crate::icon_set::{Glyph, Placement};
 use gpui::{
     AnyElement, App, BoxShadow, Edges, ElementId, InteractiveElement, IntoElement, ParentElement,
     Pixels, RenderOnce, SharedString, StatefulInteractiveElement, Styled, Window, div, hsla, point,
     prelude::FluentBuilder as _, px,
 };
-use gpui_component::{Icon, IconName};
+use gpui_component::IconName;
 
 use super::badge::{Badge, InfoBadge};
 use super::button::{Button, ButtonKind};
@@ -69,7 +70,8 @@ pub enum NavEntry {
 #[derive(Clone)]
 pub struct NavItem {
     pub label: SharedString,
-    pub icon: IconName,
+    /// A symbol, a window's own SVG, or a picture.
+    pub icon: Glyph,
     pub disabled: bool,
     pub shown: ShownState,
     /// A count or a dot at the item's trailing edge.
@@ -83,12 +85,9 @@ pub struct NavItem {
     /// One trailing icon action, such as Eject on a drive. Only drawn in the
     /// open pane; a window offers the same action in the item's context menu.
     pub action: Option<NavAction>,
-    /// An SVG the window's own asset source serves, drawn instead of `icon`
-    /// for a glyph the kit's set does not have (a trash can).
-    pub icon_path: Option<SharedString>,
     /// A small mark on the icon's bottom trailing corner, such as the star a
     /// pinned folder wears beside its own icon.
-    pub emblem: Option<IconName>,
+    pub emblem: Option<Glyph>,
     /// A slim bar under the label, such as how full a drive is: the share
     /// filled (0.0 to 1.0), and whether it is drawn in the caution colour.
     pub meter: Option<(f32, bool)>,
@@ -97,7 +96,7 @@ pub struct NavItem {
 /// A trailing icon action on a navigation item.
 #[derive(Clone)]
 pub struct NavAction {
-    pub icon: IconName,
+    pub icon: Glyph,
     /// Its name, shown as the tooltip.
     pub label: SharedString,
     pub on_click: super::Handler,
@@ -105,12 +104,12 @@ pub struct NavAction {
 
 impl NavAction {
     pub fn new(
-        icon: IconName,
+        icon: impl Into<Glyph>,
         label: impl Into<SharedString>,
         on_click: impl Fn(&mut Window, &mut App) + 'static,
     ) -> Self {
         Self {
-            icon,
+            icon: icon.into(),
             label: label.into(),
             on_click: Rc::new(on_click),
         }
@@ -118,17 +117,16 @@ impl NavAction {
 }
 
 impl NavItem {
-    pub fn new(label: impl Into<SharedString>, icon: IconName) -> Self {
+    pub fn new(label: impl Into<SharedString>, icon: impl Into<Glyph>) -> Self {
         Self {
             label: label.into(),
-            icon,
+            icon: icon.into(),
             disabled: false,
             shown: ShownState::Live,
             badge: None,
             caption: None,
             caption_warning: false,
             action: None,
-            icon_path: None,
             emblem: None,
             meter: None,
         }
@@ -136,13 +134,13 @@ impl NavItem {
 
     /// Draws this SVG (served by the window's asset source) as the icon.
     pub fn icon_path(mut self, path: impl Into<SharedString>) -> Self {
-        self.icon_path = Some(path.into());
+        self.icon = Glyph::Path(path.into());
         self
     }
 
     /// Puts a small mark on the icon's corner; the item keeps its own icon.
-    pub fn emblem(mut self, emblem: IconName) -> Self {
-        self.emblem = Some(emblem);
+    pub fn emblem(mut self, emblem: impl Into<Glyph>) -> Self {
+        self.emblem = Some(emblem.into());
         self
     }
 
@@ -269,6 +267,59 @@ pub fn search_slot(has_search: bool, compact: bool) -> SearchSlot {
         (false, _) => SearchSlot::None,
         (true, false) => SearchSlot::Field,
         (true, true) => SearchSlot::Button,
+    }
+}
+
+/// How a window draws its pane at its current width.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PaneLayout {
+    /// 48px, icons only.
+    pub compact: bool,
+    /// When open, the pane floats over the content instead of pushing it.
+    pub overlay: bool,
+}
+
+/// The person's own choice about a window's pane, kept apart for a wide
+/// and a narrow window: closed with ☰ while wide, opened while narrow.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct PaneChoice {
+    pub wide_collapsed: bool,
+    pub narrow_open: bool,
+}
+
+impl PaneChoice {
+    /// The pane in a window that is `narrow` or not. A wide window's pane is
+    /// open unless the person closed it; a narrow window's is compact unless
+    /// the person opened it, and then it floats so the content keeps its
+    /// width, as WinUI's `NavigationView` does in its compact mode.
+    pub fn layout(self, narrow: bool) -> PaneLayout {
+        if narrow {
+            PaneLayout {
+                compact: !self.narrow_open,
+                overlay: true,
+            }
+        } else {
+            PaneLayout {
+                compact: self.wide_collapsed,
+                overlay: false,
+            }
+        }
+    }
+
+    /// Takes the pane's own ☰: `compact` is what it asks for, in a window
+    /// that is `narrow` or not.
+    pub fn toggle(&mut self, compact: bool, narrow: bool) {
+        if narrow {
+            self.narrow_open = !compact;
+        } else {
+            self.wide_collapsed = compact;
+        }
+    }
+
+    /// A narrow window's open pane closes once a page is chosen, as WinUI's
+    /// overlay pane does.
+    pub fn page_chosen(&mut self) {
+        self.narrow_open = false;
     }
 }
 
@@ -514,11 +565,8 @@ fn item_row(
             div()
                 .relative()
                 .child(
-                    match &item.icon_path {
-                        Some(path) => Icon::empty().path(path.clone()),
-                        None => Icon::new(item.icon.clone()),
-                    }
-                    .size(size::ICON),
+                    item.icon
+                        .element(size::ICON, Placement::Labelled, p, item.disabled),
                 )
                 .children(item.emblem.clone().map(|emblem| {
                     // No disc behind it: a disc of any one fill is a wrong
@@ -528,7 +576,8 @@ fn item_row(
                         .absolute()
                         .right(px(-7.0))
                         .bottom(px(-5.0))
-                        .child(Icon::new(emblem).size(px(10.0)).text_color(p.accent_text))
+                        .text_color(p.accent_text)
+                        .child(emblem.element(px(10.0), Placement::Labelled, p, false))
                 })),
         ),
     )

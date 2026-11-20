@@ -8,9 +8,8 @@ use better_ui::fluent::auto_suggest::{AutoSuggestBox, Suggestion};
 use better_ui::fluent::badge::InfoBadge;
 use better_ui::fluent::chrome::TitleBar;
 use better_ui::fluent::navigation::{NavItem, NavigationView};
-use better_ui::fluent::palette;
+use better_ui::icon_set::{self, Picture};
 use gpui::*;
-use gpui_component::{Icon, IconName};
 
 use crate::{
     app::ManagerApp,
@@ -26,17 +25,17 @@ const SEARCH_WIDTH: f32 = 288.0;
 
 /// The pane icon for each item (spec section 1's table). Lucide has no house
 /// or touchpad glyph, so Home and Touchpad use the nearest two.
-pub(crate) fn route_icon(route: Route) -> IconName {
+pub(crate) fn route_icon(route: Route) -> Picture {
     match route {
-        Route::Home => IconName::LayoutDashboard,
-        Route::System => IconName::Cpu,
-        Route::WindowAttention => IconName::Bell,
-        Route::Touchpad => IconName::Frame,
-        Route::KeepAwake => IconName::Sun,
-        Route::Apps => IconName::Inbox,
-        Route::DefaultApps => IconName::Star,
-        Route::Fixes => IconName::TriangleAlert,
-        Route::Settings => IconName::Settings,
+        Route::Home => Picture::Dashboard,
+        Route::System => Picture::Computer,
+        Route::WindowAttention => Picture::Bell,
+        Route::Touchpad => Picture::Touchpad,
+        Route::KeepAwake => Picture::KeepAwake,
+        Route::Apps => Picture::Apps,
+        Route::DefaultApps => Picture::Star,
+        Route::Fixes => Picture::Fixes,
+        Route::Settings => Picture::Settings,
     }
 }
 
@@ -73,12 +72,8 @@ impl ManagerApp {
     /// The window's titlebar: `Better Manager` in both languages (audit
     /// M12), and a back button while there is somewhere to go back to.
     pub(crate) fn title_bar(&self, cx: &mut Context<Self>) -> AnyElement {
-        let p = palette(cx);
-        let mut bar = TitleBar::new(shell(self.locale).window_title).icon(
-            Icon::new(IconName::GalleryVerticalEnd)
-                .size(px(16.0))
-                .text_color(p.accent),
-        );
+        let mut bar = TitleBar::new(shell(self.locale).window_title)
+            .icon(icon_set::picture(Picture::Settings, 16.0));
         if crate::navigation::shows_back(&self.history) {
             bar = bar.back(
                 self.locale.words(),

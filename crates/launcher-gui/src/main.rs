@@ -22,7 +22,6 @@
 
 use gpui::*;
 use gpui_component::Root;
-use gpui_component_assets::Assets;
 use launcher_gui::{
     LauncherOverlay, Locale, MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH, OverlayEvent, START_HEIGHT,
     START_WIDTH, overlay_size,
@@ -31,6 +30,22 @@ use launcher_platform::activation::{
     ActivationRequest, InstanceRole, OverlayVisibility, SingleInstance,
 };
 use launcher_platform::bus::SessionBusRegistry;
+
+/// The icon set before the kit's icons (ticket 147).
+struct Assets;
+
+impl gpui::AssetSource for Assets {
+    fn load(&self, path: &str) -> gpui::Result<Option<std::borrow::Cow<'static, [u8]>>> {
+        if let Some(svg) = better_ui::icon_set::load(path) {
+            return Ok(Some(std::borrow::Cow::Borrowed(svg)));
+        }
+        gpui_component_assets::Assets.load(path)
+    }
+
+    fn list(&self, path: &str) -> gpui::Result<Vec<gpui::SharedString>> {
+        gpui_component_assets::Assets.list(path)
+    }
+}
 
 fn main() {
     // First statement in the process: open time is a published figure, so the

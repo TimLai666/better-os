@@ -14,6 +14,7 @@
 
 use std::rc::Rc;
 
+use crate::icon_set::{Glyph, Placement};
 use gpui::{
     AnyElement, App, AppContext as _, ClickEvent, ElementId, Entity, FocusHandle,
     InteractiveElement, IntoElement, ParentElement, RenderOnce, SharedString,
@@ -35,7 +36,7 @@ pub enum MenuEntry {
     Separator,
     Submenu {
         label: SharedString,
-        icon: Option<IconName>,
+        icon: Option<Glyph>,
         disabled: bool,
         entries: Vec<MenuEntry>,
     },
@@ -45,10 +46,9 @@ pub enum MenuEntry {
 #[derive(Clone)]
 pub struct MenuItem {
     pub label: SharedString,
-    pub icon: Option<IconName>,
-    /// The window's own SVG, drawn instead of `icon` (a command bar
-    /// command that moved behind `…` keeps the glyph it had in the bar).
-    pub icon_path: Option<SharedString>,
+    /// A symbol, a window's own SVG, or a picture (drawn as beside a
+    /// label: DESIGN.md's Icons).
+    pub icon: Option<Glyph>,
     /// The keyboard shortcut text, such as `Ctrl+C`. It is shown, not bound:
     /// the window binds the shortcut itself.
     pub shortcut: Option<SharedString>,
@@ -65,7 +65,6 @@ impl MenuItem {
         Self {
             label: label.into(),
             icon: None,
-            icon_path: None,
             shortcut: None,
             disabled: false,
             shown: ShownState::Live,
@@ -80,14 +79,14 @@ impl MenuItem {
         self
     }
 
-    pub fn icon(mut self, icon: IconName) -> Self {
-        self.icon = Some(icon);
+    pub fn icon(mut self, icon: impl Into<Glyph>) -> Self {
+        self.icon = Some(icon.into());
         self
     }
 
     /// Draws the window's own SVG at `path` instead of a kit icon.
     pub fn icon_path(mut self, path: impl Into<SharedString>) -> Self {
-        self.icon_path = Some(path.into());
+        self.icon = Some(Glyph::Path(path.into()));
         self
     }
 
@@ -147,14 +146,13 @@ impl MenuEntry {
         self.icon().is_some() || matches!(self, MenuEntry::Item(item) if item.checked.is_some())
     }
 
-    fn icon(&self) -> Option<Icon> {
+    fn icon(&self) -> Option<Glyph> {
         match self {
-            MenuEntry::Item(item) => match (item.checked, &item.icon_path) {
-                (Some(true), _) => Some(Icon::new(IconName::Check)),
-                (_, Some(path)) => Some(Icon::empty().path(path.clone())),
-                _ => item.icon.clone().map(Icon::new),
+            MenuEntry::Item(item) => match item.checked {
+                Some(true) => Some(Glyph::Symbol(IconName::Check)),
+                _ => item.icon.clone(),
             },
-            MenuEntry::Submenu { icon, .. } => icon.clone().map(Icon::new),
+            MenuEntry::Submenu { icon, .. } => icon.clone(),
             MenuEntry::Separator => None,
         }
     }
@@ -472,12 +470,13 @@ impl MenuPanel {
 fn row(
     id: ElementId,
     label: SharedString,
-    icon: Option<Icon>,
+    icon: Option<Glyph>,
     icon_column: bool,
     trailing: Option<AnyElement>,
     state: Option<Interaction>,
     p: &Palette,
 ) -> gpui::Stateful<gpui::Div> {
+    let disabled = state == Some(Interaction::Disabled);
     let (background, foreground) = item_colors(state.unwrap_or(Interaction::Rest), p);
     // The inset shape is drawn inside a hit area that fills the row, so the
     // pixels between two items belong to one of them (`hit_area`).
@@ -500,12 +499,9 @@ fn row(
         look = group_look(look, hover, pressed);
     }
     if icon_column {
-        look = look.child(
-            div()
-                .size(super::size::ICON)
-                .flex_none()
-                .children(icon.map(|icon| icon.size(super::size::ICON))),
-        );
+        look = look.child(div().size(super::size::ICON).flex_none().children(
+            icon.map(|icon| icon.element(super::size::ICON, Placement::Labelled, p, disabled)),
+        ));
     }
     let look = look
         .child(div().flex_1().whitespace_nowrap().child(label))
@@ -680,7 +676,7 @@ impl RenderOnce for MenuPanel {
                     let mut element = row(
                         ElementId::named_usize("submenu", index),
                         label.clone(),
-                        icon.clone().map(Icon::new),
+                        icon.clone(),
                         icon_column,
                         Some(chevron),
                         shown_state,

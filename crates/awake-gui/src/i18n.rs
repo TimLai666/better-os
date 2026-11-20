@@ -63,14 +63,14 @@ impl Locale {
 pub(crate) struct Copy {
     // ---- Shell ---------------------------------------------------------
     pub(crate) application_name: &'static str,
-    pub(crate) application_tagline: &'static str,
-    pub(crate) navigation: &'static str,
     pub(crate) keyboard_hint: &'static str,
     pub(crate) refresh: &'static str,
     pub(crate) cancel: &'static str,
     pub(crate) save: &'static str,
     pub(crate) edit: &'static str,
     pub(crate) delete: &'static str,
+    /// The Play button on a Quick Sessions row, which has no words of its own.
+    pub(crate) start_this_session: &'static str,
     pub(crate) duplicate: &'static str,
     pub(crate) enable: &'static str,
     pub(crate) disable: &'static str,
@@ -371,14 +371,13 @@ impl Copy {
 
 static EN_US: Copy = Copy {
     application_name: "Better Awake",
-    application_tagline: "Keep this machine awake, on purpose",
-    navigation: "Sections",
     keyboard_hint: "Press Ctrl and a number to jump to a section",
     refresh: "Refresh",
     cancel: "Cancel",
     save: "Save",
     edit: "Edit",
     delete: "Delete",
+    start_this_session: "Start this session",
     duplicate: "Duplicate",
     enable: "Enable",
     disable: "Disable",
@@ -648,14 +647,13 @@ static EN_US: Copy = Copy {
 
 static ZH_TW: Copy = Copy {
     application_name: "Better Awake",
-    application_tagline: "讓這台電腦有理由地保持清醒",
-    navigation: "區段",
     keyboard_hint: "按 Ctrl 加數字可直接切換區段",
     refresh: "重新讀取",
     cancel: "取消",
     save: "儲存",
     edit: "編輯",
     delete: "刪除",
+    start_this_session: "開始這個工作階段",
     duplicate: "複製",
     enable: "啟用",
     disable: "停用",

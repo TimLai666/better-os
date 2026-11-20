@@ -2,7 +2,7 @@
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
-use gpui_component::{ActiveTheme, *};
+use gpui_component::{ActiveTheme, IconName, h_flex, v_flex};
 
 use crate::app::FilesApp;
 use crate::drives::DriveText as _;
@@ -1252,12 +1252,10 @@ impl FilesApp {
                 .border_color(p.card_stroke)
                 .hover(move |style| style.bg(hover))
                 .cursor_pointer()
-                .child(
-                    Icon::empty()
-                        .path(crate::icons::drive_row_icon(&drive))
-                        .size(px(32.0))
-                        .text_color(p.text_secondary),
-                )
+                .child(better_ui::icon_set::picture(
+                    crate::icons::drive_row_icon(&drive),
+                    32.0,
+                ))
                 .child(
                     v_flex()
                         .flex_1()

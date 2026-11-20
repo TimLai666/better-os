@@ -7,11 +7,9 @@
 //! search, and Home from this list alone, so a page ticket adds its module
 //! and replaces one line of [`PAGES`] and touches nothing else in the shell.
 //!
-//! The pages tickets 86 to 90 build are registered now so the pane, deep
-//! links, and search already know them; the ones not built yet are
-//! placeholders, which a debug build draws as "not built yet". None may ship
-//! in a release; ticket 91's release gate fails on any entry that is not
-//! [`PageStatus::Built`]. Touchpad is built (ticket 88).
+//! Every page is built: Fixes (ticket 90) was the last placeholder, and the
+//! debug-only "not built yet" page it replaced is gone, so no build can ship
+//! one (ticket 91's release gate).
 
 use crate::attention::{self, AttentionItem, Snapshot};
 use crate::i18n::{Locale, Shell, shell};
@@ -20,17 +18,17 @@ use crate::search::SearchEntry;
 use crate::{home, settings_page, window_attention_page};
 
 pub(crate) mod default_apps;
+pub(crate) mod fixes;
 pub(crate) mod keep_awake;
 pub(crate) mod system;
 pub(crate) mod touchpad;
 
-/// How far along a page is.
+/// How far along a page is. A page that is not built has no way to be
+/// registered: ticket 84's placeholder is gone with the last one.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PageStatus {
     /// The page its spec section describes.
     Built,
-    /// Nothing yet; the named ticket builds it.
-    Placeholder { ticket: u16 },
 }
 
 /// What a page's pane item carries.
@@ -56,18 +54,6 @@ pub(crate) struct PageModule {
     /// What Home shows about this page.
     pub(crate) attention: fn(&Snapshot) -> Vec<AttentionItem>,
     pub(crate) badge: fn(&Snapshot) -> Option<NavBadge>,
-}
-
-fn no_entries(_: Locale) -> Vec<SearchEntry> {
-    Vec::new()
-}
-
-fn no_attention(_: &Snapshot) -> Vec<AttentionItem> {
-    Vec::new()
-}
-
-fn no_badge(_: &Snapshot) -> Option<NavBadge> {
-    None
 }
 
 /// One of the three cards at the top of Apps that open its sub-pages.
@@ -177,16 +163,6 @@ const APPS: PageModule = PageModule {
     },
 };
 
-const FIXES: PageModule = PageModule {
-    route: Route::Fixes,
-    name: "fixes",
-    status: PageStatus::Placeholder { ticket: 90 },
-    title: |s| s.fixes,
-    search_entries: no_entries,
-    attention: no_attention,
-    badge: no_badge,
-};
-
 /// The registration list, in the pane's order. One line per page.
 pub(crate) static PAGES: [PageModule; 9] = [
     home::PAGE,
@@ -196,7 +172,7 @@ pub(crate) static PAGES: [PageModule; 9] = [
     keep_awake::PAGE,
     APPS,
     default_apps::PAGE,
-    FIXES,
+    fixes::PAGE,
     settings_page::PAGE,
 ];
 
@@ -234,12 +210,6 @@ pub(crate) fn attention(snapshot: &Snapshot) -> Vec<AttentionItem> {
             .flat_map(|page| (page.attention)(snapshot))
             .collect(),
     )
-}
-
-/// Whether a debug build is running, which is the only build that draws a
-/// placeholder's "not built yet" notice.
-pub(crate) fn shows_not_built_notice() -> bool {
-    cfg!(debug_assertions)
 }
 
 /// The states every page and card uses (spec section 2), with their copy,
@@ -601,21 +571,35 @@ mod tests {
         );
     }
 
-    /// The pages tickets 85–90 build are registered and say which ticket owns
-    /// them, so ticket 91's release gate can refuse to ship them.
+    /// Every page in the pane has content a person can find: a title in
+    /// both languages, and (Home aside, which gathers the other pages' items
+    /// rather than holding cards) search entries for its cards in both
+    /// languages, each naming its own page. Together with the
+    /// exhaustive match in `render::page_rows`, which will not compile with a
+    /// route that draws nothing, this is ticket 91's release gate: no page
+    /// can ship as a placeholder.
     #[test]
-    fn the_unbuilt_pages_name_their_tickets() {
-        let status = |route| module(route).status;
-        assert_eq!(status(Route::Home), PageStatus::Built);
-        assert_eq!(status(Route::Settings), PageStatus::Built);
-        assert_eq!(status(Route::WindowAttention), PageStatus::Built);
-        assert_eq!(status(Route::Apps), PageStatus::Built);
-        assert_eq!(status(Route::System), PageStatus::Built);
-        assert_eq!(status(Route::KeepAwake), PageStatus::Built);
-        assert_eq!(status(Route::Touchpad), PageStatus::Built);
-        assert_eq!(status(Route::DefaultApps), PageStatus::Built);
-        assert_eq!(status(Route::Fixes), PageStatus::Placeholder { ticket: 90 });
-        assert_eq!(shows_not_built_notice(), cfg!(debug_assertions));
+    fn every_page_in_the_pane_has_real_content() {
+        for page in &PAGES {
+            for locale in [Locale::EnUs, Locale::ZhTw] {
+                assert!(!(page.title)(shell(locale)).is_empty(), "{:?}", page.route);
+                if page.route == Route::Home {
+                    continue;
+                }
+                let entries = (page.search_entries)(locale);
+                assert!(
+                    !entries.is_empty(),
+                    "{:?} has no search entries",
+                    page.route
+                );
+                for entry in &entries {
+                    assert_eq!(entry.route, page.route);
+                    assert!(!entry.header.is_empty());
+                }
+            }
+        }
+        let routes: Vec<Route> = PAGES.iter().map(|page| page.route).collect();
+        assert_eq!(routes, Route::ALL);
     }
 
     #[test]

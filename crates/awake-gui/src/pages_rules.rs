@@ -9,10 +9,11 @@ use better_ui::{StatusPill, StatusTone};
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
-    ActiveTheme, IconName,
+    ActiveTheme, Disableable as _, IconName, Selectable as _, StyledExt as _,
     button::{Button, ButtonVariants},
+    h_flex,
     input::Input,
-    *,
+    v_flex,
 };
 
 use crate::{
@@ -104,7 +105,12 @@ impl AwakeApp {
                             .child(
                                 Button::new("rules-new")
                                     .primary()
-                                    .icon(IconName::Plus)
+                                    .icon(crate::components::action_icon(
+                                        better_ui::icon_set::Picture::Add,
+                                        true,
+                                        false,
+                                        cx,
+                                    ))
                                     .label(c.new_rule)
                                     .on_click(
                                         cx.listener(|this, _, window, cx| {
@@ -561,7 +567,12 @@ impl AwakeApp {
                         )
                         .child(
                             Button::new("draft-add-group")
-                                .icon(IconName::Plus)
+                                .icon(crate::components::action_icon(
+                                    better_ui::icon_set::Picture::Add,
+                                    false,
+                                    group_count >= awake_core::MAX_GROUPS_PER_RULE,
+                                    cx,
+                                ))
                                 .label(c.add_group)
                                 .disabled(group_count >= awake_core::MAX_GROUPS_PER_RULE)
                                 .on_click(
@@ -691,13 +702,23 @@ impl AwakeApp {
                         cx,
                     ))
                     .child(
-                        Button::new(SharedString::from(format!("group-remove-{index}")))
-                            .icon(IconName::Delete)
-                            .disabled(group_count <= 1)
-                            .on_click(cx.listener(move |this, _, cx_window, cx| {
+                        crate::components::square_icon_button(Button::new(SharedString::from(
+                            format!("group-remove-{index}"),
+                        )))
+                        .child(crate::components::action_alone(
+                            better_ui::icon_set::Picture::Delete,
+                            false,
+                            group_count <= 1,
+                            cx,
+                        ))
+                        .tooltip(c.delete)
+                        .disabled(group_count <= 1)
+                        .on_click(cx.listener(
+                            move |this, _, cx_window, cx| {
                                 let _ = cx_window;
                                 this.remove_group(index, cx)
-                            })),
+                            },
+                        )),
                     ),
             )
             .children(
@@ -720,7 +741,12 @@ impl AwakeApp {
                             "add-condition-{index}-{}",
                             provider.as_key()
                         )))
-                        .icon(IconName::Plus)
+                        .icon(crate::components::action_icon(
+                            better_ui::icon_set::Picture::Add,
+                            false,
+                            !available,
+                            cx,
+                        ))
                         .label(provider_label(provider, c))
                         // A provider that cannot be read here is not offered as
                         // something to add. The list still shows it, so nobody

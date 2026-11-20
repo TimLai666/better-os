@@ -531,15 +531,14 @@ impl FilesApp {
                                 .child(fluent::list::selection_bar(p, false)),
                         )
                     })
-                    .child(
+                    .child(better_ui::icon_set::picture(
                         if is_folder {
-                            Icon::empty().path(folder_glyph.svg())
+                            folder_glyph.picture()
                         } else {
-                            Icon::new(IconName::File)
-                        }
-                        .size(px(16.0))
-                        .text_color(p.text_secondary),
-                    )
+                            better_ui::icon_set::Picture::File
+                        },
+                        16.0,
+                    ))
                     .child(
                         fluent::label(entry.name, BODY, p.text_primary)
                             .flex_1()
@@ -1029,15 +1028,15 @@ pub(crate) fn small_glyph(emblem: &'static str, size: f32) -> Option<&'static st
 }
 
 fn entry_icon(icon: RowIcon, fallback: FallbackIcon, size: f32, p: &fluent::Palette) -> AnyElement {
-    let color = p.text_secondary;
     let fallback_icon = move || {
-        Icon::new(match fallback {
-            FallbackIcon::Folder => IconName::Folder,
-            FallbackIcon::File => IconName::File,
-            FallbackIcon::Application => IconName::LayoutDashboard,
-        })
-        .size(px(size))
-        .text_color(color)
+        better_ui::icon_set::picture(
+            match fallback {
+                FallbackIcon::Folder => better_ui::icon_set::Picture::Folder,
+                FallbackIcon::File => better_ui::icon_set::Picture::File,
+                FallbackIcon::Application => better_ui::icon_set::Picture::Apps,
+            },
+            size,
+        )
         .into_any_element()
     };
     let picture = match icon.file {

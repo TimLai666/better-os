@@ -257,6 +257,8 @@ pub struct UpdateRestart {
     waiting: Option<(ToastId, Blocker)>,
     closed_for: Option<Blocker>,
     failed: bool,
+    /// The package was removed under the running window (ticket 90).
+    removed: bool,
     _observe: Option<Subscription>,
     _watch: Option<ProgramWatch>,
     _task: Option<Task<()>>,
@@ -323,6 +325,7 @@ impl UpdateRestart {
             waiting: None,
             closed_for: None,
             failed: false,
+            removed: false,
             _observe: Some(observe),
             _watch: watch,
             _task: task,
@@ -342,6 +345,7 @@ impl UpdateRestart {
             waiting: None,
             closed_for: None,
             failed: false,
+            removed: false,
             _observe: Some(observe),
             _watch: None,
             _task: None,
@@ -349,6 +353,13 @@ impl UpdateRestart {
     }
 
     /// The window's toast host, for the window's own toasts.
+    /// Whether the window's package is being removed or is gone, with
+    /// nothing to replace the program: the window keeps running and must
+    /// change nothing that only the installed program could undo.
+    pub fn program_removed(&self) -> bool {
+        self.removed
+    }
+
     pub fn toast_host(&self) -> &Entity<ToastHost> {
         &self.host
     }
@@ -406,6 +417,11 @@ fn step<V: Restartable>(view: &mut V, window: &mut Window, cx: &mut Context<V>) 
         return false;
     };
     let state = tracker.poll(Instant::now());
+    let removed = state == UpdateState::Removed;
+    if restart.removed != removed {
+        restart.removed = removed;
+        cx.notify();
+    }
     match decide(&state, blocked.is_some()) {
         RestartDecision::Stay => {
             restart.sync_waiting(None, cx);

@@ -213,6 +213,8 @@ pub(crate) struct ManagerApp {
     pub(crate) keep_awake: crate::pages::keep_awake::state::KeepAwakeState,
     /// System's page (ticket 86).
     pub(crate) system: crate::pages::system::state::SystemState,
+    /// The Fixes page (ticket 90).
+    pub(crate) fixes: crate::pages::fixes::state::FixesState,
     /// Its "Add an app" search field.
     pub(crate) window_attention_add: Entity<InputState>,
     /// The Touchpad page (ticket 88), made the first time it is drawn.
@@ -432,6 +434,7 @@ impl ManagerApp {
             window_attention: Default::default(),
             keep_awake: Default::default(),
             system: Default::default(),
+            fixes: Default::default(),
             window_attention_add,
             touchpad: None,
             touchpad_facts: Default::default(),
@@ -460,6 +463,8 @@ impl ManagerApp {
         app.refresh_keep_awake(cx);
         // Home's battery item and its Power mode card need System's read.
         app.refresh_system(cx);
+        // Home's Fixes item and the pane's count need a check.
+        app.refresh_fixes(cx);
         app
     }
 
@@ -526,6 +531,7 @@ impl ManagerApp {
                 .unwrap_or_default(),
             battery_health: self.system.battery_health(),
             login_screen_late: self.login_watch.recent(now_unix_seconds()),
+            fixes: self.fixes.facts(),
         }
     }
 
@@ -1160,6 +1166,10 @@ impl ManagerApp {
         if page == Page::System {
             self.refresh_system(cx);
             self.tick_sensors(cx);
+        }
+        // Fixes checks every entry each time it is shown.
+        if page == Page::Fixes {
+            self.refresh_fixes(cx);
         }
         if page != self.page {
             self.focused_card = None;
@@ -2337,7 +2347,8 @@ impl better_ui::restart::Restartable for ManagerApp {
             self.heal_task.is_some()
                 || self.keep_awake.blocks_restart()
                 || self.defaults.blocks_restart()
-                || self.system.blocks_restart(),
+                || self.system.blocks_restart()
+                || self.fixes.blocks_restart(),
         )
         .or_else(|| {
             self.touchpad

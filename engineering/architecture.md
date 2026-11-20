@@ -93,6 +93,11 @@ drive-mounts ──┬──> files-gui         sidebar, "Mount automatically" (
 
 defaults-core ──> defaults-platform ──> defaults-store ──> manager-gui / CLI
    declarations, aggregate status, plans   typed adapters   snapshots + history
+
+patch-core ──> patch-platform ──> manager-gui        Fixes page (ticket 90)
+   known-fault entries: detect,   Flatpak files, Mutter's scale, the closed
+   describe, plan, check, undo;   command list, the record of applied fixes,
+   no I/O                         a fixture machine for the demo and sandboxes
 ```
 
 `better-ui` provides GPUI presentation primitives to every GUI crate in the
@@ -455,6 +460,12 @@ collection is explicitly configured to include them.
   filtering, aggregation, and verdict rule, and by running the production
   collectors over ticket 22's captured `/proc` trees, so a renamed metric fails
   a test instead of blanking a column.
+- `patch-core` entries are tested through a fake host of canned answers that
+  follows each change; `patch-platform` runs every entry's detection,
+  fix, check, and undo against a fixture machine in a scratch directory with
+  the real file reading and writing, and asserts over both crates' source
+  that nothing names a shell and only its `command` module starts a process.
+  No test runs `fc-cache` or `flatpak` or reads the person's files.
 - `monitor-actions-linux` is tested against a real child process it spawns —
   stopped, resumed, reniced, terminated, and checked against `/proc` after each
   step — because a policy test cannot prove a syscall works.
@@ -538,6 +549,15 @@ collection is explicitly configured to include them.
   removable drive is mounted and unmounted by the window through UDisks2, as
   the person may. The daemon's prerm on removal runs
   `--remove-drive-entries`.
+- Better Patch (ticket 90, ADR 0017, `engineering/specs/better-patch.md`) is
+  the Fixes page. `patch-core` holds every entry as typed Rust: what it reads,
+  how it decides, the exact change as data, the check, and the undo planned
+  from the record of what the fix changed. `patch-platform` answers the reads
+  and makes the changes: it edits the person's own Flatpak override file only
+  while it still holds what was read, asks Mutter's `DisplayConfig` for the
+  scale, and runs `fc-match`, `fc-cache -f`, and `flatpak override --show`
+  from a closed list with fixed arguments, in one module. No entry needs
+  root; one that does will add a typed daemon change, never a command.
 - The login screen watch (ticket 140, ADR 0033) is the daemon binary's
   `--watch-login-screen` mode, run once per boot by
   `better-greeter-watch.service`, which nothing in the boot waits for. It

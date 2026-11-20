@@ -4,6 +4,7 @@
 
 pub mod command_line;
 pub mod fluent;
+pub mod icon_set;
 pub mod pane_edge;
 pub mod restart;
 pub mod system_frame;
@@ -13,7 +14,7 @@ use gpui::{
     AnyElement, App, Hsla, IntoElement, ParentElement, Pixels, SharedString, Styled, StyledImage,
     Window, WindowDecorations, WindowOptions, div,
 };
-use gpui_component::*;
+use gpui_component::StyledExt as _;
 
 /// The window chrome every first-party Better OS window draws for itself.
 ///

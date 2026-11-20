@@ -18,6 +18,7 @@ use better_ui::fluent::text_box::{NumberBox, NumberModel, TextBox};
 use better_ui::fluent::time_picker::{Time, TimeModel, TimePicker};
 use better_ui::fluent::toggle::ToggleSwitch;
 use better_ui::fluent::{BODY, CAPTION, label, palette};
+use better_ui::icon_set::Picture;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::IconName;
@@ -120,7 +121,7 @@ impl ManagerApp {
                 };
                 let words = describe(locale, &state);
                 let mut state_card =
-                    SettingsCard::new("awake-component", words.text).icon(IconName::Sun);
+                    SettingsCard::new("awake-component", words.text).icon(Picture::KeepAwake);
                 if let Some(action) = words.action {
                     state_card = state_card.content(
                         Button::accent("awake-component-action", action).on_click(Self::act(
@@ -248,7 +249,7 @@ impl ManagerApp {
         // The top card: the state, and the one control it calls for.
         let headline = decide::Headline::of(&status, &view);
         let (header, description) = headline.words(w, c, zone);
-        let mut top = SettingsCard::new(card::STATE, header).icon(IconName::Sun);
+        let mut top = SettingsCard::new(card::STATE, header).icon(Picture::KeepAwake);
         if !description.is_empty() {
             top = top.description(description);
         }
@@ -306,8 +307,8 @@ impl ManagerApp {
                     reason.display_name().to_string(),
                 )
                 .icon(match reason.origin {
-                    awake_core::SessionOrigin::Manual => IconName::User,
-                    awake_core::SessionOrigin::Trigger => IconName::Bot,
+                    awake_core::SessionOrigin::Manual => Picture::User,
+                    awake_core::SessionOrigin::Trigger => Picture::Automation,
                 })
                 .description(line);
                 reason_card = if pending {
@@ -475,7 +476,7 @@ impl ManagerApp {
         let has_battery = battery.offers_threshold();
         let lid_on = policy.prevent_lid_suspend;
         let mut lid_card =
-            SettingsCard::new(card::DEFAULT_LID, c.keep_awake_lid_closed).icon(IconName::Moon);
+            SettingsCard::new(card::DEFAULT_LID, c.keep_awake_lid_closed).icon(Picture::Moon);
         if view.lid.available {
             lid_card = lid_card
                 .description(format!(
@@ -512,7 +513,7 @@ impl ManagerApp {
                 CARD_GAP,
                 card::BATTERY_STOP,
                 SettingsCard::new(card::BATTERY_STOP, w.battery_stop_header)
-                    .icon(IconName::BatteryLow)
+                    .icon(Picture::BatteryLow)
                     .content(
                         div()
                             .flex()
@@ -581,7 +582,7 @@ impl ManagerApp {
             rows.push(Row::new(
                 gap,
                 SettingsCard::new("awake-charge", c.current_charge)
-                    .icon(IconName::BatteryMedium)
+                    .icon(Picture::BatteryMedium)
                     .description(c.on_battery_rule_detail)
                     .content(label(charge, BODY, p.text_secondary)),
             ));
@@ -608,7 +609,7 @@ impl ManagerApp {
             gap,
             card::LID_LIMIT,
             SettingsCard::new(card::LID_LIMIT, c.lid_limit_heading)
-                .icon(IconName::Moon)
+                .icon(Picture::Moon)
                 .description(c.lid_limit_description)
                 .disabled(!view.lid.available)
                 .content(
@@ -793,7 +794,7 @@ impl ManagerApp {
             }));
         let mut expander =
             SettingsExpander::new(card::QUICK, w.quick_header, self.keep_awake.quick_open)
-                .icon(IconName::Play)
+                .icon(Picture::Timer)
                 .description(w.quick_description)
                 .on_toggle(Self::act_with(cx, |this, open: bool, _, cx| {
                     this.keep_awake.quick_open = open;
@@ -845,7 +846,7 @@ impl ManagerApp {
                 .child(
                     Button::icon_button(
                         ElementId::named_usize("awake-length-remove", index),
-                        IconName::Delete,
+                        Picture::Delete,
                         w.remove,
                     )
                     .disabled(disabled || !row.can_remove)
@@ -893,26 +894,26 @@ impl ManagerApp {
         let mut bar = CommandBar::new("awake-rules-bar")
             .locale(locale.words())
             .command(
-                Command::new(w.new_rule, IconName::Plus)
+                Command::new(w.new_rule, Picture::Add)
                     .disabled(busy)
                     .on_click(Self::act(cx, |this, window, cx| this.new_rule(window, cx))),
             )
             .command(
-                Command::new(c.pause_rules_short, IconName::Pause)
+                Command::new(c.pause_rules_short, Picture::Pause)
                     .disabled(busy)
                     .on_click(Self::act(cx, |this, _, cx| {
                         this.pause_keep_awake_rules(Some(awake_core::PAUSE_SHORT_SECONDS), cx)
                     })),
             )
             .command(
-                Command::new(c.pause_rules_long, IconName::Pause)
+                Command::new(c.pause_rules_long, Picture::Pause)
                     .disabled(busy)
                     .on_click(Self::act(cx, |this, _, cx| {
                         this.pause_keep_awake_rules(Some(awake_core::PAUSE_LONG_SECONDS), cx)
                     })),
             )
             .command(
-                Command::new(w.override_all, IconName::CircleX)
+                Command::new(w.override_all, Picture::Disable)
                     .disabled(busy)
                     .on_click(Self::act(cx, |this, _, cx| {
                         this.keep_awake.dialog = Some(Dialog::OverrideAll);
@@ -921,7 +922,7 @@ impl ManagerApp {
             );
         if view.suppression.is_some() {
             bar = bar.command(
-                Command::new(w.resume_rules, IconName::Play)
+                Command::new(w.resume_rules, Picture::Play)
                     .disabled(busy)
                     .on_click(Self::act(cx, |this, _, cx| {
                         this.resume_keep_awake_rules(cx)
@@ -1019,7 +1020,7 @@ impl ManagerApp {
                 rule.name.clone(),
                 open,
             )
-            .icon(IconName::Bot)
+            .icon(Picture::Automation)
             .description(decide::rule_description(&rule, c, w))
             .content(
                 ToggleSwitch::new(
@@ -1229,7 +1230,7 @@ impl ManagerApp {
         rows.push(Row::new(
             CARD_GAP,
             SettingsCard::new("awake-draft-lid", c.keep_awake_lid_closed)
-                .icon(IconName::Moon)
+                .icon(Picture::Moon)
                 .description(format!("{} · {}", w.when_this_rule, c.lid_rule_default_off))
                 .content(
                     ToggleSwitch::new("awake-draft-lid-switch", lid_on)
@@ -1277,7 +1278,7 @@ impl ManagerApp {
                                 row.child(
                                     Button::icon_button(
                                         ElementId::named_usize("awake-group-remove", group_index),
-                                        IconName::Delete,
+                                        Picture::Delete,
                                         w.remove_group,
                                     )
                                     .on_click(Self::act(cx, move |this, _, cx| {
@@ -1344,7 +1345,7 @@ impl ManagerApp {
                         ElementId::named_usize("awake-add-condition", group_index),
                         ButtonKind::Standard,
                     )
-                    .icon(IconName::Plus)
+                    .icon(Picture::Add)
                     .label(w.add_condition)
                     .entries(entries)
                     .disabled(condition_count >= awake_core::MAX_CONDITIONS_PER_GROUP),
@@ -1355,7 +1356,7 @@ impl ManagerApp {
             12.0,
             div().flex().child(
                 Button::standard("awake-add-group", w.add_group)
-                    .icon(IconName::Plus)
+                    .icon(Picture::Add)
                     .disabled(group_count >= awake_core::MAX_GROUPS_PER_RULE)
                     .on_click(Self::act(cx, |this, window, cx| this.add_group(window, cx))),
             ),
@@ -1744,7 +1745,7 @@ impl ManagerApp {
         let backend = &view.backend;
         let mut rows = Vec::new();
         let mut backend_card = SettingsCard::new(card::DIAGNOSTICS, c.backend_heading)
-            .icon(IconName::Cpu)
+            .icon(Picture::Diagnostics)
             .content(label(
                 format!("{} · {}", backend.name, backend.availability_label(c)),
                 BODY,
@@ -2026,7 +2027,7 @@ impl ManagerApp {
         };
         Some(
             SettingsCard::new("home-keep-awake", w.quick_toggle_header)
-                .icon(IconName::Sun)
+                .icon(Picture::KeepAwake)
                 .description(match (&active, manual) {
                     (Some(active), true) => active.clone(),
                     _ => w.quick_toggle_off.to_string(),

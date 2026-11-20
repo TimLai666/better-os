@@ -1010,11 +1010,6 @@ pub(crate) struct Shell {
     /// `{query}` is what the person typed.
     pub(crate) search_no_result: &'static str,
 
-    // A page a later ticket builds, as a debug build shows it.
-    pub(crate) not_built_title: &'static str,
-    /// `{ticket}` is the ticket that builds the page.
-    pub(crate) not_built_body: &'static str,
-
     // Home.
     /// `{distribution}` and `{version}`.
     pub(crate) banner_line: &'static str,
@@ -1123,8 +1118,6 @@ static SHELL_EN: Shell = Shell {
     settings: "Settings",
     search_placeholder: "Find a setting",
     search_no_result: "No settings match \"{query}\".",
-    not_built_title: "This page isn't built yet",
-    not_built_body: "Ticket {ticket} builds it. A release build cannot ship while this page is a placeholder.",
     banner_line: "{distribution} · Better OS {version}",
     battery_charging: "Charging",
     battery_discharging: "On battery",
@@ -1208,8 +1201,6 @@ static SHELL_ZH_TW: Shell = Shell {
     settings: "設定",
     search_placeholder: "尋找設定",
     search_no_result: "找不到符合「{query}」的設定。",
-    not_built_title: "這一頁還沒完成",
-    not_built_body: "由 ticket {ticket} 完成。這一頁還是預留頁時，正式版不能發佈。",
     banner_line: "{distribution} · Better OS {version}",
     battery_charging: "充電中",
     battery_discharging: "使用電池",

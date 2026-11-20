@@ -10,12 +10,13 @@
 //! has Body Strong's weight and a check mark, never the accent, which stays
 //! for the primary action, the selection, and focus.
 
+use crate::icon_set::{Glyph, Placement};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     App, FontWeight, IntoElement, ParentElement, Pixels, RenderOnce, Rgba, SharedString, Styled,
     Window, div, px,
 };
-use gpui_component::{Icon, IconName};
+use gpui_component::IconName;
 
 use super::chart::ChartHue;
 use super::{CAPTION, Palette, palette, radius, text};
@@ -42,7 +43,7 @@ pub fn chip_colors(hue: Option<ChartHue>, p: &Palette) -> (Rgba, Rgba, Rgba) {
 #[derive(IntoElement)]
 pub struct Chip {
     text: SharedString,
-    icon: Option<Icon>,
+    icon: Option<Glyph>,
     hue: Option<ChartHue>,
     emphasized: bool,
 }
@@ -57,7 +58,7 @@ impl Chip {
         }
     }
 
-    pub fn icon(mut self, icon: impl Into<Icon>) -> Self {
+    pub fn icon(mut self, icon: impl Into<Glyph>) -> Self {
         self.icon = Some(icon.into());
         self
     }
@@ -81,7 +82,7 @@ impl RenderOnce for Chip {
         let p = palette(cx);
         let (fill, stroke, color) = chip_colors(self.hue, p);
         let icon = if self.emphasized {
-            Some(Icon::new(IconName::Check))
+            Some(Glyph::Symbol(IconName::Check))
         } else {
             self.icon
         };
@@ -98,7 +99,7 @@ impl RenderOnce for Chip {
             .bg(fill)
             .text_color(color)
             .when_some(icon, |d, icon| {
-                d.child(icon.size(px(12.0)).text_color(color))
+                d.child(icon.element(px(12.0), Placement::Labelled, p, false))
             })
             .child(
                 div()

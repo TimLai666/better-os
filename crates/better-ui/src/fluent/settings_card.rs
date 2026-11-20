@@ -14,6 +14,7 @@
 
 use std::rc::Rc;
 
+use crate::icon_set::{Glyph, Placement};
 use gpui::{
     AnyElement, App, Div, ElementId, InteractiveElement, IntoElement, MouseButton, ParentElement,
     Pixels, RenderOnce, SharedString, StatefulInteractiveElement, Styled, Window, div,
@@ -47,7 +48,7 @@ pub const LEADING_SIZE: Pixels = px(20.0);
 
 /// What stands at a card's leading edge.
 enum CardLeading {
-    Icon(IconName),
+    Icon(Glyph),
     /// The info bar's status icon, for a card that reports a state (Home's
     /// attention cards).
     Status(Severity),
@@ -76,9 +77,10 @@ fn header_block(
         .min_w_0()
         .children(leading.map(|leading| {
             let mark = match leading {
-                CardLeading::Icon(icon) => Icon::new(icon)
-                    .size(px(20.0))
+                CardLeading::Icon(icon) => div()
+                    .flex()
                     .text_color(title)
+                    .child(icon.element(px(20.0), Placement::Labelled, p, disabled))
                     .into_any_element(),
                 CardLeading::Status(severity) => severity_icon(severity, p).into_any_element(),
                 CardLeading::Element(element) => div()
@@ -160,8 +162,8 @@ impl SettingsCard {
         }
     }
 
-    pub fn icon(mut self, icon: IconName) -> Self {
-        self.icon = Some(CardLeading::Icon(icon));
+    pub fn icon(mut self, icon: impl Into<Glyph>) -> Self {
+        self.icon = Some(CardLeading::Icon(icon.into()));
         self
     }
 
@@ -348,8 +350,8 @@ impl SettingsExpander {
         }
     }
 
-    pub fn icon(mut self, icon: IconName) -> Self {
-        self.icon = Some(CardLeading::Icon(icon));
+    pub fn icon(mut self, icon: impl Into<Glyph>) -> Self {
+        self.icon = Some(CardLeading::Icon(icon.into()));
         self
     }
 
@@ -541,16 +543,16 @@ impl RenderOnce for SettingsExpander {
 /// fill, card stroke, 4px corners, 20px by 24px padding.
 #[derive(IntoElement)]
 pub struct DeviceBanner {
-    icon: IconName,
+    icon: Glyph,
     title: SharedString,
     caption: Option<SharedString>,
     trailing: Option<AnyElement>,
 }
 
 impl DeviceBanner {
-    pub fn new(icon: IconName, title: impl Into<SharedString>) -> Self {
+    pub fn new(icon: impl Into<Glyph>, title: impl Into<SharedString>) -> Self {
         Self {
-            icon,
+            icon: icon.into(),
             title: title.into(),
             caption: None,
             trailing: None,
@@ -584,11 +586,10 @@ impl RenderOnce for DeviceBanner {
             .border_color(p.card_stroke)
             .bg(p.card)
             .child(
-                div().flex_none().child(
-                    Icon::new(self.icon)
-                        .size(px(48.0))
-                        .text_color(p.text_secondary),
-                ),
+                div()
+                    .flex_none()
+                    .text_color(p.text_secondary)
+                    .child(self.icon.element(px(48.0), Placement::Labelled, p, false)),
             )
             .child(
                 div()

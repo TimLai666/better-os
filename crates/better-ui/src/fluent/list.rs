@@ -22,6 +22,7 @@
 use std::cmp::Ordering;
 use std::rc::Rc;
 
+use crate::icon_set::{Glyph, Placement};
 use gpui::{
     AnyElement, App, AppContext as _, Context, ElementId, InteractiveElement, IntoElement,
     MouseButton, ParentElement, Pixels, Point, Render, RenderOnce, Rgba, SharedString,
@@ -67,7 +68,7 @@ pub fn selection_bar(p: &Palette, disabled: bool) -> gpui::Div {
 pub struct ListItem {
     pub title: SharedString,
     pub caption: Option<SharedString>,
-    pub icon: Option<IconName>,
+    pub icon: Option<Glyph>,
     pub disabled: bool,
     pub shown: ShownState,
 }
@@ -88,8 +89,8 @@ impl ListItem {
         self
     }
 
-    pub fn icon(mut self, icon: IconName) -> Self {
-        self.icon = Some(icon);
+    pub fn icon(mut self, icon: impl Into<Glyph>) -> Self {
+        self.icon = Some(icon.into());
         self
     }
 
@@ -210,11 +211,14 @@ impl RenderOnce for ListView {
             }
             let mut hit = hit_row(ElementId::named_usize("row", index), RowInset::LIST);
             row = row
-                .children(
-                    item.icon
-                        .clone()
-                        .map(|icon| Icon::new(icon).size(size::ICON).text_color(caption_color)),
-                )
+                .children(item.icon.clone().map(|icon| {
+                    div().flex().text_color(caption_color).child(icon.element(
+                        size::ICON,
+                        Placement::Labelled,
+                        p,
+                        disabled,
+                    ))
+                }))
                 .child(
                     div()
                         .flex()
@@ -279,7 +283,7 @@ impl RenderOnce for ListView {
 #[derive(Clone)]
 pub enum Leading {
     /// A 16px glyph in secondary text, as [`ListView`] draws one.
-    Glyph(IconName),
+    Glyph(Glyph),
     /// An application's own icon, at the row's icon size.
     App(AppIcon),
     /// A 16px glyph in a status color, for a row that reports how something
@@ -356,8 +360,8 @@ impl ListRow {
         self
     }
 
-    pub fn glyph(mut self, icon: IconName) -> Self {
-        self.leading = Some(Leading::Glyph(icon));
+    pub fn glyph(mut self, icon: impl Into<Glyph>) -> Self {
+        self.leading = Some(Leading::Glyph(icon.into()));
         self
     }
 
@@ -472,9 +476,10 @@ impl RenderOnce for ListRow {
             );
         }
         let leading: Option<AnyElement> = self.leading.map(|leading| match leading {
-            Leading::Glyph(icon) => Icon::new(icon)
-                .size(size::ICON)
+            Leading::Glyph(icon) => div()
+                .flex()
                 .text_color(caption_color)
+                .child(icon.element(size::ICON, Placement::Labelled, p, disabled))
                 .into_any_element(),
             Leading::App(icon) => app_icon(&icon, row_icon_size(two_line), p),
             Leading::Status(icon, severity) => Icon::new(icon)

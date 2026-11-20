@@ -8,6 +8,7 @@
 
 use std::rc::Rc;
 
+use crate::icon_set::{Glyph, Placement};
 use gpui::{
     AnyElement, App, ElementId, InteractiveElement, IntoElement, ParentElement, Pixels, RenderOnce,
     SharedString, StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder as _, px,
@@ -133,7 +134,7 @@ pub struct Button {
     id: ElementId,
     kind: ButtonKind,
     label: Option<SharedString>,
-    icon: Option<Icon>,
+    icon: Option<Glyph>,
     trailing_icon: Option<Icon>,
     checked: Option<bool>,
     disabled: bool,
@@ -176,7 +177,7 @@ impl Button {
     /// because it has no words.
     pub fn icon_button(
         id: impl Into<ElementId>,
-        icon: impl Into<Icon>,
+        icon: impl Into<Glyph>,
         tooltip: impl Into<SharedString>,
     ) -> Self {
         Self::new(id, ButtonKind::Subtle)
@@ -201,7 +202,10 @@ impl Button {
         self
     }
 
-    pub fn icon(mut self, icon: impl Into<Icon>) -> Self {
+    /// A symbol or a picture before the label. An action picture is drawn
+    /// as alone on a button with no label, beside the label otherwise, and
+    /// in the text on accent colour on an accent fill.
+    pub fn icon(mut self, icon: impl Into<Glyph>) -> Self {
         self.icon = Some(icon.into());
         self
     }
@@ -270,7 +274,14 @@ impl RenderOnce for Button {
         }
         let mut button = paint(button, colors, state, radius::SM, p.is_dark());
         if let Some(icon) = self.icon {
-            button = button.child(icon.size(size::ICON));
+            let on_accent = self.kind == ButtonKind::Accent || self.checked == Some(true);
+            let placement = Placement::for_control(on_accent, icon_only);
+            button = button.child(icon.element(
+                icon.slot(size::ICON, placement),
+                placement,
+                p,
+                disabled,
+            ));
         }
         if let Some(label) = self.label {
             // A full-width button's label can be longer than its row (a
@@ -633,7 +644,7 @@ pub struct DropDownButton {
     id: ElementId,
     kind: ButtonKind,
     label: Option<SharedString>,
-    icon: Option<Icon>,
+    icon: Option<Glyph>,
     entries: Vec<MenuEntry>,
     disabled: bool,
     shown: ShownState,
@@ -673,7 +684,7 @@ impl DropDownButton {
         self
     }
 
-    pub fn icon(mut self, icon: impl Into<Icon>) -> Self {
+    pub fn icon(mut self, icon: impl Into<Glyph>) -> Self {
         self.icon = Some(icon.into());
         self
     }

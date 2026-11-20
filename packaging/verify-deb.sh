@@ -25,13 +25,29 @@ EXTENSION_UUID="touchpad-adapter@betteros.org"
 # inferred from the package name because most of these packages install more
 # than one binary, and a package that quietly stopped shipping its service or
 # its recovery entry point would otherwise still pass.
+# A maintainer script that acts for each person (packaging/maintainer/
+# accounts.sh) lists them through getent and gives each person's step its own
+# time limit, so one hung home cannot hold dpkg's lock.
+verify_account_block() {
+    local what="$1"
+    local script="$2"
+    grep -qF 'eval "$better_os_account_library"' "$script" &&
+        grep -qF 'timeout -s KILL "$seconds" sh -c "$better_os_account_library"' "$script" &&
+        ! grep -qF 'mktemp' "$script" &&
+        grep -qxF "better_os_getent='getent'" "$script" || {
+        printf '%s does not act for each person through the timed account library\n' "$what" >&2
+        exit 1
+    }
+}
+
 required_executables() {
     case "$1" in
         better-manager)
             printf '%s\n' \
                 usr/bin/better-manager \
                 usr/libexec/better-window-attention \
-                usr/libexec/better-os/daemon-handoff
+                usr/libexec/better-os/daemon-handoff \
+                usr/lib/better-os/before-removal/better-manager
             ;;
         better-monitor)
             printf '%s\n' \
@@ -80,7 +96,8 @@ required_data_files() {
                 usr/share/applications/io.betteros.Manager.desktop \
                 usr/share/icons/hicolor/scalable/apps/better-manager.svg \
                 usr/lib/systemd/user/better-window-attention.service \
-                usr/share/dbus-1/services/org.betteros.WindowAttention1.service
+                usr/share/dbus-1/services/org.betteros.WindowAttention1.service \
+                usr/lib/tmpfiles.d/better-manager.conf
             ;;
         better-monitor)
             printf '%s\n' \
@@ -473,6 +490,25 @@ for package_name in \
                 printf 'The Better Manager prerm does not parse as sh\n' >&2
                 exit 1
             }
+            # Ticket 90: removing Better Manager undoes the fixes it applied,
+            # as each person, through its before-removal program; an
+            # abandoned removal puts them back; the postrm deletes what was
+            # set aside.
+            for script in prerm postinst postrm; do
+                grep -qF "&& better_os_before_removal_$script \"\$1\"; } || true" "$control/$script" || {
+                    printf 'The Better Manager %s does not run the before-removal step\n' "$script" >&2
+                    exit 1
+                }
+                grep -qxF "better_os_before_removal_program='/usr/lib/better-os/before-removal/better-manager'" "$control/$script" || {
+                    printf 'The Better Manager %s names another before-removal program\n' "$script" >&2
+                    exit 1
+                }
+                sh -n "$control/$script" || {
+                    printf 'The Better Manager %s does not parse as sh\n' "$script" >&2
+                    exit 1
+                }
+                verify_account_block "Better Manager $script" "$control/$script"
+            done
             # ADR 0028: the handoff for a privileged service too old to
             # install its own successor. The postinst starts it, and it hands
             # over only the exact packages this build made beside it.
@@ -572,8 +608,9 @@ for package_name in \
                 printf 'The Better Touchpad postrm does not parse as sh\n' >&2
                 exit 1
             }
+            verify_account_block "Better Touchpad postrm" "$control/postrm"
             grep -qxF "better_os_override_files='touchegg.desktop fusuma.desktop'" "$control/postrm" &&
-                grep -qxF 'better_os_forget_autostart_overrides "$1" || true' "$control/postrm" || {
+                grep -qF '&& better_os_forget_autostart_overrides "$1"; } || true' "$control/postrm" || {
                 printf 'The Better Touchpad postrm does not remove its autostart overrides\n' >&2
                 exit 1
             }
