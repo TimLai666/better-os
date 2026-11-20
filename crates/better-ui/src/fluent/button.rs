@@ -275,14 +275,13 @@ impl RenderOnce for Button {
         let mut button = paint(button, colors, state, radius::SM, p.is_dark());
         if let Some(icon) = self.icon {
             let on_accent = self.kind == ButtonKind::Accent || self.checked == Some(true);
-            let placement = if on_accent {
-                Placement::OnAccent
-            } else if icon_only {
-                Placement::Alone
-            } else {
-                Placement::Labelled
-            };
-            button = button.child(icon.element(size::ICON, placement, p, disabled));
+            let placement = Placement::for_control(on_accent, icon_only);
+            button = button.child(icon.element(
+                icon.slot(size::ICON, placement),
+                placement,
+                p,
+                disabled,
+            ));
         }
         if let Some(label) = self.label {
             // A full-width button's label can be longer than its row (a

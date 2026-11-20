@@ -21,7 +21,7 @@ mod catalog;
 #[cfg(test)]
 mod tests;
 
-pub use catalog::{ASSET_PREFIX, Kind, Picture, load};
+pub use catalog::{ASSET_PREFIX, INTRINSIC, Kind, LARGE_INTRINSIC, Picture, load};
 
 use gpui::{
     AnyElement, Div, Img, IntoElement, ObjectFit, ParentElement, Pixels, Rgba, SharedString,
@@ -78,11 +78,26 @@ impl Glyph {
         }
     }
 
-    /// The glyph as a control draws it. A symbol or a window's SVG is `size`
-    /// square in the inherited text colour, as the kit always drew it; an
-    /// object picture is `size` square; an action picture takes its
-    /// colours and size from `placement`. `disabled` dims a picture (a
-    /// symbol takes the control's disabled text colour already).
+    /// The size a control's icon slot should be for this glyph: an action
+    /// alone is 18px (DESIGN.md, Icons); everything else keeps the
+    /// control's own `standard` size.
+    pub fn slot(&self, standard: Pixels, placement: Placement) -> Pixels {
+        match self {
+            Glyph::Picture(picture)
+                if picture.kind() == Kind::Action && placement == Placement::Alone =>
+            {
+                px(Placement::Alone.size())
+            }
+            _ => standard,
+        }
+    }
+
+    /// The glyph drawn `size` square, the slot it is given. A symbol or a
+    /// window's SVG is in the inherited text colour, as the kit always drew
+    /// it; a picture is drawn at `size` too, an action in the colours
+    /// `placement` gives it. `disabled` dims a picture (a symbol takes the
+    /// control's disabled text colour already). A control that places an
+    /// action alone asks [`Glyph::slot`] for its size first.
     pub fn element(
         &self,
         size: Pixels,
@@ -102,7 +117,10 @@ impl Glyph {
                     picture_disabled(*picture, f32::from(size)).into_any_element()
                 }
                 Kind::Object => self::picture(*picture, f32::from(size)).into_any_element(),
-                Kind::Action => action(*picture, placement, palette, disabled).into_any_element(),
+                Kind::Action => {
+                    action_sized(*picture, placement, palette, disabled, f32::from(size))
+                        .into_any_element()
+                }
             },
         }
     }
@@ -116,7 +134,7 @@ pub fn picture(picture: Picture, size: f32) -> Img {
         "{} is an action",
         picture.name()
     );
-    img(picture.path())
+    img(picture.path_for(size))
         .size(px(size))
         .flex_none()
         .object_fit(ObjectFit::Contain)
@@ -142,6 +160,19 @@ pub enum Placement {
 }
 
 impl Placement {
+    /// Where a control's icon sits: on an accent fill (an accent button, a
+    /// checked toggle) it turns over; otherwise it is alone without a label
+    /// and beside the label with one.
+    pub const fn for_control(accent_fill: bool, icon_only: bool) -> Placement {
+        if accent_fill {
+            Placement::OnAccent
+        } else if icon_only {
+            Placement::Alone
+        } else {
+            Placement::Labelled
+        }
+    }
+
     /// The size an action icon is drawn at here.
     pub const fn size(self) -> f32 {
         match self {
@@ -153,9 +184,23 @@ impl Placement {
 
 /// The two colours an action icon is drawn in: its body, and its minor
 /// layer's lighter shade. A destructive action is the critical colour in
-/// either placement.
-pub fn action_colours(picture: Picture, placement: Placement, palette: &Palette) -> (Rgba, Rgba) {
+/// either placement. On a disabled accent button the icon takes the
+/// button's own disabled text colour, as its label does.
+pub fn action_colours(
+    picture: Picture,
+    placement: Placement,
+    palette: &Palette,
+    disabled: bool,
+) -> (Rgba, Rgba) {
     match placement {
+        Placement::OnAccent if disabled => (
+            palette.text_on_accent_disabled,
+            crate::fluent::mix(
+                palette.text_on_accent_disabled,
+                palette.window_background,
+                0.45,
+            ),
+        ),
         Placement::OnAccent => (
             palette.text_on_accent,
             crate::fluent::mix(palette.text_on_accent, palette.accent, 0.45),
@@ -172,7 +217,8 @@ pub fn action(picture: Picture, placement: Placement, palette: &Palette, disable
 }
 
 /// An action icon at a size of its own: its layers stacked and tinted, the
-/// whole drawn at [`DISABLED_OPACITY`] when the control is disabled.
+/// whole drawn at [`DISABLED_OPACITY`] when the control is disabled, except
+/// on an accent fill, where the disabled colours are already the button's.
 pub fn action_sized(
     picture: Picture,
     placement: Placement,
@@ -186,7 +232,8 @@ pub fn action_sized(
         "{} is an object",
         picture.name()
     );
-    let (body, minor) = action_colours(picture, placement, palette);
+    let (body, minor) = action_colours(picture, placement, palette, disabled);
+    let dimmed = disabled && placement != Placement::OnAccent;
     let layer = |path: &'static str, colour: Rgba| {
         svg()
             .path(path)
@@ -202,7 +249,7 @@ pub fn action_sized(
         .size(px(size))
         .children(picture.second_layer().map(|(path, _)| layer(path, minor)))
         .child(layer(picture.path(), body))
-        .when(disabled, |icon| icon.opacity(DISABLED_OPACITY))
+        .when(dimmed, |icon| icon.opacity(DISABLED_OPACITY))
 }
 
 #[cfg(test)]
@@ -269,33 +316,87 @@ mod renderer_tests {
     #[test]
     fn an_action_takes_its_colours_from_where_it_sits() {
         assert_eq!(
-            action_colours(Picture::Copy, Placement::Alone, &LIGHT),
+            action_colours(Picture::Copy, Placement::Alone, &LIGHT, false),
             (LIGHT.accent, LIGHT.icon_accent_2)
         );
         assert_eq!(
-            action_colours(Picture::Copy, Placement::Labelled, &DARK),
+            action_colours(Picture::Copy, Placement::Labelled, &DARK, false),
             (DARK.icon_quiet, DARK.icon_quiet_2)
         );
         for placement in [Placement::Alone, Placement::Labelled] {
             assert_eq!(
-                action_colours(Picture::Delete, placement, &LIGHT),
+                action_colours(Picture::Delete, placement, &LIGHT, false),
                 (LIGHT.critical, LIGHT.icon_critical_2)
             );
         }
         // On an accent fill the icon turns over, destructive or not, so it
         // never sits accent on accent.
         for picture in [Picture::Copy, Picture::Delete] {
-            let (body, minor) = action_colours(picture, Placement::OnAccent, &LIGHT);
+            let (body, minor) = action_colours(picture, Placement::OnAccent, &LIGHT, false);
             assert_eq!(body, LIGHT.text_on_accent);
             assert_ne!(minor, LIGHT.accent);
             assert_ne!(minor, body);
         }
+        // Disabled on an accent fill, the icon is the button's disabled
+        // text colour, as its label is, not the live colour dimmed.
+        let (body, minor) = action_colours(Picture::Copy, Placement::OnAccent, &LIGHT, true);
+        assert_eq!(body, LIGHT.text_on_accent_disabled);
+        assert_ne!(minor, body);
         assert_eq!(Placement::Alone.size(), 18.0);
         assert_eq!(Placement::Labelled.size(), 16.0);
         let purple = crate::fluent::hex(0x9141ac);
         let accented = with_accent(&DARK, purple, crate::fluent::hex(0xffffff));
         assert_eq!(accented.icon_accent_2, second_layer(purple, true));
         assert_ne!(accented.icon_accent_2, DARK.icon_accent_2);
+    }
+
+    /// A checked toggle and an accent button are accent-filled, so their
+    /// icon turns over; otherwise an icon alone and one beside a label differ.
+    #[test]
+    fn a_control_places_its_icon_by_its_fill_and_its_label() {
+        assert_eq!(Placement::for_control(true, true), Placement::OnAccent);
+        assert_eq!(Placement::for_control(true, false), Placement::OnAccent);
+        assert_eq!(Placement::for_control(false, true), Placement::Alone);
+        assert_eq!(Placement::for_control(false, false), Placement::Labelled);
+    }
+
+    /// An action alone gets the 18px slot; every other glyph keeps the
+    /// control's own size, and an action is drawn at whatever slot it gets.
+    #[test]
+    fn an_action_alone_gets_an_eighteen_pixel_slot() {
+        use super::Glyph;
+        use gpui::px;
+        let copy = Glyph::from(Picture::Copy);
+        assert_eq!(copy.slot(px(16.0), Placement::Alone), px(18.0));
+        assert_eq!(copy.slot(px(16.0), Placement::Labelled), px(16.0));
+        assert_eq!(copy.slot(px(48.0), Placement::OnAccent), px(48.0));
+        let folder = Glyph::from(Picture::Folder);
+        assert_eq!(folder.slot(px(16.0), Placement::Alone), px(16.0));
+    }
+
+    /// GPUI rasterises an `img` SVG at twice the size its file declares, so
+    /// every size a window draws an object at must come from a file that
+    /// declares at least that size: then the raster covers it on a 2x
+    /// display. Checked through GPUI's own renderer for every size up to
+    /// the largest the kit and the windows use (64px, Better Launcher's
+    /// preview).
+    #[test]
+    fn an_object_is_rasterised_at_least_twice_the_size_it_is_drawn_at() {
+        let renderer = SvgRenderer::new(Arc::new(()));
+        for size in [12.0, 16.0, 20.0, 24.0, 32.0, 40.0, 48.0, 64.0_f32] {
+            for picture in [Picture::Folder, Picture::Computer, Picture::Disc] {
+                let path = picture.path_for(size);
+                let bytes = super::load(path).expect(path);
+                let image = renderer.render_single_frame(bytes, 1.0).unwrap();
+                let width = image.size(0).width.0 as f32;
+                assert!(
+                    width >= 2.0 * size,
+                    "{} at {size}px rasterises to {width}px from {path}",
+                    picture.name()
+                );
+            }
+        }
+        assert_eq!(super::LARGE_INTRINSIC, 64.0);
     }
 
     /// The lighter shade is solid and sits between the body and the window

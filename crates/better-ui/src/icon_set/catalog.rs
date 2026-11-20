@@ -30,6 +30,17 @@ impl Kind {
 /// The prefix every picture's asset path starts with.
 pub const ASSET_PREFIX: &str = "better-ui/icons/";
 
+/// The size an object's file declares: 24px, the grid it is drawn on.
+pub const INTRINSIC: f32 = 24.0;
+
+/// The size the large copy of an object declares. GPUI rasterises an `img`
+/// SVG once, at twice the size the file declares, whatever size it is drawn
+/// at and whatever the display's scale, so a 24px file drawn at 64px on a
+/// 2x display is a 48px raster stretched to 128. The large copy is the same
+/// drawing with this size in its header, for anything drawn above
+/// [`INTRINSIC`].
+pub const LARGE_INTRINSIC: f32 = 64.0;
+
 /// An action's second layer, for an entry marked `two`.
 macro_rules! second_layer {
     ($file:literal) => {
@@ -112,6 +123,16 @@ macro_rules! pictures {
                 match self {
                     $(Picture::$object => None,)*
                     $(Picture::$action => second_layer!($action_file $($two)?),)*
+                }
+            }
+
+            /// Where the large copy of an object is served (see
+            /// [`LARGE_INTRINSIC`]); an action, drawn as a mask at the size of
+            /// its element, has none and answers its own path.
+            pub const fn large_path(self) -> &'static str {
+                match self {
+                    $(Picture::$object => concat!("better-ui/icons/object/large/", $object_file, ".svg"),)*
+                    $(Picture::$action => concat!("better-ui/icons/action/", $action_file, ".svg"),)*
                 }
             }
 
@@ -266,6 +287,39 @@ pictures! {
 }
 
 impl Picture {
+    /// The path to draw an object at `size` from: its own file up to
+    /// [`INTRINSIC`], the large copy above it.
+    pub fn path_for(self, size: f32) -> &'static str {
+        if self.kind() == Kind::Object && size > INTRINSIC {
+            self.large_path()
+        } else {
+            self.path()
+        }
+    }
+
+    /// The large copy's SVG: the file with [`LARGE_INTRINSIC`] in place of
+    /// [`INTRINSIC`] in its header, the drawing and viewBox unchanged.
+    pub fn large_svg(self) -> &'static str {
+        static LARGE: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+        let all = LARGE.get_or_init(|| {
+            Picture::ALL
+                .iter()
+                .map(|picture| {
+                    picture.svg().replacen(
+                        r#"width="24" height="24""#,
+                        r#"width="64" height="64""#,
+                        1,
+                    )
+                })
+                .collect()
+        });
+        let index = Picture::ALL
+            .iter()
+            .position(|picture| *picture == self)
+            .expect("every picture is in ALL");
+        &all[index]
+    }
+
     /// Whether the action destroys something, and so is drawn in the
     /// critical colour wherever it is.
     pub const fn destructive(self) -> bool {
@@ -279,6 +333,12 @@ impl Picture {
 pub fn load(path: &str) -> Option<&'static [u8]> {
     if let Some(picture) = Picture::from_path(path) {
         return Some(picture.svg().as_bytes());
+    }
+    if let Some(picture) = Picture::ALL
+        .iter()
+        .find(|picture| picture.kind() == Kind::Object && picture.large_path() == path)
+    {
+        return Some(picture.large_svg().as_bytes());
     }
     Picture::ALL
         .iter()

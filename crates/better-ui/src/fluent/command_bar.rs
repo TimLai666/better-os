@@ -268,14 +268,13 @@ impl RenderOnce for AppBarButton {
         if !disabled {
             element = element.track_focus(&focus.tab_index(0).tab_stop(command.shown.is_live()));
         }
-        let placement = if command.icon_only {
-            Placement::Alone
-        } else {
-            Placement::Labelled
-        };
-        let icon = command
-            .icon
-            .element(super::size::ICON, placement, p, disabled);
+        let placement = Placement::for_control(command.checked.unwrap_or(false), command.icon_only);
+        let icon = command.icon.element(
+            command.icon.slot(super::size::ICON, placement),
+            placement,
+            p,
+            disabled,
+        );
         // On a checked (accent) button the badge turns over, so it never
         // sits accent on accent.
         let (badge_fill, badge_text) = if command.checked.unwrap_or(false) {
