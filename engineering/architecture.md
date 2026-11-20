@@ -85,6 +85,12 @@ hardware-core ──> hardware-platform ──┬──> manager-gui        Syst
    what a machine has, each card's     ├──> manager-daemon     org.betteros.Hardware1
    rules, no I/O                       └──> better-window-attention  charger switch
    sysfs under a root, PPD / UPower / gsd-power clients, the Hardware1 client
+hardware-core::charge_state   what every battery icon shows (ticket 170): one
+   rule, its pictures' names and its words; also "is a charger online"
+   ├──> monitor-collectors-linux   the kernel's battery status, parsed once
+   ├──> monitor-gui, monitor-tray, manager-gui   every battery icon and line
+   ├──> awake-platform              which power supplies count as a charger
+   └──> awake-gui ──> hardware-platform   reads the battery beside the service
 
 drive-mounts ──┬──> files-gui         sidebar, "Mount automatically" (ticket 127)
    which drives  ├──> manager-gui       System page, Drives section

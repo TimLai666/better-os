@@ -69,6 +69,7 @@ impl PowerProvider {
     pub fn read(&self) -> Result<PowerReading, ReadError> {
         let entries = list_dir(&self.supplies_dir())?;
         let mut reading = PowerReading::default();
+        let mut sources: Vec<(String, Option<bool>)> = Vec::new();
 
         for entry in entries {
             let Ok(supply_type) = read_attribute(&entry.join("type")) else {
@@ -77,33 +78,33 @@ impl PowerProvider {
                 // because one USB-C port exposed something odd is not.
                 continue;
             };
-            match supply_type.as_str() {
-                "Mains" | "USB" | "USB_PD" | "USB_PD_DRP" => {
-                    if let Ok(online) = read_u64_attribute(&entry.join("online")) {
-                        // Any supply reporting online means the machine is on
-                        // external power, so the answer is a union across nodes
-                        // rather than whichever node was read last.
-                        reading.ac_connected =
-                            Some(reading.ac_connected.unwrap_or(false) || online != 0);
-                    }
+            if supply_type == "Battery" {
+                reading.has_battery = true;
+                if let Ok(capacity) = read_u64_attribute(&entry.join("capacity")) {
+                    // A driver reporting past 100 is reporting nonsense; it
+                    // is clamped rather than allowed to make a `u8` wrap.
+                    let percent = capacity.min(100) as u8;
+                    // With two batteries the lower one is the one that will
+                    // run out, so it is the one protection must act on.
+                    reading.battery_percent = Some(match reading.battery_percent {
+                        Some(existing) => existing.min(percent),
+                        None => percent,
+                    });
                 }
-                "Battery" => {
-                    reading.has_battery = true;
-                    if let Ok(capacity) = read_u64_attribute(&entry.join("capacity")) {
-                        // A driver reporting past 100 is reporting nonsense; it
-                        // is clamped rather than allowed to make a `u8` wrap.
-                        let percent = capacity.min(100) as u8;
-                        // With two batteries the lower one is the one that will
-                        // run out, so it is the one protection must act on.
-                        reading.battery_percent = Some(match reading.battery_percent {
-                            Some(existing) => existing.min(percent),
-                            None => percent,
-                        });
-                    }
-                }
-                _ => continue,
+            } else {
+                let online = read_u64_attribute(&entry.join("online"))
+                    .ok()
+                    .map(|online| online != 0);
+                sources.push((supply_type, online));
             }
         }
+        // Which supplies count as a charger, and how their `online` combine,
+        // is the one rule every Better OS window uses (ticket 170).
+        reading.ac_connected = hardware_core::charge_state::charger_online(
+            sources
+                .iter()
+                .map(|(kind, online)| (kind.as_str(), *online)),
+        );
 
         Ok(reading)
     }

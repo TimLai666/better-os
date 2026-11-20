@@ -7,6 +7,8 @@ license.workspace = true
 
 [dependencies]
 monitor-core.workspace = true
+# The kernel's battery `status`, parsed once for the suite (ticket 170).
+hardware-core.workspace = true
 serde.workspace = true
 # socket(2), sendto(2), and recv(2) for the NETLINK_SOCK_DIAG dump that
 # attributes TCP traffic to processes, and dlopen(3) for NVIDIA's management

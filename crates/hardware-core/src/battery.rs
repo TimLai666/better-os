@@ -20,6 +20,31 @@ impl BatteryStatus {
             _ => BatteryStatus::Unknown,
         }
     }
+
+    /// The status as Better Monitor's `battery.status` metric spells it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            BatteryStatus::Charging => "charging",
+            BatteryStatus::Discharging => "discharging",
+            BatteryStatus::Full => "full",
+            BatteryStatus::NotCharging => "not_charging",
+            BatteryStatus::Unknown => "unknown",
+        }
+    }
+
+    /// The status from Better Monitor's `battery.status` metric; `None` for a
+    /// word it does not spell.
+    pub fn from_key(key: &str) -> Option<BatteryStatus> {
+        [
+            BatteryStatus::Charging,
+            BatteryStatus::Discharging,
+            BatteryStatus::Full,
+            BatteryStatus::NotCharging,
+            BatteryStatus::Unknown,
+        ]
+        .into_iter()
+        .find(|status| status.as_str() == key)
+    }
 }
 
 /// The machine's own battery, read.
@@ -110,6 +135,15 @@ mod tests {
         );
         assert_eq!(BatteryStatus::parse("Unknown"), BatteryStatus::Unknown);
         assert_eq!(BatteryStatus::parse("whatever"), BatteryStatus::Unknown);
+    }
+
+    #[test]
+    fn metric_keys_round_trip() {
+        for raw in ["Charging", "Discharging", "Full", "Not charging", "Unknown"] {
+            let status = BatteryStatus::parse(raw);
+            assert_eq!(BatteryStatus::from_key(status.as_str()), Some(status));
+        }
+        assert_eq!(BatteryStatus::from_key("Not charging"), None);
     }
 
     #[test]

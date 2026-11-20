@@ -305,6 +305,33 @@ pub fn set_keyboard(
     }
 }
 
+/// UPower's display device: the battery the desktop's own indicator draws.
+pub const UPOWER_DISPLAY_DEVICE: Endpoint = Endpoint {
+    name: "org.freedesktop.UPower",
+    path: "/org/freedesktop/UPower/devices/DisplayDevice",
+    interface: "org.freedesktop.UPower.Device",
+};
+
+/// What a window that shows the battery follows to learn that a charger
+/// came or went or the battery's state moved, without polling (ticket 170):
+/// UPower's `OnBattery` and its display device. UPower reads the kernel's
+/// `power_supply` uevents, so a change there reaches these signals.
+pub const POWER_SUPPLY_CHANGES: [Endpoint; 2] = [UPOWER, UPOWER_DISPLAY_DEVICE];
+
+/// Whether UPower tells the desktop that a charge limit holds the battery:
+/// its display device has `ChargeThresholdEnabled` (UPower 1.90.3, on Ubuntu
+/// 24.04, does not; GNOME Shell 49 draws a plugged-in battery from it). `Some(false)` when
+/// UPower has no such property or is not running, `None` when the read
+/// failed for another reason. A read only.
+pub fn upower_reports_charge_threshold(system: &Connection) -> Option<bool> {
+    match get(system, &UPOWER_DISPLAY_DEVICE, "ChargeThresholdEnabled") {
+        Ok(_) => Some(true),
+        Err(BusError::Absent(_)) => Some(false),
+        Err(BusError::Failed(text)) if text.contains("No such property") => Some(false),
+        Err(BusError::Failed(_)) => None,
+    }
+}
+
 pub fn on_battery(system: &Connection) -> Result<bool, BusError> {
     bool::try_from(get(system, &UPOWER, "OnBattery")?).map_err(|e| BusError::Failed(e.to_string()))
 }

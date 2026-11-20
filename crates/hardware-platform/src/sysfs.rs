@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use hardware_core::Presence;
 use hardware_core::battery::{BatteryFacts, BatteryStatus};
+use hardware_core::charge_state::{BatteryPart, ChargeLimit, ChargeReadings};
 use hardware_core::fan::FanState;
 use hardware_core::lighting::{HintInterface, LightingHint, asus_wmi};
 #[cfg(feature = "sensors")]
@@ -17,6 +18,9 @@ use monitor_collectors_linux::hwmon::{SensorKind as MonitorKind, scan_hwmon};
 /// mode switch, first match wins (spec 11.2).
 pub const FAN_PLATFORM_DEVICES: [&str; 1] = ["asus-nb-wmi"];
 
+/// The variable a debug build of a window reads its sysfs root from.
+pub use hardware_core::DEBUG_SYS_ROOT_VARIABLE as DEBUG_ROOT_VARIABLE;
+
 /// Where the machine is: `/` on a real one.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SysRoot(PathBuf);
@@ -24,6 +28,18 @@ pub struct SysRoot(PathBuf);
 impl SysRoot {
     pub fn system() -> SysRoot {
         SysRoot(PathBuf::from("/"))
+    }
+
+    /// The root a window reads: `/`, or in a debug build the fixture tree
+    /// `BETTER_OS_DEBUG_SYS_ROOT` names, for screenshots in a sandbox. A
+    /// release build never reads the variable.
+    pub fn for_window() -> SysRoot {
+        if cfg!(debug_assertions)
+            && let Some(root) = std::env::var_os(DEBUG_ROOT_VARIABLE)
+        {
+            return SysRoot::at(root);
+        }
+        SysRoot::system()
     }
 
     /// A tree laid out as `<root>/sys`, `<root>/proc`, `<root>/etc`.
@@ -55,16 +71,26 @@ fn sorted_entries(dir: &Path) -> Vec<PathBuf> {
     entries
 }
 
-/// The machine's own battery: a `power_supply` of type `Battery` whose scope
-/// is not `Device` (a mouse reports its battery as one) and that is present.
-pub fn system_battery(root: &SysRoot) -> Option<PathBuf> {
+/// Whether `dir` is one of the machine's own batteries: a `power_supply` of
+/// type `Battery` whose scope is not `Device` (a mouse reports its battery as
+/// one) and that is present.
+fn is_system_battery(dir: &Path) -> bool {
+    read_text(&dir.join("type")).is_ok_and(|t| t == "Battery")
+        && read_text(&dir.join("scope")).map_or(true, |s| s != "Device")
+        && read_text(&dir.join("present")).map_or(true, |p| p != "0")
+}
+
+/// Every system battery, in name order (`BAT0` before `BAT1`).
+pub fn system_batteries(root: &SysRoot) -> Vec<PathBuf> {
     sorted_entries(&root.path("sys/class/power_supply"))
         .into_iter()
-        .find(|dir| {
-            read_text(&dir.join("type")).is_ok_and(|t| t == "Battery")
-                && read_text(&dir.join("scope")).map_or(true, |s| s != "Device")
-                && read_text(&dir.join("present")).map_or(true, |p| p != "0")
-        })
+        .filter(|dir| is_system_battery(dir))
+        .collect()
+}
+
+/// The machine's first battery, whose facts and limit the System page shows.
+pub fn system_battery(root: &SysRoot) -> Option<PathBuf> {
+    system_batteries(root).into_iter().next()
 }
 
 /// The battery's facts. Absent when there is no system battery; unreadable
@@ -94,6 +120,72 @@ pub fn battery(root: &SysRoot) -> Presence<BatteryFacts> {
         model: read_text(&dir.join("model_name"))
             .ok()
             .filter(|m| !m.is_empty()),
+    })
+}
+
+/// Whether a charger supplies power: each other `power_supply`'s `type` and
+/// `online`, judged by `hardware_core::charge_state::charger_online`. `None`
+/// when no charger is listed or one could not be read.
+pub fn charger_online(root: &SysRoot) -> Option<bool> {
+    let sources: Vec<(String, Option<bool>)> = sorted_entries(&root.path("sys/class/power_supply"))
+        .into_iter()
+        .filter_map(|dir| {
+            let kind = read_text(&dir.join("type")).ok()?;
+            let online = match read_text(&dir.join("online")).as_deref() {
+                Ok(text) => text.parse::<u32>().ok().map(|v| v > 0),
+                Err(_) => None,
+            };
+            Some((kind, online))
+        })
+        .collect();
+    hardware_core::charge_state::charger_online(
+        sources
+            .iter()
+            .map(|(kind, online)| (kind.as_str(), *online)),
+    )
+}
+
+/// One battery's part of the battery icon's reading, its own limit included.
+fn battery_part(dir: &Path) -> BatteryPart {
+    let number = |name: &str| read_text(&dir.join(name)).ok()?.parse::<f64>().ok();
+    let end = dir.join("charge_control_end_threshold");
+    let limit = if !end.exists() {
+        ChargeLimit::NotSupported
+    } else {
+        match number("charge_control_end_threshold") {
+            Some(end) if (1.0..=100.0).contains(&end) => ChargeLimit::Percent {
+                end: end.round() as u8,
+                start: number("charge_control_start_threshold")
+                    .filter(|start| (0.0..100.0).contains(start))
+                    .map(|start| start.round() as u8),
+            },
+            _ => ChargeLimit::Unreadable,
+        }
+    };
+    BatteryPart {
+        status: read_text(&dir.join("status"))
+            .ok()
+            .map(|s| BatteryStatus::parse(&s)),
+        percent: number("capacity").map(|c| c.clamp(0.0, 100.0).round() as u8),
+        energy_now: number("energy_now").or_else(|| number("charge_now")),
+        energy_full: number("energy_full").or_else(|| number("charge_full")),
+        limit,
+    }
+}
+
+/// What every battery icon reads: the charger and every system battery with
+/// its own limit (`hardware_core::charge_state`). `None` without a system
+/// battery. A charge-reporting battery's `charge_*` stands in for energy: the
+/// weighting needs one unit across the batteries, and both of a ThinkPad's
+/// report the same kind.
+pub fn charge_readings(root: &SysRoot) -> Option<ChargeReadings> {
+    let batteries: Vec<BatteryPart> = system_batteries(root)
+        .iter()
+        .map(|dir| battery_part(dir))
+        .collect();
+    (!batteries.is_empty()).then(|| ChargeReadings {
+        charger_online: charger_online(root),
+        batteries,
     })
 }
 
