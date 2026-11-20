@@ -14,9 +14,10 @@ use hardware_core::sensors::{SensorLabel, SensorRow, SensorSummary};
 use hardware_core::write::WriteOutcome;
 
 use super::copy::{Copy, copy};
-use crate::home::battery_words;
+use crate::home::battery_look;
 use crate::i18n::Locale;
 use crate::pages::states::PageState;
+use hardware_core::charge_state::{ChargeLimit, ChargeReadings};
 
 /// Sentences one after another: a space between them in English, nothing
 /// between them in Chinese, where a full stop already ends each one.
@@ -74,13 +75,54 @@ pub(crate) fn charge_label(choice: ChargeChoice, c: &Copy) -> String {
     }
 }
 
-/// `87% · 充電中`, or the status alone when the charge could not be read.
-pub(crate) fn battery_description(battery: &BatteryFacts, locale: Locale) -> String {
-    let status = battery_words(battery.status, locale);
-    match battery.capacity {
+/// `87% · 充電中`, or the state alone when the charge could not be read.
+/// The state is the battery icon rule's (`hardware_core::charge_state`),
+/// with the limit the page read beside the battery.
+pub(crate) fn battery_description(charge: &ChargeReadings, locale: Locale) -> String {
+    let status = battery_look(charge, locale).words;
+    match charge.percent() {
         Some(percent) => format!("{percent}% · {status}"),
-        None => status.to_string(),
+        None => status,
     }
+}
+
+/// The sentence the charge limit card adds after its description, while a
+/// limit under 100% holds a battery and GNOME's own battery icon cannot show
+/// it (ticket 170).
+pub(crate) fn charge_limit_lines(
+    charge: Option<&ChargeReadings>,
+    desktop_icon_note: bool,
+    c: &Copy,
+) -> Vec<String> {
+    let below_full = charge.is_some_and(|charge| {
+        charge
+            .batteries
+            .iter()
+            .any(|b| matches!(b.limit, ChargeLimit::Percent { end, .. } if end < 100))
+    });
+    if desktop_icon_note && below_full {
+        vec![c.charge_desktop_icon.to_string()]
+    } else {
+        Vec::new()
+    }
+}
+
+/// Whether GNOME's own battery icon draws a battery held at its limit like
+/// one running the machine, which is what the charge limit card says.
+///
+/// GNOME Shell up to 48 adds a mark only for UPower's `charging` and draws
+/// `pending-charge` as the plain level icon; 49 draws `-plugged-in` for it
+/// when UPower's display device has `ChargeThresholdEnabled`
+/// (`engineering/specs/battery-charge-state.md`). So the sentence is true on
+/// GNOME when the shell is older than 49, or when UPower publishes no such
+/// property; without either reading it is not said.
+pub(crate) fn desktop_icon_note(
+    on_gnome: bool,
+    shell_major: Option<u32>,
+    upower_reports_threshold: Option<bool>,
+) -> bool {
+    on_gnome
+        && (upower_reports_threshold == Some(false) || shell_major.is_some_and(|major| major < 49))
 }
 
 pub(crate) fn battery_rows(battery: &BatteryFacts, c: &Copy) -> Vec<String> {

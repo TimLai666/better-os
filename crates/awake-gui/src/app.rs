@@ -70,6 +70,12 @@ pub(crate) struct AwakeApp {
     pub(crate) preferences_saved: bool,
 
     pub(crate) status: Option<StatusView>,
+    /// What the battery is doing, read from sysfs each time the service's
+    /// status arrives, for the Battery section's power row
+    /// (`hardware_core::charge_state`, ticket 170). The service's status
+    /// carries only "on AC power", which cannot tell a battery held at its
+    /// charge limit from one charging.
+    pub(crate) charge: Option<hardware_core::charge_state::ChargeReadings>,
     pub(crate) rules: Vec<RuleView>,
     /// The rules exactly as the service reported them. The presented rows carry
     /// localized sentences rather than operands, so the editor is opened from
@@ -121,6 +127,7 @@ impl AwakeApp {
             store,
             preferences_saved: readable,
             status: None,
+            charge: None,
             rules: Vec::new(),
             raw_rules: Vec::new(),
             rules_suppression: None,
@@ -147,7 +154,34 @@ impl AwakeApp {
             ),
         };
         app.refresh(cx);
+        app.follow(cx);
         app
+    }
+
+    /// Reads again whenever the service signals or a charger or the battery
+    /// changes, so the Battery section's power row is current without
+    /// polling (ticket 170).
+    fn follow(&mut self, cx: &mut Context<Self>) {
+        let (sender, receiver) = std::sync::mpsc::channel::<()>();
+        std::thread::spawn(move || crate::client::follow(move || sender.send(()).is_ok()));
+        let receiver = std::sync::Arc::new(std::sync::Mutex::new(receiver));
+        cx.spawn(async move |this, cx| {
+            loop {
+                let receiver = receiver.clone();
+                let got = cx
+                    .background_spawn(async move {
+                        receiver
+                            .lock()
+                            .map(|receiver| receiver.recv().is_ok())
+                            .unwrap_or(false)
+                    })
+                    .await;
+                if !got || this.update(cx, |this, cx| this.refresh(cx)).is_err() {
+                    return;
+                }
+            }
+        })
+        .detach();
     }
 
     // ---- Navigation ----------------------------------------------------
@@ -191,6 +225,7 @@ impl AwakeApp {
                     .map(ProviderRow::from_wire)
                     .collect();
                 self.status = Some(StatusView::from_status(&status));
+                self.charge = snapshot.charge;
                 self.connection_error = None;
             }
             Err(error) => {

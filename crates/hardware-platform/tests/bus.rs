@@ -187,3 +187,46 @@ fn a_keyboard_led_with_no_service_is_present_and_unreadable() {
     let facts = hardware_platform::read_machine(&root, Some(&quiet), Some(&quiet));
     assert!(matches!(facts.keyboard, Presence::Unreadable(_)));
 }
+
+/// A UPower whose display device has `ChargeThresholdEnabled`, as UPower
+/// releases after 1.90.3 publish it.
+struct ThresholdDevice;
+
+#[zbus::interface(name = "org.freedesktop.UPower.Device")]
+impl ThresholdDevice {
+    #[zbus(property)]
+    fn charge_threshold_enabled(&self) -> bool {
+        true
+    }
+}
+
+/// Whether UPower tells the desktop about a charge limit decides the System
+/// page's sentence about GNOME's own icon (ticket 170). UPower 1.90.3's
+/// display device has no such property; without UPower nothing does.
+#[test]
+fn upower_reports_a_charge_threshold_only_when_its_device_has_the_property() {
+    let bus = bus_or_skip!();
+    let client = bus.connect();
+    assert_eq!(bus::upower_reports_charge_threshold(&client), Some(false));
+
+    let _services =
+        fakes::serve_system(bus.builder(), FakeProfiles::owners_machine(), false, false).unwrap();
+    assert_eq!(bus::upower_reports_charge_threshold(&client), Some(false));
+
+    let newer = bus_or_skip!();
+    let _device = newer
+        .builder()
+        .serve_at(
+            "/org/freedesktop/UPower/devices/DisplayDevice",
+            ThresholdDevice,
+        )
+        .unwrap()
+        .name("org.freedesktop.UPower")
+        .unwrap()
+        .build()
+        .unwrap();
+    assert_eq!(
+        bus::upower_reports_charge_threshold(&newer.connect()),
+        Some(true)
+    );
+}

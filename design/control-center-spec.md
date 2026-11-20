@@ -177,8 +177,10 @@ manufacturer's model suffix removed when it repeats (`ASUS Vivobook S 14
 M5406WA_M5406WA` reads as `ASUS Vivobook S 14 M5406WA`; the vendor comes from
 `sys_vendor`, `ASUSTeK COMPUTER INC.`, and is shown as the first word of the
 product name already). A battery icon and charge sit at its trailing edge when
-a battery exists: `🔋 87%` with `充電中` / `Charging`, `使用電池` / `On
-battery`, or `已充滿` / `Full`.
+a battery exists: `🔋 87%` with the battery state rule's picture and words
+(`engineering/specs/battery-charge-state.md`): `充電中` / `Charging`,
+`使用電池` / `On battery`, `已接上電源，維持在 80%` / `Plugged in, holding at
+80%`, and the rest.
 
 ### Attention cards
 
@@ -282,8 +284,14 @@ caution colour with a caution icon.
 | Cycles | 充電次數：{n} | Charge cycles: {n} | `cycle_count`, row hidden when it reads 0 (the machine reads 0) |
 | Model | 型號：{model} | Model: {model} | `model_name` |
 
-Status words: `Charging` 充電中 / `Discharging` 使用電池 / `Full` 已充滿 /
-`Not charging` 已接電源，沒有充電 / anything else 無法判讀 (Unknown).
+Status words and the cards' icons are the battery state rule's
+(`engineering/specs/battery-charge-state.md`, ticket 170), which lists every
+state's words in both languages. The charge limit card's description is the
+description above, then, on GNOME while a limit under 100% is set and GNOME's
+own icon cannot show a held battery (the shell older than 49, or UPower
+without `ChargeThresholdEnabled`), 停在上限時，GNOME 本身的電池圖示看起來跟使用電池時一樣。
+/ At the limit, GNOME's own battery icon looks the same as on battery., then
+the restore and authentication sentences.
 
 ### Group: 顯示 / Display
 

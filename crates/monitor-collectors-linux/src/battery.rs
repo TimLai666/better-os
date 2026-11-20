@@ -24,37 +24,10 @@ use std::path::Path;
 
 pub const BATTERY_COLLECTOR: &str = "linux.battery";
 
-/// What a battery is doing.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum BatteryStatus {
-    Charging,
-    Discharging,
-    Full,
-    NotCharging,
-    Unknown,
-}
-
-impl BatteryStatus {
-    pub fn parse(raw: &str) -> Self {
-        match raw.trim() {
-            "Charging" => Self::Charging,
-            "Discharging" => Self::Discharging,
-            "Full" => Self::Full,
-            "Not charging" => Self::NotCharging,
-            _ => Self::Unknown,
-        }
-    }
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Charging => "charging",
-            Self::Discharging => "discharging",
-            Self::Full => "full",
-            Self::NotCharging => "not_charging",
-            Self::Unknown => "unknown",
-        }
-    }
-}
+/// What a battery is doing: the kernel's `status`, parsed in one place for
+/// the whole suite (`hardware_core::battery`), with the spelling the
+/// `battery.status` metric carries.
+pub use hardware_core::battery::BatteryStatus;
 
 /// One battery, read.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -78,6 +51,12 @@ pub struct BatteryReading {
     pub manufacturer: Option<String>,
     /// The charge limit the firmware stops at, `0.0..=1.0`.
     pub charge_limit: Option<f64>,
+    /// `charge_control_start_threshold`, below which charging starts again,
+    /// `0.0..=1.0`.
+    pub charge_start: Option<f64>,
+    /// Whether the battery has `charge_control_end_threshold` at all, so a
+    /// limit that could not be read is told from a battery with none.
+    pub charge_limit_present: bool,
     /// Whether the battery belongs to an attached device (a mouse) rather
     /// than to this machine.
     pub device_scope: bool,
@@ -184,6 +163,10 @@ pub fn read_battery(dir: &Path, name: &str) -> BatteryReading {
         charge_limit: number(dir, "charge_control_end_threshold")
             .filter(|limit| *limit > 0.0 && *limit <= 100.0)
             .map(|limit| limit / 100.0),
+        charge_limit_present: dir.join("charge_control_end_threshold").exists(),
+        charge_start: number(dir, "charge_control_start_threshold")
+            .filter(|start| *start >= 0.0 && *start < 100.0)
+            .map(|start| start / 100.0),
         device_scope: text(dir, "scope").as_deref() == Some("Device"),
     }
 }
@@ -337,6 +320,12 @@ impl BatteryCollector {
                 source(),
                 "charge_control_end_threshold",
             ),
+            gauge(
+                "battery.charge.start",
+                Unit::Ratio,
+                source(),
+                "charge_control_start_threshold",
+            ),
             identity("battery.technology", source(), "technology"),
             identity("battery.model", source(), "model_name"),
             identity("battery.manufacturer", source(), "manufacturer"),
@@ -477,8 +466,24 @@ impl BatteryCollector {
                     Some(cycles) => Observation::unsigned(cycles),
                 },
             );
-            if let Some(limit) = battery.charge_limit {
-                m.insert(metric_id("battery.charge.limit"), Observation::float(limit));
+            match battery.charge_limit {
+                Some(limit) => {
+                    m.insert(metric_id("battery.charge.limit"), Observation::float(limit));
+                }
+                // There and unreadable is not the same as a battery with no
+                // limit: the battery icon says it does not know (ticket 170).
+                None if battery.charge_limit_present => {
+                    m.insert(
+                        metric_id("battery.charge.limit"),
+                        Observation::Unsupported(UnsupportedReason::NotReported {
+                            detail: "the charge limit could not be read".into(),
+                        }),
+                    );
+                }
+                None => {}
+            }
+            if let Some(start) = battery.charge_start {
+                m.insert(metric_id("battery.charge.start"), Observation::float(start));
             }
             for (id, value) in [
                 ("battery.technology", &battery.technology),

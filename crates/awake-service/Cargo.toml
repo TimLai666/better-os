@@ -44,3 +44,9 @@ awake-service = { path = ".", features = ["test-support"] }
 awake-platform = { workspace = true, features = ["test-support"] }
 better-core.workspace = true
 tempfile.workspace = true
+
+# The real engine and interface with a fake inhibitor, on whatever session bus
+# it is started on, for screenshots in a sandbox (ticket 170).
+[[example]]
+name = "awake_standin"
+required-features = ["test-support"]

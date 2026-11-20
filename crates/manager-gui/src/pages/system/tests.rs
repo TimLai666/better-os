@@ -3,6 +3,7 @@
 use better_core::CurrentDesktop;
 use hardware_core::battery::{BatteryFacts, BatteryStatus};
 use hardware_core::charge::{ChargeChoice, charge_limit_view};
+use hardware_core::charge_state::{ChargeLimit, ChargeReadings};
 use hardware_core::power::{Caution, Degradation, Hold};
 use hardware_core::sensors::{SensorKind, SensorLabel, SensorRow, SensorSummary};
 use hardware_core::write::WriteOutcome;
@@ -78,6 +79,15 @@ fn a_limit_set_elsewhere_names_its_value() {
     );
 }
 
+fn one(status: BatteryStatus, percent: Option<u8>, end: u8) -> ChargeReadings {
+    ChargeReadings::single(
+        Some(true),
+        Some(status),
+        percent,
+        ChargeLimit::Percent { end, start: None },
+    )
+}
+
 #[test]
 fn the_battery_reads_its_charge_status_and_rows() {
     let battery = BatteryFacts {
@@ -88,9 +98,10 @@ fn the_battery_reads_its_charge_status_and_rows() {
         cycles: Some(0),
         model: Some("A32-K55".into()),
     };
-    assert_eq!(battery_description(&battery, Locale::ZhTw), "87% · 充電中");
+    let charging = one(BatteryStatus::Charging, Some(87), 100);
+    assert_eq!(battery_description(&charging, Locale::ZhTw), "87% · 充電中");
     assert_eq!(
-        battery_description(&battery, Locale::EnUs),
+        battery_description(&charging, Locale::EnUs),
         "87% · Charging"
     );
     assert_eq!(
@@ -100,12 +111,68 @@ fn the_battery_reads_its_charge_status_and_rows() {
             "Model: A32-K55".to_string()
         ]
     );
-    let unread = BatteryFacts {
-        capacity: None,
-        status: BatteryStatus::Unknown,
-        ..battery
-    };
-    assert_eq!(battery_description(&unread, Locale::EnUs), "Unknown");
+    assert_eq!(
+        battery_description(&one(BatteryStatus::Unknown, None, 100), Locale::EnUs),
+        "Battery state unknown"
+    );
+}
+
+/// The owner's machine on 2026-11-21: the charger online, `Not charging`
+/// at 80% with the limit at 80 (ticket 170).
+fn held() -> ChargeReadings {
+    one(BatteryStatus::NotCharging, Some(80), 80)
+}
+
+#[test]
+fn the_charge_limit_card_says_what_gnomes_own_icon_draws_only_when_true() {
+    assert_eq!(
+        charge_limit_lines(Some(&held()), true, copy(Locale::ZhTw)),
+        vec!["停在上限時，GNOME 本身的電池圖示看起來跟使用電池時一樣。".to_string()]
+    );
+    assert_eq!(
+        charge_limit_lines(Some(&held()), true, copy(Locale::EnUs)),
+        vec!["At the limit, GNOME's own battery icon looks the same as on battery.".to_string()]
+    );
+    // Not when the note does not hold, and not without a limit under 100%.
+    assert!(charge_limit_lines(Some(&held()), false, copy(Locale::EnUs)).is_empty());
+    let full = one(BatteryStatus::Full, Some(100), 100);
+    assert!(charge_limit_lines(Some(&full), true, copy(Locale::EnUs)).is_empty());
+    assert!(charge_limit_lines(None, true, copy(Locale::EnUs)).is_empty());
+}
+
+/// GNOME Shell 49 draws a plugged-in battery when UPower reports
+/// `ChargeThresholdEnabled`; older shells, or a UPower without the property,
+/// draw the on-battery icon, which is when the card says so.
+#[test]
+fn the_desktop_icon_note_follows_the_shell_and_upower() {
+    assert!(desktop_icon_note(true, Some(46), Some(false)));
+    assert!(desktop_icon_note(true, Some(46), None));
+    assert!(desktop_icon_note(true, Some(49), Some(false)));
+    assert!(desktop_icon_note(true, None, Some(false)));
+    assert!(!desktop_icon_note(true, Some(49), Some(true)));
+    assert!(!desktop_icon_note(true, Some(50), None));
+    assert!(!desktop_icon_note(true, None, None));
+    assert!(!desktop_icon_note(false, Some(46), Some(false)));
+}
+
+#[test]
+fn online_below_the_limit_and_not_charging_is_never_called_holding() {
+    let stuck = one(BatteryStatus::NotCharging, Some(52), 80);
+    for locale in BOTH {
+        let line = battery_description(&stuck, locale);
+        assert!(
+            !line.contains("維持") && !line.contains("holding"),
+            "{line}"
+        );
+    }
+    assert_eq!(
+        battery_description(&stuck, Locale::EnUs),
+        "52% · Plugged in, not charging"
+    );
+    assert_eq!(
+        battery_description(&held(), Locale::ZhTw),
+        "80% · 已接上電源，維持在 80%"
+    );
 }
 
 #[test]

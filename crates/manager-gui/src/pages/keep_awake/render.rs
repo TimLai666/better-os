@@ -565,11 +565,18 @@ impl ManagerApp {
             ..
         } = battery
         {
-            let source = match on_ac_power {
-                Some(true) => c.on_ac_power,
-                Some(false) => c.on_battery_power,
-                None => c.unknown,
-            };
+            // The battery's state in the words and picture every battery
+            // icon in Better OS uses (ticket 170). Without a battery reading
+            // of its own the rule gets only the charger the service saw.
+            let readings = self.keep_awake.charge.clone().unwrap_or(
+                hardware_core::charge_state::ChargeReadings {
+                    charger_online: on_ac_power,
+                    batteries: Vec::new(),
+                },
+            );
+            let look = crate::home::battery_look(&readings, locale);
+            let source = look.words.as_str();
+            let charge_icon = crate::home::battery_picture(&look);
             let charge = percent
                 .map(|percent| {
                     fill(
@@ -582,7 +589,7 @@ impl ManagerApp {
             rows.push(Row::new(
                 gap,
                 SettingsCard::new("awake-charge", c.current_charge)
-                    .icon(Picture::BatteryMedium)
+                    .icon(charge_icon)
                     .description(c.on_battery_rule_detail)
                     .content(label(charge, BODY, p.text_secondary)),
             ));

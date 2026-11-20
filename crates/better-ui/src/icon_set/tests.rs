@@ -150,7 +150,7 @@ fn every_object_opens_with_the_header_its_large_copy_needs() {
         .copied()
         .filter(|p| p.kind() == Kind::Object)
         .collect();
-    assert_eq!(objects.len(), 86);
+    assert_eq!(objects.len(), 89);
     for picture in objects {
         assert!(
             picture.svg().starts_with(HEADER),
