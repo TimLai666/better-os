@@ -22,9 +22,9 @@
 use better_ui::fluent::button::Button;
 use better_ui::fluent::chart::{ChartHue, ChartSeries, LineChart};
 use better_ui::fluent::{BODY, BODY_STRONG, CAPTION, label, palette, radius, spacing};
+use better_ui::icon_set::{self, Picture};
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
-use gpui_component::{Icon, IconName};
 use monitor_core::{EntityKind, MetricId};
 use monitor_store::Sample;
 use monitor_views::ProcessFacts;
@@ -85,16 +85,16 @@ impl Section {
         }
     }
 
-    fn icon(self) -> IconName {
+    fn icon(self) -> Picture {
         match self {
-            Section::Cpu => IconName::Cpu,
-            Section::Memory => IconName::MemoryStick,
-            Section::Gpu => IconName::Frame,
-            Section::Disk => IconName::HardDrive,
-            Section::Network => IconName::Network,
-            Section::Battery => IconName::Battery,
-            Section::Temperatures => IconName::Sun,
-            Section::Fans => IconName::Loader,
+            Section::Cpu => Picture::Cpu,
+            Section::Memory => Picture::Memory,
+            Section::Gpu => Picture::Gpu,
+            Section::Disk => Picture::Drive,
+            Section::Network => Picture::Network,
+            Section::Battery => Picture::Battery,
+            Section::Temperatures => Picture::Thermometer,
+            Section::Fans => Picture::Fan,
         }
     }
 }
@@ -611,11 +611,7 @@ impl PopupView {
                                     .flex()
                                     .items_center()
                                     .gap(px(6.0))
-                                    .child(
-                                        Icon::new(section.icon())
-                                            .size_4()
-                                            .text_color(p.text_secondary),
-                                    )
+                                    .child(icon_set::picture(section.icon(), 16.0))
                                     .child(label(self.title(section), CAPTION, p.text_secondary)),
                             )
                             .child(label(figure, BODY_STRONG, p.text_primary))
