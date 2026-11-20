@@ -546,9 +546,12 @@ GUI or dependency compiles when the relevant command was not executed.
   says "no backend can do this yet" is honest but it is not a feature.
 - Better Files becomes the desktop's file manager (ticket 129, ADR 0041) by a
   user-level D-Bus activation file for `org.freedesktop.FileManager1` that
-  runs `better-files --service`; a running owner is never stopped, and
-  removal runs `/usr/lib/better-os/before-removal/better-files` to put the
-  previous file (or none) back. The routing has run only on a private
+  runs `better-files --service`; a running owner is never stopped.
+  Removal puts the previous file (or none) back through
+  `/usr/lib/better-os/before-removal/better-files`, a removal by `apt` through
+  the package's postrm, and Better Manager's start finishes what either
+  left; turning Better Files off runs the same program from
+  `/usr/lib/better-os/on-disable/` and turning it on its `--undo`. The routing has run only on a private
   `dbus-daemon` with stand-in file managers: nobody has watched a real
   "Show in folder" open Better Files on GNOME, nor a real Nautilus give the
   name up, and the adapter's executable table is the only thing that may
