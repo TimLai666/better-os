@@ -622,15 +622,21 @@ GUI or dependency compiles when the relevant command was not executed.
   is what the ticket-43 merge commit `c813fd6` did, over one added optional
   dependency. Regenerate in the same commit that moves the lockfile; a dependency
   change is a lockfile change even when it adds no new crate to the graph.
-- One place decides which Ubuntu base a host is built on:
-  `crates/better-core/src/host.rs`. `manager-daemon` and `manager-platform`'s
-  `HostPlatform` both call it, and `install.sh` — which is shell and cannot —
-  keeps a matching copy with a comment pointing at it and a fixture test for
-  every case. Do not add a fourth reading of `/etc/os-release`; a client that
-  resolves the host differently from the service that checks its plan is the
-  ticket 43 and ticket 45 defect in both of its forms. `MockPlatform` is the
-  demo mode's platform and nothing else: a client that plans from it reports
-  Ubuntu 24.04 amd64 whatever the machine is.
+- One place reads os-release and decides which Ubuntu base a host is built
+  on: `crates/better-core/src/host.rs`. `read_os_release_under` reads
+  `/etc/os-release`, or `/usr/lib/os-release` only when the first does not
+  exist, and every Rust reader calls it: `manager-daemon`, `manager-platform`'s
+  `HostPlatform`, Better Manager's home banner, Better Monitor's audit, and
+  the system drive's name (ticket 138, `running_system_name` through
+  `drive_mounts::listing::Drive::naming`). `install.sh` — which is shell and
+  cannot — keeps a matching copy of the file order and the release rules with
+  a comment pointing at it and a CI fixture for every case.
+  `crates/better-core/tests/os_release_readers.rs` fails when any other crate
+  names an os-release path outside its tests; do not add a reader. A client
+  that resolves the host differently from the service that checks its plan
+  is the ticket 43 and ticket 45 defect in both of its forms. `MockPlatform`
+  is the demo mode's platform and nothing else: a client that plans from it
+  reports Ubuntu 24.04 amd64 whatever the machine is.
 - `resolve_distribution_id` returns `/etc/os-release`'s own `ID`, so a Zorin
   host is `zorin` and not the Ubuntu base its release number comes from. That
   went public in v0.2.5 and it is a contract change for manifests, not only an

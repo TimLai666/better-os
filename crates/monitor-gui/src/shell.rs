@@ -316,6 +316,22 @@ pub(crate) fn property_row(
         .into_any_element()
 }
 
+/// A row of a card's name and value list, with the note that explains it,
+/// when it has one, directly under it as secondary text.
+pub(crate) fn fact_row(fact: crate::card_notes::Fact, p: &Palette) -> AnyElement {
+    let row = property_row(fact.name, fact.value, fact.missing, p);
+    match fact.note {
+        None => row,
+        Some(note) => div()
+            .flex()
+            .flex_col()
+            .min_w_0()
+            .child(row)
+            .child(label(note, CAPTION, p.text_secondary).pb(px(4.0)))
+            .into_any_element(),
+    }
+}
+
 /// A short message in a card, for an empty or unavailable state.
 pub(crate) fn note_card(
     title: impl Into<SharedString>,
