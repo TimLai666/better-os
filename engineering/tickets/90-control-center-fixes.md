@@ -40,16 +40,130 @@ Spec section 9.
 
 ## Acceptance
 
-- [ ] Each entry has tests for detection (present and absent), fix, check,
+- [x] Each entry has tests for detection (present and absent), fix, check,
       and undo against fixture directories in a scratch HOME.
-- [ ] Nothing in `patch-*` spawns a shell or takes a command from data; a
+- [x] Nothing in `patch-*` spawns a shell or takes a command from data; a
       test asserts it over the crates' source, as `touchpad-gui` does.
-- [ ] Light and dark, zh-TW and English, 1600 and 960, screenshotted with a
+- [x] Light and dark, zh-TW and English, 1600 and 960, screenshotted with a
       fixture fault present and with none.
-- [ ] fmt, clippy on stable and 1.99, `cargo +1.95 check`, workspace tests,
+- [x] fmt, clippy on stable and 1.99, `cargo +1.95 check`, workspace tests,
       and the license check pass.
 
 ## Notes
+
+**Blocked:** waiting on CI's `package` job (the container check in
+`packaging/test-daemon-e2e.sh`, which removes `better-manager` under a real
+dpkg and `setpriv`) passing on the final head of pull request #25; this
+machine has no usable Docker. Everything else is built and checked.
+
+Second review (2026-11-21), all fixed:
+
+- **Maintainer scripts.**
+  - The account library lives in a shell variable, never a temporary
+    file, and is built only for removal, abort-remove, and purge. Nothing
+    in it can fail the script; `TMPDIR=/nonexistent` exits 0 on upgrade
+    and on removal.
+  - Account names that are not plain names are skipped and counted, and
+    output is prefixed with no `sed`.
+  - Homes are judged from the mount table (no automount is woken), with a
+    120 s deadline for the whole walk.
+  - Older stamps are cleared at the very top of the prerm.
+  - `accounts.sh` documents the interface for other scripts.
+- **Being removed.**
+  - The removal stamp in `/run/better-os` decides whether a removal is
+    running. The directory exists from boot (`tmpfiles.d`), the window
+    watches it, and "Check again" never deletes a running removal's
+    set-aside file.
+  - An abandoned removal (`deinstall ok installed`) is not "being removed".
+  - A half-done one is said on the page, with what finishes it. Upgrade,
+    reinstall, and downgrade statuses are tested never to read as a
+    removal.
+- **Demo stores.** The Touchpad page's demo store moved off `/tmp` to the
+  shared `better_core::private_dir`.
+- **Entry 2.**
+  - Says before Fix that screen sharing may show only X11 windows (read
+    from WebRTC's and Chromium's source, cited in the spec).
+  - Says "cannot tell" when an Electron-base app's version is not found.
+  - Puts the person's `sockets` text back exactly.
+- **Removal reach.** It follows a custom XDG directory the person owns
+  outside the home. The postrm and the manifest cover every half-written
+  file.
+- **The page.**
+  - The description says only what is true.
+  - Every row under "Problems found" draws the warning sign.
+  - Paths read relative to home (fixtures are laid out as a home).
+
+
+Delivered (spec: `engineering/specs/better-patch.md`):
+
+- **Engine and entries.** `patch-core` (no GPUI, no I/O) holds the `Entry`
+  trait, `EntryState`, the record, the engine, and both entries.
+  `patch-platform` holds the host, the Flatpak reader and in-place writer,
+  Mutter's scale (5 s timeout; "cannot check on this desktop yet" off
+  GNOME), the closed command runner, the record store, the location file, a
+  fixture machine, and the removal step.
+- **Entry 2 follows every Electron version.** Electron 38 removed
+  `ELECTRON_OZONE_PLATFORM_HINT` (breaking-changes.md, 38.0). The override
+  now also takes the `wayland` socket away and sets `XDG_SESSION_TYPE=x11`,
+  and detection reads the app's Electron `version` file. The check looks at
+  what the app will start with, not only at the keys written.
+- **Where the fix is offered.** Only at one whole-number scale above 1. A
+  fractional scale, or screens at different scales, is listed with the
+  reason and no Fix.
+- **Override files.** Edited in place: only the fix's own lines change.
+  Line endings, spacing, repeated keys and repeated groups (read as GLib
+  reads them) and the file's permissions are kept.
+- **The page.** `manager-gui/src/pages/fixes/` has the search entries, the
+  pane count and Home's item. The debug-only placeholder is gone,
+  `render::page_rows` matches every pane item with no catch-all, and
+  `every_page_in_the_pane_has_real_content` replaces the old gate test. The
+  window stops offering changes while its package is being removed (the
+  shared `UpdateState::Removed` in `better_core::self_update`). The demo
+  window's fixture machine lives only under a private runtime directory.
+- **Removing Better Manager undoes every applied fix that has an undo**
+  (AGENTS.md: nothing a component adds outlives it):
+  - The prerm runs the before-removal program as each person `getent
+    passwd` lists in the login range. Each step runs under `timeout -s KILL
+    30`, in its own session, with no terminal input.
+  - A key changed after the fix is left and named. A fix whose undo failed
+    stays recorded with its file named. The record is deleted otherwise.
+  - `--undo` acts only on this dpkg run's stamped set-aside file.
+  - The postrm cleans up what the program set aside. A removal that failed
+    after the prerm is reported on the Fixes page at the next start.
+  - The location file lets the removal find a record and overrides kept
+    under custom XDG directories.
+  - An unmounted encrypted home is the limit that remains.
+- **Manifest.** `better-manager.yaml` `paths` lists the record, the
+  set-aside file, the location file, and the before-removal program.
+
+Checks run on the branch after merging `main` (2026-11-21):
+
+- `cargo test --no-fail-fast -p patch-core -p patch-platform -p better-core
+  -p better-ui -p manager-gui -p manager-core`: exit 0, all passed
+  (manager-gui 378).
+- `cargo +stable clippy` and `cargo +1.99.0 clippy` (`-p patch-core -p
+  patch-platform -p better-core -p better-ui -p manager-gui --all-targets --
+  -D warnings`): exit 0.
+- `cargo +1.95 check` for the same crates: exit 0.
+- `cargo fmt --all --check`: exit 0.
+- The license check: exit 0, after regenerating it.
+- `bash packaging/tests/autostart-overrides.test.sh` and
+  `before-removal-accounts.test.sh`: exit 0. They include a hung home and a
+  hung program being killed after their time limit.
+- `sh -n` and `bash -n` on every changed script. `build-deb.sh`'s script
+  writers were run against a scratch staging directory, and their output
+  passes `verify-deb.sh`'s new checks.
+
+Not run here: shellcheck (not installed on this machine), a real
+`build-deb.sh`/`verify-deb.sh`, and the container check in
+`packaging/test-daemon-e2e.sh`. This machine has no usable Docker; the new
+`apt-get remove better-manager` section's first run is CI's.
+
+Screenshots: `/home/tim/Developer/better-os-evidence/90/`, taken in a private
+headless GNOME Shell 46 with a scratch HOME and fixture machines. They cover
+light and dark, zh-TW and English, 1600 and 960 wide, and for each: found,
+found expanded, after Fix, none, applied, after Undo, not offered
+(fractional scale), and Home's item.
 
 Never run either fix against the person's real fontconfig cache or Flatpak
 overrides from an agent session; use the scratch HOME.

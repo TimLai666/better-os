@@ -59,3 +59,7 @@ desktop's own services and never through `manager-daemon`.
       screenshots in `/home/tim/Developer/better-os-evidence/157/`.
 - [ ] fmt, clippy on stable, the crates' tests, and the license inventory
       check pass.
+
+## Notes
+
+The network, sound, and battery models are the shared crates of `design/system-settings-spec.md` section 3.1 (`network-core`, `sound-core`), used by Better Manager's pages too (tickets 232, 234): whichever of this ticket and those starts first creates them to that section. Each settings link opens the Better Manager page once it exists (section 4.3's names).

@@ -473,7 +473,12 @@ GUI or dependency compiles when the relevant command was not executed.
   the package, and with `--undo` if the daemon then refuses. It never blocks a
   removal: exit 3 is a warning in Activity, exit 4 means no session and a
   pending restore Better Manager finishes at its next start. Better Touchpad's
-  puts its captured touchpad settings back. The gesture service's first run puts the Mac-style preset in
+  puts its captured touchpad settings back. Better Manager's own (it undoes
+  the fixes it applied, ticket 90) is run by its maintainer scripts instead,
+  as each person in the login range, because Better Manager cannot remove
+  itself (`packaging/maintainer/before-removal-accounts.sh`, sharing
+  `accounts.sh` and `account-step.sh` with the autostart postrm: accounts
+  from `getent passwd`, each person's step under `timeout -s KILL 30`). The gesture service's first run puts the Mac-style preset in
   force when no gesture file exists yet. Without both processes the Gestures
   screen and the `touchpad.gesture_bridge` health check say which is missing:
   the service owns `org.betteros.TouchpadGestures1` while it runs, and an
@@ -629,6 +634,29 @@ GUI or dependency compiles when the relevant command was not executed.
   installed, and the catalog is read from the process's own `XDG_DATA_DIRS`, so
   a manager started without the Flatpak paths reports Flatpak applications as
   gone. The choice buttons in the window have not been looked at.
+- Better Patch, the Fixes page (ticket 90, `engineering/specs/better-patch.md`),
+  has run its two entries only against fixture machines in scratch
+  directories: no agent session may rebuild the person's font cache or write
+  their Flatpak overrides. Nobody has watched it find, fix, or undo either
+  fault on a real desktop; the Mutter scale read has been seen only in a
+  headless GNOME Shell. The Electron fix is offered only at one whole-number
+  scale above 1 (the case ticket 76 verified) and covers every Electron
+  version's way of choosing Wayland; that the override puts an Electron 38
+  or later app on X11 is read from Electron's and Flatpak's sources, not
+  seen. Removing Better Manager with apt undoes every applied fix that has an
+  undo, as each person `getent passwd` lists in the login range, each step
+  under `timeout -s KILL 30`, through the package's before-removal program
+  run by its maintainer scripts (a key the person changed afterwards is left
+  and named, a fix whose undo failed stays recorded), and deletes the record;
+  the rebuilt font cache stays. An encrypted home that is not mounted keeps
+  its fixes. The container check in `packaging/test-daemon-e2e.sh` runs that
+  removal under a real dpkg and `setpriv`; its first run is CI's. Maintainer
+  scripts that act in people's homes keep the account library in a variable,
+  never a temporary file, and reach only plain-named accounts on mounted
+  local homes (or with a session), within 30 s each and 120 s in all
+  (`packaging/maintainer/accounts.sh` documents the interface). The Electron
+  fix may limit the app's screen sharing to X11 windows (read from
+  Chromium's source, not tried), and the card says so before Fix.
 - The login screen watch (ticket 140, ADR 0033) has run against a real
   systemd, logind, and journal only in CI's container check
   (`packaging/boot-watch/run.sh`, a stand-in `gdm.service` that never opens

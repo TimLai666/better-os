@@ -915,6 +915,105 @@ grep -q 'already installed and current' /tmp/installer-rerun.log || {
 }
 printf 'The installer is idempotent\n'
 
+printf '== removing Better Manager undoes the fixes it applied (ticket 90) ==\n'
+# A person whose Fixes page applied the Electron pointer fix: a record and
+# an override file that holds their own line and the fix's keys. apt removes
+# Better Manager, as it is the only way it goes; its prerm runs the
+# before-removal program as that person, and its postrm deletes what the
+# program set aside. Run under a time limit so a hang fails the job instead
+# of holding it.
+FIX_UID=1000
+if ! getent passwd "$FIX_UID" > /dev/null; then
+    useradd --create-home --uid "$FIX_UID" better-person
+fi
+fix_home="$(getent passwd "$FIX_UID" | cut -d: -f6)"
+fix_app=io.github.shiftey.Desktop
+fix_override="$fix_home/.local/share/flatpak/overrides/$fix_app"
+fix_record="$fix_home/.local/state/better-os/fixes.json"
+fix_aside="$fix_home/.local/state/better-os/fixes-removal-undo.json"
+own_lines='# kept by hand
+[Context]
+filesystems=~/Projects;
+'
+mkdir -p "$(dirname "$fix_override")" "$(dirname "$fix_record")"
+printf '%ssockets=x11;!fallback-x11;!wayland;\n\n[Environment]\nELECTRON_OZONE_PLATFORM_HINT=x11\nXDG_SESSION_TYPE=x11\n' \
+    "$own_lines" > "$fix_override"
+cat > "$fix_record" <<RECORD
+{
+  "schema_version": 1,
+  "applied": [
+    {
+      "entry": "electron-cursor",
+      "subject": { "flatpak-app": "$fix_app" },
+      "applied_at": 1763700000,
+      "change": {
+        "override-keys": {
+          "app": "$fix_app",
+          "name": { "default": "GitHub Desktop", "zh_tw": null },
+          "created_file": false,
+          "created_groups": ["Environment"],
+          "keys": [
+            { "key": { "socket": "x11" }, "previous": "absent", "written": "granted" },
+            { "key": { "socket": "fallback-x11" }, "previous": "absent", "written": "denied" },
+            { "key": { "socket": "wayland" }, "previous": "absent", "written": "denied" },
+            { "key": { "environment": "ELECTRON_OZONE_PLATFORM_HINT" }, "previous": "absent", "written": { "value": "x11" } },
+            { "key": { "environment": "XDG_SESSION_TYPE" }, "previous": "absent", "written": { "value": "x11" } }
+          ]
+        }
+      }
+    }
+  ]
+}
+RECORD
+chown -R "$FIX_UID:$FIX_UID" "$fix_home/.local"
+installer_reports_installed better-manager || {
+    printf 'Better Manager is not installed before its removal check\n' >&2
+    exit 1
+}
+[[ -x /usr/lib/better-os/before-removal/better-manager ]] || {
+    printf 'The before-removal program is not installed\n' >&2
+    exit 1
+}
+timeout -s KILL 300 env DEBIAN_FRONTEND=noninteractive apt-get remove -y better-manager \
+    > /tmp/manager-remove.log 2>&1 || {
+    printf 'Removing Better Manager failed or did not finish:\n' >&2
+    cat /tmp/manager-remove.log >&2
+    exit 1
+}
+if installer_reports_installed better-manager; then
+    printf 'Better Manager is still installed after its removal\n' >&2
+    exit 1
+fi
+[[ "$(cat "$fix_override")" == "$(printf '%s' "$own_lines")" ]] || {
+    printf 'The override is not back to the person'"'"'s own lines:\n' >&2
+    cat "$fix_override" >&2
+    cat /tmp/manager-remove.log >&2
+    exit 1
+}
+# The program rewrote the file as the person: a root write would leave it
+# owned by root.
+[[ "$(stat -c %u "$fix_override")" == "$FIX_UID" ]] || {
+    printf 'The override was rewritten by uid %s, not by the person\n' "$(stat -c %u "$fix_override")" >&2
+    exit 1
+}
+[[ ! -e "$fix_record" ]] || {
+    printf 'The record outlived Better Manager\n' >&2
+    exit 1
+}
+[[ ! -e "$fix_aside" && ! -e "$fix_aside.tmp" ]] || {
+    printf 'What the removal set aside outlived it\n' >&2
+    exit 1
+}
+[[ ! -e /run/better-os/better-manager-removal-run ]] || {
+    printf 'The removal stamp outlived the removal\n' >&2
+    exit 1
+}
+if ls "${TMPDIR:-/tmp}"/better-os-accounts.* >/dev/null 2>&1; then
+    printf 'A maintainer script left its account library behind\n' >&2
+    exit 1
+fi
+printf 'Removing Better Manager undid the fix, as the person, and left nothing\n'
+
 "$INSTALLER" --uninstall
 for package_name in better-manager better-manager-daemon better-shell-adapter; do
     if installer_reports_installed "$package_name"; then

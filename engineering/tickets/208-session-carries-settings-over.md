@@ -39,3 +39,7 @@ or no Zhuyin is a second step the person has to know about.
       two layouts, and Chewing logs in to the session and sees all of them;
       GNOME's database and `monitors.xml` unchanged byte for byte afterwards.
 - [ ] fmt, clippy on stable, and the crates' tests pass.
+
+## Notes
+
+Found by ticket 229 (2026-11-21, read only): the owner's GNOME has no `~/.config/monitors.xml` (Mutter runs its own choice, 2880 × 1800 at 120 Hz, scale 2.0, from `org.gnome.Mutter.DisplayConfig.GetCurrentState`). The scale carry-over must read Mutter's current state when the file is absent, or it carries nothing on that machine.

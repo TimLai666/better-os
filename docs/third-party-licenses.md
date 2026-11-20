@@ -10,11 +10,11 @@ It does not replace the license text supplied by each upstream project.
 ## Review summary
 
 - Root project license: `GPL-3.0-or-later`.
-- Resolved Cargo packages: 980.
-- Packages with an SPDX license expression: 978.
+- Resolved Cargo packages: 982.
+- Packages with an SPDX license expression: 980.
 - Packages with only a license-file field: 0.
 - Packages without package-level license metadata: 2.
-- `Cargo.lock` SHA-256: `77977229fff864af39a9bba826f81c6c7f3e33fe8e1666741d83b824d6831f2d`.
+- `Cargo.lock` SHA-256: `9325786173859693dac08bcfcb882f39b72a9cd14c2e5b4b63b2ff5abde9d5ac`.
 
 The 2 package(s) without package-level license metadata are
 listed separately below. Their pinned upstream checkout contains both
@@ -28,7 +28,7 @@ source of truth for those packages.
 | `MIT OR Apache-2.0` | 424 |
 | `MIT` | 202 |
 | `Apache-2.0 OR MIT` | 79 |
-| `GPL-3.0-or-later` | 69 |
+| `GPL-3.0-or-later` | 71 |
 | `MIT/Apache-2.0` | 41 |
 | `Apache-2.0` | 32 |
 | `Unicode-3.0` | 18 |
@@ -131,6 +131,8 @@ Better OS does not relicense or silently select a different expression.
 | `monitor-tray` | `0.2.16` | `GPL-3.0-or-later` | workspace |
 | `monitor-views` | `0.2.16` | `GPL-3.0-or-later` | workspace |
 | `option-ext` | `0.2.0` | `MPL-2.0` | [crates.io](https://crates.io/crates/option-ext/0.2.0) |
+| `patch-core` | `0.2.16` | `GPL-3.0-or-later` | workspace |
+| `patch-platform` | `0.2.16` | `GPL-3.0-or-later` | workspace |
 | `r-efi` | `5.3.0` | `MIT OR Apache-2.0 OR LGPL-2.1-or-later` | [crates.io](https://crates.io/crates/r-efi/5.3.0) |
 | `r-efi` | `6.0.0` | `MIT OR Apache-2.0 OR LGPL-2.1-or-later` | [crates.io](https://crates.io/crates/r-efi/6.0.0) |
 | `self_cell` | `1.3.0` | `Apache-2.0 OR GPL-2.0-only` | [crates.io](https://crates.io/crates/self_cell/1.3.0) |
@@ -687,6 +689,8 @@ keeps its own license.
 | `paste` | `1.0.15` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/paste/1.0.15) |
 | `pastey` | `0.1.1` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/pastey/0.1.1) |
 | `pastey` | `0.2.3` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/pastey/0.2.3) |
+| `patch-core` | `0.2.16` | `GPL-3.0-or-later` | workspace |
+| `patch-platform` | `0.2.16` | `GPL-3.0-or-later` | workspace |
 | `pathfinder_geometry` | `0.5.1` | `MIT/Apache-2.0` | [crates.io](https://crates.io/crates/pathfinder_geometry/0.5.1) |
 | `pathfinder_simd` | `0.5.6` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/pathfinder_simd/0.5.6) |
 | `pbkdf2` | `0.12.2` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/pbkdf2/0.12.2) |
