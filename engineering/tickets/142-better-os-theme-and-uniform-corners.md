@@ -60,7 +60,13 @@ every window.
    that the shell positions (a shell extension cannot host a GPUI window);
    the shell-side code only reports the click and the button's position.
    The component turns Zorin's or Ubuntu's own taskbar off while it
-   runs and puts it back on removal.
+   runs and puts it back on removal. Ticket 95's design
+   (`design/top-bar-spec.md` section 10, proposed ADR 0036) gives the taskbar
+   the same route as the top bar: a GPUI view the shell starts and makes a
+   dock, a second row in ADR 0036's program table, and the bottom strip
+   reserved through the same `ReserveStrip`; while the top bar runs, the
+   taskbar draws no clock, system menu, or tray. Shapes (a) and (b) above are
+   decision D4 there.
 4. One radius everywhere: the GTK layer, Better OS windows, and the
    compositor clip all take it from the component's single setting.
 
