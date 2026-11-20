@@ -714,27 +714,18 @@ impl GitApp {
             .border_r_1()
             .border_color(p.divider)
             .child(main)
-            // The whole segment after the divider opens the menu, its full
-            // height and width (ticket 130).
+            // The divider and everything after it open the menu, the
+            // cell's full height, and Escape gives focus back (ticket 130).
             .child(
-                div()
-                    .flex_none()
-                    .h_full()
-                    .border_l_1()
-                    .border_color(p.divider)
-                    .child(
-                        MenuSegment::new("sync-more", state.clone())
-                            .tooltip(c.sync_more)
-                            .disabled(busy),
-                    ),
+                MenuSegment::new("sync-more", state)
+                    .entries(if open {
+                        self.sync_menu_entries(repo, c, cx)
+                    } else {
+                        Vec::new()
+                    })
+                    .tooltip(c.sync_more)
+                    .disabled(busy),
             )
-            .when(open, |d| {
-                d.child(
-                    MenuFlyout::new("sync-menu", self.sync_menu_entries(repo, c, cx))
-                        .align_right()
-                        .state(state),
-                )
-            })
     }
 
     /// The rows of the sync button's arrow menu: what each does and how many

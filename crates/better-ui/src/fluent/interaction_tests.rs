@@ -293,8 +293,8 @@ fn a_press_in_a_nested_flyout_past_the_outer_edge_reaches_its_content(cx: &mut T
 }
 
 /// A toolbar cell 52px tall, as Better Git's sync cell is: a primary part
-/// and, after a divider, a [`MenuSegment`] that fills the cell's height,
-/// with the cell drawing the menu lined up on its right edge. Below it, a
+/// and, last, a [`MenuSegment`], drawn exactly as Better Git draws it (the
+/// segment owns its divider, its height, and its menu). Below it, a
 /// [`SplitButton`].
 struct SplitHarness {
     menu: Entity<MenuOpen>,
@@ -308,20 +308,22 @@ fn plain_entries() -> Vec<MenuEntry> {
 impl Render for SplitHarness {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let view = cx.entity().downgrade();
-        let open = self.menu.read(cx).is_open();
         div()
             .size_full()
             .child(
                 div()
                     .id("cell")
+                    .debug_selector(|| "cell".into())
                     .absolute()
                     .left(px(20.0))
                     .top(px(20.0))
                     .h(px(52.0))
                     .flex()
+                    .items_center()
                     .child(
                         div()
                             .id("cell-primary")
+                            .debug_selector(|| "cell-primary".into())
                             .w(px(160.0))
                             .h_full()
                             .on_click(cx.listener(|h, _, _, cx| {
@@ -330,22 +332,10 @@ impl Render for SplitHarness {
                             })),
                     )
                     .child(
-                        div()
-                            .debug_selector(|| "segment".into())
-                            .h_full()
-                            .border_l_1()
-                            .child(
-                                super::button::MenuSegment::new("segment", self.menu.clone())
-                                    .tooltip("More"),
-                            ),
-                    )
-                    .when(open, |d| {
-                        d.child(
-                            MenuFlyout::new("segment-menu", plain_entries())
-                                .align_right()
-                                .state(self.menu.clone()),
-                        )
-                    }),
+                        super::button::MenuSegment::new("segment", self.menu.clone())
+                            .entries(plain_entries())
+                            .tooltip("More"),
+                    ),
             )
             .child(
                 div()
@@ -381,13 +371,25 @@ fn split_harness(cx: &mut TestAppContext) -> (Entity<SplitHarness>, &mut VisualT
 #[gpui::test]
 fn a_press_in_the_corner_of_a_toolbar_arrow_segment_opens_its_menu(cx: &mut TestAppContext) {
     let (view, cx) = split_harness(cx);
-    let segment = bounds(cx, "segment");
+    let segment = bounds(cx, "menu-segment-segment");
+    let cell = bounds(cx, "cell");
+    let primary = bounds(cx, "cell-primary");
     assert_eq!(
-        segment.size.height,
-        px(52.0),
-        "the segment fills the cell's height"
+        segment.top(),
+        cell.top(),
+        "the segment is the cell's height"
     );
-    assert!(segment.size.width >= px(36.0));
+    assert_eq!(segment.bottom(), cell.bottom());
+    assert_eq!(
+        segment.right(),
+        cell.right(),
+        "and reaches its trailing edge"
+    );
+    assert!(
+        segment.left() - primary.right() <= px(1.0),
+        "and starts at the divider"
+    );
+    assert!(segment.size.width >= px(35.0));
     let corners = [
         point(segment.left() + px(2.0), segment.top() + px(1.0)),
         point(segment.right() - px(1.0), segment.bottom() - px(1.0)),
@@ -577,5 +579,62 @@ fn right_and_left_open_and_close_the_selected_tree_row(cx: &mut TestAppContext) 
             [(0, true), (0, false)],
             "a leaf has nothing to open"
         )
+    });
+}
+
+/// Tab, as a person presses it: focus moves to the window's first tab
+/// stop, which is the segment.
+fn tab_to_first_stop(cx: &mut VisualTestContext) {
+    cx.update(|window, cx| window.focus_next(cx));
+    cx.run_until_parked();
+}
+
+fn segment_key_opens(keys: &'static str, cx: &mut TestAppContext) {
+    let (view, cx) = split_harness(cx);
+    tab_to_first_stop(cx);
+    cx.simulate_keystrokes(keys);
+    view.read_with(cx, |h, cx| {
+        let menu = h.menu.read(cx);
+        assert!(menu.is_open(), "{keys} opens the menu");
+        assert_eq!(menu.highlight, Some(0), "on its first item");
+        assert_eq!(h.primary, 0, "{keys} never invokes the primary part");
+    });
+    assert!(cx.debug_bounds("menu-item-0").is_some());
+}
+
+#[gpui::test]
+fn enter_opens_a_toolbar_arrow_segments_menu_on_its_first_item(cx: &mut TestAppContext) {
+    segment_key_opens("enter", cx);
+}
+
+#[gpui::test]
+fn space_opens_a_toolbar_arrow_segments_menu_on_its_first_item(cx: &mut TestAppContext) {
+    segment_key_opens("space", cx);
+}
+
+#[gpui::test]
+fn alt_down_opens_a_toolbar_arrow_segments_menu_on_its_first_item(cx: &mut TestAppContext) {
+    segment_key_opens("alt-down", cx);
+}
+
+#[gpui::test]
+fn f4_opens_a_toolbar_arrow_segments_menu_on_its_first_item(cx: &mut TestAppContext) {
+    segment_key_opens("f4", cx);
+}
+
+/// Escape closes the menu and gives focus back to the segment, so the next
+/// key reaches it: Enter opens the menu again (review of ticket 130).
+#[gpui::test]
+fn escape_gives_focus_back_to_a_toolbar_arrow_segment(cx: &mut TestAppContext) {
+    let (view, cx) = split_harness(cx);
+    tab_to_first_stop(cx);
+    cx.simulate_keystrokes("enter");
+    view.read_with(cx, |h, cx| assert!(h.menu.read(cx).is_open()));
+    cx.simulate_keystrokes("escape");
+    view.read_with(cx, |h, cx| assert!(!h.menu.read(cx).is_open()));
+    cx.simulate_keystrokes("enter");
+    view.read_with(cx, |h, cx| {
+        assert!(h.menu.read(cx).is_open(), "the segment had focus again");
+        assert_eq!(h.primary, 0);
     });
 }

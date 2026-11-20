@@ -43,3 +43,33 @@ segment does nothing.
   `/home/tim/Developer/better-os-evidence/130/`: a press on the bottom-right
   and top-left corners of the segment opens the menu, a second corner press
   closes it, and the hover fill covers the segment.
+- Review fixes: `MenuSegment` now owns the divider, the cell's height, and
+  its menu, and gives focus back to itself when the menu closes (Escape or a
+  choice), as `SplitButton` and `DropDownButton` do; Better Git draws it as
+  the last child of its sync cell with nothing around it, so the corner
+  test's harness and the app draw the same thing, and the test measures the
+  segment against the cell (same top, bottom, and trailing edge, starting at
+  the divider). New tests: Enter, Space, Alt+Down, and F4 each open the menu
+  once on its first item without invoking the primary part, and Escape gives
+  focus back (`escape_gives_focus_back_to_a_toolbar_arrow_segment`).
+- Seen again with the keyboard, English:
+  `en-US-4-keyboard-enter-on-focused-segment-opens-menu-on-first-item.png`
+  and `en-US-5-keyboard-escape-closes-menu-focus-ring-back-on-segment.png`.
+
+### Checks that ran
+
+Run in the worktree through the build lock wrapper, on 2026-11-21:
+
+- `cargo fmt --all --check`: exit 0.
+- `cargo +stable clippy -p better-ui -p monitor-views -p monitor-gui -p git-gui
+  -p manager-gui -p app-chooser-gui -p fluent-gallery -p awake-gui
+  -p launcher-gui -p touchpad-gui --all-targets -- -D warnings` (rustc
+  1.97.1): exit 0.
+- `cargo test -p better-ui -p monitor-views -p monitor-gui -p git-gui`:
+  exit 0, 534 passed, 0 failed.
+- Not run: clippy and tests of `files-gui`, a dependent of `better-ui`. It
+  does not build on this machine: `glib-sys` finds no `glib-2.0` through
+  pkg-config (GStreamer, through `files-preview`). Nothing in `files-gui`
+  changed.
+- `escape_gives_focus_back_to_a_toolbar_arrow_segment` was also run with the
+  focus hand-back removed, and failed, so it guards the fix.

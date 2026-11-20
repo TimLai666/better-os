@@ -483,20 +483,23 @@ impl RenderOnce for SplitButton {
 }
 
 /// The arrow segment of a toolbar's split cell, such as GitHub Desktop's
-/// fetch, pull, and push: the part after the divider that opens the cell's
-/// menu. The whole segment is the target, its full height and width with
-/// its padding, and the hover and pressed fills cover all of it, as the
+/// fetch, pull, and push: the divider and the part after it that opens the
+/// cell's menu. The whole segment is the target, its full height and width
+/// with its padding, and the hover and pressed fills cover all of it, as the
 /// secondary part of WinUI's `SplitButton` does (ticket 130); a button
 /// drawn inside a taller cell left everything around its glyph dead.
 ///
-/// It fills its parent's height. The parent draws the [`MenuFlyout`] from
-/// the same [`MenuOpen`] state, where the cell wants it lined up. A press
-/// opens the menu and a second press closes it; Enter, Space, Alt+Down, and
-/// F4 open it with the first item highlighted.
+/// Put it last in its cell: it fills the cell's height, draws the divider
+/// on its leading edge, and draws its menu lined up with its trailing edge,
+/// which is the cell's. A press opens the menu and a second press closes
+/// it; Enter, Space, Alt+Down, and F4 open it with the first item
+/// highlighted; Escape or a choice closes it and puts focus back on the
+/// segment.
 #[derive(IntoElement)]
 pub struct MenuSegment {
     id: ElementId,
     state: gpui::Entity<MenuOpen>,
+    entries: Vec<MenuEntry>,
     width: Pixels,
     tooltip: Option<SharedString>,
     disabled: bool,
@@ -510,10 +513,18 @@ impl MenuSegment {
         Self {
             id: id.into(),
             state,
+            entries: Vec::new(),
             width: Self::WIDTH,
             tooltip: None,
             disabled: false,
         }
+    }
+
+    /// The menu's rows. Only drawn while the menu is open, so a caller may
+    /// leave them empty while it is shut.
+    pub fn entries(mut self, entries: Vec<MenuEntry>) -> Self {
+        self.entries = entries;
+        self
     }
 
     pub fn width(mut self, width: Pixels) -> Self {
@@ -541,12 +552,12 @@ impl RenderOnce for MenuSegment {
         let is_open = self.state.read(cx).is_open();
         let hover = p.subtle_fill;
         let pressed = p.subtle_fill_tertiary;
+        let selector = format!("menu-segment-{}", self.id);
         let mut segment = div()
             .id(self.id.clone())
+            .debug_selector(move || selector)
             .relative()
-            .h_full()
-            .w(self.width)
-            .flex_none()
+            .size_full()
             .flex()
             .items_center()
             .justify_center()
@@ -561,7 +572,7 @@ impl RenderOnce for MenuSegment {
             let toggle = self.state.clone();
             let key_open = self.state.clone();
             segment = segment
-                .track_focus(&focus.tab_index(0).tab_stop(true))
+                .track_focus(&focus.clone().tab_index(0).tab_stop(true))
                 .hover(move |s| s.bg(hover))
                 .active(move |s| s.bg(pressed))
                 .on_click(move |event, window, cx| {
@@ -591,7 +602,25 @@ impl RenderOnce for MenuSegment {
                 segment = segment.tooltip(super::dialog::tooltip_builder(tooltip));
             }
         }
-        with_focus_ring(segment, ring, px(0.0), p)
+        let segment = with_focus_ring(segment, ring, px(0.0), p);
+        let menu: Option<AnyElement> = (is_open && !self.disabled).then(|| {
+            MenuFlyout::new(child_id(&self.id, "flyout"), self.entries)
+                .align_right()
+                .state(self.state.clone())
+                .return_focus(focus)
+                .into_any_element()
+        });
+        // The flyout is the segment's sibling, so a press inside it never
+        // reaches the segment's own click.
+        div()
+            .relative()
+            .h_full()
+            .w(self.width)
+            .flex_none()
+            .border_l_1()
+            .border_color(p.divider)
+            .child(segment)
+            .children(menu)
     }
 }
 
