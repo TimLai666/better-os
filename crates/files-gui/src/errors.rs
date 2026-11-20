@@ -79,10 +79,31 @@ pub fn explain(text: &str, c: &'static Copy) -> String {
         "files.operation.error.io" => e.io,
         // --- The window ----------------------------------------------
         "files.prefs.error.unwritable" => e.prefs_unwritable,
+        "files.prefs.error.unreadable" => e.prefs_unreadable,
+        "files.bookmarks.error.unwritable" => e.bookmarks_unwritable,
         "files.plugin.no_view" => e.plugin_no_view,
+        "files.plugin.error.not_trusted" => e.plugin_not_trusted,
+        "files.plugin.error.no_program" => e.plugin_no_program,
+        "files.plugin.error.not_found" => e.plugin_not_found,
+        "files.plugin.error.failed" if detail.is_empty() => e.plugin_failed_silently,
+        "files.plugin.error.failed" => e.plugin_failed,
+        "files.plugin.error.timed_out" => e.plugin_timed_out,
+        "files.plugin.error.too_large" => e.plugin_too_large,
+        // A key of this window's own families that has no sentence says so,
+        // naming the key, rather than standing on screen alone (ticket 172).
+        _ if detail_free_key(key) => return e.unknown_reason.replace("{key}", text),
         _ => return text.to_string(),
     };
     sentence.replace("{detail}", detail)
+}
+
+/// Whether `key` is shaped like one of the keys this window is handed
+/// (`files.…`, `storage.…`): lower-case dotted words, no spaces.
+fn detail_free_key(key: &str) -> bool {
+    (key.starts_with("files.") || key.starts_with("storage."))
+        && key
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '.')
 }
 
 /// The disk service's errors (`storage_platform::PlatformError`), which

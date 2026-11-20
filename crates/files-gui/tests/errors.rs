@@ -24,6 +24,8 @@ fn keys() -> Vec<String> {
         "storage.client.error.protocol:bad document",
         "storage.client.error.protocol_version:3:2",
         "files.prefs.error.unwritable:permission denied",
+        "files.prefs.error.unreadable:expected value at line 1",
+        "files.bookmarks.error.unwritable:permission denied",
         "files.plugin.no_view:tailnet",
         // The disk service's own sentences, as the client relays them.
         "storage.client.error.rejected:unmount was refused for /org/freedesktop/UDisks2/block_devices/sdc1: GDBus.Error:org.freedesktop.UDisks2.Error.DeviceBusy: Error unmounting /dev/sdc1: target is busy",
@@ -83,7 +85,43 @@ fn keys() -> Vec<String> {
         },
     ];
     keys.extend(errors.iter().map(|error| error.to_string()));
+    // A plugin command that did not answer (ticket 172: these reached the
+    // window as their debug shape).
+    use files_gui::plugins::RunError;
+    keys.extend(
+        [
+            RunError::NotTrusted(PathBuf::from("/home/a/.local/share/folio/plugins/x/run")),
+            RunError::NotFound("tailscale".into()),
+            RunError::NotFound(String::new()),
+            RunError::Failed {
+                code: Some(1),
+                last_error: "no network".into(),
+            },
+            RunError::Failed {
+                code: Some(1),
+                last_error: String::new(),
+            },
+            RunError::TimedOut,
+            RunError::TooLarge,
+        ]
+        .iter()
+        .map(RunError::key),
+    );
     keys
+}
+
+#[test]
+fn a_key_with_no_sentence_says_so_and_names_it() {
+    assert_eq!(
+        explain("files.something.new:detail", &EN_US),
+        "Unknown reason (files.something.new:detail)"
+    );
+    assert_eq!(
+        explain("storage.something_new", &ZH_TW),
+        "原因不明（storage.something_new）"
+    );
+    // Text that is not a key is still left as it is.
+    assert_eq!(explain("Sent to Phone.", &ZH_TW), "Sent to Phone.");
 }
 
 #[test]

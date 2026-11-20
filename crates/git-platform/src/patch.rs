@@ -8,7 +8,7 @@ use std::io;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 
-use files_platform::Put;
+use files_platform::{Put, TrashError};
 use git_core::{
     DiffLineKind, FileDiff, LineKey, PatchMode, RawDiff, change_fingerprint, line_key, parse_diff,
 };
@@ -447,5 +447,54 @@ fn trash(path: &Path, take: bool) -> Result<(), GitError> {
     let put = if take { Put::Move } else { Put::Copy };
     files_platform::trash_path(path, put)
         .map(|_| ())
-        .map_err(|error| GitError::Io(error.to_string()))
+        .map_err(trash_failure)
+}
+
+/// A trash failure as the system's own words about the file, the way the
+/// I/O error this replaced read: Better Git shows `GitError::Io`'s text as
+/// it is, and a `files.trash.error.…` key must not reach its window
+/// (ticket 172).
+fn trash_failure(error: TrashError) -> GitError {
+    GitError::Io(match error {
+        TrashError::Io { path, reason } | TrashError::Unusable { path, reason } => {
+            format!("{}: {reason}", path.display())
+        }
+        TrashError::NotFound { path } => format!("{}: not found", path.display()),
+        TrashError::CrossDevice { path } => {
+            format!("{}: the trash is on another device", path.display())
+        }
+        TrashError::DestinationOccupied { path } | TrashError::OriginalParentMissing { path } => {
+            path.display().to_string()
+        }
+        TrashError::NoRecord { item } => item,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{GitError, TrashError, trash_failure};
+    use std::path::PathBuf;
+
+    #[test]
+    fn a_trash_failure_reaches_the_window_as_words_about_the_file_not_a_key() {
+        let path = PathBuf::from("/work/repo/notes.txt");
+        for error in [
+            TrashError::Io {
+                path: path.clone(),
+                reason: "permission denied".into(),
+            },
+            TrashError::Unusable {
+                path: path.clone(),
+                reason: "symlink".into(),
+            },
+            TrashError::NotFound { path: path.clone() },
+            TrashError::CrossDevice { path: path.clone() },
+        ] {
+            let GitError::Io(text) = trash_failure(error) else {
+                panic!("a trash failure is an I/O failure");
+            };
+            assert!(text.starts_with("/work/repo/notes.txt"), "{text}");
+            assert!(!text.contains("files.trash"), "{text}");
+        }
+    }
 }

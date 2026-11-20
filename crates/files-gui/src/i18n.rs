@@ -653,7 +653,19 @@ pub struct ErrorCopy {
     pub archive_unreadable: &'static str,
     pub io: &'static str,
     pub prefs_unwritable: &'static str,
+    pub prefs_unreadable: &'static str,
+    pub bookmarks_unwritable: &'static str,
     pub plugin_no_view: &'static str,
+    /// A plugin command that did not answer (ticket 172).
+    pub plugin_not_trusted: &'static str,
+    pub plugin_not_found: &'static str,
+    pub plugin_no_program: &'static str,
+    pub plugin_failed: &'static str,
+    pub plugin_failed_silently: &'static str,
+    pub plugin_timed_out: &'static str,
+    pub plugin_too_large: &'static str,
+    /// A key this window has no sentence for: `{key}`.
+    pub unknown_reason: &'static str,
 }
 
 pub const EN_US: Copy = Copy {
@@ -1183,7 +1195,17 @@ pub const EN_US: Copy = Copy {
         archive_unreadable: "The archive can't be read ({detail}).",
         io: "Something went wrong reading or writing ({detail}). Retry, or check the drive.",
         prefs_unwritable: "Your settings could not be saved ({detail}).",
+        prefs_unreadable: "Your settings could not be read, so the defaults are used ({detail}).",
+        bookmarks_unwritable: "Your bookmarks could not be saved ({detail}).",
         plugin_no_view: "No plugin has a page named “{detail}”.",
+        plugin_not_trusted: "The plugin was not run, because its program ({detail}) could be changed by someone other than you.",
+        plugin_not_found: "The plugin's program could not be found ({detail}).",
+        plugin_no_program: "The plugin's command names no program to run.",
+        plugin_failed: "The plugin stopped with an error: {detail}",
+        plugin_failed_silently: "The plugin stopped with an error and did not say why.",
+        plugin_timed_out: "The plugin took too long to answer, so it was stopped.",
+        plugin_too_large: "The plugin's answer was too large to use.",
+        unknown_reason: "Unknown reason ({key})",
     },
 };
 
@@ -1714,7 +1736,17 @@ pub const ZH_TW: Copy = Copy {
         archive_unreadable: "無法讀取這個壓縮檔（{detail}）。",
         io: "讀取或寫入時出了問題（{detail}）。請重試，或檢查磁碟。",
         prefs_unwritable: "無法儲存你的設定（{detail}）。",
+        prefs_unreadable: "無法讀取你的設定，所以改用預設值（{detail}）。",
+        bookmarks_unwritable: "無法儲存你的書籤（{detail}）。",
         plugin_no_view: "沒有外掛提供名為「{detail}」的頁面。",
+        plugin_not_trusted: "沒有執行這個外掛，因為它的程式（{detail}）可能被你以外的人修改。",
+        plugin_not_found: "找不到外掛的程式（{detail}）。",
+        plugin_no_program: "外掛的指令沒有指定要執行的程式。",
+        plugin_failed: "外掛發生錯誤而停止：{detail}",
+        plugin_failed_silently: "外掛發生錯誤而停止，但沒有說明原因。",
+        plugin_timed_out: "外掛太久沒有回應，已經停止。",
+        plugin_too_large: "外掛回傳的內容太大，無法使用。",
+        unknown_reason: "原因不明（{key}）",
     },
 };
 
