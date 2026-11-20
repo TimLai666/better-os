@@ -36,6 +36,9 @@ pub struct TouchpadApp {
     pub(crate) backend: Box<dyn TouchpadBackend>,
     pub(crate) store: TouchpadStore,
     pub(crate) page: Page,
+    /// The navigation pane's own button opened or closed it; until then it
+    /// follows the window's width.
+    pub(crate) nav_compact: Option<bool>,
     pub(crate) pointer: PointerTrace,
     /// The test surface's bounds, refreshed every frame by a canvas element so
     /// a pointer position can be turned into a fraction of the surface.
@@ -175,6 +178,7 @@ impl TouchpadApp {
             backend,
             store,
             page,
+            nav_compact: None,
             pointer: PointerTrace::idle(),
             surface: Rc::new(Cell::new(Bounds::default())),
             sliders,
