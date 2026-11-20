@@ -625,12 +625,21 @@ impl<'a> RealDriver<'a> {
     }
 
     /// The GNOME Shell extensions a step's package installed, from the same
-    /// file list.
+    /// file list, and those of the companions the step carries (ticket 131).
     fn step_extensions(&self, step: &PlanStep) -> Result<Vec<String>, FailureEvidence> {
         if self.shell_extensions.is_none() {
             return Ok(Vec::new());
         }
-        Ok(shell_extensions(&self.step_files(step)?))
+        let mut uuids = shell_extensions(&self.step_files(step)?);
+        let mut companions: Vec<String> = step
+            .artifact
+            .iter()
+            .flat_map(|artifact| artifact.companions.iter())
+            .map(|companion| companion.package.clone())
+            .collect();
+        companions.extend(step.verify_companions.iter().cloned());
+        crate::reconcile::add_companion_extensions(&mut uuids, self.packages, &companions);
+        Ok(uuids)
     }
 
     /// Runs each removed package's before-removal program (ticket 88), so a
@@ -1113,6 +1122,11 @@ impl StageDriver for RealDriver<'_> {
                         DesiredOperation::Verify if step.leaves_enabled => self
                             .start_recorded_units(step)
                             .and_then(|()| self.enable_extensions(step)),
+                        // The companions just installed may bring an extension
+                        // of their own (ticket 131).
+                        DesiredOperation::AddCompanions if step.leaves_enabled => {
+                            self.enable_extensions(step)
+                        }
                         DesiredOperation::Verify | DesiredOperation::AddCompanions => Ok(()),
                         // A new program is on disk, and a unit that is
                         // already running is still executing the old one.
