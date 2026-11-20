@@ -1193,6 +1193,18 @@ fn a_composition_never_adds_up_to_more_than_the_whole() {
 // The details table's rich cells and keyboard (`list.rs`).
 
 #[test]
+fn right_opens_a_closed_tree_row_and_left_closes_an_open_one() {
+    use super::list::tree_step;
+    assert_eq!(tree_step(Some(false), Key::Right), Some(true));
+    assert_eq!(tree_step(Some(true), Key::Left), Some(false));
+    assert_eq!(tree_step(Some(true), Key::Right), None);
+    assert_eq!(tree_step(Some(false), Key::Left), None);
+    assert_eq!(tree_step(None, Key::Right), None);
+    assert_eq!(tree_step(None, Key::Left), None);
+    assert_eq!(tree_step(Some(false), Key::Enter), None);
+}
+
+#[test]
 fn a_table_cell_carries_its_tone_indent_and_expander() {
     use super::list::{CellTone, TableCell, tone_color};
     let cell = TableCell::new("Files")

@@ -45,7 +45,7 @@ fn verdict_color(verdict: &ResourceVerdict, p: &Palette) -> Rgba {
     }
 }
 
-fn hertz(value: f64) -> String {
+pub(crate) fn hertz(value: f64) -> String {
     format!("{:.2} GHz", value / 1e9)
 }
 
@@ -572,7 +572,12 @@ impl MonitorApp {
                 }
             }
         };
-        let (select, invoke, menu) = (selection_of.clone(), selection_of.clone(), selection_of);
+        let (select, invoke, expand, menu) = (
+            selection_of.clone(),
+            selection_of.clone(),
+            selection_of.clone(),
+            selection_of,
+        );
         DetailsTable::new("processes", columns, rows)
             .presorted()
             .fill()
@@ -601,6 +606,16 @@ impl MonitorApp {
                     None => {}
                 },
             ))
+            // The arrow and Right and Left open and close a group (ticket
+            // 145); a double click keeps opening and closing it too.
+            .on_expand({
+                let expand = Self::act_with(cx, move |this, (index, open): (usize, bool), _, _| {
+                    if let Some(AppSelection::Group(key)) = expand(this, index) {
+                        this.set_expanded(&key, open);
+                    }
+                });
+                move |index, open, window, cx| expand((index, open), window, cx)
+            })
             .on_context_menu(Self::act_point(
                 cx,
                 move |this, index, position, window, cx| {
@@ -637,7 +652,7 @@ impl MonitorApp {
                             if *column == ProcessColumn::Name && tree {
                                 let cell = cell.indent(row.depth.min(8) as u8);
                                 if row.has_children {
-                                    cell.expander(true)
+                                    cell.expander(row.expanded)
                                 } else {
                                     cell
                                 }
@@ -689,7 +704,8 @@ impl MonitorApp {
                 column,
                 ascending: direction == SortDirection::Ascending,
             });
-        let (select_pids, invoke_pids, menu_pids) = (pids.clone(), pids.clone(), pids);
+        let (select_pids, invoke_pids, expand_pids, menu_pids) =
+            (pids.clone(), pids.clone(), pids.clone(), pids);
         let sort_columns = columns_shown.clone();
         DetailsTable::new("details", columns, rows)
             .presorted()
@@ -714,6 +730,16 @@ impl MonitorApp {
                     this.show_properties(pid, cx);
                 }
             }))
+            // A parent's arrow, and Right and Left, show and hide its
+            // children (ticket 145); a double click still opens Properties.
+            .on_expand({
+                let expand = Self::act_with(cx, move |this, (index, open): (usize, bool), _, _| {
+                    if let Some(pid) = expand_pids.get(index).copied() {
+                        this.set_process_expanded(pid, open);
+                    }
+                });
+                move |index, open, window, cx| expand((index, open), window, cx)
+            })
             .on_context_menu(Self::act_point(
                 cx,
                 move |this, index, position, window, cx| {
@@ -1156,45 +1182,12 @@ impl MonitorApp {
                 c,
                 p,
             ));
-        let facts = card(p)
-            .gap(px(0.0))
-            .child(crate::shell::property_row(
-                c.maximum_speed,
-                cpu.maximum_hz
-                    .map(hertz)
-                    .unwrap_or_else(|| c.not_available.to_string()),
-                cpu.maximum_hz.is_none(),
-                p,
-            ))
-            .child(crate::shell::property_row(
-                c.logical_processors,
-                cpu.logical
-                    .map(|n| n.to_string())
-                    .unwrap_or_else(|| c.not_available.to_string()),
-                cpu.logical.is_none(),
-                p,
-            ))
-            .child(crate::shell::property_row(
-                c.waiting_to_run,
-                cpu.load_1m
-                    .map(|l| format!("{l:.2}"))
-                    .unwrap_or_else(|| c.not_available.to_string()),
-                cpu.load_1m.is_none(),
-                p,
-            ))
-            .child(crate::shell::property_row(
-                c.temperature,
-                cpu.temperature_celsius
-                    .map(|t| format!("{t:.0} °C"))
-                    .unwrap_or_else(|| c.not_read.to_string()),
-                cpu.temperature_celsius.is_none(),
-                p,
-            ))
-            .child(div().pt(spacing::SM).child(label(
-                c.waiting_to_run_hint,
-                CAPTION,
-                p.text_secondary,
-            )));
+        // Each note sits under the row it explains (ticket 145).
+        let facts = card(p).gap(px(0.0)).children(
+            crate::card_notes::cpu_facts(&cpu, c)
+                .into_iter()
+                .map(|fact| crate::shell::fact_row(fact, p)),
+        );
         div()
             .flex()
             .flex_col()
@@ -1542,7 +1535,7 @@ impl MonitorApp {
             .flex_wrap()
             .gap(spacing::XL)
             .child(stat_or_missing(
-                c.utilization,
+                crate::card_notes::gpu_utilization_title(&gpu, c),
                 gpu.utilization.map(share),
                 true,
                 c,
@@ -1605,9 +1598,10 @@ impl MonitorApp {
         ] {
             facts = facts.child(crate::shell::property_row(name, value, none, p));
         }
-        if gpu.source.as_deref() == Some("clients") {
+        // The utilization figure is marked with the same sign (ticket 145).
+        if let Some(note) = crate::card_notes::gpu_utilization_note(&gpu, c) {
             facts = facts.child(div().pt(spacing::SM).child(label(
-                c.busy_from_clients,
+                note,
                 CAPTION,
                 p.text_secondary,
             )));

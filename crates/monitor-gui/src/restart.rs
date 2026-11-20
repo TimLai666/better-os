@@ -2,8 +2,9 @@
 //! with no GPUI in it.
 //!
 //! The view is the page, the resource the Performance page shows, the
-//! selection and the expanded applications on the Processes page, the filter
-//! being typed, every table's sort, and the pane and settings expanders. The
+//! selection and the expanded applications on the Processes page, the
+//! processes closed on the Details tree, the filter being typed, every
+//! table's sort, and the pane and settings expanders. The
 //! numbers themselves are not carried: the service keeps collecting while the
 //! window restarts, and the new window reads them from it.
 //!
@@ -81,6 +82,9 @@ pub(crate) struct MonitorView {
     pub(crate) app_sort: (usize, bool),
     pub(crate) app_selection: Option<SelectionKey>,
     pub(crate) expanded: Vec<String>,
+    /// The processes closed on the Details page's tree, by PID: a restart
+    /// keeps every process, so the PIDs still name them.
+    pub(crate) collapsed: Vec<u32>,
     pub(crate) process_sort: (usize, bool),
     pub(crate) selected_pid: Option<u32>,
     pub(crate) startup_sort: Option<(usize, bool)>,
@@ -105,6 +109,7 @@ impl Default for MonitorView {
             app_sort: (column_index(AppColumn::Cpu), false),
             app_selection: None,
             expanded: Vec::new(),
+            collapsed: Vec::new(),
             process_sort: (process_column_index(ProcessColumn::CpuUtilization), false),
             selected_pid: None,
             startup_sort: None,
@@ -224,6 +229,7 @@ mod tests {
             page: Page::Processes.index(),
             filter: "fire".into(),
             expanded: vec!["firefox".into()],
+            collapsed: vec![1200, 4],
             app_selection: Some(SelectionKey::Process(42)),
             startup_sort: Some((2, true)),
             ..MonitorView::default()

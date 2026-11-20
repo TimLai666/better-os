@@ -149,8 +149,11 @@ pub struct VisibleRow {
     pub index: usize,
     /// Zero in flat mode; the depth below a root in tree mode.
     pub depth: u16,
-    /// Whether this row has children that the tree is showing under it.
+    /// Whether this row has children in the tree, shown under it or not.
     pub has_children: bool,
+    /// Whether its children are shown: false for a row the person closed,
+    /// and for a row with none.
+    pub expanded: bool,
 }
 
 /// A sortable, filterable, optionally hierarchical process table.
@@ -161,6 +164,8 @@ pub struct ProcessTableModel {
     filter: String,
     tree_mode: bool,
     show_command_line: bool,
+    /// The processes whose children the person hid in tree mode, by PID.
+    collapsed: Vec<u32>,
     visible: Vec<VisibleRow>,
 }
 
@@ -173,6 +178,7 @@ impl ProcessTableModel {
             filter: String::new(),
             tree_mode: false,
             show_command_line: false,
+            collapsed: Vec::new(),
             visible: Vec::new(),
         };
         model.rebuild();
@@ -249,6 +255,30 @@ impl ProcessTableModel {
         self.rebuild();
     }
 
+    /// The processes whose children are hidden in tree mode.
+    pub fn collapsed(&self) -> &[u32] {
+        &self.collapsed
+    }
+
+    /// Hide only these processes' children in tree mode. A PID that has no
+    /// process in this round is forgotten, so a reused PID opens as new.
+    pub fn set_collapsed(&mut self, mut collapsed: Vec<u32>) {
+        collapsed.sort_unstable();
+        collapsed.dedup();
+        self.collapsed = collapsed;
+        self.rebuild();
+    }
+
+    /// Show (`true`) or hide a process's children in tree mode.
+    pub fn set_expanded(&mut self, pid: u32, expanded: bool) {
+        let mut collapsed = self.collapsed.clone();
+        collapsed.retain(|candidate| *candidate != pid);
+        if !expanded {
+            collapsed.push(pid);
+        }
+        self.set_collapsed(collapsed);
+    }
+
     pub fn show_command_line(&self) -> bool {
         self.show_command_line
     }
@@ -268,6 +298,9 @@ impl ProcessTableModel {
     }
 
     fn rebuild(&mut self) {
+        let live: std::collections::HashSet<u32> =
+            self.processes.iter().map(|process| process.pid).collect();
+        self.collapsed.retain(|pid| live.contains(pid));
         let matching = self.matching_indices();
         self.visible = if self.tree_mode {
             self.build_tree(&matching)
@@ -280,6 +313,7 @@ impl ProcessTableModel {
                     index,
                     depth: 0,
                     has_children: false,
+                    expanded: false,
                 })
                 .collect()
         };
@@ -397,23 +431,30 @@ impl ProcessTableModel {
         let mut rows = Vec::with_capacity(matching.len());
         let mut visited: Vec<bool> = vec![false; self.processes.len()];
         // An explicit stack rather than recursion: a deep process tree must
-        // not be able to overflow the render thread's stack.
-        let mut stack: Vec<(usize, u16)> = roots.into_iter().rev().map(|i| (i, 0)).collect();
-        while let Some((index, depth)) = stack.pop() {
+        // not be able to overflow the render thread's stack. A hidden row is
+        // still visited, so a closed branch is not appended as orphans below.
+        let mut stack: Vec<(usize, u16, bool)> =
+            roots.into_iter().rev().map(|i| (i, 0, true)).collect();
+        while let Some((index, depth, shown)) = stack.pop() {
             if visited[index] {
                 continue;
             }
             visited[index] = true;
             let pid = self.processes[index].pid;
             let kids = children.get(&pid);
-            rows.push(VisibleRow {
-                index,
-                depth,
-                has_children: kids.is_some_and(|kids| !kids.is_empty()),
-            });
+            let has_children = kids.is_some_and(|kids| !kids.is_empty());
+            let expanded = has_children && self.collapsed.binary_search(&pid).is_err();
+            if shown {
+                rows.push(VisibleRow {
+                    index,
+                    depth,
+                    has_children,
+                    expanded,
+                });
+            }
             if let Some(kids) = kids {
                 for child in kids.iter().rev() {
-                    stack.push((*child, depth.saturating_add(1)));
+                    stack.push((*child, depth.saturating_add(1), shown && expanded));
                 }
             }
         }
@@ -430,6 +471,7 @@ impl ProcessTableModel {
             index,
             depth: 0,
             has_children: false,
+            expanded: false,
         }));
         rows
     }
@@ -746,6 +788,45 @@ mod tests {
         assert_eq!(rows[2].depth, 2);
         assert_eq!(model.processes[rows[3].index].display_name(), "gedit");
         assert_eq!(rows[3].depth, 1);
+    }
+
+    #[test]
+    fn a_closed_tree_row_hides_its_whole_branch_and_opens_again() {
+        let mut model = ProcessTableModel::new(sample());
+        model.set_tree_mode(true);
+        let firefox = model.processes[model.visible_rows()[1].index].pid;
+        assert!(model.visible_rows()[1].expanded);
+        model.set_expanded(firefox, false);
+        // firefox-tab is hidden, and not appended below as an orphan.
+        assert_eq!(names(&model), vec!["systemd", "firefox", "gedit"]);
+        let row = model.visible_rows()[1];
+        assert!(row.has_children && !row.expanded);
+        // A newer round keeps it closed.
+        model.update(sample());
+        assert_eq!(names(&model), vec!["systemd", "firefox", "gedit"]);
+        assert_eq!(model.collapsed(), [firefox]);
+        model.set_expanded(firefox, true);
+        assert_eq!(names(&model).len(), 4);
+        assert!(model.collapsed().is_empty());
+    }
+
+    #[test]
+    fn closing_the_root_hides_every_descendant_and_a_gone_pid_is_forgotten() {
+        let mut model = ProcessTableModel::new(sample());
+        model.set_tree_mode(true);
+        let root = model.processes[model.visible_rows()[0].index].pid;
+        model.set_expanded(root, false);
+        assert_eq!(names(&model), vec!["systemd"]);
+        // A leaf is never open.
+        model.set_expanded(root, true);
+        assert!(!model.visible_rows()[3].has_children);
+        assert!(!model.visible_rows()[3].expanded);
+        model.set_collapsed(vec![root, 999_999]);
+        assert_eq!(
+            model.collapsed(),
+            [root],
+            "a PID with no process is dropped"
+        );
     }
 
     #[test]

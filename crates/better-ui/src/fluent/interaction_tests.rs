@@ -426,3 +426,156 @@ fn a_press_in_the_corner_of_a_split_buttons_chevron_opens_its_menu(cx: &mut Test
     );
     view.read_with(cx, |h, _| assert_eq!(h.primary, 0));
 }
+
+/// A details table whose first row is a group that opens to two children,
+/// as Better Monitor's Processes page draws an application (ticket 145).
+struct TableHarness {
+    open: bool,
+    selected: Option<usize>,
+    invoked: Vec<usize>,
+    expanded: Vec<(usize, bool)>,
+}
+
+impl Render for TableHarness {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        use super::list::{Column, DetailsTable, TableCell};
+        let mut rows = vec![vec![TableCell::new("Files (2)").expander(self.open)]];
+        if self.open {
+            rows.push(vec![TableCell::new("files").indent(2)]);
+            rows.push(vec![TableCell::new("files-helper").indent(2)]);
+        }
+        rows.push(vec![TableCell::new("Terminal").indent(1)]);
+        let view = cx.entity().downgrade();
+        let (select, invoke, expand) = (view.clone(), view.clone(), view);
+        div().size_full().p(px(20.0)).child(
+            DetailsTable::new("tree", vec![Column::new("Name")], rows)
+                .presorted()
+                .selected(self.selected)
+                .on_select(move |index, _, cx| {
+                    let _ = select.update(cx, |h, cx| {
+                        h.selected = Some(index);
+                        cx.notify();
+                    });
+                })
+                .on_invoke(move |index, _, cx| {
+                    let _ = invoke.update(cx, |h, cx| {
+                        h.invoked.push(index);
+                        cx.notify();
+                    });
+                })
+                .on_expand(move |index, open, _, cx| {
+                    let _ = expand.update(cx, |h, cx| {
+                        h.expanded.push((index, open));
+                        if index == 0 {
+                            h.open = open;
+                        }
+                        cx.notify();
+                    });
+                }),
+        )
+    }
+}
+
+fn table_harness(cx: &mut TestAppContext) -> (Entity<TableHarness>, &mut VisualTestContext) {
+    cx.update(gpui_component::init);
+    cx.add_window_view(|_, _| TableHarness {
+        open: false,
+        selected: None,
+        invoked: Vec::new(),
+        expanded: Vec::new(),
+    })
+}
+
+fn double_press(cx: &mut VisualTestContext, at: Point<Pixels>) {
+    use gpui::{MouseButton, MouseDownEvent, MouseUpEvent};
+    cx.simulate_mouse_move(at, None, Modifiers::default());
+    for click_count in [1, 2] {
+        cx.simulate_event(MouseDownEvent {
+            position: at,
+            modifiers: Modifiers::default(),
+            button: MouseButton::Left,
+            click_count,
+            first_mouse: false,
+        });
+        cx.simulate_event(MouseUpEvent {
+            position: at,
+            modifiers: Modifiers::default(),
+            button: MouseButton::Left,
+            click_count,
+        });
+    }
+    cx.run_until_parked();
+}
+
+/// The owner's "its disclosure arrow does nothing when clicked": one press
+/// in the corner of the arrow's hit area, away from the glyph, opens the
+/// row, and another closes it, without selecting or invoking it.
+#[gpui::test]
+fn one_press_on_a_tree_rows_arrow_opens_and_closes_it(cx: &mut TestAppContext) {
+    let (view, cx) = table_harness(cx);
+    let arrow = bounds(cx, "table-expander-0");
+    let row = bounds(cx, "table-row-0");
+    assert_eq!(arrow.size.height, row.size.height, "the full row height");
+    assert!(arrow.size.width >= px(24.0), "wider than the 12px glyph");
+    let corner = point(arrow.left() + px(1.0), arrow.top() + px(1.0));
+    press(cx, corner);
+    view.read_with(cx, |h, _| {
+        assert!(h.open);
+        assert_eq!(h.expanded, [(0, true)]);
+        assert_eq!(h.selected, None, "the arrow does not select the row");
+        assert!(h.invoked.is_empty());
+    });
+    assert!(
+        cx.debug_bounds("table-row-1").is_some(),
+        "its children are drawn"
+    );
+    let corner = point(arrow.right() - px(1.0), arrow.bottom() - px(1.0));
+    press(cx, corner);
+    view.read_with(cx, |h, _| {
+        assert!(!h.open);
+        assert_eq!(h.expanded, [(0, true), (0, false)]);
+        assert!(h.invoked.is_empty());
+    });
+}
+
+/// A double click on the row, away from its arrow, still invokes it, and
+/// the table leaves the opening to the window, as before.
+#[gpui::test]
+fn a_double_click_on_a_tree_row_still_invokes_it(cx: &mut TestAppContext) {
+    let (view, cx) = table_harness(cx);
+    let row = bounds(cx, "table-row-0");
+    double_press(cx, point(row.right() - px(20.0), row.center().y));
+    view.read_with(cx, |h, _| {
+        assert_eq!(h.invoked, [0]);
+        assert_eq!(h.selected, Some(0));
+        assert!(h.expanded.is_empty(), "the arrow was not pressed");
+    });
+}
+
+/// Right opens the selected row and Left closes it; on a row with no
+/// children neither does anything.
+#[gpui::test]
+fn right_and_left_open_and_close_the_selected_tree_row(cx: &mut TestAppContext) {
+    let (view, cx) = table_harness(cx);
+    let row = bounds(cx, "table-row-0");
+    press(cx, point(row.right() - px(20.0), row.center().y));
+    view.read_with(cx, |h, _| assert_eq!(h.selected, Some(0)));
+    cx.simulate_keystrokes("right");
+    view.read_with(cx, |h, _| assert!(h.open));
+    cx.simulate_keystrokes("right");
+    view.read_with(cx, |h, _| {
+        assert_eq!(h.expanded, [(0, true)], "already open")
+    });
+    cx.simulate_keystrokes("left");
+    view.read_with(cx, |h, _| assert!(!h.open));
+    cx.simulate_keystrokes("down");
+    view.read_with(cx, |h, _| assert_eq!(h.selected, Some(1)));
+    cx.simulate_keystrokes("right left");
+    view.read_with(cx, |h, _| {
+        assert_eq!(
+            h.expanded,
+            [(0, true), (0, false)],
+            "a leaf has nothing to open"
+        )
+    });
+}

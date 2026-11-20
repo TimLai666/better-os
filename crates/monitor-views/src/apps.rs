@@ -170,6 +170,18 @@ impl AppsModel {
         self.expanded.iter().any(|expanded| expanded == key)
     }
 
+    /// The groups that are open, by key.
+    pub fn expanded(&self) -> &[String] {
+        &self.expanded
+    }
+
+    /// Open (`true`) or close a group.
+    pub fn set_expanded(&mut self, key: &str, expanded: bool) {
+        if self.is_expanded(key) != expanded {
+            self.toggle_expanded(key);
+        }
+    }
+
     pub fn toggle_expanded(&mut self, key: &str) {
         match self.expanded.iter().position(|expanded| expanded == key) {
             Some(index) => {

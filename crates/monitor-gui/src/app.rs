@@ -238,6 +238,9 @@ pub(crate) struct MonitorApp {
     /// The applications open on the Processes page, kept here so a round
     /// built off the window's thread opens the same ones.
     pub(crate) expanded: Vec<String>,
+    /// The processes closed on the Details page's tree, by PID, kept here
+    /// for the same reason.
+    pub(crate) collapsed: Vec<u32>,
     round_generation: u64,
     applied_generation: u64,
     pub(crate) processes: ProcessTableModel,
@@ -380,6 +383,7 @@ impl MonitorApp {
             app_sort: (AppColumn::Cpu, false),
             app_selection: None,
             expanded: Vec::new(),
+            collapsed: Vec::new(),
             round_generation: 0,
             applied_generation: 0,
             processes,
@@ -505,6 +509,7 @@ impl MonitorApp {
             command_lines: self.include_command_lines,
             precedence: self.precedence.clone(),
             expanded: self.expanded.clone(),
+            collapsed: self.collapsed.clone(),
         }
     }
 
@@ -557,6 +562,9 @@ impl MonitorApp {
         // A group that is gone stops being remembered as open.
         let apps = &self.apps;
         self.expanded.retain(|key| apps.is_expanded(key));
+        let processes = &self.processes;
+        self.collapsed
+            .retain(|pid| processes.collapsed().contains(pid));
         // A resource that went away (a disk unplugged) is not left selected
         // on a page that can no longer draw it.
         match &self.resource {
@@ -706,6 +714,21 @@ impl MonitorApp {
             .logical
             .filter(|count| *count > 0)
             .map(|count| count as f64)
+    }
+
+    /// Open (`true`) or close an application's processes on the Processes
+    /// page, from its arrow or the arrow keys.
+    pub(crate) fn set_expanded(&mut self, key: &str, expanded: bool) {
+        if self.apps.is_expanded(key) != expanded {
+            self.toggle_expanded(key);
+        }
+    }
+
+    /// Show (`true`) or hide a process's children on the Details page's
+    /// tree.
+    pub(crate) fn set_process_expanded(&mut self, pid: u32, expanded: bool) {
+        self.processes.set_expanded(pid, expanded);
+        self.collapsed = self.processes.collapsed().to_vec();
     }
 
     /// Open or close an application's processes on the Processes page.
@@ -1094,6 +1117,8 @@ impl MonitorApp {
         self.app_sort = (column_of(view.app_sort.0), view.app_sort.1);
         self.app_selection = view.app_selection.map(|key| key.selection());
         self.expanded = view.expanded;
+        self.collapsed = view.collapsed;
+        self.processes.set_collapsed(self.collapsed.clone());
         self.processes.set_sort(
             process_column_of(view.process_sort.0),
             direction(view.process_sort.1),
@@ -1146,6 +1171,7 @@ impl better_ui::restart::Restartable for MonitorApp {
             app_sort: (column_index(self.app_sort.0), self.app_sort.1),
             app_selection: self.app_selection.as_ref().map(SelectionKey::of),
             expanded: self.expanded.clone(),
+            collapsed: self.collapsed.clone(),
             process_sort: (
                 process_column_index(process_column),
                 ascending(process_direction),

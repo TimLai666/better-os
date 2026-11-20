@@ -1028,6 +1028,12 @@ type ContextHandler = Rc<dyn Fn(usize, gpui::Point<Pixels>, &mut Window, &mut Ap
 /// the rows are one tab stop where Up, Down, Home, and End move the selection
 /// and Enter invokes the selected row. A right click, or the Menu key or
 /// Shift+F10 on the selected row, asks for its context menu.
+///
+/// A row with a cell that has a [`TableCell::expander`] is a tree row, as
+/// WinUI's `TreeView` draws one: a single press anywhere in the chevron's
+/// hit area (the row's full height, wider than the glyph) opens or closes
+/// it without selecting or invoking the row, and Right and Left open and
+/// close the selected row. A double click keeps meaning invoke.
 #[derive(IntoElement)]
 pub struct DetailsTable {
     id: ElementId,
@@ -1042,7 +1048,17 @@ pub struct DetailsTable {
     on_select: Option<IndexHandler>,
     on_invoke: Option<IndexHandler>,
     on_context_menu: Option<ContextHandler>,
+    on_expand: Option<ExpandHandler>,
 }
+
+/// A tree row asked to open (`true`) or close (`false`), by its index.
+type ExpandHandler = Rc<dyn Fn(usize, bool, &mut Window, &mut App)>;
+
+/// How wide a tree row's chevron takes presses: the 12px glyph with room
+/// on both sides, as `TreeViewItem`'s 24px expand-collapse area. It takes
+/// 6px of the cell's padding before it and 6px of the gap after, so the
+/// text sits where it did with a bare glyph.
+pub const EXPANDER_HIT_WIDTH: Pixels = px(24.0);
 
 impl DetailsTable {
     pub fn new<C: Into<TableCell>>(
@@ -1066,6 +1082,7 @@ impl DetailsTable {
             on_select: None,
             on_invoke: None,
             on_context_menu: None,
+            on_expand: None,
         }
     }
 
@@ -1129,6 +1146,35 @@ impl DetailsTable {
         self.on_context_menu = Some(Rc::new(handler));
         self
     }
+
+    /// A tree row's chevron was pressed, or Right or Left asked it to open
+    /// or close: the row's index, and whether it should now be open. The
+    /// window changes its model; the table draws what it is given.
+    pub fn on_expand(
+        mut self,
+        handler: impl Fn(usize, bool, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_expand = Some(Rc::new(handler));
+        self
+    }
+}
+
+/// The tree key rule [`DetailsTable`] follows: whether a key asks the
+/// selected row, whose cell's expander is `expander`, to open
+/// (`Some(true)`) or close (`Some(false)`). `None` when the key does
+/// nothing there: Right on an open row, Left on a closed one, or a row
+/// with no children.
+///
+/// Moving to a parent or a first child, as `TreeView` also does, is left
+/// out: a table's indentation also lines rows up (a group with one process
+/// is indented to sit under the named groups), so it cannot say which row
+/// is a parent.
+pub fn tree_step(expander: Option<bool>, key: Key) -> Option<bool> {
+    match (key, expander) {
+        (Key::Right, Some(false)) => Some(true),
+        (Key::Left, Some(true)) => Some(false),
+        _ => None,
+    }
 }
 
 fn cell(column: &Column) -> gpui::Div {
@@ -1164,6 +1210,7 @@ struct RowParts {
     on_select: Option<IndexHandler>,
     on_invoke: Option<IndexHandler>,
     on_context_menu: Option<ContextHandler>,
+    on_expand: Option<ExpandHandler>,
 }
 
 fn table_row(position: usize, parts: &RowParts, p: &Palette) -> gpui::AnyElement {
@@ -1174,6 +1221,7 @@ fn table_row(position: usize, parts: &RowParts, p: &Palette) -> gpui::AnyElement
     let pressed = row_fill(selected, Interaction::Pressed, p);
     let mut row = div()
         .id(ElementId::named_usize("table-row", row_index))
+        .debug_selector(move || format!("table-row-{row_index}"))
         .relative()
         .flex()
         .flex_none()
@@ -1206,16 +1254,47 @@ fn table_row(position: usize, parts: &RowParts, p: &Palette) -> gpui::AnyElement
             content = content.pl(px(12.0 + 16.0 * value.indent as f32));
         }
         if let Some(expanded) = value.expander {
-            content = content.child(
-                Icon::new(if expanded {
-                    IconName::ChevronDown
-                } else {
-                    IconName::ChevronRight
-                })
-                .size(px(12.0))
+            let glyph = Icon::new(if expanded {
+                IconName::ChevronDown
+            } else {
+                IconName::ChevronRight
+            })
+            .size(px(12.0))
+            .flex_none()
+            .text_color(p.text_secondary);
+            let mut chevron = div()
+                .id(ElementId::named_usize("table-expander", row_index))
+                .debug_selector(move || format!("table-expander-{row_index}"))
                 .flex_none()
-                .text_color(p.text_secondary),
-            );
+                .h(size::ROW_HEIGHT)
+                .w(EXPANDER_HIT_WIDTH)
+                .ml(px(-6.0))
+                .mr(px(-6.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(radius::SM)
+                .child(glyph);
+            if let Some(expand) = parts.on_expand.clone() {
+                let hover = p.subtle_fill;
+                let pressed = p.subtle_fill_tertiary;
+                let focus = parts.focus.clone();
+                chevron = chevron
+                    .hover(move |s| s.bg(hover))
+                    .active(move |s| s.bg(pressed))
+                    .on_click(move |event, window, cx| {
+                        // The row underneath neither selects nor invokes:
+                        // the second press of a quick pair closes what the
+                        // first opened, as File Explorer's chevrons do.
+                        cx.stop_propagation();
+                        if event.is_keyboard() {
+                            return;
+                        }
+                        focus.focus(window, cx);
+                        expand(row_index, !expanded, window, cx);
+                    });
+            }
+            content = content.child(chevron);
         }
         let label = text(div(), if value.strong { BODY_STRONG } else { BODY })
             .text_color(color)
@@ -1372,6 +1451,7 @@ impl RenderOnce for DetailsTable {
             on_select: self.on_select.clone(),
             on_invoke: self.on_invoke.clone(),
             on_context_menu: self.on_context_menu.clone(),
+            on_expand: self.on_expand.clone(),
         });
 
         let body: gpui::AnyElement = if count == 0 {
@@ -1455,6 +1535,19 @@ impl RenderOnce for DetailsTable {
                     if let (Some(row), Some(invoke)) = (parts.selected, parts.on_invoke.as_ref()) {
                         cx.stop_propagation();
                         invoke(row, window, cx);
+                    }
+                } else if matches!(key, Key::Right | Key::Left) {
+                    let (Some(row), Some(expand)) = (parts.selected, parts.on_expand.as_ref())
+                    else {
+                        return;
+                    };
+                    let expander = parts
+                        .rows
+                        .get(row)
+                        .and_then(|cells| cells.iter().find_map(|cell| cell.expander));
+                    if let Some(open) = tree_step(expander, key) {
+                        cx.stop_propagation();
+                        expand(row, open, window, cx);
                     }
                 } else if let Some(next) = table_step(position, parts.order.len(), key)
                     && let Some(select) = parts.on_select.as_ref()

@@ -1745,6 +1745,7 @@ fn a_round_built_off_the_window_thread_keeps_the_tables_settings() {
         command_lines: false,
         precedence: monitor_views::grouping::GroupingPrecedence::default(),
         expanded: vec![key.clone()],
+        collapsed: Vec::new(),
     };
     // A round that carries no process report still builds, with empty
     // tables that show the same settings.
@@ -2280,5 +2281,103 @@ fn the_appearance_follows_the_desktop_unless_one_was_picked() {
     assert_eq!(
         copy(Locale::ZhTw).appearance_description,
         "預設跟著桌面切換淺色或深色，也可以固定用其中一種"
+    );
+}
+
+// Ticket 145: a note says which row it explains, and the arrows of both
+// tables open and close what the window remembers.
+
+#[test]
+fn the_load_note_sits_under_the_load_row_in_both_languages() {
+    use crate::card_notes::cpu_facts;
+    let cpu = crate::charts::CpuReadings {
+        load_1m: Some(0.95),
+        ..Default::default()
+    };
+    for (c, row) in [
+        (&EN, "Waiting to run (1 minute average)"),
+        (&ZH, "等待執行（1 分鐘平均）"),
+    ] {
+        let facts = cpu_facts(&cpu, c);
+        let noted: Vec<_> = facts.iter().filter(|fact| fact.note.is_some()).collect();
+        assert_eq!(noted.len(), 1, "one row has a note, and it is that row's");
+        assert_eq!(noted[0].name, row, "the row keeps its name");
+        assert_eq!(noted[0].value, "0.95");
+        assert_eq!(noted[0].note, Some(c.waiting_to_run_hint));
+    }
+}
+
+#[test]
+fn a_graphics_figure_and_its_note_carry_the_same_mark() {
+    use crate::card_notes::{MARK, gpu_utilization_note, gpu_utilization_title};
+    for c in [&EN, &ZH] {
+        let clients = crate::charts::GpuReadings {
+            source: Some("clients".into()),
+            ..Default::default()
+        };
+        let title = gpu_utilization_title(&clients, c);
+        let note = gpu_utilization_note(&clients, c).expect("added up from programs");
+        assert!(title.starts_with(c.utilization) && title.ends_with(MARK));
+        assert!(note.starts_with(MARK));
+        assert!(
+            note.contains(c.utilization),
+            "the note also names the figure: {note}"
+        );
+        let driver = crate::charts::GpuReadings {
+            source: Some("driver".into()),
+            ..Default::default()
+        };
+        assert_eq!(gpu_utilization_title(&driver, c), c.utilization);
+        assert_eq!(gpu_utilization_note(&driver, c), None);
+    }
+}
+
+/// A group the person closed with its arrow while a round was being built
+/// does not spring open again when the round, built with it open, arrives;
+/// and a process closed on the Details tree stays closed the same way.
+#[test]
+fn what_was_closed_while_a_round_was_built_stays_closed() {
+    use crate::charts::TableSettings;
+    use monitor_views::SortDirection;
+    let mut a = ProcessFacts::synthetic(100, "alpha");
+    a.cgroup = Field::Value(
+        "/user.slice/user-1000.slice/user@1000.service/app.slice/app-gnome-alpha-1.scope".into(),
+    );
+    let mut b = ProcessFacts::synthetic(101, "alpha-helper");
+    b.cgroup = a.cgroup.clone();
+    b.parent_pid = Field::Value(100);
+    let processes = vec![a, b];
+    let mut apps = monitor_views::AppsModel::new(
+        processes.clone(),
+        monitor_views::grouping::GroupingPrecedence::default(),
+    );
+    let key = apps.applications()[0].group.key.clone();
+    // Built while the group was open.
+    apps.set_expanded(&key, true);
+    let mut table = ProcessTableModel::new(processes);
+    table.set_tree_mode(true);
+    assert_eq!(table.visible_rows().len(), 2);
+    // Closed meanwhile: the window's settings no longer name it.
+    let current = TableSettings {
+        sort: (ProcessColumn::Name, SortDirection::Ascending),
+        filter: String::new(),
+        tree: true,
+        command_lines: false,
+        precedence: monitor_views::grouping::GroupingPrecedence::default(),
+        expanded: Vec::new(),
+        collapsed: vec![100],
+    };
+    current.apply_apps(&mut apps);
+    assert!(!apps.is_expanded(&key));
+    current.apply_processes(&mut table);
+    assert_eq!(table.visible_rows().len(), 1, "alpha-helper is hidden");
+    assert!(!table.visible_rows()[0].expanded);
+    assert!(table.visible_rows()[0].has_children);
+    let lines = tables::app_lines(&apps, tables::AppColumn::Cpu, false);
+    assert!(
+        !lines
+            .iter()
+            .any(|line| matches!(line, tables::AppLine::Member { .. })),
+        "no process of a closed group is listed"
     );
 }
