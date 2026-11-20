@@ -1,6 +1,7 @@
 //! Shared domain types and validation for Better OS components.
 
 pub mod defaults;
+pub mod desktop;
 pub mod host;
 pub mod manifest;
 pub mod package_health;
@@ -11,6 +12,7 @@ pub use defaults::{
     IntegrationId, IntegrationKind, IntegrationTarget, KeyObservation, MAX_INTEGRATION_ID_LENGTH,
     MAX_TARGET_KEY_LENGTH, ObservedValue, RequiredPrivilege, RestorePolicy, SessionEffect,
 };
+pub use desktop::{CurrentDesktop, UNKNOWN_DESKTOP};
 pub use host::{
     SUPPORTED_UBUNTU_RELEASES, describe_os_release, os_release_field, resolve_distribution_id,
     resolve_ubuntu_release,

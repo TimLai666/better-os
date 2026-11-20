@@ -1,5 +1,6 @@
 //! The System page's words and decisions, without a window.
 
+use better_core::CurrentDesktop;
 use hardware_core::battery::{BatteryFacts, BatteryStatus};
 use hardware_core::charge::{ChargeChoice, charge_limit_view};
 use hardware_core::power::{Caution, Degradation, Hold};
@@ -237,18 +238,26 @@ fn each_write_outcome_draws_its_state() {
 #[test]
 fn the_desktop_line_is_gnome_with_its_version_and_the_session() {
     assert_eq!(
-        desktop_line(Some("zorin:GNOME"), Some("46"), Some("wayland")).as_deref(),
+        desktop_line(
+            &CurrentDesktop::parse("zorin:GNOME"),
+            Some("46"),
+            Some("wayland")
+        )
+        .as_deref(),
         Some("GNOME 46 · Wayland")
     );
     assert_eq!(
-        desktop_line(Some("ubuntu:GNOME"), None, Some("x11")).as_deref(),
+        desktop_line(&CurrentDesktop::parse("ubuntu:GNOME"), None, Some("x11")).as_deref(),
         Some("GNOME · X11")
     );
     assert_eq!(
-        desktop_line(Some("KDE"), Some("46"), None).as_deref(),
+        desktop_line(&CurrentDesktop::parse("KDE"), Some("46"), None).as_deref(),
         Some("KDE")
     );
-    assert_eq!(desktop_line(None, None, Some("tty")), None);
+    assert_eq!(
+        desktop_line(&CurrentDesktop::default(), None, Some("tty")),
+        None
+    );
 }
 
 #[test]

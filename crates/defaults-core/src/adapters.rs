@@ -11,6 +11,7 @@
 use std::io;
 use std::path::PathBuf;
 
+use better_core::CurrentDesktop;
 use better_core::defaults::AdapterId;
 use defaults_platform::{
     AdapterSet, ApplicationCatalog, DconfAdapter, LauncherEntryAdapter, LazyApplications,
@@ -147,21 +148,15 @@ pub fn default_simulated_desktop_path() -> PathBuf {
     data.join("better-os/defaults/simulated-desktop.json")
 }
 
-/// The session this is running in.
+/// The session this is running in, in [`CurrentDesktop::identity`] form:
+/// every desktop `XDG_CURRENT_DESKTOP` lists (`zorin:gnome` on Zorin), with
+/// `DESKTOP_SESSION` only as a fallback.
 ///
 /// An undetectable session stays undetectable rather than being assumed to be
 /// GNOME: a declaration that names a session it is not running in should not
 /// apply, and guessing here would make it apply anyway.
 pub fn desktop_session() -> String {
-    for key in ["XDG_CURRENT_DESKTOP", "DESKTOP_SESSION"] {
-        if let Ok(value) = std::env::var(key)
-            && let Some(first) = value.split(':').next()
-            && !first.trim().is_empty()
-        {
-            return first.trim().to_lowercase();
-        }
-    }
-    "unknown".to_string()
+    CurrentDesktop::from_env().identity()
 }
 
 #[cfg(test)]

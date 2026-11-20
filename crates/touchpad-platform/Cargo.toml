@@ -21,6 +21,8 @@ path = "src/bin/before_removal.rs"
 required-features = ["dconf-write"]
 
 [dependencies]
+# The one rule for which desktop a session is (`better_core::desktop`).
+better-core.workspace = true
 defaults-platform.workspace = true
 touchpad-core.workspace = true
 # The scroll pass-through's names and factor rule (ADR 0030); without its
@@ -33,9 +35,6 @@ serde_json.workspace = true
 zbus = { workspace = true, optional = true }
 
 [dev-dependencies]
-# `tests/manifest.rs` validates the shipped Better Touchpad manifest the way
-# the manager validates one, and checks it against this crate's own key table.
-better-core.workspace = true
 tempfile.workspace = true
 # The integration tests speak the core vocabulary, which a dependency of the
 # library is not automatically lent to them.
