@@ -227,6 +227,13 @@ pub trait SessionAdapter {
         SuppressionOutcome::unsupported()
     }
 
+    /// Whether the desktop's own gestures are off right now, as the adapter
+    /// reported when it was connected, or `None` for an adapter that cannot
+    /// change them and so has nothing to report.
+    fn reported_built_in_suppression(&self) -> Option<bool> {
+        None
+    }
+
     /// Looks again. The default answers from the capability report, which is
     /// all a capability-only adapter can honestly say.
     fn verify(&self, action: &DesktopAction) -> VerificationResult {

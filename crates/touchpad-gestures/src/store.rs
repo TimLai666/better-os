@@ -80,6 +80,74 @@ impl GestureStore {
         }
     }
 
+    /// Where the lock every writer of `gestures.json` takes lives.
+    pub fn lock_path(&self) -> std::path::PathBuf {
+        self.store.directory().join("gestures.lock")
+    }
+
+    /// Reads the profiles, lets `change` alter them, and writes them back, with
+    /// every other writer of the file kept out from the read to the write
+    /// (ticket 131).
+    ///
+    /// The window and the gesture service both write through this, each
+    /// merging only its own changes onto what it reads here
+    /// ([`crate::merge::merge`]). The lock is `flock(2)` on `gestures.lock`
+    /// beside the file, which the kernel releases when the holder exits, so a
+    /// writer that crashes cannot leave the other locked out. A file that will
+    /// not parse is never written over: it is the only copy. Returns what the
+    /// file holds afterwards.
+    pub fn update_profiles(
+        &self,
+        change: impl FnOnce(&mut GestureProfiles),
+    ) -> Result<GestureProfiles, GestureStoreError> {
+        std::fs::create_dir_all(self.store.directory()).map_err(|source| StoreError::Io {
+            path: self.store.directory().to_path_buf(),
+            source,
+        })?;
+        let lock_path = self.lock_path();
+        let lock = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&lock_path)
+            .map_err(|source| StoreError::Io {
+                path: lock_path.clone(),
+                source,
+            })?;
+        lock.lock().map_err(|source| StoreError::Io {
+            path: lock_path.clone(),
+            source,
+        })?;
+        let before = self.load_profiles()?;
+        let mut after = before.clone();
+        change(&mut after);
+        if after != before {
+            self.save_profiles(&after)?;
+        }
+        // Dropping the file releases the lock.
+        drop(lock);
+        Ok(after)
+    }
+
+    /// Writes the changes `ours` made to `base` onto the file as it is now,
+    /// under the lock, with [`crate::merge::merge`]: the one way both the
+    /// window and the gesture service save (ticket 131). A file that does not
+    /// exist yet is taken to hold `base`, so a first save writes `ours` whole.
+    /// Returns what the file holds afterwards.
+    pub fn save_changes(
+        &self,
+        base: &GestureProfiles,
+        ours: &GestureProfiles,
+    ) -> Result<GestureProfiles, GestureStoreError> {
+        let path = self.config_path();
+        self.update_profiles(|theirs| {
+            if !path.exists() {
+                *theirs = base.clone();
+            }
+            *theirs = crate::merge::merge(base, ours, theirs);
+        })
+    }
+
     pub fn save_profiles(&self, profiles: &GestureProfiles) -> Result<(), GestureStoreError> {
         self.store
             .write_text(&self.config_path(), &profiles.to_json())?;
@@ -261,6 +329,62 @@ mod tests {
     use crate::profiles::PROFILE_SCHEMA_VERSION;
     use better_actions::DesktopAction;
     use touchpad_session::MockSessionAdapter;
+
+    /// Ticket 131: the window and the service write the same file. Each read,
+    /// merge, and write happens under the one lock, so two writers interleaving
+    /// as tightly as threads can never lose each other's change.
+    #[test]
+    fn two_writers_interleaving_never_lose_a_change() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("touchpad");
+        let writer = |prefix: &'static str| {
+            let root = root.clone();
+            std::thread::spawn(move || {
+                let store = GestureStore::at(&root);
+                for index in 0..30 {
+                    store
+                        .update_profiles(|profiles| {
+                            // Widen the window between the read and the write.
+                            std::thread::sleep(std::time::Duration::from_millis(1));
+                            profiles.global.gestures.push(
+                                crate::definition::GestureDefinition::new(
+                                    &format!("{prefix}-{index}"),
+                                    crate::definition::GestureShape::Swipe,
+                                    5,
+                                    false,
+                                    Some(crate::definition::Direction::Up),
+                                    DesktopAction::ShowOverview,
+                                )
+                                .unwrap(),
+                            );
+                        })
+                        .unwrap();
+                }
+            })
+        };
+        let first = writer("window");
+        let second = writer("service");
+        first.join().unwrap();
+        second.join().unwrap();
+        let stored = GestureStore::at(&root).load_profiles().unwrap();
+        assert_eq!(stored.global.gestures.len(), 60);
+    }
+
+    #[test]
+    fn an_update_never_writes_over_a_file_that_will_not_parse() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = GestureStore::at(directory.path());
+        std::fs::write(store.config_path(), "{ not json").unwrap();
+        assert!(
+            store
+                .update_profiles(|profiles| profiles.global.enabled = false)
+                .is_err()
+        );
+        assert_eq!(
+            std::fs::read_to_string(store.config_path()).unwrap(),
+            "{ not json"
+        );
+    }
 
     fn store() -> (tempfile::TempDir, GestureStore) {
         let directory = tempfile::tempdir().unwrap();

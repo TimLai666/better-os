@@ -41,6 +41,34 @@ pub const BUS_NAME: &str = "org.betteros.TouchpadAdapter1";
 pub const OBJECT_PATH: &str = "/org/betteros/TouchpadAdapter1";
 pub const INTERFACE_NAME: &str = "org.betteros.TouchpadAdapter1";
 
+/// The name the gesture service owns for as long as it runs (ticket 131).
+///
+/// The extension keeps GNOME's own swipe trackers off only while this name has
+/// an owner, and takes a request to turn them off only from that owner. So a
+/// service that stops, crashes, or is killed with its session can never leave
+/// the desktop without its gestures. Better Touchpad's page asks whether it
+/// has an owner to tell "the service is listening" from "it is not running".
+pub const SERVICE_BUS_NAME: &str = "org.betteros.TouchpadGestures1";
+
+/// The program the owner of [`SERVICE_BUS_NAME`] must be for the extension to
+/// accept it (ADR 0035). Owning the name is not enough: any program in the
+/// session could take it first.
+pub const SERVICE_EXECUTABLE: &str = "/usr/bin/better-touchpad-gestured";
+
+/// Where the gesture service answers what it can and cannot do right now:
+/// `Status() -> (b watching, s problem)`. `watching` is false while it cannot
+/// watch its configuration (a change then waits for the watch to come back),
+/// and `problem` says why.
+pub const SERVICE_OBJECT_PATH: &str = "/org/betteros/TouchpadGestures1";
+pub const SERVICE_INTERFACE: &str = "org.betteros.TouchpadGestures1";
+
+/// What the gesture service reports about itself.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ServiceStatus {
+    pub watching: bool,
+    pub problem: String,
+}
+
 /// Every method the extension serves, and every signal it emits. The names are
 /// here once so that the client, the tests, and the interface XML can be
 /// checked against each other rather than against memory.
@@ -256,6 +284,30 @@ pub trait ShellEvents: Send {
     fn recv(&mut self) -> Option<ShellGestureEvent>;
 }
 
+/// Everything the gesture service waits for, on one stream (ticket 131).
+///
+/// The adapter comes and goes with GNOME Shell: it is not on the bus yet when
+/// a login starts the service, and it leaves and comes back when the shell
+/// restarts or the extension is turned off and on. The service waits on this
+/// stream rather than exiting when the adapter is missing, which is what left
+/// it dead for a whole session on five of seven logins.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SessionEvent {
+    /// The adapter extension now owns its bus name.
+    AdapterAppeared,
+    /// The adapter's bus name lost its owner.
+    AdapterVanished,
+    Gesture(ShellGestureEvent),
+    /// Something wrote the gesture configuration or the safe mode marker: a
+    /// window, an import, a person with an editor. The service reads them
+    /// again at once.
+    ConfigurationChanged,
+    /// The service was asked to stop (SIGTERM, SIGINT).
+    Stop,
+    /// The session bus connection is gone.
+    Closed,
+}
+
 /// A recorded stream, replayed in order and then ended.
 pub struct RecordedShellEvents {
     events: std::collections::VecDeque<ShellGestureEvent>,
@@ -291,6 +343,8 @@ pub struct GnomeShellAdapter {
     bridge: Box<dyn ShellBridge>,
     capabilities: ActionCapabilities,
     reported: ShellCapabilities,
+    /// Whether taking GNOME's gestures is left to the gesture service.
+    suppression_left_to_service: bool,
 }
 
 impl GnomeShellAdapter {
@@ -307,7 +361,18 @@ impl GnomeShellAdapter {
             bridge,
             capabilities: Self::declare(),
             reported,
+            suppression_left_to_service: false,
         }
+    }
+
+    /// The form a window uses (ticket 131): it never turns GNOME's own
+    /// gestures off itself. Only the gesture service may, once gestures have
+    /// arrived from the adapter, and the extension refuses the request from
+    /// anyone else. Giving them back still goes through, because that only
+    /// ever returns GNOME to its own behaviour.
+    pub fn leaving_suppression_to_the_service(mut self) -> Self {
+        self.suppression_left_to_service = true;
+        self
     }
 
     /// What the extension said about itself.
@@ -389,7 +454,19 @@ impl SessionAdapter for GnomeShellAdapter {
         }
     }
 
+    fn reported_built_in_suppression(&self) -> Option<bool> {
+        Some(self.reported.built_in_gestures_suppressed)
+    }
+
     fn suppress_built_in_gestures(&mut self, suppress: bool) -> SuppressionOutcome {
+        if suppress && self.suppression_left_to_service {
+            return SuppressionOutcome::Unsupported {
+                reason: "session.built_in_gestures_left_to_service".to_string(),
+                detail: "the gesture service turns GNOME's own gestures off once gestures \
+                         arrive from the adapter"
+                    .to_string(),
+            };
+        }
         match self
             .bridge
             .call(ShellRequest::SuppressBuiltInGestures(suppress))
@@ -521,6 +598,26 @@ mod tests {
 
     fn adapter(bridge: Arc<FakeShellBridge>) -> GnomeShellAdapter {
         GnomeShellAdapter::connect(Box::new(SharedShellBridge(bridge))).expect("a shell adapter")
+    }
+
+    #[test]
+    fn a_window_never_takes_gnomes_gestures_and_can_still_give_them_back() {
+        let recorded = Arc::new(FakeShellBridge::new());
+        let mut adapter = adapter(recorded.clone()).leaving_suppression_to_the_service();
+        assert!(matches!(
+            adapter.suppress_built_in_gestures(true),
+            SuppressionOutcome::Unsupported { reason, .. }
+                if reason == "session.built_in_gestures_left_to_service"
+        ));
+        assert!(recorded.calls().is_empty());
+        assert_eq!(
+            adapter.suppress_built_in_gestures(false),
+            SuppressionOutcome::Restored
+        );
+        assert_eq!(
+            recorded.calls(),
+            vec![ShellRequest::SuppressBuiltInGestures(false)]
+        );
     }
 
     #[test]

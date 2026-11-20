@@ -10,6 +10,8 @@ better-actions.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+# Follows gestures.json as other processes write it (ticket 131).
+notify.workspace = true
 touchpad-core.workspace = true
 touchpad-session.workspace = true
 

@@ -52,6 +52,9 @@ pub struct TouchpadApp {
     pub(crate) import_path: Entity<InputState>,
     /// Watches for an update and restarts into it (ticket 105).
     pub(crate) update_restart: better_ui::restart::UpdateRestart,
+    /// Follows `gestures.json` as the gesture service and the other window
+    /// write it (ticket 131).
+    pub(crate) _gesture_watch: touchpad_gestures::ConfigurationWatch,
 }
 
 /// Where the appearance is stored. The file is written only when a person
@@ -170,7 +173,36 @@ impl TouchpadApp {
             cx,
         );
 
+        // Reads the gesture file again whenever another process writes it,
+        // so this window never saves a stale copy over the gesture service's
+        // automatic disable or Better Manager's page (ticket 131). An edit
+        // open in the editor stays open.
+        let (changed, changes) = smol::channel::unbounded::<()>();
+        let gesture_watch = touchpad_gestures::ConfigurationWatch::start(
+            &[gesture_store.config_path()],
+            touchpad_gestures::watch::RETRY,
+            move || {
+                let _ = changed.send_blocking(());
+            },
+            |_| {},
+        );
+        cx.spawn(async move |this, cx| {
+            while changes.recv().await.is_ok() {
+                while changes.try_recv().is_ok() {}
+                let followed = this.update(cx, |app: &mut Self, cx| {
+                    if app.gestures.reload(&app.gesture_store) {
+                        cx.notify();
+                    }
+                });
+                if followed.is_err() {
+                    return;
+                }
+            }
+        })
+        .detach();
+
         Self {
+            _gesture_watch: gesture_watch,
             model,
             backend,
             store,

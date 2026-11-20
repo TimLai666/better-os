@@ -137,6 +137,12 @@ impl SessionAdapter for RoutingAdapter {
         }
         best
     }
+
+    fn reported_built_in_suppression(&self) -> Option<bool> {
+        self.adapters
+            .iter()
+            .find_map(|adapter| adapter.reported_built_in_suppression())
+    }
 }
 
 #[cfg(test)]

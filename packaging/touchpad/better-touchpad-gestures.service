@@ -5,15 +5,18 @@ PartOf=graphical-session.target
 After=graphical-session.target
 
 [Service]
-# Type=simple. The service owns no bus name: it is a client of the GNOME Shell
-# adapter extension's name and of Better Launcher's, so there is nothing for
+# Type=simple. The service owns org.betteros.TouchpadGestures1 while it runs
+# (the adapter extension gives GNOME its gestures back when that name loses its
+# owner), but nothing activates it by that name, so there is nothing for
 # systemd to wait on at exec time.
 Type=simple
 ExecStart=/usr/bin/better-touchpad-gestured
-# on-failure, not always. The service exits successfully and on purpose in
-# three cases — safe mode is on, no gesture is configured, and the adapter
-# extension is not enabled — and restarting it for those would be a loop that
-# hides the reason instead of showing it in the journal.
+# on-failure. The service never exits on purpose (ticket 131): with safe mode
+# on, nothing configured, or the adapter extension missing it stays resident,
+# idle, and watching, so there is no successful exit to restart from. Stopped
+# by SIGTERM it gives GNOME's gestures back and ends by that signal, which
+# systemd records as a stop rather than a failure, and Better Manager starts it
+# again at its next start or on Check again.
 Restart=on-failure
 
 # Hardening for an unprivileged user unit, chosen the same way
@@ -35,8 +38,8 @@ SystemCallArchitectures=native
 RestrictAddressFamilies=AF_UNIX
 
 [Install]
-# Installed, not enabled. Enabling it is the user's own step or Better
-# Manager's enable step, and it is only useful once the GNOME Shell adapter
-# extension has been enabled too — which is also the user's own act, because
-# enabling a shell extension always is.
+# Installed, not enabled, by dpkg. Better Manager's install step enables and
+# starts it and turns the GNOME Shell adapter extension on in the same action
+# (ticket 88), so nothing is left for the person to do; the extension loads at
+# the next login, and the service waits for it until then.
 WantedBy=graphical-session.target

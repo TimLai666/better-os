@@ -625,12 +625,21 @@ impl<'a> RealDriver<'a> {
     }
 
     /// The GNOME Shell extensions a step's package installed, from the same
-    /// file list.
+    /// file list, and those of the companions the step carries (ticket 131).
     fn step_extensions(&self, step: &PlanStep) -> Result<Vec<String>, FailureEvidence> {
         if self.shell_extensions.is_none() {
             return Ok(Vec::new());
         }
-        Ok(shell_extensions(&self.step_files(step)?))
+        let mut uuids = shell_extensions(&self.step_files(step)?);
+        let mut companions: Vec<String> = step
+            .artifact
+            .iter()
+            .flat_map(|artifact| artifact.companions.iter())
+            .map(|companion| companion.package.clone())
+            .collect();
+        companions.extend(step.verify_companions.iter().cloned());
+        crate::reconcile::add_companion_extensions(&mut uuids, self.packages, &companions);
+        Ok(uuids)
     }
 
     /// Runs each removed package's before-removal program (ticket 88), so a
@@ -764,7 +773,7 @@ impl<'a> RealDriver<'a> {
 
     /// Fails when a step that leaves its component enabled has an extension
     /// the person's settings do not have on.
-    fn check_extensions(&self, plan: &TransactionPlan) -> Option<StageOutcome> {
+    fn check_extensions(&mut self, plan: &TransactionPlan) -> Option<StageOutcome> {
         let controller = self.shell_extensions?;
         for step in plan.steps().iter().filter(|step| step.leaves_enabled) {
             let uuids = match self.step_extensions(step) {
@@ -781,15 +790,23 @@ impl<'a> RealDriver<'a> {
                     return Some(StageOutcome::Failed(extension_failure(&uuids, failure)));
                 }
             };
+            // GNOME's switch that turns off every extension is the person's
+            // own decision about their whole desktop, and nothing Better OS
+            // may flip. It is said, as a warning, and never fails a check: a
+            // failed check rolls an install or an update back, and the person
+            // switching extensions off must not undo Better Manager's own
+            // update or any other component's (ticket 131). The extensions
+            // are still in the list, so they run once the switch is off.
             match controller.all_turned_off() {
                 Ok(true) => {
-                    return Some(StageOutcome::Failed(FailureEvidence::with_detail(
-                        "shell_extension.not_enabled",
+                    self.warnings.push((
+                        step.component.clone(),
                         format!(
-                            "GNOME's switch that turns off all extensions is on, so {} cannot run",
+                            "shell_extension.all_turned_off: GNOME's switch that turns off all \
+                             extensions is on, so {} cannot run until it is turned off",
                             uuids.join(", ")
                         ),
-                    )));
+                    ));
                 }
                 Ok(false) => {}
                 Err(failure) if failure.is_no_shell() => continue,
@@ -975,7 +992,7 @@ impl<'a> RealDriver<'a> {
     /// a healthy one by being enabled. A step the rule finds healthy passes; a
     /// failed check fails the stage with `health.failed` and the rule's detail;
     /// a check that could not run fails it with `health.undetermined`.
-    fn check_health(&self, plan: &TransactionPlan) -> StageOutcome {
+    fn check_health(&mut self, plan: &TransactionPlan) -> StageOutcome {
         if let Some(outcome) = &self.outcome {
             let stage = outcome_to_stage(outcome);
             if !matches!(stage, StageOutcome::Completed) {
@@ -1113,6 +1130,11 @@ impl StageDriver for RealDriver<'_> {
                         DesiredOperation::Verify if step.leaves_enabled => self
                             .start_recorded_units(step)
                             .and_then(|()| self.enable_extensions(step)),
+                        // The companions just installed may bring an extension
+                        // of their own (ticket 131).
+                        DesiredOperation::AddCompanions if step.leaves_enabled => {
+                            self.enable_extensions(step)
+                        }
                         DesiredOperation::Verify | DesiredOperation::AddCompanions => Ok(()),
                         // A new program is on disk, and a unit that is
                         // already running is still executing the old one.

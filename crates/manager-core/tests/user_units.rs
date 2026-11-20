@@ -89,8 +89,8 @@ fn enabled_but_stopped(unit: &str) -> UnitState {
     UnitState::new(unit, true, UnitActivity::Stopped)
 }
 
-/// Enabled, and finished on its own with success: the touchpad gesture
-/// service when it has nothing to do.
+/// Enabled, and finished on its own with success: what the touchpad gesture
+/// service on 0.2.16 did when the adapter was late (ticket 131).
 fn exited(unit: &str) -> UnitState {
     UnitState::new(unit, true, UnitActivity::Exited)
 }
@@ -566,11 +566,11 @@ fn health_reports_a_stopped_unit_by_name() {
     );
 }
 
-/// A service that exits 0 on purpose — the touchpad gesture service with
-/// nothing to do — is an enabled component working as designed. Verify
-/// passes and starts nothing, and the startup pass leaves it alone.
+/// Ticket 131: a service that exited, even with success, is not running, and
+/// no Better OS unit exits on purpose any more. The startup pass starts it,
+/// and so does Verify (Check again), which then passes.
 #[test]
-fn a_service_that_finished_successfully_is_healthy_and_is_not_restarted() {
+fn a_service_that_exited_is_started_again_by_the_startup_pass_and_by_verify() {
     let manager = manager();
     let mut state = state_with(&awake(), record("0.2.9", true));
     let packages = FixedPackageStateProbe::new(&[("better-awake", "0.2.9")])
@@ -581,7 +581,10 @@ fn a_service_that_finished_successfully_is_healthy_and_is_not_restarted() {
     let healed = manager
         .heal_user_units(&mut state, &packages, &units)
         .expect("the startup pass runs");
-    assert!(healed.is_empty(), "{healed:?}");
+    assert_eq!(healed.len(), 1, "{healed:?}");
+    assert!(healed[0].started, "{healed:?}");
+
+    let units = FakeUserUnitController::new(&[exited(AWAKE_UNIT)]);
 
     let executor = SucceedingExecutor::new(Arc::new(Mutex::new(Vec::new())));
     let mut driver = RealDriver::new(
@@ -603,8 +606,8 @@ fn a_service_that_finished_successfully_is_healthy_and_is_not_restarted() {
         units
             .calls()
             .iter()
-            .all(|call| matches!(call, FakeUnitCall::States(_))),
-        "nothing was started: {:?}",
+            .any(|call| matches!(call, FakeUnitCall::Enable(_))),
+        "the exited unit was not started: {:?}",
         units.calls()
     );
 }
@@ -1224,4 +1227,69 @@ fn the_real_driver_takes_a_controller_through_a_builder() {
     let manager = manager();
     let sink = DiscardingSink;
     let _runner = TransactionRunner::new(&manager, Box::new(driver), &sink);
+}
+
+const AWAKE_TRAY_UNIT: &str = "better-awake-tray.service";
+
+fn awake_files_with_tray() -> InstalledFiles {
+    let mut files = awake_files();
+    files
+        .paths
+        .push("/usr/lib/systemd/user/better-awake-tray.service".into());
+    files
+}
+
+/// Review of ticket 131: the Awake tray's Quit exits 0. That is not the
+/// component being off (only disabling or removing it is), so the exited
+/// tray reads as not satisfied and the startup pass starts it again.
+#[test]
+fn a_tray_the_person_quit_is_started_again_by_the_startup_pass() {
+    let quit = exited(AWAKE_TRAY_UNIT);
+    assert!(!quit.is_satisfied());
+
+    let manager = manager();
+    let mut state = state_with(&awake(), record("0.2.9", true));
+    let packages = FixedPackageStateProbe::new(&[("better-awake", "0.2.9")])
+        .with_files("better-awake", awake_files_with_tray());
+    let units = FakeUserUnitController::new(&[running(AWAKE_UNIT), quit]);
+    let healed = manager
+        .heal_user_units(&mut state, &packages, &units)
+        .expect("the startup pass runs");
+    assert_eq!(healed.len(), 1, "{healed:?}");
+    assert!(healed[0].started, "{healed:?}");
+    assert!(
+        units.calls().iter().any(|call| matches!(
+            call,
+            FakeUnitCall::Enable(started) if started == &[AWAKE_TRAY_UNIT.to_string()]
+        )),
+        "{:?}",
+        units.calls()
+    );
+}
+
+/// Review of ticket 131: `better-window-attention` exits 0 when another
+/// instance already owns its name. That second instance is never the unit's
+/// main process while the first runs, so systemd reports the unit active, and
+/// an active unit is started by neither the startup pass nor anything else:
+/// no restart loop. The unit here stands in for any unit whose first
+/// instance runs.
+#[test]
+fn a_second_instance_exiting_while_the_first_runs_restarts_nothing() {
+    let manager = manager();
+    let mut state = state_with(&awake(), record("0.2.9", true));
+    let packages = FixedPackageStateProbe::new(&[("better-awake", "0.2.9")])
+        .with_files("better-awake", awake_files());
+    let units = FakeUserUnitController::new(&[running(AWAKE_UNIT)]);
+    let healed = manager
+        .heal_user_units(&mut state, &packages, &units)
+        .expect("the startup pass runs");
+    assert!(healed.is_empty(), "{healed:?}");
+    assert!(
+        units
+            .calls()
+            .iter()
+            .all(|call| matches!(call, FakeUnitCall::States(_))),
+        "something was started: {:?}",
+        units.calls()
+    );
 }

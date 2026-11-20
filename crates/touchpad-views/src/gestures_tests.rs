@@ -27,6 +27,171 @@ fn screen() -> GestureScreen {
     )
 }
 
+/// The Mac-style preset with its four swipes moved to three fingers, where
+/// GNOME 46's own trackers are. The shipped preset collides with nothing on
+/// GNOME 46 (ticket 131), and the conflict decisions need a preset that does.
+fn colliding_preset() -> GestureConfig {
+    let mut config = mac_style();
+    for gesture in &mut config.gestures {
+        if gesture.shape == GestureShape::Swipe && gesture.contacts.get() == 4 {
+            gesture.contacts = touchpad_gestures::ContactCount::new(3).unwrap();
+        }
+    }
+    config
+}
+
+#[test]
+fn the_shipped_preset_previews_no_conflict_with_gnome_46() {
+    let mut screen = screen();
+    screen.preview_preset();
+    let card = screen.preset_card(copy(Locale::EnUs));
+    assert!(card.conflicts.is_empty());
+    assert_eq!(card.changes.len(), mac_style().gestures.len());
+}
+
+/// The window as Startup builds it never takes GNOME's gestures itself, even
+/// for a gesture the person chose over GNOME's: the gesture service does, once
+/// gestures arrive (ticket 131).
+#[test]
+fn the_window_leaves_taking_gnomes_gestures_to_the_service() {
+    let recorded = std::sync::Arc::new(touchpad_session::FakeShellBridge::new());
+    let adapter = touchpad_session::GnomeShellAdapter::connect(Box::new(
+        touchpad_session::gnome::SharedShellBridge(recorded.clone()),
+    ))
+    .expect("a shell adapter")
+    .leaving_suppression_to_the_service();
+    let mut screen = GestureScreen::new(GestureConfig::default(), None, Box::new(adapter));
+    confirmed_preview(&mut screen, ConflictResolution::DisableBuiltIn);
+    screen.apply_plan(None).unwrap();
+
+    assert!(!screen.suppression().is_suppressed());
+    assert!(
+        !recorded
+            .calls()
+            .contains(&touchpad_session::ShellRequest::SuppressBuiltInGestures(
+                true
+            )),
+        "{:?}",
+        recorded.calls()
+    );
+}
+
+/// A file written by 0.2.16 marks the four-finger swipes as colliding with
+/// GNOME. The window corrects that with the function the service uses, so it
+/// neither shows the badge nor writes the old annotation back (ticket 131).
+#[test]
+fn a_stale_conflict_from_an_older_model_is_corrected_when_the_screen_opens() {
+    let mut stale = mac_style();
+    for gesture in &mut stale.gestures {
+        if gesture.shape == GestureShape::Swipe && gesture.contacts.get() == 4 {
+            gesture.conflict = touchpad_gestures::ConflictState::Conflicts {
+                with: "gnome.overview.swipe".to_string(),
+                detail: "gnome.overview_and_application_grid".to_string(),
+            };
+        }
+    }
+    let screen = screen_with(GestureProfiles::global_only(stale), None);
+    let rows = screen.rows(copy(Locale::EnUs));
+    assert!(rows.iter().all(|row| row.conflict.is_none()));
+    assert!(
+        screen
+            .config()
+            .gestures
+            .iter()
+            .all(|gesture| !gesture.conflict.conflicts())
+    );
+}
+
+/// Review of ticket 131: an edit that moves a gesture onto GNOME's three
+/// fingers is marked as colliding at once, and moving it back clears it,
+/// through the one annotating function.
+#[test]
+fn an_edit_onto_or_off_three_fingers_is_re_annotated_at_once() {
+    let mut screen = screen();
+    screen.preview_preset();
+    screen.confirm(true);
+    screen.apply_plan(None).unwrap();
+    assert!(!screen.collides_with_gnome());
+
+    screen.edit(&id("overview"));
+    screen.editor_mut().unwrap().contacts = 3;
+    screen.commit_edit(None).unwrap();
+    assert!(screen.collides_with_gnome());
+    assert!(
+        screen
+            .config()
+            .get(&id("overview"))
+            .unwrap()
+            .conflict
+            .conflicts()
+    );
+
+    screen.edit(&id("overview"));
+    screen.editor_mut().unwrap().contacts = 4;
+    screen.commit_edit(None).unwrap();
+    assert!(!screen.collides_with_gnome());
+}
+
+/// Review of ticket 131: the gesture service turned gestures off after a
+/// failing adapter while this window was open. An edit made here afterwards
+/// lands, and the switch stays off: the window writes its own change onto
+/// the file as it is now, not its stale copy.
+#[test]
+fn an_edit_in_an_open_window_keeps_a_switch_the_service_turned_off() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = GestureStore::at(directory.path());
+    store.save_config(&mac_style()).unwrap();
+    let mut screen = screen_with(store.load_profiles().unwrap(), None);
+
+    // The service, from its own copy, turns the switch off.
+    let service_base = store.load_profiles().unwrap();
+    let mut service_ours = service_base.clone();
+    service_ours.global.enabled = false;
+    store.save_changes(&service_base, &service_ours).unwrap();
+
+    screen.set_enabled(&id("launcher"), false, Some(&store));
+    let stored = store.load_config().unwrap();
+    assert!(!stored.enabled, "the window wrote its stale switch back");
+    assert!(!stored.get(&id("launcher")).unwrap().enabled);
+    // And the window now shows the file as it is.
+    assert!(!screen.config().enabled);
+}
+
+/// Review of ticket 131: a window follows the file when another process
+/// writes it, and an edit open in the editor stays open.
+#[test]
+fn a_window_follows_the_file_and_keeps_an_edit_in_progress() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = GestureStore::at(directory.path());
+    store.save_config(&mac_style()).unwrap();
+    let mut screen = screen_with(store.load_profiles().unwrap(), None);
+    screen.edit(&id("overview"));
+    screen.editor_mut().unwrap().contacts = 5;
+
+    let mut off = mac_style();
+    off.enabled = false;
+    store.save_config(&off).unwrap();
+
+    assert!(screen.reload(&store));
+    assert!(!screen.config().enabled);
+    assert_eq!(screen.editor().unwrap().contacts, 5);
+    // Reading the same file again changes nothing.
+    assert!(!screen.reload(&store));
+}
+
+#[test]
+fn a_stopped_gesture_service_is_said_and_an_unknown_one_is_not() {
+    let mut screen = screen();
+    assert!(!screen.service_stopped());
+    screen.set_service_running(Some(true));
+    assert!(!screen.service_stopped());
+    screen.set_service_running(Some(false));
+    assert!(screen.service_stopped());
+    for locale in [Locale::EnUs, Locale::ZhTw] {
+        assert!(!copy(locale).gesture_service_stopped.is_empty());
+    }
+}
+
 /// A screen reopened on stored profiles, which is what a restart is.
 fn screen_with(profiles: GestureProfiles, device: Option<String>) -> GestureScreen {
     GestureScreen::with_profiles(profiles, device, None, Box::new(MockSessionAdapter::new()))
@@ -35,7 +200,7 @@ fn screen_with(profiles: GestureProfiles, device: Option<String>) -> GestureScre
 /// The preview, the four conflict decisions, and the confirmation — the whole
 /// gate, as a screen would walk it.
 fn confirmed_preview(screen: &mut GestureScreen, resolution: ConflictResolution) {
-    screen.preview_preset();
+    screen.preview_preset_as(&colliding_preset());
     let conflicts: Vec<GestureId> = screen
         .plan()
         .unwrap()
@@ -62,7 +227,7 @@ fn the_screen_starts_with_nothing_bound_and_the_preset_not_applied() {
 #[test]
 fn previewing_lists_every_change_and_every_conflict_before_anything_happens() {
     let mut screen = screen();
-    screen.preview_preset();
+    screen.preview_preset_as(&colliding_preset());
     let card = screen.preset_card(copy(Locale::EnUs));
 
     assert_eq!(card.changes.len(), mac_style().gestures.len());
@@ -75,7 +240,7 @@ fn previewing_lists_every_change_and_every_conflict_before_anything_happens() {
 #[test]
 fn nothing_is_applied_until_every_conflict_is_decided_and_the_change_confirmed() {
     let mut screen = screen();
-    screen.preview_preset();
+    screen.preview_preset_as(&colliding_preset());
 
     // No decisions, no confirmation.
     assert_eq!(
@@ -181,7 +346,7 @@ fn keeping_the_desktop_gesture_leaves_our_four_swipes_switched_off() {
 #[test]
 fn a_conflict_offers_three_decisions_and_the_remap_moves_the_gesture_out_of_reach() {
     let mut screen = screen();
-    screen.preview_preset();
+    screen.preview_preset_as(&colliding_preset());
     let card = screen.preset_card(copy(Locale::EnUs));
     let conflict = &card.conflicts[0];
     assert_eq!(conflict.resolution, None);
@@ -444,7 +609,9 @@ fn changing_the_shape_keeps_the_direction_legal() {
 #[test]
 fn an_edited_gesture_is_no_longer_claimed_to_be_the_shipped_preset() {
     let mut screen = screen();
-    confirmed_preview(&mut screen, ConflictResolution::DisableBuiltIn);
+    // The shipped preset itself, which has no conflict to decide.
+    screen.preview_preset();
+    screen.confirm(true);
     screen.apply_plan(None).unwrap();
     assert_eq!(screen.preset_status(), PresetStatus::Applied);
     assert_eq!(screen.config().preset, PresetId::MacStyle);
@@ -1105,8 +1272,8 @@ fn forgetting_a_device_profile_puts_that_pad_back_on_the_shared_one() {
 // ---------------------------------------------------------------------------
 
 fn imported_document() -> GestureProfiles {
-    let mut document = GestureProfiles::global_only(mac_style());
-    let mut theirs = mac_style();
+    let mut document = GestureProfiles::global_only(colliding_preset());
+    let mut theirs = colliding_preset();
     theirs.get_mut(&id("launcher")).unwrap().contacts =
         touchpad_gestures::ContactCount::new(5).unwrap();
     document.devices.insert(PAD.to_string(), theirs);

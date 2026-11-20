@@ -8200,6 +8200,7 @@ version = "0.2.16"
 dependencies = [
  "better-actions",
  "launcher-platform",
+ "libc",
  "tempfile",
  "tokio",
  "touchpad-core",
@@ -8214,6 +8215,7 @@ name = "touchpad-gestures"
 version = "0.2.16"
 dependencies = [
  "better-actions",
+ "notify",
  "serde",
  "serde_json",
  "tempfile",
@@ -8235,6 +8237,7 @@ dependencies = [
  "launcher-platform",
  "serde",
  "serde_json",
+ "smol",
  "tempfile",
  "touchpad-core",
  "touchpad-gestures",

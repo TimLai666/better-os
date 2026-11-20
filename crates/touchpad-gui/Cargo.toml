@@ -33,6 +33,8 @@ gpui-component.workspace = true
 gpui-component-assets.workspace = true
 gpui-platform.workspace = true
 serde.workspace = true
+# The channel the gesture file watch wakes the window through (ticket 131).
+smol = "2"
 
 [dev-dependencies]
 serde_json.workspace = true
