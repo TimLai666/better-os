@@ -1,7 +1,9 @@
 # Ticket 144 — Desktop stacks: files on the desktop grouped automatically
 
 **Blocked by:** the desktop-icons decision in ticket 143 (who draws the
-desktop: Better Files, COSMIC Files, or Zorin's extension)
+desktop: Better Files, COSMIC Files, or Zorin's extension), now decision C6
+of proposed [ADR 0038](/engineering/decisions/0038-cosmic-as-the-desktop.md),
+which recommends Better Files; on GNOME also ADR 0036's acceptance
 
 ## Why
 

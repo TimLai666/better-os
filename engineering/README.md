@@ -9,7 +9,7 @@ Working documents for the people and agents developing Better OS. Documentation 
 | [contracts/](contracts/) | The component manifest schema that component authors write against | Before changing manifest fields or validation |
 | [performance/](performance/) | Benchmark methods and recorded numbers for Better Files, Better Launcher, and Better Storage | Before making or changing a performance claim |
 | [../design/](../design/) | Screen designs, each a spec with every state and its zh-TW and English copy plus HTML mockups in both appearances: the control center (`control-center-spec.md`, ticket 83), the top bar (`top-bar-spec.md`, ticket 95, with the owner's decisions of 2026-11-21 at the top), and Better Input, the input method with voice typing (`better-input-spec.md`, ticket 99, with the decisions still open for the owner at the top) | Before building or changing a screen they describe |
-| [decisions/](decisions/) | One file per hard-to-reverse choice, with the options that were rejected | Before proposing to change such a choice |
+| [decisions/](decisions/) | One file per hard-to-reverse choice, with the options that were rejected. A proposed record waits for the owner with its decisions listed at the top, as does Better OS's desktop: GNOME, COSMIC, or a Better OS session on COSMIC's compositor (0038, ticket 143, with the desktop-icons question ticket 144 waits on and which of tickets 150 to 161 wait under each option) | Before proposing to change such a choice |
 | [tickets/](tickets/) | One file per slice of work | Picking the next piece of work |
 | [handoff.md](handoff.md) | Unfinished work that has no ticket. Present only while there is some | Arriving to pick up work |
 
