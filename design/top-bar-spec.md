@@ -34,7 +34,9 @@ bar offers other things: the Better OS menu, the focused application's name
 with the actions every window has, and the status area. The sections and
 tickets below that describe handing menus to the bar (the AppMenu registrar,
 `com.canonical.dbusmenu` export from `better-ui`, tickets 153 to 155) are
-being revised to match and are not to be built as written. D6 is still open.
+being revised to match and are not to be built as written. D6 (answered the same day): accepted; old
+X11 (XEmbed) tray icons are not shown while the bar is on, and the bar's
+settings card says so.
 
 | # | Decision | Recommendation | What each choice costs |
 | --- | --- | --- | --- |
