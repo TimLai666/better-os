@@ -48,14 +48,6 @@ const SYMBOLS: &[(&str, &str)] = &[
     ("Github", "GitHub's own mark, not redrawn"),
 ];
 
-/// Functions that feed gpui-component's `SidebarMenuItem`, which takes only
-/// a single-colour toolkit `Icon`: a picture there needs the window's
-/// navigation moved to the kit's `NavigationView`. Recorded in ticket 147.
-const SIDEBAR_FEEDS: &[(&str, &str)] = &[
-    ("awake-gui/src/shell.rs", "fn section_icon("),
-    ("touchpad-gui/src/pages.rs", "fn page_icon("),
-];
-
 /// The kit's own tests use toolkit icons as fixtures for its controls.
 const FIXTURES: &[&str] = &["better-ui/src/fluent/tests.rs"];
 
@@ -194,8 +186,7 @@ fn every_window_hands_gpui_an_asset_source_that_serves_the_icon_set() {
 }
 
 /// No window names a toolkit line icon for a thing or an action: every
-/// `IconName` left is a plain symbol or a status mark, apart from the
-/// recorded sidebars that cannot take a picture.
+/// `IconName` left is a plain symbol or a status mark.
 #[test]
 fn no_window_names_a_toolkit_icon_for_a_thing_or_an_action() {
     let symbols: BTreeSet<&str> = SYMBOLS.iter().map(|(name, _)| *name).collect();
@@ -205,16 +196,9 @@ fn no_window_names_a_toolkit_icon_for_a_thing_or_an_action() {
         if FIXTURES.contains(&file.as_str()) {
             continue;
         }
-        let sidebar = SIDEBAR_FEEDS
-            .iter()
-            .find(|(path, _)| *path == file)
-            .map(|(_, function)| function_lines(&text, function));
         for (name, line) in names_after(&text, "IconName::") {
             seen += 1;
             if symbols.contains(name.as_str()) {
-                continue;
-            }
-            if sidebar.as_ref().is_some_and(|lines| lines.contains(&line)) {
                 continue;
             }
             offences.push(format!("{file}:{line} IconName::{name}"));
@@ -239,6 +223,16 @@ fn no_window_reaches_a_toolkit_icon_another_way() {
         if FIXTURES.contains(&file.as_str()) {
             continue;
         }
+        for (at, _) in text.match_indices("use gpui_component::") {
+            let statement = &text[at..text[at..].find(';').map_or(text.len(), |end| at + end)];
+            let glob = statement
+                .split(|c: char| c == ',' || c == '{' || c == '}' || c.is_whitespace())
+                .any(|part| part == "*" || part.ends_with("::*"));
+            if glob {
+                let line = text[..at].lines().count() + 1;
+                offences.push(format!("{file}:{line}: glob-imports the toolkit"));
+            }
+        }
         for (index, line) in text.lines().enumerate() {
             let at = format!("{file}:{}", index + 1);
             let code = line.trim_start();
@@ -247,11 +241,6 @@ fn no_window_reaches_a_toolkit_icon_another_way() {
             }
             if code.contains("IconName as ") {
                 offences.push(format!("{at}: renames IconName"));
-            }
-            if code.starts_with("use gpui_component::")
-                && (code.contains("::*") || code.contains("{*") || code.contains(", *"))
-            {
-                offences.push(format!("{at}: glob-imports the toolkit"));
             }
             let mut rest = line;
             while let Some(found) = rest.find("\"icons/") {
@@ -283,22 +272,6 @@ fn no_window_reaches_a_toolkit_icon_another_way() {
     );
 }
 
-/// The lines of the function that starts with `signature`, up to its
-/// closing brace at the start of a line.
-fn function_lines(text: &str, signature: &str) -> std::ops::RangeInclusive<usize> {
-    let lines: Vec<&str> = text.lines().collect();
-    let start = lines
-        .iter()
-        .position(|line| line.contains(signature))
-        .unwrap_or_else(|| panic!("{signature} is gone; update SIDEBAR_FEEDS"));
-    let end = lines[start..]
-        .iter()
-        .position(|line| *line == "}")
-        .map(|offset| start + offset)
-        .unwrap();
-    (start + 1)..=(end + 1)
-}
-
 #[test]
 fn the_scanner_reads_names_after_a_prefix() {
     let found = names_after(
@@ -306,5 +279,4 @@ fn the_scanner_reads_names_after_a_prefix() {
         "IconName::",
     );
     assert_eq!(found, vec![("Close".to_string(), 1)]);
-    assert_eq!(function_lines("x\nfn f() {\n  a\n}\ny", "fn f("), 2..=4);
 }
