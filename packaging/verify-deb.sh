@@ -46,7 +46,8 @@ required_executables() {
         better-files)
             printf '%s\n' \
                 usr/bin/better-files \
-                usr/bin/better-files-preview
+                usr/bin/better-files-preview \
+                usr/lib/better-os/before-removal/better-files
             ;;
         better-git)
             printf '%s\n' usr/bin/better-git

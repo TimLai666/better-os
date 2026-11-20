@@ -1267,25 +1267,53 @@ pub(crate) fn open_window_at(folder: Option<files_core::LocalPath>, cx: &mut App
 
 /// Opens the window at the location the command line resolved to.
 pub fn run(start: StartPlan) {
+    run_with(Some(start));
+}
+
+/// How long a Better Files the session bus started waits for the call that
+/// started it before it leaves (ADR 0041).
+pub const SERVICE_IDLE: Duration = Duration::from_secs(30);
+
+/// `better-files --service`: serves `org.freedesktop.FileManager1` with no
+/// window, opens one for each call, and leaves when the last one closes, or
+/// after [`SERVICE_IDLE`] when no call came.
+pub fn run_service() {
+    run_with(None);
+}
+
+fn run_with(start: Option<StartPlan>) {
     let app = gpui_platform::application().with_assets(crate::icons::FilesAssets);
 
     app.run(move |cx| {
         gpui_component::init(cx);
 
-        let handoff = better_ui::restart::take_handoff(APP_ID);
-        let mut window_options = files_window_options(cx);
-        if let Some(bounds) = better_ui::restart::window_bounds(handoff.as_ref()) {
-            window_options.window_bounds = Some(bounds);
-        }
-
-        cx.spawn(async move |cx| {
-            cx.open_window(window_options, |window, cx| {
-                let view = cx.new(|cx| FilesApp::new(window, cx, start, handoff));
-                cx.new(|cx| better_ui::window_chrome::root(view, window, cx))
+        if let Some(start) = start {
+            let handoff = better_ui::restart::take_handoff(APP_ID);
+            let mut window_options = files_window_options(cx);
+            if let Some(bounds) = better_ui::restart::window_bounds(handoff.as_ref()) {
+                window_options.window_bounds = Some(bounds);
+            }
+            cx.spawn(async move |cx| {
+                cx.open_window(window_options, |window, cx| {
+                    let view = cx.new(|cx| FilesApp::new(window, cx, start, handoff));
+                    cx.new(|cx| better_ui::window_chrome::root(view, window, cx))
+                })
+                .expect("failed to open Better Files window");
             })
-            .expect("failed to open Better Files window");
-        })
-        .detach();
+            .detach();
+        } else {
+            // Nothing asked for a window yet: leave if nothing does. Once
+            // one opened, closing the last one ends the process as usual.
+            cx.spawn(async move |cx| {
+                Timer::after(SERVICE_IDLE).await;
+                cx.update(|cx| {
+                    if cx.windows().is_empty() {
+                        cx.quit();
+                    }
+                });
+            })
+            .detach();
+        }
 
         // "Show in folder" from other applications: each request opens a
         // window, in this process.

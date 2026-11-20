@@ -69,21 +69,26 @@ default_integrations:
     session_effect: immediate
     health_prerequisites: [installed, enabled, healthy]
 
-  - id: file-manager-tool-entry-point
-    kind: tool-entry-point
+  # "Show in folder" in other applications is a call to this bus name, and
+  # the session bus starts whatever the person's own activation file names
+  # before Nautilus' (ADR 0041). `true` means Better Files is what it starts;
+  # the program is never taken from here. A file manager already running
+  # keeps the name until it exits, hence `sign-out`.
+  - id: file-manager-service
+    kind: user-service
     exclusivity: exclusive
     target:
       desired:
-        type: desktop_entry
-        value: io.betteros.Files.desktop
-      keys: ["/org/gnome/desktop/applications/file-manager"]
+        type: boolean
+        value: true
+      keys: [org.freedesktop.FileManager1]
     platforms: [ubuntu, zorin]
     sessions: [gnome]
-    apply_adapter: tool-entry-point
-    verify_adapter: tool-entry-point
+    apply_adapter: user-service
+    verify_adapter: user-service
     restore_policy: captured-value
     privileges: user
-    session_effect: immediate
+    session_effect: sign-out
     health_prerequisites: [installed, enabled]
 
   - id: overview-entry

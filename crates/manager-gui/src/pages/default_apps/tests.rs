@@ -23,8 +23,8 @@ use crate::layout::{ActionLayout, MIN_CONTENT_WIDTH, action_layout};
 use crate::pages::default_apps::model::{
     ApprovedPlan, DefaultsSummary, PrimaryAction, RestoreClass, ResultTone, ReviewModel,
     SecondaryAction, aggregate_label, component_rows, integration_state_label, kind_label,
-    last_verified_times, observed_label, outcome_headline, relative_time, result_rows,
-    session_effect_label, skip_reason_label, value_label, warning_label,
+    last_verified_times, observed_for, observed_label, outcome_headline, relative_time,
+    result_rows, session_effect_label, skip_reason_label, value_for, value_label, warning_label,
 };
 
 fn component(value: &str) -> ComponentId {
@@ -943,6 +943,59 @@ fn a_reading_the_system_could_not_give_is_words_rather_than_a_machine_key() {
             "<Super>e, <Super>f"
         );
     }
+}
+
+/// Ticket 129: the file manager row says who answers "Show in folder", in
+/// both languages, never "On" or an activation file's text.
+#[test]
+fn the_file_manager_row_names_who_answers_show_in_folder() {
+    let kind = IntegrationKind::UserService;
+    for locale in [Locale::EnUs, Locale::ZhTw] {
+        let c = copy(locale);
+        assert_eq!(
+            value_for(locale, kind, &DefaultsValue::Boolean(true)),
+            c.service_ours
+        );
+        assert_eq!(
+            observed_for(locale, kind, &ObservedValue::Unset),
+            c.service_system
+        );
+        assert_eq!(
+            observed_for(
+                locale,
+                kind,
+                &ObservedValue::Set {
+                    value: DefaultsValue::Text("owned-by:/usr/bin/nautilus".into())
+                }
+            ),
+            c.service_running.replace("{program}", "nautilus")
+        );
+        assert_eq!(
+            observed_for(
+                locale,
+                kind,
+                &ObservedValue::Set {
+                    value: DefaultsValue::Text("[D-BUS Service]\nName=x\n".into())
+                }
+            ),
+            c.service_custom
+        );
+        // Other kinds keep their own words.
+        assert_eq!(
+            value_for(
+                locale,
+                IntegrationKind::Autostart,
+                &DefaultsValue::Boolean(true)
+            ),
+            c.value_on
+        );
+    }
+    assert_eq!(
+        copy(Locale::ZhTw)
+            .service_running
+            .replace("{program}", "nautilus"),
+        "nautilus，直到它關閉"
+    );
 }
 
 #[test]

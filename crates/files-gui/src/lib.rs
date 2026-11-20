@@ -168,4 +168,4 @@ pub fn refuse_root() -> Result<(), &'static str> {
     Ok(())
 }
 
-pub use app::run;
+pub use app::{run, run_service};

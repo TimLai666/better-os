@@ -287,6 +287,12 @@ pub(crate) struct Copy {
     pub(crate) kind_input_method: &'static str,
     pub(crate) kind_autostart: &'static str,
     pub(crate) kind_user_service: &'static str,
+    /// Who the session bus starts for a name (ADR 0041).
+    pub(crate) service_ours: &'static str,
+    pub(crate) service_system: &'static str,
+    /// `{program}` is the executable that owns the name now.
+    pub(crate) service_running: &'static str,
+    pub(crate) service_custom: &'static str,
     pub(crate) kind_tool_entry_point: &'static str,
     pub(crate) kind_component_setting: &'static str,
 
@@ -589,6 +595,10 @@ static EN: Copy = Copy {
     kind_input_method: "Input method",
     kind_autostart: "Starts with the session",
     kind_user_service: "Background service",
+    service_ours: "Better Files",
+    service_system: "The system's file manager",
+    service_running: "{program}, until it closes",
+    service_custom: "Another program you set up",
     kind_tool_entry_point: "System tool entry",
     kind_component_setting: "Component setting",
 
@@ -886,6 +896,10 @@ static ZH_TW: Copy = Copy {
     kind_input_method: "輸入法",
     kind_autostart: "登入時自動啟動",
     kind_user_service: "背景服務",
+    service_ours: "Better Files",
+    service_system: "系統內建的檔案管理員",
+    service_running: "{program}，直到它關閉",
+    service_custom: "你自己設定的其他程式",
     kind_tool_entry_point: "系統工具入口",
     kind_component_setting: "元件設定",
 

@@ -189,8 +189,8 @@ pub(crate) fn component_rows(
                     integration: status.integration.clone(),
                     kind: status.kind,
                     state: status.state.clone(),
-                    current_owner: observed_label(locale, &status.current),
-                    target_owner: value_label(locale, &status.desired),
+                    current_owner: observed_for(locale, status.kind, &status.current),
+                    target_owner: value_for(locale, status.kind, &status.desired),
                     session_effect: status.session_effect,
                     restore_available: status.restore_available,
                     last_verified: verified
@@ -263,6 +263,50 @@ pub(crate) fn value_label(locale: Locale, value: &DefaultsValue) -> String {
         DefaultsValue::TextList(values) => values.join(", "),
         DefaultsValue::Boolean(true) => c.value_on.to_string(),
         DefaultsValue::Boolean(false) => c.value_off.to_string(),
+    }
+}
+
+/// A desired value in words, for its kind: a bus name Better OS takes over
+/// is named by who answers it, never "On" (ADR 0041).
+pub(crate) fn value_for(locale: Locale, kind: IntegrationKind, value: &DefaultsValue) -> String {
+    match (kind, value) {
+        (IntegrationKind::UserService, DefaultsValue::Boolean(true)) => {
+            copy(locale).service_ours.to_string()
+        }
+        (IntegrationKind::UserService, DefaultsValue::Text(text)) => {
+            match text.strip_prefix("owned-by:") {
+                Some(program) => {
+                    let name = std::path::Path::new(program)
+                        .file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| program.to_string());
+                    copy(locale).service_running.replace("{program}", &name)
+                }
+                // Someone's own activation file: its text is not for the
+                // screen.
+                None => copy(locale).service_custom.to_string(),
+            }
+        }
+        _ => value_label(locale, value),
+    }
+}
+
+/// What the system said, in words, for its kind: who the session bus starts
+/// when nothing of the person's own says (no file of theirs) is the
+/// system's file manager, not "None".
+pub(crate) fn observed_for(
+    locale: Locale,
+    kind: IntegrationKind,
+    observed: &ObservedValue,
+) -> String {
+    match (kind, observed) {
+        (IntegrationKind::UserService, ObservedValue::Unset) => {
+            copy(locale).service_system.to_string()
+        }
+        (IntegrationKind::UserService, ObservedValue::Set { value }) => {
+            value_for(locale, kind, value)
+        }
+        _ => observed_label(locale, observed),
     }
 }
 
@@ -735,14 +779,14 @@ impl ReviewModel {
 
     fn entry(&self, entry: &PlanEntry) -> ReviewEntry {
         let new_owner = match &entry.action {
-            PlanAction::Apply { to } => value_label(self.locale, to),
-            PlanAction::Restore { to } => observed_label(self.locale, to),
+            PlanAction::Apply { to } => value_for(self.locale, entry.kind, to),
+            PlanAction::Restore { to } => observed_for(self.locale, entry.kind, to),
             PlanAction::Skip { .. } => match self.kind {
-                PlanKind::Apply => value_label(self.locale, &entry.desired),
+                PlanKind::Apply => value_for(self.locale, entry.kind, &entry.desired),
                 PlanKind::Restore => entry
                     .captured_previous
                     .as_ref()
-                    .map(|value| observed_label(self.locale, value))
+                    .map(|value| observed_for(self.locale, entry.kind, value))
                     .unwrap_or_else(|| copy(self.locale).none.to_string()),
             },
         };
@@ -750,12 +794,12 @@ impl ReviewModel {
             component: entry.component.clone(),
             integration: entry.integration.clone(),
             kind: entry.kind,
-            current_owner: observed_label(self.locale, &entry.current),
+            current_owner: observed_for(self.locale, entry.kind, &entry.current),
             new_owner,
             captured_previous: entry
                 .captured_previous
                 .as_ref()
-                .map(|value| observed_label(self.locale, value)),
+                .map(|value| observed_for(self.locale, entry.kind, value)),
             session_effect: entry.session_effect,
             // Whether what is there now can be put back later: a value saved
             // by an earlier change, or, the first time Better OS changes this

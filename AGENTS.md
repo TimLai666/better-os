@@ -533,6 +533,15 @@ GUI or dependency compiles when the relevant command was not executed.
   carries application back, forward, zoom, and rotate because Issue #3's table
   does, and every adapter reports all four unsupported. A four-row preview that
   says "no backend can do this yet" is honest but it is not a feature.
+- Better Files becomes the desktop's file manager (ticket 129, ADR 0041) by a
+  user-level D-Bus activation file for `org.freedesktop.FileManager1` that
+  runs `better-files --service`; a running owner is never stopped, and
+  removal runs `/usr/lib/better-os/before-removal/better-files` to put the
+  previous file (or none) back. The routing has run only on a private
+  `dbus-daemon` with stand-in file managers: nobody has watched a real
+  "Show in folder" open Better Files on GNOME, nor a real Nautilus give the
+  name up, and the adapter's executable table is the only thing that may
+  name a program for a bus name.
 - Better Defaults writes GNOME keybindings and desktop settings through the
   dconf service now, and the write has only ever reached a real `dconf-service`
   on a private bus. Nobody has watched GNOME Shell or Settings pick up a change

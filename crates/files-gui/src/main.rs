@@ -14,6 +14,14 @@ fn main() {
             eprintln!("{text}");
             std::process::exit(2);
         }
+        Invocation::Service => {
+            if let Err(reason) = files_gui::refuse_root() {
+                eprintln!("better-files: {reason}");
+                std::process::exit(1);
+            }
+            files_gui::run_service();
+            return;
+        }
     };
     if let Err(reason) = files_gui::refuse_root() {
         eprintln!("better-files: {reason}");

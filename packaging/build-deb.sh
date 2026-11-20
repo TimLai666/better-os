@@ -120,6 +120,7 @@ cargo build --release \
     -p monitor-cli \
     -p launcher-gui \
     -p files-gui \
+    -p defaults-core \
     -p git-gui \
     -p touchpad-gui \
     -p touchpad-gesture-service \
@@ -872,10 +873,13 @@ make_package better-launcher \
     'One overlay with the search row on top and the whole application library below it.'
 
 # The large preview (Space) is a program of its own, which Better Files
-# looks for beside itself.
+# looks for beside itself. Removal runs the before-removal program (as the
+# person, before dpkg is asked) to put back the file manager the session bus
+# starts and the folder handler (ADR 0041).
 PACKAGE_BINARIES=(
     "better-files:usr/bin/better-files"
     "better-files-preview:usr/bin/better-files-preview"
+    "better-files-before-removal:usr/lib/better-os/before-removal/better-files"
 )
 PACKAGE_DATA=(
     "packaging/files/io.betteros.Files.desktop:usr/share/applications/io.betteros.Files.desktop"

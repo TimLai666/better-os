@@ -13,6 +13,12 @@ defaults-store.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 
+# Better Files' before-removal program (ticket 129, ADR 0041): it restores
+# what Better Files took over, through the same Restore as the window.
+[[bin]]
+name = "better-files-before-removal"
+path = "src/bin/files_before_removal.rs"
+
 [dev-dependencies]
 # The mixed-handler-group tests run the production `mimeapps.list` adapter over
 # a temporary file.
@@ -21,3 +27,5 @@ manager-core.workspace = true
 manager-platform.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
+# The file managers a private bus starts in `tests/bus_activation.rs`.
+zbus.workspace = true
