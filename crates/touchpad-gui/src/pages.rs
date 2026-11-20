@@ -103,7 +103,14 @@ impl TouchpadApp {
             .border_color(cx.theme().border)
             .bg(cx.theme().background)
             .child(
+                // The title takes the row's free width, as Better Awake's
+                // does. Left at an automatic basis, this column made the
+                // whole top bar as tall as the content area under it and
+                // the page got no height at all (seen in a sandbox, ticket
+                // 147); `flex_1` or a block both keep the bar at its own
+                // height.
                 v_flex()
+                    .flex_1()
                     .min_w_0()
                     .child(
                         div()
@@ -941,10 +948,7 @@ impl Render for TouchpadApp {
                 let content = v_flex()
                     .size_full()
                     .min_w_0()
-                    // The top bar is a wrapping row; as a column's child it
-                    // would stretch to the free height and centre its one line,
-                    // leaving no room for the page (seen in the sandbox).
-                    .child(div().flex_none().child(self.top_bar(cx)))
+                    .child(self.top_bar(cx))
                     .when(self.model.safe_mode(), |this| {
                         this.child(
                             div()
