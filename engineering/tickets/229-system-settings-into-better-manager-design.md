@@ -2,6 +2,7 @@
 
 **Spec:** better-os-session.md, Not doing (C9)
 **Blocked by:** none for the design; building waits on the owner's answers
+**Blocked:** the owner's answers to M1 to M9 at the top of `design/system-settings-spec.md`; the design, mockups, ADR 0042 (proposed) and build tickets 231 to 252 are in the repository (2026-11-21)
 
 ## Why
 
