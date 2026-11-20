@@ -32,7 +32,7 @@ home_g="$WORK_DIR/home/g" # Better Defaults' file and the person's kept aside: t
 home_h="$WORK_DIR/home/h" # the person's file and one kept aside: both stay
 home_k="$WORK_DIR/home/k" # only the kept-aside file is left: it is back
 setup_homes() {
-    rm -rf -- "$WORK_DIR/home" "$WORK_DIR/linked-share" "$WORK_DIR/elsewhere.service"
+    rm -rf -- "${WORK_DIR:?}/home" "${WORK_DIR:?}/linked-share" "${WORK_DIR:?}/elsewhere.service"
     for home in "$home_a" "$home_b" "$home_d" "$home_e" "$home_f" "$home_g" "$home_h" "$home_k"; do
         mkdir -p "$home/.local/share/dbus-1/services"
     done

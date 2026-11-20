@@ -1045,50 +1045,69 @@ timeout -s KILL 300 env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-i
     cat /tmp/files-reinstall.log >&2
     exit 1
 }
-if ! grep -qx 'Exec=/usr/bin/better-files --service' "$files_activation" || [[ ! -f "$files_aside" ]]; then
-    printf 'An upgrade of Better Files changed the activation files\n' >&2
+# Each check says what it expected and what it found before it fails.
+found_activation="$(cat "$files_activation" 2>&1 || true)"
+if [[ "$found_activation" != *'Exec=/usr/bin/better-files --service'* || ! -f "$files_aside" ]]; then
+    printf 'An upgrade of Better Files changed the activation files.\n' >&2
+    printf 'Expected Better OS'"'"'s file in place and the person'"'"'s kept aside; found:\n%s\n' "$found_activation" >&2
+    ls -la "$files_services" >&2 || true
+    cat /tmp/files-reinstall.log >&2
     exit 1
 fi
+remove_status=0
 timeout -s KILL 300 env DEBIAN_FRONTEND=noninteractive apt-get remove -y better-files \
-    > /tmp/files-remove.log 2>&1 || {
-    printf 'Removing Better Files failed or did not finish:\n' >&2
+    > /tmp/files-remove.log 2>&1 || remove_status=$?
+if [[ "$remove_status" -ne 0 ]]; then
+    printf 'Removing Better Files failed or did not finish: expected exit 0, found %s (124 or 137 is the time limit)\n' \
+        "$remove_status" >&2
     cat /tmp/files-remove.log >&2
     exit 1
-}
+fi
 if installer_reports_installed better-files; then
-    printf 'Better Files is still installed after its removal\n' >&2
+    printf 'Better Files is still installed after its removal: expected not installed, found %s\n' \
+        "$(dpkg-query -W -f='${db:Status-Abbrev}' better-files 2>&1 || true)" >&2
     exit 1
 fi
-cmp -s <(printf '%s' "$own_activation") "$files_activation" || {
-    printf 'The person'"'"'s own activation file is not back in place:\n' >&2
+if ! cmp -s <(printf '%s' "$own_activation") "$files_activation"; then
+    printf 'The person'"'"'s own activation file is not back in place.\nExpected:\n%s\nFound:\n%s\n' \
+        "$own_activation" "$(cat "$files_activation" 2>&1 || true)" >&2
     ls -la "$files_services" >&2 || true
     cat /tmp/files-remove.log >&2
     exit 1
-}
-[[ ! -e "$files_aside" ]] || {
-    printf 'The kept-aside file outlived Better Files\n' >&2
-    exit 1
-}
-[[ "$(stat -c '%u %a' "$files_activation")" == "$FIX_UID 640" ]] || {
-    printf 'The person'"'"'s file came back as %s, not owner %s mode 640\n' \
-        "$(stat -c '%u %a' "$files_activation")" "$FIX_UID" >&2
-    exit 1
-}
-files_name="$(getent passwd "$FIX_UID" | cut -d: -f1)"
-grep -qxF "Better OS ($files_name): your own org.freedesktop.FileManager1.service is back in use" /tmp/files-remove.log || {
-    printf 'The removal did not tell the person running apt:\n' >&2
-    cat /tmp/files-remove.log >&2
-    exit 1
-}
-if ls "${TMPDIR:-/tmp}"/better-os-accounts.* >/dev/null 2>&1; then
-    printf 'A maintainer script left its account library behind\n' >&2
+fi
+if [[ -e "$files_aside" || -L "$files_aside" ]]; then
+    printf 'The kept-aside file outlived Better Files: expected no %s, found:\n' "$files_aside" >&2
+    ls -la "$files_aside" >&2 || true
     exit 1
 fi
-audit="$(dpkg --audit)"
-[[ -z "$audit" ]] || {
-    printf 'dpkg is not consistent after removing Better Files:\n%s\n' "$audit" >&2
+restored_owner_mode="$(stat -c '%u %a' "$files_activation" 2>&1 || true)"
+if [[ "$restored_owner_mode" != "$FIX_UID 640" ]]; then
+    printf 'The person'"'"'s file came back wrong: expected owner and mode "%s 640", found "%s"\n' \
+        "$FIX_UID" "$restored_owner_mode" >&2
     exit 1
-}
+fi
+# apt runs dpkg on a pseudo-terminal, so the maintainer scripts' lines reach
+# the log ending in a carriage return and a newline.
+files_name="$(getent passwd "$FIX_UID" | cut -d: -f1)"
+expected_line="Better OS ($files_name): your own org.freedesktop.FileManager1.service is back in use"
+if ! tr -d '\r' < /tmp/files-remove.log | grep -qxF "$expected_line"; then
+    printf 'The removal did not tell the person running apt: expected the line\n%s\nfound these lines from Better OS:\n' \
+        "$expected_line" >&2
+    grep -a 'Better OS' /tmp/files-remove.log | od -c >&2 || true
+    cat /tmp/files-remove.log >&2
+    exit 1
+fi
+for leftover in "${TMPDIR:-/tmp}"/better-os-accounts.*; do
+    if [[ -e "$leftover" ]]; then
+        printf 'A maintainer script left its account library behind: expected none, found %s\n' "$leftover" >&2
+        exit 1
+    fi
+done
+audit="$(dpkg --audit 2>&1)" || true
+if [[ -n "$audit" ]]; then
+    printf 'dpkg is not consistent after removing Better Files: expected no output from dpkg --audit, found:\n%s\n' "$audit" >&2
+    exit 1
+fi
 printf 'Removing Better Files put the person'"'"'s file manager back, as the person\n'
 
 "$INSTALLER" --uninstall
