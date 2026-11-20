@@ -105,10 +105,11 @@ pub fn escape_bind_path(path: &Path) -> String {
 /// keyboard's lock, and a removal's prerm, for ever). Each helper adds the
 /// one file or node it needs and its capability bounding set.
 ///
-/// Three hardening options are deliberately absent: `ProtectKernelTunables=`,
+/// Four hardening options are deliberately absent: `ProtectKernelTunables=`,
 /// `ProtectControlGroups=`, and `ProtectProc=` each bring the API file
 /// systems back (`MountAPIVFS=`), and with them the whole of `/sys` over the
-/// one-file tmpfs. Seen on systemd 255 (transient units in a user manager,
+/// one-file tmpfs; `PrivateNetwork=` mounts a fresh sysfs for its network
+/// namespace there, read-only but whole (seen in mountinfo, 2026-11-21). Seen on systemd 255 (transient units in a user manager,
 /// 2026-11-21: `ls /sys` lists 11 entries with any of them, 1 without), the
 /// same duplicate-mount rule ADR 0029 found. What they protect is covered
 /// otherwise: `/proc/sys` and `/proc/sysrq-trigger` are bound read-only, the
@@ -121,7 +122,11 @@ pub fn helper_sandbox() -> Vec<String> {
         "ProtectSystem=strict",
         "ProtectHome=yes",
         "PrivateTmp=yes",
-        "PrivateNetwork=yes",
+        // No network through the BPF address filter and the address
+        // families, not `PrivateNetwork=`: a private network namespace makes
+        // systemd mount a fresh (read-only) sysfs over `/sys`, which puts
+        // every sysfs file back in view over the one-file tmpfs.
+        "IPAddressDeny=any",
         "PrivateDevices=yes",
         "ReadOnlyPaths=/proc/sys",
         "ReadOnlyPaths=/proc/sysrq-trigger",
@@ -368,6 +373,90 @@ fn store(path: &Path, stored: StoredHardware) -> Result<(), DaemonError> {
     std::fs::rename(&temporary, path).map_err(|e| DaemonError::Storage(e.to_string()))
 }
 
+/// Where the limit the battery had before Better OS first set one is kept,
+/// beside the stored choice: the value removal gives back.
+pub fn before_file(state: &Path) -> PathBuf {
+    state.with_file_name("hardware-before.json")
+}
+
+/// Records, once, the limit the battery reads before Better OS's first
+/// write: what it had from the firmware or from whatever set it before.
+/// Later writes leave the record alone.
+pub fn remember_before(root: &SysRoot, state: &Path) -> Result<(), DaemonError> {
+    let before = before_file(state);
+    if before.exists() {
+        return Ok(());
+    }
+    match sysfs::charge_limit(root) {
+        hardware_core::Presence::Present(value) => store(
+            &before,
+            StoredHardware {
+                charge_limit: value,
+            },
+        ),
+        _ => Ok(()),
+    }
+}
+
+/// Gives the battery back the limit it had before Better OS and forgets the
+/// choice, so the boot-time restore has nothing left to write: the prerm of
+/// the daemon package and of Better Manager (AGENTS.md, nothing outlives
+/// the component). Returns one line per thing it did or could not do; it
+/// never fails a removal.
+///
+/// What cannot be given back, and is said: a limit set by a version that
+/// did not record the one before (it stays as it is until the firmware
+/// resets it), and a recorded limit outside 60, 80, and 100, which the
+/// helper does not write (ADR 0029's closed set).
+pub fn release_charge_limit(
+    root: &SysRoot,
+    writer: &dyn AttributeWriter,
+    state: &Path,
+) -> Vec<String> {
+    let before = before_file(state);
+    let mut lines = Vec::new();
+    if !state.exists() && !before.exists() {
+        return lines;
+    }
+    let current = sysfs::charge_limit(root).value().copied();
+    let recorded = std::fs::read_to_string(&before)
+        .ok()
+        .and_then(|text| serde_json::from_str::<StoredHardware>(&text).ok())
+        .map(|stored| stored.charge_limit);
+    let now = current
+        .map(|v| format!("{v}%"))
+        .unwrap_or_else(|| "unreadable".to_string());
+    match recorded {
+        Some(value) if Some(value) == current => {
+            lines.push(format!("charge limit already {value}%, as before Better OS"));
+        }
+        Some(value) if charge::accepts(value) => {
+            match apply_charge_limit(root, writer, value) {
+                Ok(read) => lines.push(format!(
+                    "charge limit given back: {read}%, as before Better OS"
+                )),
+                Err(error) => lines.push(format!(
+                    "charge limit not given back ({error}); it stays at {now}"
+                )),
+            }
+        }
+        Some(value) => lines.push(format!(
+            "charge limit before Better OS was {value}%, which the helper does not write; it stays at {now}"
+        )),
+        None => lines.push(format!(
+            "the charge limit before Better OS was not recorded; it stays at {now} until the firmware resets it"
+        )),
+    }
+    for path in [state.to_path_buf(), before] {
+        match std::fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => lines.push(format!("{}: {error}", path.display())),
+        }
+    }
+    lines
+}
+
 /// What `--restore-hardware` did.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Restored {
@@ -423,6 +512,11 @@ impl<A: Authorizer + 'static> HardwareService<A> {
         let writer = self.writer.clone();
         let state_file = self.state_file.clone();
         self.blocking(move || {
+            // What the battery had before Better OS's first write, for
+            // removal to give back.
+            if let Some(path) = &state_file {
+                remember_before(&root, path)?;
+            }
             let read = apply_charge_limit(&root, writer.as_ref(), percent)?;
             if let Some(path) = state_file {
                 store(&path, StoredHardware { charge_limit: read })?;
@@ -749,7 +843,9 @@ mod tests {
             assert!(properties.contains(&wanted.to_string()), "{wanted}");
         }
         // These would bring the whole of /sys back over the one-file tmpfs.
+        assert!(properties.contains(&"IPAddressDeny=any".to_string()));
         for refused in [
+            "PrivateNetwork",
             "ProtectKernelTunables",
             "ProtectControlGroups",
             "ProtectProc",
@@ -845,5 +941,44 @@ mod tests {
             // Only the newest of the three was written.
             assert_eq!(written, vec![4]);
         });
+    }
+
+    /// The coordinator's finding: the charge limit and its boot restore
+    /// must not outlive the component.
+    #[test]
+    fn release_gives_the_limit_back_and_forgets_the_choice() {
+        let dir = tempfile::tempdir().unwrap();
+        let attribute = battery(dir.path(), "BAT1", "100\n");
+        let root = SysRoot::at(dir.path());
+        let state = dir.path().join("var/hardware.json");
+        // Nothing set: nothing done, nothing said.
+        assert!(release_charge_limit(&root, &DirectWriter, &state).is_empty());
+        // The first write records 100; a later one keeps that record.
+        remember_before(&root, &state).unwrap();
+        apply_charge_limit(&root, &DirectWriter, 80).unwrap();
+        store(&state, StoredHardware { charge_limit: 80 }).unwrap();
+        remember_before(&root, &state).unwrap();
+        apply_charge_limit(&root, &DirectWriter, 60).unwrap();
+        let lines = release_charge_limit(&root, &DirectWriter, &state);
+        assert_eq!(
+            lines,
+            vec!["charge limit given back: 100%, as before Better OS"]
+        );
+        assert_eq!(std::fs::read_to_string(&attribute).unwrap(), "100");
+        assert!(!state.exists() && !before_file(&state).exists());
+        // Set by an older version that recorded nothing: said, and left.
+        std::fs::write(&attribute, "80\n").unwrap();
+        store(&state, StoredHardware { charge_limit: 80 }).unwrap();
+        let lines = release_charge_limit(&root, &DirectWriter, &state);
+        assert!(lines[0].contains("was not recorded"), "{lines:?}");
+        assert!(lines[0].contains("80%"), "{lines:?}");
+        assert!(!state.exists());
+        // A recorded limit outside the helper's set: said, and left.
+        store(&before_file(&state), StoredHardware { charge_limit: 90 }).unwrap();
+        store(&state, StoredHardware { charge_limit: 80 }).unwrap();
+        let lines = release_charge_limit(&root, &DirectWriter, &state);
+        assert!(lines[0].contains("was 90%"), "{lines:?}");
+        assert_eq!(std::fs::read_to_string(&attribute).unwrap(), "80\n");
+        assert!(!state.exists() && !before_file(&state).exists());
     }
 }

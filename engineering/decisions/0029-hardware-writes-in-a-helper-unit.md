@@ -95,8 +95,18 @@ empty capability set, and stays uid 0, which owns the file.
 systems and with them the whole of `/sys` over the one-file tmpfs, the
 same duplicate-mount rule this record's context describes (seen with
 transient units in a user manager, systemd 255). `/proc/sys` is protected
-by a read-only bind instead. `packaging/hardware-unit/check.sh` checks the
-full list in a VM, including that `/proc/sys` and `/dev` cannot be written
-and that the bound file still can. No real system manager has run the new
-list yet.
+by a read-only bind instead.
+
+The decision above was also not what ran: its `PrivateNetwork=yes` makes
+systemd mount a fresh sysfs for the private network namespace at `/sys`,
+over the tmpfs, read-only but whole (seen in a transient unit's
+mountinfo, systemd 255). The helper could not write another sysfs file,
+which is what this record's check asserted, but it could read all of
+`/sys`, not "only the one attribute file". `PrivateNetwork=` is replaced by
+`IPAddressDeny=any` beside `RestrictAddressFamilies=AF_UNIX`, and `/sys`
+now holds the one bound file. `packaging/hardware-unit/check.sh`, now a CI step
+on every push, starts units with the list the release daemon prints
+(`--helper-properties`) on a real systemd 255 in a container, and checks
+that `/sys` holds one entry, `/proc/sys` and `/dev` cannot be written, and
+the bound file still can.
 

@@ -463,7 +463,7 @@ for package_name in \
             # ADR 0034: removing Better Manager gives the keyboard back to
             # its firmware and forgets the colour, whether or not the
             # privileged service package stays.
-            grep -qF '/usr/libexec/better-manager-daemon --release-keyboard-lighting || true' "$control/prerm" || {
+            grep -qF '/usr/libexec/better-manager-daemon --release-hardware || true' "$control/prerm" || {
                 printf 'The Better Manager prerm does not give the keyboard back to its firmware\n' >&2
                 exit 1
             }
@@ -1061,13 +1061,18 @@ for condition in hardware.json keyboard-lighting.json; do
     }
 done
 dpkg-deb --ctrl-tarfile "$daemon_path" | tar -xO ./prerm \
-    | grep -q -- '/usr/libexec/better-manager-daemon --release-keyboard-lighting' || {
+    | grep -q -- '/usr/libexec/better-manager-daemon --release-hardware' || {
     printf "The daemon's prerm does not give the keyboard back to its firmware\n" >&2
     exit 1
 }
 dpkg-deb --ctrl-tarfile "$daemon_path" | tar -xO ./postrm \
     | grep -q -- 'rm -f /var/lib/better-os/keyboard-lighting.json' || {
     printf "The daemon's postrm does not delete the keyboard colour it kept\n" >&2
+    exit 1
+}
+dpkg-deb --ctrl-tarfile "$daemon_path" | tar -xO ./postrm \
+    | grep -q -- '/var/lib/better-os/hardware.json /var/lib/better-os/hardware-before.json' || {
+    printf "The daemon's postrm does not delete the charge limit it kept on removal\n" >&2
     exit 1
 }
 # No udev rule hands a hidraw node to anyone (ADR 0034: the daemon's helper

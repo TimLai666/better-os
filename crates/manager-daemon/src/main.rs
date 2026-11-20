@@ -62,22 +62,61 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     // The prerm on removal of this package and of better-manager (ADR
-    // 0034): a keyboard Better OS took over goes back to its firmware, and
-    // the choice is forgotten, so neither outlives the page that set it.
-    // Never fails the removal.
-    if arguments.first().map(String::as_str) == Some("--release-keyboard-lighting") {
+    // 0034): a keyboard Better OS took over goes back to its firmware, the
+    // battery gets back the charge limit it had before Better OS, and both
+    // choices are forgotten, so neither they nor their boot-time restore
+    // outlive the page that set them. Never fails the removal.
+    if arguments.first().map(String::as_str) == Some("--release-hardware") {
         if arguments.len() > 1 {
-            return Err("--release-keyboard-lighting takes no value".into());
+            return Err("--release-hardware takes no value".into());
         }
+        let program = std::env::current_exe()?;
+        let root = hardware_platform::sysfs::SysRoot::system();
         let helper = manager_daemon::keyboard_lighting::SandboxedLampHelper {
-            program: std::env::current_exe()?,
+            program: program.clone(),
         };
         for problem in manager_daemon::keyboard_lighting::release(
-            &hardware_platform::sysfs::SysRoot::system(),
+            &root,
             &helper,
             &manager_daemon::keyboard_lighting::LightingPaths::system(),
         ) {
             eprintln!("better-manager-daemon: keyboard lighting: {problem}");
+        }
+        let writer = manager_daemon::hardware::SandboxedWriter { program };
+        for line in manager_daemon::hardware::release_charge_limit(
+            &root,
+            &writer,
+            std::path::Path::new(manager_daemon::HARDWARE_STATE),
+        ) {
+            eprintln!("better-manager-daemon: {line}");
+        }
+        return Ok(());
+    }
+    // The helpers' unit properties, one per line, exactly as the daemon
+    // passes them to systemd-run: what packaging/hardware-unit/check.sh
+    // starts its probes with, so the check cannot drift from the code.
+    if arguments.first().map(String::as_str) == Some("--helper-properties") {
+        let properties = match (
+            arguments.get(1).map(String::as_str),
+            arguments.get(2),
+            arguments.get(3),
+        ) {
+            (Some("attribute"), Some(path), None) => {
+                manager_daemon::hardware::helper_properties(std::path::Path::new(path))
+            }
+            (Some("lamp-array"), Some(node), None)
+                if hardware_platform::sysfs::is_hidraw_name(node) =>
+            {
+                manager_daemon::keyboard_lighting::lamp_helper_properties(node)
+            }
+            _ => {
+                return Err(
+                    "--helper-properties takes attribute PATH or lamp-array hidrawN".into(),
+                );
+            }
+        };
+        for property in properties {
+            println!("{property}");
         }
         return Ok(());
     }
@@ -208,7 +247,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
         }
         return Err(format!(
-            "better-manager-daemon takes no argument but --restore-hardware, --watch-login-screen, --remove-drive-entries, --release-keyboard-lighting, --write-attribute, --lamp-array, --lamp-array-via-helper, or --write-via-helper; got {argument:?}"
+            "better-manager-daemon takes no argument but --restore-hardware, --watch-login-screen, --remove-drive-entries, --release-hardware, --helper-properties, --write-attribute, --lamp-array, --lamp-array-via-helper, or --write-via-helper; got {argument:?}"
         )
         .into());
     }

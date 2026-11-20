@@ -200,9 +200,10 @@ PACKAGE_SYSTEM_FRAGMENT=""
 PACKAGE_DAEMON_HANDOFF=0
 #   PACKAGE_RELEASES_KEYBOARD  1 for better-manager: its prerm on removal
 #                      gives a keyboard whose colour the System page set back
-#                      to its firmware and forgets the choice (ADR 0034), so
-#                      neither outlives the page; the daemon package, which
-#                      Better Manager only recommends, may well stay
+#                      to its firmware, gives the battery back the charge
+#                      limit it had before Better OS, and forgets both choices
+#                      (ADR 0034), so none outlives the page; the daemon
+#                      package, which Better Manager only recommends, may stay
 PACKAGE_RELEASES_KEYBOARD=0
 #   PACKAGE_HANDOFF_RETRY  1 for better-shell-adapter: its postinst starts the
 #                      handoff Better Manager installed, which is how a failed
@@ -233,9 +234,9 @@ add_keyboard_release() {
         chmod 0755 "$staging_dir/DEBIAN/prerm"
     fi
     {
-        printf '\n# ADR 0034: the keyboard goes back to its firmware with the page that set it.\n'
+        printf '\n# ADR 0034: the keyboard and the charge limit go back with the page that set them.\n'
         # shellcheck disable=SC2016 # expanded by the maintainer script
-        printf 'if [ "$1" = remove ] && [ -x /usr/libexec/better-manager-daemon ]; then\n    /usr/libexec/better-manager-daemon --release-keyboard-lighting || true\nfi\n'
+        printf 'if [ "$1" = remove ] && [ -x /usr/libexec/better-manager-daemon ]; then\n    /usr/libexec/better-manager-daemon --release-hardware || true\nfi\n'
     } >> "$staging_dir/DEBIAN/prerm"
 }
 
@@ -721,8 +722,9 @@ if [ "$1" = "remove" ]; then
     if [ -x /usr/libexec/better-manager-daemon ]; then
         /usr/libexec/better-manager-daemon --remove-drive-entries || true
         # ADR 0034: a keyboard whose colour Better OS set goes back to its
-        # firmware's own lighting. Nothing is touched when nothing was set.
-        /usr/libexec/better-manager-daemon --release-keyboard-lighting || true
+        # firmware's own lighting, and the battery to the charge limit it had
+        # before Better OS. Nothing is touched when nothing was set.
+        /usr/libexec/better-manager-daemon --release-hardware || true
     fi
     if command -v deb-systemd-helper >/dev/null 2>&1; then
         deb-systemd-helper disable better-hardware-restore.service >/dev/null 2>&1 || true
@@ -743,9 +745,11 @@ set -e
 # and the person ticked nothing to keep them.
 if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
     rm -rf /var/lib/better-os/boot-watch
-    # The keyboard colour (ADR 0034): the prerm gave the keyboard back to
-    # its firmware, so the choice it described goes too.
-    rm -f /var/lib/better-os/keyboard-lighting.json
+    # The keyboard colour and the charge limit (ADR 0034): the prerm gave
+    # both back, so the choices and the limit recorded before Better OS go
+    # too, and the boot-time restore finds nothing to write.
+    rm -f /var/lib/better-os/keyboard-lighting.json \
+        /var/lib/better-os/hardware.json /var/lib/better-os/hardware-before.json
 fi
 
 if [ "$1" = "purge" ]; then

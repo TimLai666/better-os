@@ -91,7 +91,9 @@ pub const HELPER_GID: libc::gid_t = 65534;
 pub fn lamp_helper_properties(node: &str) -> Vec<String> {
     let mut properties = crate::hardware::helper_sandbox();
     properties.extend([
-        format!("BindPaths=/dev/{node}"),
+        // `-`: a node gone since the daemon found it is the helper's own
+        // clean "No such file" rather than a unit that cannot set up.
+        format!("BindPaths=-/dev/{node}"),
         format!("DeviceAllow=/dev/{node} rw"),
         "CapabilityBoundingSet=CAP_SETUID CAP_SETGID".to_string(),
     ]);
@@ -921,13 +923,13 @@ mod tests {
         // /dev is private: the pseudo-devices and this node, bound in, and
         // the device cgroup allows only it.
         assert!(has("PrivateDevices=yes"));
-        assert!(has("BindPaths=/dev/hidraw1"));
+        assert!(has("BindPaths=-/dev/hidraw1"));
         assert_eq!(
             properties
                 .iter()
                 .filter(|p| p.starts_with("DeviceAllow=") || p.starts_with("BindPaths="))
                 .collect::<Vec<_>>(),
-            vec!["BindPaths=/dev/hidraw1", "DeviceAllow=/dev/hidraw1 rw"]
+            vec!["BindPaths=-/dev/hidraw1", "DeviceAllow=/dev/hidraw1 rw"]
         );
         // Only the two capabilities the drop to nobody needs.
         assert_eq!(

@@ -107,7 +107,14 @@ build installed through Better Manager; everything else is built.
   the kit's settings cards keep a press on a header control from toggling
   the card (the three per-page workarounds are gone).
 - Removing Better Manager gives the keyboard back too (it only recommends
-  the daemon package, which may stay).
+  the daemon package, which may stay), and gives the battery back the
+  charge limit it read before Better OS's first write
+  (`--release-hardware`; a limit set before that record existed is left
+  and the removal says so).
+- CI runs `packaging/hardware-unit/check.sh` on every push: both helpers'
+  units on a real systemd, with the property lists the release daemon
+  prints. The container has no hidraw device, so the LampArray helper is
+  only shown to start and fail cleanly there.
 
 ### The owner's check (on the next release, installed through Better Manager)
 

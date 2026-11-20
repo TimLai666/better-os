@@ -92,7 +92,7 @@ only root can open. Two ways were open.
   `PrivateDevices=yes`, so `/dev` holds the pseudo-devices and, bound in,
   this one node, which `DeviceAllow=/dev/hidrawN rw` is the only device
   the cgroup lets it open; `/proc/sys` and `/proc/sysrq-trigger` read-only;
-  `ProtectSystem=strict`, `ProtectHome=`, `PrivateTmp=`, `PrivateNetwork=`,
+  `ProtectSystem=strict`, `ProtectHome=`, `PrivateTmp=`, `IPAddressDeny=any`,
   `ProtectKernelModules=`, `ProtectKernelLogs=`, `ProtectClock=`,
   `ProtectHostname=`, `NoNewPrivileges=`, `RestrictSUIDSGID=`,
   `RestrictRealtime=`, `RestrictNamespaces=`, `LockPersonality=`,
@@ -114,15 +114,18 @@ only root can open. Two ways were open.
   and it has no way to build report 0x5F or the 0xFF59 copy. If a colour
   fails after autonomous mode was turned off, it turns it back on once and
   reports the first error.
-- Three hardening options are not used, on purpose: `ProtectKernelTunables=`,
+- Four hardening options are not used, on purpose: `ProtectKernelTunables=`,
   `ProtectControlGroups=`, and `ProtectProc=` each bring the API file
-  systems back, and with them all of `/sys` over the one-file tmpfs. Seen
-  with transient units in a user manager on systemd 255 (2026-11-21): with
-  any one of them `ls /sys` listed 11 entries, without them 1; the same
-  duplicate-mount rule ADR 0029 found for `ReadOnlyPaths=/sys`. Their
-  protection is covered otherwise: `/proc/sys` is bound read-only (seen
-  `ro` in that unit's mountinfo), the cgroup tree is under the empty
-  `/sys`, and the process that reads the device is `nobody`.
+  systems back, and with them all of `/sys` over the one-file tmpfs; and
+  `PrivateNetwork=` makes systemd mount a fresh sysfs for the new network
+  namespace at `/sys`, read-only but whole. Seen with transient units in a
+  user manager on systemd 255 (2026-11-21): with any one of them `ls /sys`
+  listed 11 entries, without them 1, and mountinfo showed the second sysfs
+  mount over the tmpfs for `PrivateNetwork=`. Their protection is covered
+  otherwise: `/proc/sys` is bound read-only (seen `ro` in that unit's
+  mountinfo), the cgroup tree is under the empty `/sys`, the network is
+  closed by `RestrictAddressFamilies=AF_UNIX` and `IPAddressDeny=any`, and
+  the process that reads the device is `nobody`.
 - `kbd_rgb_mode` is written by ADR 0029's attribute helper, which now
   accepts that file under `/sys/devices/` with exactly a value the closed set
   produces (`cmd` 0: set for now, never saved to the firmware).
@@ -218,12 +221,24 @@ only root can open. Two ways were open.
   nothing the device sent. The attribute helper for `kbd_rgb_mode` stays
   uid 0 with no capability at all: its only input is its two arguments,
   checked against closed sets, and the file it writes is root's.
-- **Untested on a real system manager:** the sandbox properties above are
-  asserted by tests as a list and were probed one by one in a user manager
-  (systemd 255), but no transient unit with them has run as root against
-  a real hidraw node or sysfs attribute. Ticket 136's owner check runs them
-  for real; `packaging/hardware-unit/check.sh` runs the attribute helper's
-  in a VM.
+- **What a real system manager checks, and what it does not:** CI runs
+  `packaging/hardware-unit/check.sh` in a throwaway container with systemd
+  255 as PID 1 on every push, with the property lists read from the release
+  daemon itself (`--helper-properties`, the lists `systemd-run` is given):
+  the attribute helper's unit starts with them, writes its one stand-in
+  file, sees one entry under `/sys`, a read-only `/proc/sys`, and a private
+  `/dev`, and writes nothing else; the restore unit writes a stored limit;
+  removal gives the limit back. The LampArray helper's unit starts with its
+  properties accepted, fails cleanly (exit 1, the helper's own error) on a
+  node that is absent, and on a character device that is not hidraw is let
+  open it by its device cgroup and refuses it. **Not verified:** the
+  container has no hidraw device, and none can be made that the kernel's
+  hidraw driver answers for, so no feature report has gone through the
+  sandboxed helper, and the drop to `nobody` has not run past a real
+  descriptor read. Ticket 136's owner check is the first run against the
+  real keyboard. Until CI has run the check once, even the container part
+  is unobserved: nothing on the development machine can run it (no Docker
+  daemon).
 - Unknown until the owner checks on the real keyboard (ticket 136's notes):
   the lamp count, `LampArrayKind`, and per-lamp level counts; whether
   intensity and the WMI brightness levels 0–3 multiply, override each other,

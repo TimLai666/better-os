@@ -833,6 +833,13 @@ value in `/var/lib/better-os/hardware.json` and a oneshot system unit,
 stored limit and nothing else. Fan mode is never restored: it always starts on
 automatic.
 
+The first limit Better OS writes is preceded by a record of what the battery
+read (`/var/lib/better-os/hardware-before.json`). Removing Better Manager or
+the daemon package writes that value back through the same helper and deletes
+both files, so the boot-time restore has nothing left (ADR 0034). A limit set
+before that record existed, or recorded outside 60, 80, and 100, is left as
+it is, and the removal says so.
+
 ## 12. Where every function goes
 
 Every function of the four windows and of the tray's window entry points,
