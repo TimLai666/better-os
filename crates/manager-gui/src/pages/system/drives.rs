@@ -10,11 +10,11 @@ use better_ui::fluent::info_bar::{InfoBar, Severity};
 use better_ui::fluent::settings_card::SettingsCard;
 use better_ui::fluent::toggle::ToggleSwitch;
 use better_ui::fluent::{BODY, label, palette};
+use better_ui::icon_set::Picture;
 use drive_mounts::choice::{self, FollowUp, Locked, SystemFiles};
 use drive_mounts::client::{self, SetOutcome};
 use drive_mounts::listing::{Drive, DriveKind, DriveName};
 use gpui::*;
-use gpui_component::IconName;
 
 use crate::app::ManagerApp;
 use crate::i18n::Locale;
@@ -500,8 +500,8 @@ impl ManagerApp {
             }
             content = content.child(toggle);
             let icon = match drive.kind {
-                DriveKind::Removable | DriveKind::Optical => IconName::ExternalLink,
-                _ => IconName::HardDrive,
+                DriveKind::Removable | DriveKind::Optical => Picture::ExternalDrive,
+                _ => Picture::Drive,
             };
             let card_ = SettingsCard::new(
                 ElementId::named_usize("system-drive", index),

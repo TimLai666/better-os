@@ -8,8 +8,8 @@ use better_ui::fluent::info_bar::{ErrorBar, ErrorReport, Severity};
 use better_ui::fluent::selection::{ComboBox, ComboItem};
 use better_ui::fluent::settings_card::SettingsCard;
 use better_ui::fluent::{BODY, label, palette};
+use better_ui::icon_set::Picture;
 use gpui::*;
-use gpui_component::IconName;
 
 use crate::app::ManagerApp;
 use crate::i18n::shell;
@@ -144,7 +144,7 @@ impl ManagerApp {
             0.0,
             card::DEFAULT,
             SettingsCard::new(card::DEFAULT, w.default_header)
-                .icon(IconName::Bell)
+                .icon(Picture::Bell)
                 .description(page::choice_explanation(locale, choices.default))
                 .content(
                     ComboBox::new(
@@ -170,7 +170,7 @@ impl ManagerApp {
             .collect();
         let input = self.window_attention_add.clone();
         let mut add_card = SettingsCard::new(card::ADD, w.add_header)
-            .icon(IconName::Plus)
+            .icon(Picture::Add)
             .content(
                 AutoSuggestBox::new("attention-add-box", &self.window_attention_add)
                     .width(px(LIST_WIDTH))

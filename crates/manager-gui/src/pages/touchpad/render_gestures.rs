@@ -16,6 +16,7 @@ use better_ui::fluent::tabs::{SelectorBar, SelectorItem};
 use better_ui::fluent::text_box::TextBox;
 use better_ui::fluent::toggle::{CheckBox, CheckState, ToggleSwitch};
 use better_ui::fluent::{BODY, BODY_STRONG, CAPTION, label, palette, radius};
+use better_ui::icon_set::Picture;
 use gpui::*;
 use gpui_component::IconName;
 use touchpad_gestures::{ConflictResolution, GestureShape, ShortcutCheck};
@@ -109,7 +110,7 @@ impl TouchpadPage {
                 .gap(px(8.0))
                 .child(
                     Button::standard("touchpad-restore-gestures", c.restore_gestures)
-                        .icon(IconName::Undo)
+                        .icon(Picture::Restore)
                         .disabled(!has_capture)
                         .on_click(Self::act(cx, |this, cx| {
                             this.restore_gestures(cx);
@@ -220,7 +221,7 @@ impl TouchpadPage {
         }
         let selected_index = identities.iter().position(|identity| *identity == selected);
         let mut card = SettingsCard::new("touchpad-gesture-profile-card", c.profile_heading)
-            .icon(IconName::Frame);
+            .icon(Picture::Touchpad);
         if selected.is_some() {
             card = card
                 .description(if own {
@@ -260,7 +261,7 @@ impl TouchpadPage {
         let preset = self.gestures.preset_card(c);
         let previewing = self.gestures.plan().is_some();
         let mut expander = SettingsExpander::new("touchpad-preset", c.preset_title, previewing)
-            .icon(IconName::Maximize)
+            .icon(Picture::Gesture)
             .description(format!(
                 "{} · {}",
                 preset.status_label, c.preset_description
@@ -459,7 +460,7 @@ impl TouchpadPage {
         let shapes = GestureShape::ALL;
         let mut expander =
             SettingsExpander::new("touchpad-editor", gesture_label(&editor.id, c), true)
-                .icon(IconName::Settings)
+                .icon(Picture::Settings)
                 .row(
                     SettingsRow::new(c.shape_label).content(combo(
                         "touchpad-editor-shape",
@@ -733,7 +734,7 @@ impl TouchpadPage {
         }
         let mut expander =
             SettingsExpander::new("touchpad-gesture-test-card", c.live_testing, true)
-                .icon(IconName::Play)
+                .icon(Picture::Diagnostics)
                 .description(description)
                 .content(
                     ToggleSwitch::new("touchpad-live-testing", live)
@@ -788,8 +789,7 @@ impl TouchpadPage {
         let words = self.locale.words();
         let choosing = self.file_task.is_some();
         let mut rows = Vec::new();
-        let mut card =
-            SettingsCard::new(card::GESTURE_FILE, c.profiles_file).icon(IconName::Folder);
+        let mut card = SettingsCard::new(card::GESTURE_FILE, c.profiles_file).icon(Picture::Folder);
         if self.portal {
             card = card.content(
                 div()
@@ -875,7 +875,7 @@ impl TouchpadPage {
         if let Some(summary) = self.gestures.import().cloned() {
             let mut expander =
                 SettingsExpander::new("touchpad-import-summary", c.import_summary, true)
-                    .icon(IconName::File)
+                    .icon(Picture::File)
                     .description(format!(
                         "{} · {}",
                         summary.source,
