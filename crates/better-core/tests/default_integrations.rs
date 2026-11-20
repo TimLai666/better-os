@@ -7,7 +7,7 @@
 
 use better_core::defaults::{AdapterId, DefaultsValue, IntegrationKind};
 use better_core::{
-    ComponentManifest, HealthPrerequisite, IntegrationExclusivity, ManifestError,
+    ComponentManifest, CurrentDesktop, HealthPrerequisite, IntegrationExclusivity, ManifestError,
     RequiredPrivilege, RestorePolicy, SessionEffect,
 };
 use std::collections::HashSet;
@@ -82,10 +82,26 @@ fn a_declaration_applies_only_to_its_declared_platform_and_session() {
     let manifest = manifest();
     let integration = &manifest.default_integrations[0];
 
-    assert!(integration.applies_to("zorin", "gnome"));
-    assert!(integration.applies_to("Ubuntu", "GNOME"));
-    assert!(!integration.applies_to("fedora", "gnome"));
-    assert!(!integration.applies_to("ubuntu", "kde"));
+    let session = |list: &str| CurrentDesktop::parse(list);
+    assert!(integration.applies_to("zorin", &session("gnome")));
+    assert!(integration.applies_to("Ubuntu", &session("GNOME")));
+    assert!(!integration.applies_to("fedora", &session("gnome")));
+    assert!(!integration.applies_to("ubuntu", &session("kde")));
+}
+
+/// Ticket 134: Zorin's session is `zorin:GNOME`, and a declaration naming
+/// `gnome` must apply there, as on Ubuntu's `ubuntu:GNOME`.
+#[test]
+fn a_declaration_for_gnome_applies_when_any_listed_desktop_is_gnome() {
+    let manifest = manifest();
+    let integration = &manifest.default_integrations[0];
+    let session = |list: &str| CurrentDesktop::from_values(Some(list), None);
+
+    assert!(integration.applies_to("zorin", &session("zorin:GNOME")));
+    assert!(integration.applies_to("ubuntu", &session("ubuntu:GNOME")));
+    assert!(integration.applies_to("ubuntu", &session("GNOME")));
+    assert!(!integration.applies_to("ubuntu", &session("")));
+    assert!(!integration.applies_to("ubuntu", &session("KDE")));
 }
 
 fn rejected(from: &str, to: &str) -> ManifestError {

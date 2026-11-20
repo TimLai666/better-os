@@ -84,6 +84,8 @@ pub(crate) struct Copy {
     pub(crate) none: &'static str,
     pub(crate) not_applicable: &'static str,
     pub(crate) unknown: &'static str,
+    /// The language a provider's reason key is put into words in.
+    pub(crate) reason_language: awake_ipc::reasons::Language,
     pub(crate) available: &'static str,
     pub(crate) unavailable: &'static str,
     pub(crate) hour_unit: &'static str,
@@ -359,6 +361,14 @@ pub(crate) struct Copy {
     pub(crate) lid_backend_cannot: &'static str,
 }
 
+impl Copy {
+    /// A provider's reason key as a sentence in this language
+    /// (`awake_ipc::reasons`); `None` when the provider gave no reason.
+    pub(crate) fn reason(&self, key: Option<&str>) -> Option<String> {
+        key.map(|key| awake_ipc::reasons::provider_reason(key, self.reason_language))
+    }
+}
+
 static EN_US: Copy = Copy {
     application_name: "Better Awake",
     application_tagline: "Keep this machine awake, on purpose",
@@ -382,6 +392,7 @@ static EN_US: Copy = Copy {
     none: "None",
     not_applicable: "Not applicable on this machine",
     unknown: "Unknown",
+    reason_language: awake_ipc::reasons::Language::English,
     available: "Available",
     unavailable: "Unavailable",
     hour_unit: "h",
@@ -658,6 +669,7 @@ static ZH_TW: Copy = Copy {
     none: "無",
     not_applicable: "這台機器不適用",
     unknown: "無法判讀",
+    reason_language: awake_ipc::reasons::Language::TraditionalChinese,
     available: "可用",
     unavailable: "無法使用",
     hour_unit: "小時",

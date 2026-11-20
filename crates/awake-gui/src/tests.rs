@@ -118,7 +118,7 @@ fn unavailable_provider(kind: ProviderKind) -> ProviderRow {
         kind,
         available: false,
         poll_seconds: None,
-        explanation: Some("awake.provider.error.no_session_bus".to_string()),
+        explanation: Some("awake.provider.no_alsa_playback_device".to_string()),
     })
 }
 
@@ -467,6 +467,27 @@ fn a_policy_the_backend_cannot_deliver_is_not_shown_as_in_force() {
 // ---------------------------------------------------------------------------
 
 #[test]
+fn a_reason_the_table_does_not_know_is_named_as_unknown_with_its_key() {
+    let providers = vec![ProviderRow::from_wire(&WireProvider {
+        kind: ProviderKind::AudioPlayback,
+        available: false,
+        poll_seconds: None,
+        explanation: Some("awake.provider.from_a_newer_service".to_string()),
+    })];
+    let condition = Condition::AudioPlayback { playing: true };
+    let english = ConditionView::present(&condition, &providers, copy(Locale::EnUs));
+    assert_eq!(
+        english.explanation(),
+        Some("Unknown reason (awake.provider.from_a_newer_service)")
+    );
+    let chinese = ConditionView::present(&condition, &providers, copy(Locale::ZhTw));
+    assert_eq!(
+        chinese.explanation(),
+        Some("原因不明（awake.provider.from_a_newer_service）")
+    );
+}
+
+#[test]
 fn an_unavailable_provider_renders_its_explanation_and_not_an_enabled_control() {
     let providers = vec![unavailable_provider(ProviderKind::AudioPlayback)];
     let condition = Condition::AudioPlayback { playing: true };
@@ -480,10 +501,16 @@ fn an_unavailable_provider_renders_its_explanation_and_not_an_enabled_control() 
             "{locale:?} would have drawn an editable control for a provider that cannot be read"
         );
         assert!(matches!(view.control, ConditionControl::Unavailable { .. }));
-        assert_eq!(
-            view.explanation(),
-            Some("awake.provider.error.no_session_bus")
-        );
+        // A sentence in the window's language, never the key (ticket 146).
+        let expected = match locale {
+            Locale::ZhTw => {
+                "找不到播放聲音的裝置。Better Awake 是透過 ALSA 讀取聲音狀態，看不到藍牙和網路喇叭。"
+            }
+            _ => {
+                "No sound playback device was found. Better Awake reads sound through ALSA, so Bluetooth and network speakers are not seen."
+            }
+        };
+        assert_eq!(view.explanation(), Some(expected));
         assert!(!c.condition_unavailable.trim().is_empty());
         assert!(!c.condition_unavailable_detail.trim().is_empty());
     }
@@ -939,15 +966,15 @@ fn the_status_shows_the_lid_row_and_the_limit_only_while_the_lid_is_held() {
     document.lid.battery_limit = awake_core::LidBatteryLimit::Minutes { minutes: 240 };
     let view = StatusView::from_status(&document);
     assert!(view.lid.held);
-    let offset = crate::localtime::UtcOffset::UTC;
+    let zone = better_core::local_time::TimeZone::UTC;
     assert_eq!(
         view.lid
-            .limit_summary(Locale::EnUs, document.now_unix_seconds, offset),
+            .limit_summary(Locale::EnUs, document.now_unix_seconds, zone),
         "Stops after 4 hours"
     );
     assert_eq!(
         view.lid
-            .limit_summary(Locale::ZhTw, document.now_unix_seconds, offset),
+            .limit_summary(Locale::ZhTw, document.now_unix_seconds, zone),
         "4 小時後停止"
     );
     let lid = view
@@ -1010,23 +1037,23 @@ fn a_running_closed_lid_clock_reads_as_a_countdown_and_otherwise_as_the_rule() {
     let mut document = status(true);
     document.effective_policy = SessionPolicy::manual_default();
     let view = StatusView::from_status(&document);
-    let offset = crate::localtime::UtcOffset::UTC;
+    let zone = better_core::local_time::TimeZone::UTC;
     assert_eq!(
         view.lid
-            .limit_summary(Locale::EnUs, document.now_unix_seconds, offset),
+            .limit_summary(Locale::EnUs, document.now_unix_seconds, zone),
         "Stops after 2 hours"
     );
     document.lid.stops_at_unix_seconds = Some(document.now_unix_seconds + 90 * 60);
     let view = StatusView::from_status(&document);
-    let at = crate::localtime::clock_time(document.now_unix_seconds + 90 * 60, offset);
+    let at = better_core::local_time::clock_time(document.now_unix_seconds + 90 * 60, zone);
     assert_eq!(
         view.lid
-            .limit_summary(Locale::EnUs, document.now_unix_seconds, offset),
+            .limit_summary(Locale::EnUs, document.now_unix_seconds, zone),
         format!("Stops at {at} (90 minutes left)")
     );
     assert_eq!(
         view.lid
-            .limit_summary(Locale::ZhTw, document.now_unix_seconds, offset),
+            .limit_summary(Locale::ZhTw, document.now_unix_seconds, zone),
         format!("{at} 停止（還有 90 分鐘）")
     );
 }

@@ -17,7 +17,7 @@ use awake_ipc::{
 };
 
 use crate::i18n::{Copy, fill};
-use crate::localtime::{UtcOffset, calendar_time, clock_time};
+use better_core::local_time::{TimeZone, calendar_time, clock_time};
 
 /// The eight sections ticket 26 names. Every one of them is a sidebar entry and
 /// a keyboard shortcut; there is no section reachable only by clicking through
@@ -357,13 +357,13 @@ impl LidView {
         &self,
         locale: crate::i18n::Locale,
         now_unix_seconds: u64,
-        offset: UtcOffset,
+        zone: TimeZone,
     ) -> String {
         match self.stops_at_unix_seconds {
             Some(stops_at) => {
                 let c = crate::i18n::copy(locale);
                 let minutes = stops_at.saturating_sub(now_unix_seconds).div_ceil(60);
-                let with_time = fill(c.lid_stops_at, "time", &clock_time(stops_at, offset));
+                let with_time = fill(c.lid_stops_at, "time", &clock_time(stops_at, zone));
                 fill(
                     &with_time,
                     "remaining",
@@ -627,9 +627,8 @@ impl ConditionView {
         let reported = providers.iter().find(|entry| entry.kind == provider);
         let control = match reported {
             Some(entry) if !entry.available => ConditionControl::Unavailable {
-                explanation: entry
-                    .explanation
-                    .clone()
+                explanation: c
+                    .reason(entry.explanation.as_deref())
                     // A provider reported unavailable without a reason still
                     // gets an explanation rather than an inert control.
                     .unwrap_or_else(|| c.unknown.to_string()),
@@ -861,13 +860,13 @@ impl HistoryRow {
         }
     }
 
-    pub(crate) fn started_label(&self, offset: UtcOffset) -> String {
-        calendar_time(self.started_at_unix_seconds, offset)
+    pub(crate) fn started_label(&self, zone: TimeZone) -> String {
+        calendar_time(self.started_at_unix_seconds, zone)
     }
 
-    pub(crate) fn ended_label(&self, offset: UtcOffset, c: &'static Copy) -> String {
+    pub(crate) fn ended_label(&self, zone: TimeZone, c: &'static Copy) -> String {
         match self.ended_at_unix_seconds {
-            Some(ended) => calendar_time(ended, offset),
+            Some(ended) => calendar_time(ended, zone),
             None => c.history_still_running.to_string(),
         }
     }
@@ -981,8 +980,8 @@ pub(crate) fn remaining_label(remaining: WireRemaining, c: &'static Copy) -> Str
     }
 }
 
-pub(crate) fn started_label(unix_seconds: u64, offset: UtcOffset) -> String {
-    clock_time(unix_seconds, offset)
+pub(crate) fn started_label(unix_seconds: u64, zone: TimeZone) -> String {
+    clock_time(unix_seconds, zone)
 }
 
 pub(crate) fn suppression_label(suppression: WireSuppression, c: &'static Copy) -> &'static str {

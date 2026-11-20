@@ -79,7 +79,7 @@ impl<'a> DefaultsEngine<'a> {
         component: &ComponentId,
         integration: &DefaultIntegration,
     ) -> Option<Unavailable> {
-        if !integration.applies_to(&self.system.distribution, &self.system.desktop_session) {
+        if !integration.applies_to(&self.system.distribution, &self.system.desktop()) {
             return Some(Unavailable::NotApplicableHere);
         }
         if let Some(prerequisite) = self

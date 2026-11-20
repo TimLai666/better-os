@@ -268,6 +268,41 @@ fn a_session_the_declaration_does_not_support_is_unavailable_rather_than_attempt
     assert!(cli.desktop().contains("Nautilus"));
 }
 
+/// Ticket 134: Zorin's and Ubuntu's sessions put their own name before
+/// `GNOME`, and a declaration for `gnome` is read there, not refused.
+#[test]
+fn a_distribution_named_first_in_the_session_still_reads_a_gnome_declaration() {
+    for desktop in ["zorin:GNOME", "ubuntu:GNOME"] {
+        let cli = Cli::new();
+        let output = Command::new(env!("CARGO_BIN_EXE_manager-cli"))
+            .env("XDG_CURRENT_DESKTOP", desktop)
+            .args(["--execution", "mock"])
+            .args(["--state-path", &cli.path("state.json")])
+            .arg("defaults")
+            .args(["--manifest", &cli.path("better-files.yaml")])
+            .args(["--snapshot-dir", &cli.path("snapshots")])
+            .args(["--mock-desktop", &cli.path("desktop.json")])
+            .arg("inspect")
+            .output()
+            .expect("the manager binary runs");
+
+        assert!(output.status.success());
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        assert!(
+            !stdout.contains("defaults.not_supported_on_this_system"),
+            "{desktop}: {stdout}"
+        );
+        assert!(
+            stdout.contains("better-files not-default"),
+            "{desktop}: {stdout}"
+        );
+        assert!(
+            stdout.contains("org.gnome.Nautilus.desktop"),
+            "{desktop}: {stdout}"
+        );
+    }
+}
+
 /// A handler group whose two types open in two different viewers.
 #[test]
 fn a_mixed_group_is_previewed_type_by_type_and_restored_type_by_type() {
