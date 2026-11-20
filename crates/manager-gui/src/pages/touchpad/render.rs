@@ -628,7 +628,7 @@ impl TouchpadPage {
                 vec![
                     TableCell::new(super::copy::check_words(&check.id, self.locale)),
                     TableCell::new(touchpad_views::i18n::health_words(check.state, locale)),
-                    TableCell::new(check.detail.clone()),
+                    TableCell::new(self.model.check_detail(check, locale)),
                 ]
             })
             .collect();

@@ -95,29 +95,6 @@ pub fn evidence_sections(evidence: &Evidence) -> Vec<(&'static str, &str)> {
     .collect()
 }
 
-/// `YYYY-MM-DD HH:MM UTC`, for the command line, which has no time zone
-/// reader of its own and says which zone it prints.
-pub fn utc_time(unix_seconds: u64) -> String {
-    let seconds = i64::try_from(unix_seconds).unwrap_or(i64::MAX);
-    let days = seconds.div_euclid(86_400);
-    let of_day = seconds.rem_euclid(86_400);
-    // Howard Hinnant's civil_from_days.
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = yoe + era * 400 + i64::from(month <= 2);
-    format!(
-        "{year:04}-{month:02}-{day:02} {:02}:{:02} UTC",
-        of_day / 3_600,
-        (of_day % 3_600) / 60
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -190,14 +167,6 @@ mod tests {
         assert!(report.interrupted(&pending));
         pending.boot_id = "f".repeat(32);
         assert!(!report.interrupted(&pending));
-    }
-
-    #[test]
-    fn the_command_line_time_is_utc_and_says_so() {
-        // 2026-11-16 12:43:00 UTC, the owner's stuck boot at 20:43 in Taipei.
-        assert_eq!(utc_time(1_794_832_980), "2026-11-16 12:43 UTC");
-        assert_eq!(utc_time(0), "1970-01-01 00:00 UTC");
-        assert_eq!(utc_time(951_782_400), "2000-02-29 00:00 UTC");
     }
 
     #[test]

@@ -342,6 +342,17 @@ fn remove_through_runner(
     refuse: bool,
     hooks: &FakeHookRunner,
 ) -> OperationProgress {
+    through_runner(state, DesiredOperation::Remove, extensions, refuse, hooks)
+}
+
+/// Runs an operation through the real runner, which is what records warnings.
+fn through_runner(
+    state: &mut ManagerState,
+    operation: DesiredOperation,
+    extensions: &FakeShellExtensions,
+    refuse: bool,
+    hooks: &FakeHookRunner,
+) -> OperationProgress {
     let manager = manager();
     let packages = packages();
     let health = FakeHealthProbe::with_files(files().paths);
@@ -360,13 +371,8 @@ fn remove_through_runner(
     .with_shell_extensions(extensions)
     .with_removal_hooks(hooks);
     let plan = manager
-        .plan_in_mode(
-            state,
-            &touchpad(),
-            DesiredOperation::Remove,
-            ExecutionMode::Real,
-        )
-        .expect("the removal plans");
+        .plan_in_mode(state, &touchpad(), operation, ExecutionMode::Real)
+        .expect("the operation plans");
     manager.begin(state, plan).expect("the plan begins");
     manager
         .advance(state, StageOutcome::Completed)
@@ -493,18 +499,46 @@ fn no_other_operation_runs_the_before_removal_program() {
     assert!(hooks.ran().is_empty());
 }
 
+/// GNOME's switch that turns off every extension is the person's decision
+/// about their whole desktop. It is said as a warning and never fails the
+/// check, because a failed check rolls an install or an update back (ticket
+/// 131). The extension is still put in the list, so it runs once the switch
+/// is off.
 #[test]
-fn gnome_s_all_extensions_off_switch_fails_the_check_and_says_why() {
-    let extensions = ShellExtensions::new(MemoryShellSettings::new(&[OURS], &[]).all_off());
-    let mut state = installed(true);
+fn gnome_s_all_extensions_off_switch_warns_and_never_fails_the_check() {
+    for operation in [DesiredOperation::Install, DesiredOperation::Verify] {
+        let extensions = ShellExtensions::new(MemoryShellSettings::new(&[], &[]).all_off());
+        let mut state = if operation == DesiredOperation::Install {
+            ManagerState::default()
+        } else {
+            installed(true)
+        };
 
-    let progress = run(&mut state, DesiredOperation::Verify, &extensions, false);
+        let progress = through_runner(
+            &mut state,
+            operation,
+            &extensions,
+            false,
+            &FakeHookRunner::default(),
+        );
 
-    let OperationProgress::Failed { failure } = progress else {
-        panic!("{progress:?}");
-    };
-    assert_eq!(failure.evidence, "shell_extension.not_enabled");
-    assert!(failure.detail.unwrap().contains("turns off all extensions"));
+        assert!(
+            matches!(progress, OperationProgress::Finished { .. }),
+            "{operation:?}: {progress:?}"
+        );
+        assert_eq!(
+            extensions.settings().enabled_list(),
+            [OURS],
+            "{operation:?}"
+        );
+        assert!(
+            warnings(&state).iter().any(|warning| warning
+                .starts_with("shell_extension.all_turned_off")
+                && warning.contains(OURS)),
+            "{operation:?}: {:?}",
+            warnings(&state)
+        );
+    }
 }
 
 /// A dpkg that cannot be read.

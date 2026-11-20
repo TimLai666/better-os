@@ -1122,6 +1122,25 @@ impl TouchpadApp {
             .min_w_0()
             .gap_4()
             .child(self.heading(c.gestures_title, c.gestures_subtitle))
+            // The adapter can answer while the service that recognizes
+            // gestures is dead (ticket 131).
+            .when(self.gestures.service_stopped(), |this| {
+                this.child(self.card(
+                    div().min_w_0().text_xs().child(c.gesture_service_stopped),
+                    cx,
+                ))
+            })
+            .when(self.gestures.collides_with_gnome(), |this| {
+                this.child(
+                    self.card(
+                        div()
+                            .min_w_0()
+                            .text_xs()
+                            .child(c.gesture_collision_unreliable),
+                        cx,
+                    ),
+                )
+            })
             .child(self.profile_card(cx))
             .child(self.preset_card(cx))
             .when_some(

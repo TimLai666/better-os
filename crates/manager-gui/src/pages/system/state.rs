@@ -148,7 +148,7 @@ fn read_about(profile_line: Option<String>, architecture: String) -> AboutFacts 
         architecture: (!architecture.is_empty()).then_some(architecture),
         kernel: files.kernel,
         desktop: desktop_line(
-            std::env::var("XDG_CURRENT_DESKTOP").ok().as_deref(),
+            &better_core::CurrentDesktop::from_env(),
             shell.as_deref(),
             std::env::var("XDG_SESSION_TYPE").ok().as_deref(),
         ),

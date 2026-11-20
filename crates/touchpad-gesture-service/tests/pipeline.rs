@@ -25,7 +25,8 @@ use touchpad_gestures::{
     SuppressionEvent, mac_style,
 };
 use touchpad_session::{
-    GnomeShellAdapter, InvocationOutcome, SessionAdapter, SessionBusShell, ShellEvents,
+    GnomeShellAdapter, InputDeviceNode, InvocationOutcome, ServiceBus, ServiceBusError,
+    SessionAdapter, SessionBusShell, SessionEvent, ShellEvents, ShellGestureEvent,
 };
 use zbus::interface;
 use zbus::object_server::SignalEmitter;
@@ -91,6 +92,8 @@ macro_rules! bus_or_skip {
 #[derive(Clone, Debug, Default, PartialEq)]
 struct ShellCalls {
     calls: Vec<String>,
+    /// The unique name each `SuppressBuiltInGestures` came from.
+    senders: Vec<String>,
 }
 
 /// The same interface the GJS extension serves, backed by a recording object
@@ -115,7 +118,20 @@ impl FakeExtension {
         self.record(&format!("SwitchWorkspace({direction})"))
     }
 
-    async fn suppress_built_in_gestures(&self, suppress: bool) -> Result<(), zbus::fdo::Error> {
+    async fn suppress_built_in_gestures(
+        &self,
+        suppress: bool,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+    ) -> Result<(), zbus::fdo::Error> {
+        // Who asked, because the real extension takes this request only from
+        // the gesture service's own name (ticket 131).
+        if let Some(sender) = header.sender() {
+            self.recorded
+                .lock()
+                .expect("recorded calls")
+                .senders
+                .push(sender.to_string());
+        }
         self.record(&format!("SuppressBuiltInGestures({suppress})"))
     }
 
@@ -261,6 +277,21 @@ impl Extension {
 
     fn calls(&self) -> Vec<String> {
         self.recorded.lock().expect("recorded calls").calls.clone()
+    }
+
+    fn senders(&self) -> Vec<String> {
+        self.recorded
+            .lock()
+            .expect("recorded calls")
+            .senders
+            .clone()
+    }
+
+    /// The extension being disabled: it gives its name up.
+    fn leave(&self) {
+        self.runtime
+            .block_on(self.connection.release_name(TEST_NAME))
+            .expect("the fake extension gave its name up");
     }
 }
 
@@ -526,25 +557,218 @@ fn a_four_contact_pinch_asks_the_launcher_and_never_the_shell() {
     );
 }
 
+/// A gesture GNOME 46's own trackers answer: three fingers up. The Mac-style
+/// preset has none (ticket 131), so the suppression path needs one of its own.
+fn three_finger_overview() -> GestureConfig {
+    let gesture = touchpad_gestures::GestureDefinition::new(
+        "three-up",
+        touchpad_gestures::GestureShape::Swipe,
+        3,
+        false,
+        Some(touchpad_gestures::Direction::Up),
+        better_actions::DesktopAction::ShowOverview,
+    )
+    .unwrap();
+    GestureConfig::with_gestures(vec![gesture], touchpad_gestures::PresetId::Custom)
+}
+
+fn suppress_calls(extension: &Extension) -> usize {
+    extension
+        .calls()
+        .iter()
+        .filter(|call| *call == "SuppressBuiltInGestures(true)")
+        .count()
+}
+
+const SERVICE_TEST_NAME: &str = "org.betteros.TouchpadGestures1Test";
+
+fn next(service: &ServiceBus) -> SessionEvent {
+    service
+        .next_event_within(std::time::Duration::from_secs(5))
+        .expect("an event within five seconds")
+}
+
+/// Ticket 131: the service's own connection owns its name, hears the adapter
+/// come and go, carries its gestures, and makes its calls as that name's owner,
+/// which is the one caller the extension takes a suppression from.
 #[test]
-fn a_confirmed_plan_asks_the_desktop_to_give_up_its_own_gestures_and_gives_them_back() {
+fn the_service_bus_follows_the_adapter_and_calls_as_the_owner_of_its_own_name() {
+    let bus = bus_or_skip!();
+    let service = ServiceBus::connect_to(&bus.address, TEST_NAME, SERVICE_TEST_NAME)
+        .expect("the service took its name");
+    assert!(!service.adapter_present());
+
+    // A second instance finds the name taken.
+    assert!(matches!(
+        ServiceBus::connect_to(&bus.address, TEST_NAME, SERVICE_TEST_NAME),
+        Err(ServiceBusError::AlreadyRunning)
+    ));
+
+    let extension = Extension::serve(&bus, false);
+    assert_eq!(next(&service), SessionEvent::AdapterAppeared);
+    assert!(service.adapter_present());
+
+    extension.swipe_on("/dev/input/event5", 0, 4, 0.0, -3.0, 7);
+    match next(&service) {
+        SessionEvent::Gesture(ShellGestureEvent::Swipe {
+            fingers, device, ..
+        }) => {
+            assert_eq!(fingers, 4);
+            assert_eq!(device, InputDeviceNode::from_wire("/dev/input/event5"));
+        }
+        other => panic!("{other:?}"),
+    }
+
+    let mut adapter =
+        GnomeShellAdapter::connect(Box::new(service.shell())).expect("the adapter answered");
+    adapter.suppress_built_in_gestures(true);
+    let owner = {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let address: zbus::Address = bus.address.parse().unwrap();
+            let connection = zbus::connection::Builder::address(address)
+                .unwrap()
+                .build()
+                .await
+                .unwrap();
+            let proxy = zbus::fdo::DBusProxy::new(&connection).await.unwrap();
+            proxy
+                .get_name_owner(SERVICE_TEST_NAME.try_into().unwrap())
+                .await
+                .unwrap()
+                .to_string()
+        })
+    };
+    assert_eq!(extension.senders(), vec![owner]);
+
+    extension.leave();
+    assert_eq!(next(&service), SessionEvent::AdapterVanished);
+    assert!(!service.adapter_present());
+
+    service.stop_sender().send(SessionEvent::Stop).unwrap();
+    assert_eq!(next(&service), SessionEvent::Stop);
+}
+
+/// Ticket 131: a gesture signal counts only when it comes from the adapter's
+/// current owner. Anyone else on the session bus could otherwise make the
+/// service perform actions, and open the "a gesture arrived" gate that
+/// suppression waits for, with one forged signal.
+#[test]
+fn a_forged_gesture_signal_from_another_connection_is_ignored() {
+    let bus = bus_or_skip!();
+    let service = ServiceBus::connect_to(&bus.address, TEST_NAME, SERVICE_TEST_NAME)
+        .expect("the service took its name");
+    let extension = Extension::serve(&bus, false);
+    assert_eq!(next(&service), SessionEvent::AdapterAppeared);
+
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let forger = runtime.block_on(async {
+        let address: zbus::Address = bus.address.parse().unwrap();
+        zbus::connection::Builder::address(address)
+            .unwrap()
+            .build()
+            .await
+            .unwrap()
+    });
+    runtime
+        .block_on(forger.emit_signal(
+            None::<&str>,
+            OBJECT_PATH,
+            "org.betteros.TouchpadAdapter1",
+            "SwipeGesture",
+            &(0u32, 3u32, 0.0f64, 0.0f64, 1u64, ""),
+        ))
+        .expect("the forged signal was sent");
+    assert_eq!(
+        service.next_event_within(std::time::Duration::from_millis(750)),
+        None,
+        "a forged signal reached the service"
+    );
+    // And the bus kept it out: the second-line owner check never saw it, so
+    // it woke nothing and took no place in the queue (review of ticket 131).
+    assert_eq!(service.signals_refused(), 0);
+
+    // The adapter's own still does.
+    extension.swipe(0, 4, 0.0, 0.0, 2);
+    assert!(matches!(
+        next(&service),
+        SessionEvent::Gesture(ShellGestureEvent::Swipe { fingers: 4, .. })
+    ));
+    runtime.block_on(async move { drop(forger) });
+}
+
+#[test]
+fn a_pinch_carries_its_device_like_a_swipe() {
+    let bus = bus_or_skip!();
+    let service = ServiceBus::connect_to(&bus.address, TEST_NAME, SERVICE_TEST_NAME)
+        .expect("the service took its name");
+    let extension = Extension::serve(&bus, false);
+    assert_eq!(next(&service), SessionEvent::AdapterAppeared);
+    extension
+        .runtime
+        .block_on(FakeExtension::pinch_gesture(
+            &extension.emitter(),
+            0,
+            4,
+            1.0,
+            0.0,
+            3,
+            "/dev/input/event9",
+        ))
+        .expect("a pinch signal");
+    match next(&service) {
+        SessionEvent::Gesture(ShellGestureEvent::Pinch { device, .. }) => {
+            assert_eq!(device, InputDeviceNode::from_wire("/dev/input/event9"));
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn the_shipped_preset_takes_none_of_gnomes_gestures() {
     let bus = bus_or_skip!();
     let extension = Extension::serve(&bus, false);
     let fixture = Fixture::new();
+    let mut listening = events(&bus);
 
     let mut setup = adapter(&bus);
     let config = fixture.applied_preset(&mut setup);
     let mut pipeline = GesturePipeline::new(config, fixture.store(), Box::new(adapter(&bus)));
-
+    pipeline.verify();
     pipeline.suppress_built_in_gestures();
-    assert!(pipeline.suppression().is_suppressed());
-    assert!(
-        extension
-            .calls()
-            .contains(&"SuppressBuiltInGestures(true)".to_string()),
-        "{:?}",
-        extension.calls()
+    swipe(&extension, 0.0, -WHOLE_SWIPE, 0, 8);
+    pipeline.run(&mut listening);
+
+    assert!(pipeline.colliding_gestures().is_empty());
+    assert_eq!(suppress_calls(&extension), 0, "{:?}", extension.calls());
+}
+
+#[test]
+fn a_colliding_gesture_takes_gnomes_only_after_a_gesture_arrives_and_gives_them_back() {
+    let bus = bus_or_skip!();
+    let extension = Extension::serve(&bus, false);
+    let fixture = Fixture::new();
+    let mut listening = events(&bus);
+
+    let mut pipeline = GesturePipeline::new(
+        three_finger_overview(),
+        fixture.store(),
+        Box::new(adapter(&bus)),
     );
+    pipeline.verify();
+    assert_eq!(pipeline.colliding_gestures(), vec!["three-up".to_string()]);
+
+    // Verified and colliding, but nothing has arrived: nothing is taken.
+    pipeline.suppress_built_in_gestures();
+    assert!(!pipeline.suppression().is_suppressed());
+    assert_eq!(suppress_calls(&extension), 0);
+
+    // One event over the real bus is the evidence.
+    extension.swipe(0, 3, 0.0, 0.0, 0);
+    pipeline.run(&mut listening);
+    assert!(pipeline.has_seen_events());
+    assert!(pipeline.suppression().is_suppressed());
+    assert_eq!(suppress_calls(&extension), 1, "{:?}", extension.calls());
 
     for event in [
         SuppressionEvent::Restored,
@@ -552,12 +776,16 @@ fn a_confirmed_plan_asks_the_desktop_to_give_up_its_own_gestures_and_gives_them_
         SuppressionEvent::SafeMode,
         SuppressionEvent::Uninstalled,
     ] {
+        let mut listening = events(&bus);
         let mut pipeline = GesturePipeline::new(
-            fixture.applied_preset(&mut setup),
+            three_finger_overview(),
             fixture.store(),
             Box::new(adapter(&bus)),
         );
-        pipeline.suppress_built_in_gestures();
+        pipeline.verify();
+        extension.swipe(0, 3, 0.0, 0.0, 0);
+        pipeline.run(&mut listening);
+        assert!(pipeline.suppression().is_suppressed(), "{}", event.key());
         pipeline.restore_built_in_gestures(event);
         assert!(!pipeline.suppression().is_suppressed(), "{}", event.key());
         assert_eq!(
@@ -618,6 +846,9 @@ fn verification_results_are_written_where_the_window_reads_them() {
     let mut setup = adapter(&bus);
     let config = fixture.applied_preset(&mut setup);
     let store = fixture.store();
+    // The service only ever runs on what the file holds, and writes its
+    // findings onto that file rather than a copy of its own (ticket 131).
+    store.save_config(&config).unwrap();
     let mut pipeline = GesturePipeline::new(config, fixture.store(), Box::new(adapter(&bus)));
 
     // Overview is verified against the real bus; the windows of the current

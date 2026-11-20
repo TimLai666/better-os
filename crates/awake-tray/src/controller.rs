@@ -18,12 +18,12 @@ use zbus::zvariant::OwnedValue;
 use crate::client::{ClientError, ServiceClient, menu_request, start_request};
 use crate::dbusmenu::all_properties;
 use crate::labels::{Labels, Locale, LocaleLabels};
-use crate::localtime::UtcOffset;
 use crate::menu::{
     Menu, MenuAction, MenuItem, OverrideConfirmation, QuickOptions, build, build_offered,
 };
 use crate::notify::{DesktopNotifier, claim_notifications, handle_event};
 use crate::sni::{ITEM_PATH, MENU_PATH, item_status};
+use better_core::local_time::TimeZone;
 
 /// How many replaced layouts are still answered. A click the host sends
 /// with an id from the layout it was showing a moment ago, while the new one
@@ -201,7 +201,7 @@ struct State {
     /// The submenus the host says are open.
     submenus: OpenSubmenus,
     revision: u32,
-    offset: UtcOffset,
+    zone: TimeZone,
     /// The tray-local half of the two-step override.
     override_confirmation: OverrideConfirmation,
 }
@@ -350,8 +350,8 @@ pub struct TrayController {
 impl TrayController {
     pub fn new(client: ServiceClient, locale: Locale, status: StatusDocument) -> Self {
         let options = QuickOptions::default();
-        let offset = UtcOffset::for_system(status.now_unix_seconds);
-        let built = build(&status, options, locale, offset, false);
+        let zone = TimeZone::System;
+        let built = build(&status, options, locale, zone, false);
         let next_id = 1 + i32::try_from(built.len()).unwrap_or(0);
         Self {
             client,
@@ -368,7 +368,7 @@ impl TrayController {
                 deferred: None,
                 submenus: OpenSubmenus::default(),
                 revision: 1,
-                offset,
+                zone,
                 override_confirmation: OverrideConfirmation::default(),
             }),
             connection: Mutex::new(None),
@@ -523,7 +523,7 @@ impl TrayController {
                 state.offer.as_ref(),
                 state.options,
                 self.locale,
-                state.offset,
+                state.zone,
                 armed,
             );
             state.install(built)
@@ -538,13 +538,12 @@ impl TrayController {
         let (update, indicator) = {
             let mut state = self.state.lock().await;
             let armed = state.override_confirmation.is_armed(now);
-            state.offset = UtcOffset::for_system(status.now_unix_seconds);
             let built = build_offered(
                 &status,
                 state.offer.as_ref(),
                 state.options,
                 self.locale,
-                state.offset,
+                state.zone,
                 armed,
             );
             state.status = status;
@@ -877,7 +876,7 @@ impl TrayController {
                 state.offer.as_ref(),
                 state.options,
                 self.locale,
-                state.offset,
+                state.zone,
                 armed,
             );
             state.install(built)
@@ -901,7 +900,7 @@ impl TrayController {
                 state.offer.as_ref(),
                 state.options,
                 self.locale,
-                state.offset,
+                state.zone,
                 armed,
             );
             state.install(built)
@@ -1156,7 +1155,7 @@ mod tests {
             status,
             QuickOptions::default(),
             Locale::EnUs,
-            UtcOffset::UTC,
+            TimeZone::UTC,
             false,
         )
     }
@@ -1176,7 +1175,7 @@ mod tests {
             deferred: None,
             submenus: OpenSubmenus::default(),
             revision: 1,
-            offset: UtcOffset::UTC,
+            zone: TimeZone::UTC,
             override_confirmation: OverrideConfirmation::default(),
         }
     }

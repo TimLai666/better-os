@@ -91,6 +91,19 @@ impl SuppressionState {
         self.confirmed == Some(self.wanted)
     }
 
+    /// Starts from what the adapter says it holds (ticket 131).
+    ///
+    /// A fresh state assumes nothing was taken and so never sends a restore.
+    /// That is wrong after an upgrade: the shell keeps running the extension
+    /// it loaded at login, and the old extension kept GNOME's trackers off
+    /// after the old service was gone. Adopting the report makes the next
+    /// transition that wants nothing send the restore.
+    pub fn adopt_reported(&mut self, suppressed: Option<bool>) {
+        if let Some(suppressed) = suppressed {
+            self.confirmed = Some(suppressed);
+        }
+    }
+
     pub fn last_outcome(&self) -> Option<&SuppressionOutcome> {
         self.last.as_ref()
     }
@@ -223,6 +236,26 @@ mod tests {
                 event.key()
             );
         }
+    }
+
+    #[test]
+    fn a_suppression_an_older_service_left_behind_is_lifted() {
+        let recorded = Arc::new(FakeShellBridge::new());
+        let mut adapter = shell(recorded.clone());
+        let mut state = SuppressionState::new();
+        state.adopt_reported(Some(true));
+        assert!(state.is_suppressed());
+        assert_eq!(
+            state.transition(
+                SuppressionEvent::PlanApplied { wanted: false },
+                &mut adapter
+            ),
+            SuppressionOutcome::Restored
+        );
+        assert_eq!(
+            recorded.calls(),
+            vec![ShellRequest::SuppressBuiltInGestures(false)]
+        );
     }
 
     #[test]

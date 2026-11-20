@@ -6,6 +6,9 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+# The one local-time conversion (`better_core::local_time`, ticket 146): a
+# `.trashinfo` stamp is local time.
+better-core.workspace = true
 git-core.workspace = true
 libc.workspace = true
 thiserror.workspace = true

@@ -19,9 +19,9 @@ use gpui_component::input::InputState;
 use super::bus::{self, Outcome, Read, Target};
 use super::copy::{copy, page_copy};
 use super::decide::{self, Facts, ModifyDraft, Presence, Service, SubPage};
-use super::localtime::UtcOffset;
 use super::model::{HistoryRow, ProviderRow, RuleTestView, RuleView};
 use crate::app::ManagerApp;
+use better_core::local_time::TimeZone;
 
 /// The component's id in Better Manager's catalog.
 pub(crate) const COMPONENT: &str = "better-awake";
@@ -97,12 +97,6 @@ impl KeepAwakeState {
         self.read
             .as_ref()
             .and_then(|read| read.status.as_ref().ok())
-    }
-
-    pub(crate) fn offset(&self) -> UtcOffset {
-        self.status()
-            .map(|status| UtcOffset::for_system(status.now_unix_seconds))
-            .unwrap_or(UtcOffset::UTC)
     }
 
     pub(crate) fn offer(&self) -> Option<&awake_ipc::QuickSessionsDocument> {
@@ -326,9 +320,11 @@ impl ManagerApp {
             .status()
             .map(|status| status.now_unix_seconds)
             .unwrap_or_else(manager_core::catalog::now_unix_seconds);
-        let offset = UtcOffset::for_system(now);
         self.keep_awake.sub = SubPage::Status;
-        self.keep_awake.dialog = Some(Dialog::Until(decide::suggested_until(now, offset)));
+        self.keep_awake.dialog = Some(Dialog::Until(decide::suggested_until(
+            now,
+            TimeZone::System,
+        )));
         cx.notify();
     }
 
@@ -370,7 +366,7 @@ impl ManagerApp {
             .status()
             .map(|status| status.now_unix_seconds)
             .unwrap_or_else(manager_core::catalog::now_unix_seconds);
-        let until = decide::until(now, UtcOffset::for_system(now), time);
+        let until = decide::until(now, TimeZone::System, time);
         let offer = self.offer_or_shipped();
         let body = decide::start_with_end(
             &offer,
@@ -443,7 +439,7 @@ impl ManagerApp {
         let draft = ModifyDraft {
             session_id,
             length,
-            until: decide::suggested_until(now, UtcOffset::for_system(now)),
+            until: decide::suggested_until(now, TimeZone::System),
             policy: session.policy,
             battery_stop_percent: session.battery_stop_percent,
         };
@@ -479,7 +475,7 @@ impl ManagerApp {
             &self.offer_or_shipped(),
             &reason,
             now,
-            UtcOffset::for_system(now),
+            TimeZone::System,
         );
         self.keep_awake.dialog = None;
         self.keep_awake_send(body, cx);
