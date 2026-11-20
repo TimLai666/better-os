@@ -253,7 +253,8 @@ throwaway home), the app chooser, the gallery's Icons page in both
 appearances, and Launcher's 64px folder preview. Two faults the screens
 found are fixed: Awake's primary buttons drew their icon in the kit's
 on-accent colour on gpui-component's own primary fill (dark on black in
-light), and Touchpad's wrapping top bar stretched over its page.
+light), and Touchpad's top bar took the whole content column (its cause,
+found in round 3, is below).
 
 An icon reads whatever accent the desktop gives. The review round found
 that an action alone was drawn in the raw accent, so a pale one all but
@@ -261,7 +262,7 @@ vanished on a light background (`#bde6fb`, 1.2:1), and Zorin's own light
 accent `#15a6f0` is 2.4:1 on `#f3f3f3`, with white on it 2.7:1. The
 palette now has icon roles beside the accent: `icon_accent` is the accent
 when it keeps 3:1 (WCAG relative luminance) on every surface an icon is
-drawn on (window, card, menu, dialog) and its second layer keeps 1.5:1
+drawn on and its second layer keeps 1.5:1
 from the main layer and from those surfaces; otherwise the accent mixed
 toward the primary text colour in 5% steps until both hold.
 `icon_on_accent` is the theme's text on accent when it keeps the same
@@ -288,9 +289,56 @@ light then dark read `#bde6fb` both times, and with
 appearance differs from the desktop theme's takes that theme's accent and
 frame colours. That is the theme's own pair, not a lookup of the wrong
 variant by `system_frame`, so the lookup is unchanged; the icon roles make
-the result readable either way. Links and accent words (`accent_text`) are
-still the raw accent in `with_accent` and have the same pale-accent
-problem as text; that is outside this ticket's icons.
+the result readable either way.
+
+Round 3 (a second independent review):
+
+- The surfaces an icon is measured on are every fill a window really draws
+  one on (`fluent::icon_surfaces`), each translucent fill composited over
+  what it sits on: the window, a card, the content layer, a menu, a dialog,
+  a selected tab; on each, a subtle button or row at rest, hovered and
+  pressed, a standard button's three fills, a tab hovered or pressed; and
+  the four info bar backgrounds over the window and a card. An icon on an
+  accent fill is measured on that fill at rest, hovered (90%) and pressed
+  (80%), over the window and a card. A check box's own fills
+  (`control_alt_fill*`) are left out on purpose: that square only ever holds
+  its check mark, and the quiet grey's second layer would otherwise sit at
+  1.42:1 on the pressed one. The table test covers 20 accents, GNOME's nine
+  among them, and fails on the old four surfaces with the review's figures
+  (Zorin blue 2.93:1 on a hovered button, GNOME yellow's on-accent icon
+  2.71:1, GNOME purple in dark 2.69:1).
+- Accent text (`accent_text`: links, the navigation emblem, Files' shortcut
+  keys, Git's accent words) follows the same stepping rule at 4.5:1 on the
+  same surfaces.
+- Left on the raw accent, for a ticket of their own: the selection
+  indicator (the bar beside a selected row or pane item), badges and the
+  dot badge, the letter tile behind an application with no icon (its letter
+  is text on accent), slider and progress fills, and focus rings. They are
+  fills, not icons or text, but a pale accent makes them faint too.
+- Better Touchpad's page vanishing (88d54d6) was not the wrapping row. In a
+  sandbox, removing `flex_wrap` changed nothing and an empty page changed
+  nothing; a fixed 64px block in the top bar's place brought the page back,
+  and so did giving the bar's title column `flex_1` or making it a block.
+  The title column was a bare `v_flex` at an automatic flex basis, and with
+  it the whole bar took the content column's height. Better Awake's title
+  column has `flex_1`, which is why it never showed. The `flex_none`
+  wrapper is gone and the title column takes `flex_1`. Neither window's top
+  bar wraps at any width it allows (760px is the minimum; checked at 800,
+  1010 and 1050 with the pane open and at 1400), so a wrapped bar was not
+  seen.
+- Awake and Touchpad now float the open pane over the content in a narrow
+  window, as Better Manager does, through the kit's `PaneChoice` (Manager's
+  rule moved into the kit), and carry the pane's wide and narrow choices
+  through an update restart; an older hand-off without them still reads.
+- A labelled action takes its control's own icon slot: 16px in a button, a
+  command bar button, a menu row, a list row, a navigation item and a tab
+  view's tab; 20px in a settings card; 13px in a selector bar item; 12px in
+  a chip; 10px as a navigation item's emblem; 48px in a device banner. An
+  action alone takes 18px whatever the slot.
+- Seen in the sandbox this round (`/tmp/claude-1000/t147-screens/round3/`):
+  Touchpad at 1400px and 800px, at 1010px with the pane open, and narrow
+  with the pane floating; Awake at 1400px, 1050px with the pane open, 800px,
+  and narrow with the pane floating.
 
 Left as they are on purpose: arrows that name a command (Undo, Redo,
 move up and down, move to front, lower priority), Git's expand and wrap
