@@ -1,0 +1,330 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Better OS 風格提案</title>
+<style>
+  :root {
+    --desk: #dcd8d1; --base: #f1efeb; --sheet: #ffffff; --raised: #ffffff; --field: #f6f4f1;
+    --text: #1c1b19; --text-2: #66635d; --text-3: #8d8982; --line: rgba(28,27,25,.09);
+    --hover: rgba(28,27,25,.05); --accent: #3a6ff0; --on-accent: #ffffff; --accent-soft: #e4ecff;
+    --danger: #c9372b; --ok: #1f9d55; --warn-bg: #fff3d6; --warn-text: #6b4a00;
+    --float: 0 1px 2px rgba(28,27,25,.10), 0 6px 18px rgba(28,27,25,.10);
+    --lift: 0 1px 2px rgba(28,27,25,.10), 0 2px 6px rgba(28,27,25,.06);
+    --window: 0 2px 6px rgba(28,27,25,.10), 0 18px 48px rgba(28,27,25,.18);
+  }
+  :root[data-theme="dark"] {
+    --desk: #121110; --base: #1e1d1b; --sheet: #282725; --raised: #34322f; --field: #201f1d;
+    --text: #f3f1ec; --text-2: #b6b2aa; --text-3: #8a867f; --line: rgba(255,255,255,.09);
+    --hover: rgba(255,255,255,.06); --accent: #86a8ff; --on-accent: #0f1524; --accent-soft: #26324f;
+    --danger: #ff8a7d; --ok: #63d88f; --warn-bg: #3d3319; --warn-text: #ffe2a0;
+    --float: 0 1px 2px rgba(0,0,0,.45), 0 8px 22px rgba(0,0,0,.40);
+    --lift: 0 1px 2px rgba(0,0,0,.45), 0 2px 6px rgba(0,0,0,.25);
+    --window: 0 2px 6px rgba(0,0,0,.5), 0 18px 48px rgba(0,0,0,.55);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --desk: #121110; --base: #1e1d1b; --sheet: #282725; --raised: #34322f; --field: #201f1d;
+      --text: #f3f1ec; --text-2: #b6b2aa; --text-3: #8a867f; --line: rgba(255,255,255,.09);
+      --hover: rgba(255,255,255,.06); --accent: #86a8ff; --on-accent: #0f1524; --accent-soft: #26324f;
+      --danger: #ff8a7d; --ok: #63d88f; --warn-bg: #3d3319; --warn-text: #ffe2a0;
+      --float: 0 1px 2px rgba(0,0,0,.45), 0 8px 22px rgba(0,0,0,.40);
+      --lift: 0 1px 2px rgba(0,0,0,.45), 0 2px 6px rgba(0,0,0,.25);
+      --window: 0 2px 6px rgba(0,0,0,.5), 0 18px 48px rgba(0,0,0,.55);
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 24px 16px 48px; background: var(--desk); color: var(--text);
+    font: 14px/20px system-ui, "Noto Sans CJK TC", sans-serif; }
+  .top { max-width: 1080px; margin: 0 auto 16px; display: flex; align-items: center; gap: 12px; }
+  .top h1 { font-size: 20px; line-height: 28px; font-weight: 600; margin: 0; flex: 1; }
+  .label { max-width: 1080px; margin: 28px auto 10px; color: var(--text-2); font-size: 12px; line-height: 16px; }
+  svg.i { width: 20px; height: 20px; flex: none; }
+  .ln { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+  .win { max-width: 1080px; margin: 0 auto; background: var(--base); border-radius: 12px;
+    border: 1px solid var(--line); box-shadow: var(--window); overflow: hidden; --app: #3a6ff0; }
+  .title { height: 44px; display: flex; align-items: center; gap: 8px; padding: 0 8px 0 14px; }
+  .title b { font-weight: 600; flex: 1; }
+  .wb { width: 32px; height: 32px; display: grid; place-items: center; border-radius: 8px; color: var(--text-2); }
+  .wb:hover { background: var(--hover); }
+  .wb svg { width: 16px; height: 16px; }
+  .body { display: grid; grid-template-columns: 232px minmax(0, 1fr); }
+  @media (max-width: 767px) { .body { grid-template-columns: 1fr; } .side { padding-bottom: 8px; } .sheet { margin: 0 8px 8px; } }
+
+  .side { padding: 4px 8px 12px; display: flex; flex-direction: column; gap: 2px; }
+  .cap { font-size: 12px; line-height: 16px; color: var(--text-3); padding: 12px 10px 4px; }
+  .row { display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 10px; border-radius: 8px; }
+  .row:hover { background: var(--hover); }
+  .row.on { background: var(--raised); box-shadow: var(--lift); font-weight: 600; }
+  .row .n { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .chip { font-size: 12px; line-height: 16px; padding: 1px 7px; border-radius: 999px; background: var(--hover); color: var(--text-2); font-weight: 400; }
+  .row.dev { height: auto; align-items: flex-start; padding: 7px 10px 8px; }
+  .row.dev .n { white-space: normal; }
+  .meter { height: 4px; border-radius: 2px; background: var(--hover); overflow: hidden; }
+  .meter i { display: block; height: 100%; border-radius: 2px; background: var(--accent); }
+  .dev .meter { margin-top: 6px; }
+  .dev small { display: block; margin-top: 4px; font-size: 12px; line-height: 16px; color: var(--text-3); font-weight: 400; }
+
+  .sheet { position: relative; margin: 0 8px 8px 0; border-radius: 12px; border: 1px solid var(--line);
+    background: linear-gradient(180deg, color-mix(in srgb, var(--app) 13%, var(--sheet)) 0, var(--sheet) 150px); min-height: 520px; padding: 12px 16px 76px; }
+  .bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .pill { display: flex; align-items: center; gap: 2px; padding: 4px; border-radius: 12px; background: var(--raised);
+    box-shadow: var(--float); }
+  .pill .b { width: 32px; height: 32px; display: grid; place-items: center; border-radius: 8px; color: var(--text-2); }
+  .pill .b:hover { background: var(--hover); }
+  .pill .b.on { background: var(--accent-soft); color: var(--accent); }
+  .pill .sep { width: 1px; height: 18px; background: var(--line); margin: 0 4px; }
+  .crumb { padding: 4px 12px 4px 6px; gap: 6px; height: 40px; }
+  .crumb span { color: var(--text-2); }
+  .crumb svg.c { width: 14px; height: 14px; color: var(--text-3); }
+  .grow { flex: 1; }
+  .h { font-size: 12px; line-height: 16px; color: var(--text-3); margin: 22px 4px 8px; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(124px, 1fr)); gap: 8px; }
+  .tile { padding: 12px 8px 10px; border-radius: 12px; text-align: center; }
+  .tile:hover { background: var(--hover); }
+  .tile.on { background: var(--accent-soft); }
+  .tile svg { width: 52px; height: 52px; display: block; margin: 0 auto 6px; }
+  .tile small { display: block; font-size: 12px; line-height: 16px; color: var(--text-3); }
+  .file { display: grid; grid-template-columns: 20px minmax(0, 1fr) 120px 72px; gap: 12px; align-items: center;
+    height: 36px; padding: 0 10px; border-radius: 8px; }
+  .file:hover { background: var(--hover); }
+  .file span { color: var(--text-2); font-size: 12px; }
+  .file .r { text-align: right; }
+  @media (max-width: 560px) { .file { grid-template-columns: 20px minmax(0, 1fr) 72px; } .file .d { display: none; } }
+  .job { position: absolute; left: 16px; right: 16px; bottom: 16px; display: flex; align-items: center; gap: 12px;
+    padding: 10px 12px 10px 14px; border-radius: 12px; background: var(--raised); box-shadow: var(--float); }
+  .job .t { flex: 1; min-width: 0; }
+  .job .meter { margin-top: 6px; }
+  .job small { color: var(--text-2); font-size: 12px; }
+
+  button { font: inherit; height: 32px; padding: 0 14px; border-radius: 8px; border: 1px solid var(--line);
+    background: var(--raised); color: var(--text); cursor: pointer; box-shadow: var(--lift); }
+  button:active { transform: translateY(1px); }
+  button.p { background: var(--accent); color: var(--on-accent); border-color: transparent; font-weight: 600; }
+  button.q { background: transparent; box-shadow: none; border-color: transparent; color: var(--text-2); }
+  button.x { background: var(--danger); color: var(--sheet); border-color: transparent; font-weight: 600; }
+
+  .page { padding: 8px 8px 0; max-width: 640px; }
+  .page h2 { font-size: 28px; line-height: 36px; font-weight: 600; margin: 4px 0 16px; }
+  .note { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border-radius: 12px;
+    background: var(--warn-bg); color: var(--warn-text); margin-bottom: 12px; }
+  .card { background: var(--raised); border: 1px solid var(--line); border-radius: 12px; margin-bottom: 12px; }
+  .set { display: flex; align-items: center; gap: 12px; padding: 12px 14px; min-height: 56px; }
+  .set + .set { border-top: 1px solid var(--line); }
+  .set .t { flex: 1; min-width: 0; }
+  .set small { display: block; color: var(--text-2); font-size: 12px; line-height: 16px; }
+  .seg { display: flex; padding: 3px; border-radius: 10px; background: var(--field); border: 1px solid var(--line); }
+  .seg span { padding: 4px 12px; border-radius: 7px; color: var(--text-2); white-space: nowrap; }
+  .seg .on { background: var(--raised); box-shadow: var(--lift); color: var(--text); font-weight: 600; }
+  .sw { width: 40px; height: 24px; border-radius: 12px; background: var(--accent); position: relative; flex: none; }
+  .sw::after { content: ""; position: absolute; top: 3px; left: 19px; width: 18px; height: 18px; border-radius: 9px; background: var(--on-accent); }
+  .sw.off { background: var(--field); border: 1px solid var(--line); }
+  .sw.off::after { left: 2px; top: 2px; background: var(--text-3); }
+  .sel { display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 8px 0 12px; border-radius: 8px;
+    background: var(--field); border: 1px solid var(--line); }
+  .sel svg { width: 14px; height: 14px; color: var(--text-3); }
+  .slide { width: 180px; height: 20px; position: relative; flex: none; }
+  .slide::before { content: ""; position: absolute; left: 0; right: 0; top: 8px; height: 4px; border-radius: 2px;
+    background: linear-gradient(90deg, var(--accent) 62%, var(--hover) 62%); }
+  .slide::after { content: ""; position: absolute; left: calc(62% - 9px); top: 1px; width: 18px; height: 18px; border-radius: 9px;
+    background: var(--raised); box-shadow: var(--float); border: 1px solid var(--line); }
+  .inp { height: 32px; width: 200px; max-width: 100%; padding: 0 10px; border-radius: 8px; background: var(--field);
+    border: 1px solid var(--line); display: flex; align-items: center; outline: 2px solid var(--accent); outline-offset: 1px; }
+  .acts { display: flex; gap: 8px; justify-content: flex-end; padding: 4px 0 8px; }
+
+  .stage { max-width: 1080px; margin: 0 auto; display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; align-items: start; }
+  .dlg { background: var(--sheet); border-radius: 16px; border: 1px solid var(--line); box-shadow: var(--window); padding: 20px; }
+  .dlg h3 { font-size: 20px; line-height: 28px; font-weight: 600; margin: 0 0 6px; }
+  .dlg p { margin: 0 0 14px; color: var(--text-2); }
+  .ck { display: flex; align-items: center; gap: 10px; margin-bottom: 18px; }
+  .ck i { width: 20px; height: 20px; border-radius: 6px; background: var(--accent); color: var(--on-accent); display: grid; place-items: center; }
+  .ck svg { width: 14px; height: 14px; }
+  .menu { background: var(--raised); border-radius: 12px; border: 1px solid var(--line); box-shadow: var(--float); padding: 4px; }
+  .menu .row { height: 32px; }
+  .menu hr { border: 0; border-top: 1px solid var(--line); margin: 4px 8px; }
+  .menu kbd { font: inherit; font-size: 12px; color: var(--text-3); }
+  .toast { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-radius: 12px; background: var(--raised);
+    border: 1px solid var(--line); box-shadow: var(--float); }
+  .stack { display: grid; gap: 16px; }
+</style>
+</head>
+<body>
+
+<div class="top">
+  <h1>Better OS 風格提案</h1>
+  <button id="theme" type="button">切換深淺色</button>
+</div>
+
+<div class="label">Better Files：底色上放一張內容紙，按鈕浮在內容上面</div>
+<div class="win" style="--app:#3a6ff0">
+  <div class="title">
+    <svg class="i" data-i="folder"></svg><b>檔案</b>
+    <span class="wb" data-s="min"></span><span class="wb" data-s="max"></span><span class="wb" data-s="close"></span>
+  </div>
+  <div class="body">
+    <nav class="side" aria-label="位置">
+      <div class="row"><svg class="i" data-i="home"></svg><span class="n">家目錄</span></div>
+      <div class="row"><svg class="i" data-i="desktop"></svg><span class="n">桌面</span></div>
+      <div class="row on"><svg class="i" data-i="documents"></svg><span class="n">文件</span><span class="chip">38</span></div>
+      <div class="row"><svg class="i" data-i="downloads"></svg><span class="n">下載</span><span class="chip">7</span></div>
+      <div class="row"><svg class="i" data-i="pictures"></svg><span class="n">圖片</span></div>
+      <div class="row"><svg class="i" data-i="music"></svg><span class="n">音樂</span></div>
+      <div class="row"><svg class="i" data-i="videos"></svg><span class="n">影片</span></div>
+      <div class="row"><svg class="i" data-i="trash"></svg><span class="n">垃圾桶</span></div>
+      <div class="cap">裝置</div>
+      <div class="row dev"><svg class="i" data-i="usb"></svg>
+        <div class="n">KINGSTON<div class="meter"><i style="width:52%"></i></div><small>還有 13.7 GB，共 28.8 GB</small></div></div>
+    </nav>
+    <main class="sheet">
+      <div class="bar">
+        <div class="pill crumb">
+          <span class="b" data-s="back"></span>
+          <svg class="i" data-i="home"></svg><span>家目錄</span><svg class="c ln" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg><b>文件</b>
+        </div>
+        <div class="grow"></div>
+        <div class="pill" role="toolbar" aria-label="動作">
+          <span class="b" title="新增資料夾"><svg class="i" data-a="newfolder"></svg></span>
+          <span class="b" title="複製"><svg class="i" data-a="copy"></svg></span>
+          <span class="b" title="重新命名"><svg class="i" data-a="rename"></svg></span>
+          <span class="b" title="刪除"><svg class="i" data-a="delete"></svg></span>
+          <span class="sep"></span>
+          <span class="b on" data-s="grid" title="圖示檢視"></span>
+          <span class="b" data-s="list" title="清單檢視"></span>
+          <span class="b" data-s="search" title="搜尋"></span>
+        </div>
+      </div>
+
+      <div class="h">資料夾</div>
+      <div class="tiles">
+        <div class="tile"><svg data-i="folder" viewBox="0 0 24 24"></svg>報稅<small>12 個項目</small></div>
+        <div class="tile on"><svg data-i="folder" viewBox="0 0 24 24"></svg>旅行<small>4 個項目</small></div>
+        <div class="tile"><svg data-i="folder" viewBox="0 0 24 24"></svg>食譜<small>9 個項目</small></div>
+        <div class="tile"><svg data-i="folder" viewBox="0 0 24 24"></svg>租屋合約<small>3 個項目</small></div>
+      </div>
+
+      <div class="h">檔案</div>
+      <div class="file"><svg class="i" data-i="pdf"></svg>2026 綜所稅試算.pdf<span class="d">11 月 18 日</span><span class="r">412 KB</span></div>
+      <div class="file"><svg class="i" data-i="documents"></svg>阿嬤的滷肉配方.md<span class="d">11 月 9 日</span><span class="r">3 KB</span></div>
+      <div class="file"><svg class="i" data-i="sheet"></svg>墾丁三天兩夜預算.xlsx<span class="d">10 月 27 日</span><span class="r">26 KB</span></div>
+      <div class="file"><svg class="i" data-i="pictures"></svg>IMG_4382.jpg<span class="d">10 月 26 日</span><span class="r">4.7 MB</span></div>
+
+      <div class="job">
+        <svg class="i" data-i="usb"></svg>
+        <div class="t">正在把 12 個項目複製到 KINGSTON<div class="meter"><i style="width:64%"></i></div></div>
+        <small>還要 40 秒</small>
+        <button class="q" type="button">取消</button>
+      </div>
+    </main>
+  </div>
+</div>
+
+<div class="label">控制中心：設定卡片、開關、選單、滑桿、文字欄位和按鈕</div>
+<div class="win" style="--app:#8a5cf0">
+  <div class="title">
+    <svg class="i" data-i="desktop"></svg><b>控制中心</b>
+    <span class="wb" data-s="min"></span><span class="wb" data-s="max"></span><span class="wb" data-s="close"></span>
+  </div>
+  <div class="body">
+    <nav class="side" aria-label="設定分類">
+      <div class="row on"><svg class="i" data-i="desktop"></svg><span class="n">顯示器</span></div>
+      <div class="row"><svg class="i" data-i="music"></svg><span class="n">音效</span></div>
+      <div class="row"><svg class="i" data-i="usb"></svg><span class="n">儲存裝置</span></div>
+      <div class="row"><svg class="i" data-i="downloads"></svg><span class="n">更新</span><span class="chip">2</span></div>
+    </nav>
+    <main class="sheet" style="padding-bottom:16px">
+      <div class="page">
+        <h2>顯示器</h2>
+        <div class="note"><svg class="i ln" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16.5v.01"/></svg><span>縮放比例變更後，部分應用程式要重新開啟才會套用。</span></div>
+        <div class="card">
+          <div class="set"><div class="t">外觀<small>視窗和面板的深淺色</small></div>
+            <div class="seg"><span class="on">跟隨系統</span><span>淺色</span><span>深色</span></div></div>
+          <div class="set"><div class="t">夜間模式<small>日落後降低藍光</small></div><span class="sw" role="switch" aria-checked="true"></span></div>
+          <div class="set"><div class="t">自動調整亮度</div><span class="sw off" role="switch" aria-checked="false"></span></div>
+        </div>
+        <div class="card">
+          <div class="set"><div class="t">縮放比例</div><div class="sel">125%<svg class="ln" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></div></div>
+          <div class="set"><div class="t">亮度</div><span class="slide"></span></div>
+          <div class="set"><div class="t">這台螢幕的名稱<small>顯示在排列畫面上</small></div><div class="inp">書桌左邊</div></div>
+        </div>
+        <div class="acts"><button type="button">還原</button><button class="p" type="button">套用</button></div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<div class="label">浮在視窗上面的東西：對話框、選單、通知</div>
+<div class="stage">
+  <div class="dlg">
+    <h3>要刪除「旅行」嗎？</h3>
+    <p>裡面的 4 個項目會一起移到垃圾桶，30 天內可以還原。</p>
+    <div class="ck"><i><svg class="ln" viewBox="0 0 24 24"><path d="m5 12 5 5 9-10"/></svg></i>以後不要再問</div>
+    <div class="acts" style="padding:0"><button type="button">取消</button><button class="x" type="button">移到垃圾桶</button></div>
+  </div>
+  <div class="stack">
+    <div class="menu">
+      <div class="row"><svg class="i" data-a="copy"></svg><span class="n">複製</span><kbd>Ctrl C</kbd></div>
+      <div class="row"><svg class="i" data-a="rename"></svg><span class="n">重新命名</span><kbd>F2</kbd></div>
+      <div class="row"><svg class="i" data-a="newfolder"></svg><span class="n">新增資料夾</span><kbd>Ctrl Shift N</kbd></div>
+      <hr>
+      <div class="row"><svg class="i" data-a="delete"></svg><span class="n">刪除</span><kbd>Delete</kbd></div>
+    </div>
+    <div class="toast"><svg class="i" data-i="usb"></svg><span style="flex:1">KINGSTON 可以拔除了</span><button class="q" type="button">知道了</button></div>
+  </div>
+</div>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <linearGradient id="g-home" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff3df"/><stop offset="1" stop-color="#f1d3a8"/></linearGradient>
+  <linearGradient id="g-desk" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#4aa8ff"/><stop offset="1" stop-color="#7ad7c8"/></linearGradient>
+  <linearGradient id="g-doc" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#eef3fd"/><stop offset="1" stop-color="#c3d5f6"/></linearGradient>
+  <linearGradient id="g-down" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#63dd90"/><stop offset="1" stop-color="#22a95a"/></linearGradient>
+  <linearGradient id="g-sky" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#7cc6ff"/><stop offset="1" stop-color="#dcf1ff"/></linearGradient>
+  <linearGradient id="g-note" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ff86b0"/><stop offset="1" stop-color="#c22f6a"/></linearGradient>
+  <linearGradient id="g-can" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#c3d0dd"/><stop offset="1" stop-color="#8b9db2"/></linearGradient>
+  <linearGradient id="g-usb" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#45d0c8"/><stop offset="1" stop-color="#178891"/></linearGradient>
+  <linearGradient id="g-fold" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#7fb4ff"/><stop offset="1" stop-color="#4a86ec"/></linearGradient>
+</defs></svg>
+
+<script>
+const sheet = (band, lines) => `<path d="M6 2.5h8l4.5 4.5V20a1.5 1.5 0 0 1-1.5 1.5H6A1.5 1.5 0 0 1 4.5 20V4A1.5 1.5 0 0 1 6 2.5z" fill="url(#g-doc)" stroke="#8fa9dd" stroke-width=".7"/><path d="M14 2.5V6a1 1 0 0 0 1 1h3.5z" fill="#8fb0ee"/>${lines}`;
+const I = {
+  home: '<rect x="15.5" y="4.6" width="2.3" height="4.5" fill="#b63a26"/><path d="M5.5 11.3 12 5.8l6.5 5.5V19a1.5 1.5 0 0 1-1.5 1.5H7A1.5 1.5 0 0 1 5.5 19z" fill="url(#g-home)"/><rect x="10.2" y="14" width="3.6" height="6.5" rx=".8" fill="#8a5a3c"/><path d="M2.9 11 12 3.2l9.1 7.8-1.5 1.8L12 6.3l-7.6 6.5z" fill="#de4a30"/>',
+  desktop: '<path d="M10 17h4l.8 3H9.2z" fill="#8a95a8"/><rect x="7.5" y="19.6" width="9" height="1.7" rx=".85" fill="#6b7689"/><rect x="2.5" y="3.8" width="19" height="13.4" rx="2" fill="#2f3b58"/><rect x="4" y="5.3" width="16" height="10.4" rx="1" fill="url(#g-desk)"/><path d="M4 13.2c3-2.4 6-2.4 8.5-.4s5 1.4 7.5-.6v2.5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1z" fill="#2069c4" opacity=".55"/>',
+  documents: sheet("", '<rect x="7.5" y="10" width="8" height="1.6" rx=".8" fill="#2f66d4"/><rect x="7.5" y="13.2" width="8" height="1.6" rx=".8" fill="#5f8de6"/><rect x="7.5" y="16.4" width="5" height="1.6" rx=".8" fill="#5f8de6"/>'),
+  pdf: '<path d="M6 2.5h8l4.5 4.5V20a1.5 1.5 0 0 1-1.5 1.5H6A1.5 1.5 0 0 1 4.5 20V4A1.5 1.5 0 0 1 6 2.5z" fill="#fbeceb" stroke="#e2a39c" stroke-width=".7"/><path d="M14 2.5V6a1 1 0 0 0 1 1h3.5z" fill="#eda59d"/><rect x="4.5" y="12" width="14" height="6.2" fill="#d4402f"/><rect x="7" y="14.2" width="9" height="1.8" rx=".9" fill="#ffffff"/>',
+  sheet: '<path d="M6 2.5h8l4.5 4.5V20a1.5 1.5 0 0 1-1.5 1.5H6A1.5 1.5 0 0 1 4.5 20V4A1.5 1.5 0 0 1 6 2.5z" fill="#e6f6ec" stroke="#93cfa8" stroke-width=".7"/><path d="M14 2.5V6a1 1 0 0 0 1 1h3.5z" fill="#93cfa8"/><rect x="7" y="10" width="9" height="8.4" rx="1" fill="#1f9d55"/><path d="M7 14.2h9M11.5 10v8.4" stroke="#e6f6ec" stroke-width="1.2"/>',
+  downloads: '<path d="M3.5 14.5h4l1.2 2.2h6.6l1.2-2.2h4V19a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z" fill="#1c7f46"/><path d="M10.3 2.8h3.4V9h3.3L12 14.6 7 9h3.3z" fill="url(#g-down)"/>',
+  pictures: '<rect x="2.5" y="4" width="19" height="16" rx="2.5" fill="#ffffff" stroke="#c3c9d4" stroke-width=".6"/><rect x="4.3" y="5.8" width="15.4" height="12.4" rx="1.2" fill="url(#g-sky)"/><circle cx="8.3" cy="9.3" r="1.9" fill="#ffc531"/><path d="M4.3 16.9l4.2-4.5 3.4 3.4v2.4H5.5a1.2 1.2 0 0 1-1.2-1.2z" fill="#3aa35c"/><path d="M9.6 18.2l5.1-7 5 6v-.2a1.2 1.2 0 0 1-1.2 1.2z" fill="#2a8048"/>',
+  music: '<path d="M8 4.8 20 2.6v13.2h-2.2V7.3l-7.6 1.5V18H8z" fill="#e0457b"/><ellipse cx="6.7" cy="18.1" rx="3.5" ry="2.9" fill="url(#g-note)"/><ellipse cx="16.5" cy="16" rx="3.5" ry="2.9" fill="url(#g-note)"/>',
+  videos: '<rect x="3" y="8.6" width="18" height="12" rx="2" fill="#4a3f6b"/><path d="M3 5.5A1.5 1.5 0 0 1 4.5 4h15A1.5 1.5 0 0 1 21 5.5V9H3z" fill="#f2c230"/><path d="M6.4 4l-2 5H7l2-5zM11.6 4l-2 5h2.6l2-5zM16.8 4l-2 5h2.6l2-5z" fill="#2d2740"/><path d="M10.2 12.2v5.2l4.8-2.6z" fill="#ffffff"/>',
+  trash: '<rect x="9.3" y="2.8" width="5.4" height="3.4" rx="1" fill="#5d6f86"/><path d="M5.5 8.4h13l-1 11.2a2 2 0 0 1-2 1.9H8.5a2 2 0 0 1-2-1.9z" fill="url(#g-can)"/><rect x="3.5" y="5.2" width="17" height="2.8" rx="1.4" fill="#5d6f86"/><rect x="9" y="11" width="1.5" height="7" rx=".75" fill="#5d6f86"/><rect x="13.5" y="11" width="1.5" height="7" rx=".75" fill="#5d6f86"/>',
+  usb: '<rect x="8.6" y="2.5" width="6.8" height="7" rx=".8" fill="#c3cbd6"/><rect x="10" y="4.6" width="1.4" height="1.9" fill="#6b7689"/><rect x="12.6" y="4.6" width="1.4" height="1.9" fill="#6b7689"/><rect x="7" y="8.8" width="10" height="12.7" rx="2.2" fill="url(#g-usb)"/><circle cx="12" cy="17.6" r="1.1" fill="#d6fffb"/>',
+  folder: '<path d="M2.5 6.2a2 2 0 0 1 2-2h4.4l2.1 2.3h8.5a2 2 0 0 1 2 2V10h-19z" fill="#3a74dc"/><path d="M2.5 9.2h19v8.9a2 2 0 0 1-2 2h-15a2 2 0 0 1-2-2z" fill="url(#g-fold)"/>'
+};
+const A = {
+  newfolder: '<path d="M2.5 6.5a2 2 0 0 1 2-2h4.6l2 2.2h8.4a2 2 0 0 1 2 2V18a2 2 0 0 1-2 2h-15a2 2 0 0 1-2-2z" fill="#f0b429"/><path d="M12 10.2v6.4M8.8 13.4h6.4" fill="none" stroke="#ffffff" stroke-width="2.2" stroke-linecap="round"/>',
+  copy: '<rect x="3" y="3" width="12.5" height="12.5" rx="2.5" fill="#9cc0f5"/><rect x="8.5" y="8.5" width="12.5" height="12.5" rx="2.5" fill="#2f7de1"/>',
+  rename: '<path d="M15.6 3.6a2.4 2.4 0 0 1 3.4 0l1.4 1.4a2.4 2.4 0 0 1 0 3.4L9 19.8l-4.8-4.8z" fill="#f0a020"/><path d="M4.2 15 9 19.8 3 21z" fill="#b8740c"/>',
+  delete: '<rect x="3.5" y="4.6" width="17" height="3" rx="1.5" fill="#d4402f"/><rect x="9.5" y="2.6" width="5" height="3" rx="1" fill="#d4402f"/><path d="M5.5 9h13l-.9 10.2a2 2 0 0 1-2 1.8H8.4a2 2 0 0 1-2-1.8z" fill="#ec6a5c"/>'
+};
+const S = {
+  min: '<path d="M6 12h12"/>', max: '<rect x="6" y="6" width="12" height="12" rx="2"/>', close: '<path d="m6 6 12 12M18 6 6 18"/>',
+  back: '<path d="M19 12H5M11 6l-6 6 6 6"/>',
+  grid: '<rect x="4" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.5"/>',
+  list: '<path d="M4 6h16M4 12h16M4 18h16"/>', search: '<circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/>'
+};
+document.querySelectorAll("svg[data-i]").forEach(e => { e.setAttribute("viewBox", "0 0 24 24"); e.setAttribute("aria-hidden", "true"); e.innerHTML = I[e.dataset.i]; });
+document.querySelectorAll("svg[data-a]").forEach(e => { e.setAttribute("viewBox", "0 0 24 24"); e.setAttribute("aria-hidden", "true"); e.innerHTML = A[e.dataset.a]; });
+document.querySelectorAll("[data-s]").forEach(e => { e.innerHTML = `<svg class="ln" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">${S[e.dataset.s]}</svg>`; });
+
+const root = document.documentElement;
+if (location.hash === "#dark") root.dataset.theme = "dark";
+if (location.hash === "#light") root.dataset.theme = "light";
+document.getElementById("theme").addEventListener("click", () => {
+  const dark = root.dataset.theme ? root.dataset.theme === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+  root.dataset.theme = dark ? "light" : "dark";
+});
+</script>
+</body>
+</html>

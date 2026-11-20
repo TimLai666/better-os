@@ -96,17 +96,10 @@ pub(crate) fn product_name(raw: &str) -> Option<String> {
     Some(name.to_string())
 }
 
-/// `PRETTY_NAME` from an `os-release` file, unquoted.
+/// `PRETTY_NAME` from an `os-release` file, unquoted by the one field
+/// reader `better_core::host` has.
 pub(crate) fn pretty_name(os_release: &str) -> Option<String> {
-    os_release.lines().find_map(|line| {
-        let value = line.strip_prefix("PRETTY_NAME=")?.trim();
-        let value = value
-            .strip_prefix('"')
-            .and_then(|v| v.strip_suffix('"'))
-            .or_else(|| value.strip_prefix('\'').and_then(|v| v.strip_suffix('\'')))
-            .unwrap_or(value);
-        (!value.is_empty()).then(|| value.to_string())
-    })
+    better_core::host::os_release_field(os_release, "PRETTY_NAME")
 }
 
 /// Where the banner reads from. `/` on a real machine; a fixture tree in a
@@ -132,9 +125,9 @@ impl HostRoot {
             product: self
                 .read("/sys/class/dmi/id/product_name")
                 .and_then(|raw| product_name(&raw)),
-            distribution: self
-                .read("/etc/os-release")
-                .or_else(|| self.read("/usr/lib/os-release"))
+            // Read by better_core::host, the one reader of the file.
+            distribution: better_core::host::read_os_release_under(&self.0)
+                .ok()
                 .and_then(|text| pretty_name(&text)),
             battery: self.battery(),
         }
@@ -273,6 +266,18 @@ mod tests {
         );
         assert_eq!(pretty_name("NAME=x\n"), None);
         assert_eq!(pretty_name("PRETTY_NAME=\"\""), None);
+    }
+
+    #[test]
+    fn the_banner_falls_back_to_the_vendor_os_release_like_every_other_reader() {
+        let root = tempfile::tempdir().unwrap();
+        write(
+            root.path(),
+            "usr/lib/os-release",
+            "PRETTY_NAME=\"Ubuntu 24.04.1 LTS\"\n",
+        );
+        let device = HostRoot(root.path().to_path_buf()).device();
+        assert_eq!(device.distribution.as_deref(), Some("Ubuntu 24.04.1 LTS"));
     }
 
     #[test]

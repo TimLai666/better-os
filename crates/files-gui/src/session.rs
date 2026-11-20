@@ -2136,8 +2136,10 @@ impl FilesSession {
         }
         match policy {
             RemovalPolicy::Performance => {
-                self.policy_confirmation =
-                    Some(PerformanceConfirmation::new(object_path, row.label.clone()));
+                self.policy_confirmation = Some(PerformanceConfirmation::new(
+                    object_path,
+                    self.device_label(object_path),
+                ));
             }
             RemovalPolicy::DirectRemoval => {
                 self.policy_confirmation = None;
@@ -2172,11 +2174,23 @@ impl FilesSession {
         self.policy_confirmation = None;
     }
 
-    fn device_label(&self, object_path: &str) -> String {
-        self.devices
-            .get(object_path)
-            .map(|row| row.label.clone())
-            .unwrap_or_else(|| object_path.to_string())
+    /// What a device is called in a toast or a dialog: what its sidebar row
+    /// says. A device the drive listing also has is drawn as that drive and
+    /// named by `Drive::naming` (the running system's drive on an external
+    /// SSD is "Zorin OS", ticket 138); any other by the service's own label.
+    pub(crate) fn device_label(&self, object_path: &str) -> String {
+        use crate::drives::DriveText as _;
+        let Some(row) = self.devices.get(object_path) else {
+            return object_path.to_string();
+        };
+        match self
+            .drives
+            .iter()
+            .find(|drive| crate::drives::is_device(drive, row))
+        {
+            Some(drive) => drive.name(crate::i18n::copy(self.locale)),
+            None => row.label.clone(),
+        }
     }
 
     /// A drive by its vendor and model, for an image write.

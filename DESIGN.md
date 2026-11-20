@@ -151,7 +151,14 @@ There are three kinds, told apart by what the icon stands for.
 - The same picture is used in the light and the dark appearance, so every icon must stand out against both window backgrounds (`#f3f3f3` and `#202020`). A pale shape, such as a sheet of paper, gets a thin edge in a darker shade of its own colour.
 - A disabled object icon is drawn at 36% opacity, the same as disabled text.
 
-**An action icon** stands for something a button does: copy, rename, delete, refresh, new folder. It is a filled shape too, but plainer than an object icon, because a row of buttons should not compete with the content: flat fills with no gradient, one colour in at most two shades plus white, and no small parts such as a pencil's eraser or a bin's ribs. Two overlapping squares for copy, a pencil outline filled in amber for rename, a red bin for delete, a yellow folder with a white plus for new folder. Two other treatments were tried on 2026-11-21 and the owner turned both down: a line icon with one coloured part reads as neither line nor colour, and a detailed, shaded picture is too realistic for a button.
+**An action icon** stands for something a button does: copy, rename, delete, refresh, new folder. It is a filled shape in two layers of one colour, and it never carries a colour of its own, because a row of buttons should not compete with the content. `design/design-demos/action-icon-options.html` shows the approved drawings under "三（修過）".
+
+- The main layer draws the body of the thing in the full colour: the front sheet of copy, the pencil's shaft, the folder, the whole bin. The second layer draws only a minor part in a lighter shade of the same colour: the sheet behind, the pencil's tip, the folder's tab, the two slots on the bin. The body is never the lighter layer.
+- The two layers do not overlap. Where one sits behind the other, only its visible part is drawn, with a gap between them. The lighter shade is a colour of its own in each appearance, not the full colour made transparent, which turns muddy on a dark background.
+- A mark on top of a shape, such as the plus on the new-folder icon, is cut out of it.
+- The colour depends on where the icon is. Alone, as in a toolbar button, it is the accent and drawn at 18px. Beside a text label, as in a menu row, it is the secondary text colour and drawn at 16px, so the words lead. Delete, and any other action that destroys something, is the critical colour in both places.
+
+Four other treatments were tried on 2026-11-21 and the owner turned each down: a line icon with one coloured part reads as neither line nor colour; a detailed, shaded picture is too realistic for a button; a flat shape in its own bright colour per action looks childish in a row; and accent-coloured icons beside menu labels are too heavy.
 
 **A plain symbol** is the third kind: arrows, chevrons, close, check, and the window buttons. These are marks, not pictures, and stay a 2px line with round ends in the primary text colour.
 

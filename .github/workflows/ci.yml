@@ -135,6 +135,20 @@ jobs:
           expect_release ubuntu2204 22.04
           expect_refused ubuntu2004
           expect_refused fedora
+          # Which file: /etc/os-release, and /usr/lib/os-release only when
+          # the first does not exist, as better_core::host reads them.
+          mkdir -p "$fixtures/vendor-only/usr/lib" "$fixtures/both/etc" "$fixtures/both/usr/lib"
+          cp "$fixtures/zorin17" "$fixtures/vendor-only/usr/lib/os-release"
+          cp "$fixtures/zorin18" "$fixtures/both/etc/os-release"
+          cp "$fixtures/zorin17" "$fixtures/both/usr/lib/os-release"
+          expect_release_under() {
+            actual="$(BETTER_OS_INSTALL_ROOT="$fixtures/$1" bash install.sh --dry-run \
+              | sed -n 's/.*installing the Ubuntu \([0-9.]*\) packages.*/\1/p')"
+            test "$actual" = "$2" || { echo "$1: expected $2, got '${actual:-nothing}'" >&2; exit 1; }
+            echo "$1 -> ubuntu-$2"
+          }
+          expect_release_under vendor-only 22.04
+          expect_release_under both 24.04
         env:
           # Raises the anonymous API rate limit that every job on this runner
           # network shares. The installer never requires a token.
