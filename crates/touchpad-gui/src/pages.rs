@@ -937,7 +937,10 @@ impl Render for TouchpadApp {
                 let content = v_flex()
                     .size_full()
                     .min_w_0()
-                    .child(self.top_bar(cx))
+                    // The top bar is a wrapping row; as a column's child it
+                    // would stretch to the free height and centre its one line,
+                    // leaving no room for the page (seen in the sandbox).
+                    .child(div().flex_none().child(self.top_bar(cx)))
                     .when(self.model.safe_mode(), |this| {
                         this.child(
                             div()
