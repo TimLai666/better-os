@@ -46,40 +46,47 @@ Spec section 9.
       test asserts it over the crates' source, as `touchpad-gui` does.
 - [x] Light and dark, zh-TW and English, 1600 and 960, screenshotted with a
       fixture fault present and with none.
-- [ ] fmt, clippy on stable and 1.99, `cargo +1.95 check`, workspace tests,
+- [x] fmt, clippy on stable and 1.99, `cargo +1.95 check`, workspace tests,
       and the license check pass.
 
 ## Notes
 
-**Blocked:** the last gate (clippy on 1.99, `cargo +1.95 check`, the full
-`manager-gui` test run, and a re-run after the last edit) was stopped because
-the shared disk fell below 8 GB free (7.6 GB at 2026-11-21 02:55); everything
-else is built and checked.
-
-Done (spec: `engineering/specs/better-patch.md`):
+Delivered (spec: `engineering/specs/better-patch.md`):
 - `patch-core` (no GPUI, no I/O): the `Entry` trait, `EntryState`, the
-  record, the engine, both entries; `patch-platform`: the host, the Flatpak
-  reader/writer, Mutter's scale, the closed command runner, the record store,
-  and a fixture machine for demo windows and sandboxes.
+  record, the engine, both entries. `patch-platform`: the host, the Flatpak
+  reader and writer, Mutter's scale, the closed command runner, the record
+  store, a fixture machine for demo windows and sandboxes, and the removal
+  step below.
 - The page in `manager-gui/src/pages/fixes/` with search entries, the pane
-  count, Home's item, and the debug-only placeholder removed (with it the
-  `Placeholder` page status, so ticket 91's release gate holds by
-  construction).
-- Checks run: `cargo test -p patch-core -p patch-platform` (56 + 9 + 8 + 4
-  passed), `cargo test -p manager-gui fixes` (10 passed, before the last edit
-  below), `cargo +stable clippy -p patch-core -p patch-platform -p
-  manager-gui --all-targets -D warnings` (clean, before the last edit),
-  `cargo fmt --all --check`, the license check.
-- Screenshots: `/home/tim/Developer/better-os-evidence/90/`, 31 files, taken
-  in a private headless GNOME Shell 46 with a scratch HOME and fixture
-  machines (`BETTER_OS_DEBUG_FIXES_ROOT`), plus one with the real host code
-  in that sandbox at scale 2 (read only: no Fix was pressed).
-
-Left: after disk is free, re-run `cargo test --no-fail-fast -p manager-gui`
-in full (the last edit counts an undone fault that came back on Home and the
-pane, and adds its assertion; it has not been compiled), clippy on stable and
-1.99 for `patch-core`, `patch-platform`, `manager-gui`, and `cargo +1.95
-check` for the same; then tick the last box and move this ticket to `done/`.
+  count, and Home's item (an undone fault that came back counts again). The
+  debug-only placeholder is gone, and with it the `Placeholder` page status,
+  so ticket 91's release gate holds by construction. Header buttons use the
+  kit's own `SettingsExpander` header handling.
+- Removing Better Manager undoes every applied fix that has an undo
+  (owner's rule via the coordinator, 2026-11-21): the package ships
+  `/usr/lib/better-os/before-removal/better-manager`, which its prerm runs as
+  each person on removal, its postinst runs with `--undo` on abort-remove,
+  and its postrm cleans up after (`packaging/maintainer/before-removal-accounts.sh`,
+  which shares `accounts.sh` with the autostart postrm). A key the person
+  changed after the fix is left and named (exit 3). The record is deleted,
+  and the rebuilt font cache is left. Tests: `patch_platform::removal` (7),
+  `packaging/tests/before-removal-accounts.test.sh` (11 checks, now in CI),
+  and a `verify-deb.sh` check. Not run through a real `apt remove`.
+- Checks run on the merge of `main` (2026-11-21):
+  - `cargo test --no-fail-fast -p patch-core -p patch-platform -p manager-gui`: exit 0, 374 + 2 + 5 + 56 + 16 + 8 + 4 passed.
+  - `cargo +stable clippy` and `cargo +1.99.0 clippy -p patch-core -p patch-platform -p manager-gui --all-targets -- -D warnings`: exit 0.
+  - `cargo +1.95 check -p patch-core -p patch-platform -p manager-gui`: exit 0.
+  - `cargo fmt --all --check`: exit 0.
+  - License check: exit 0, after regenerating it.
+  - `bash packaging/tests/autostart-overrides.test.sh` and `before-removal-accounts.test.sh`: exit 0.
+  - shellcheck is not installed on this machine; CI runs it.
+- Screenshots: `/home/tim/Developer/better-os-evidence/90/`. They were taken in
+  a private headless GNOME Shell 46 with a scratch HOME and fixture machines
+  (`BETTER_OS_DEBUG_FIXES_ROOT`), in light and dark, zh-TW and English, at 1600
+  and 960, with a fault present and with none. They also show expanded,
+  after-fix, applied, after-undo, and Home states, one shot after the merge,
+  and one with the real host code in the sandbox at scale 2 (read only, no
+  Fix pressed).
 
 Never run either fix against the person's real fontconfig cache or Flatpak
 overrides from an agent session; use the scratch HOME.

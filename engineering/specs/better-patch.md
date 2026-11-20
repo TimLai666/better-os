@@ -157,16 +157,33 @@ page is shown, and on Check again, always off the UI thread. A Fix or an Undo
 runs off the UI thread too, and the page checks again afterwards. An update
 restart waits while either is running.
 
-## Not covered
+## Removing Better Manager
 
-- **Removing Better Manager leaves applied fixes in place.** The override
-  file outlives the package, and so does the record (it is not in the
-  manifest's `paths`). AGENTS.md says nothing a component installs may
-  outlive it. Whether a fix the person chose counts as something Better OS
-  installed, and so must be undone at removal, is the owner's decision. It
-  is not built.
-- Flatpak installations listed in `/etc/flatpak/installations.d` are not
-  read; only the user and the system installation are.
+A fix Better Manager applied is something Better OS added to the machine, so
+it does not outlive Better Manager (AGENTS.md). Better Manager cannot remove
+itself, so apt is how it goes. Its package ships the before-removal program
+`/usr/lib/better-os/before-removal/better-manager`
+(`patch_platform::removal`), and its maintainer scripts run it once per
+person (`packaging/maintainer/before-removal-accounts.sh`):
+
+- **prerm remove** runs the program as each person, with only `HOME`, a
+  fixed `PATH` and `LC_ALL=C` in its environment. It sets the record and each
+  override file a fix wrote aside in
+  `~/.local/state/better-os/fixes-removal-undo.json`. Then it undoes every
+  recorded fix that has an undo, through the page's own undo path and rule:
+  a key the person changed after the fix is left as they made it and named
+  on the terminal, and the program exits 3. Last, it deletes the record.
+- **postinst abort-remove** runs it with `--undo`: every override file and
+  the record go back to what they were before the prerm.
+- **postrm remove or purge** deletes the set-aside file, as the person.
+
+A fix with no undo (the rebuilt font cache) keeps no record and is left: it
+restored the machine rather than adding to it. The program needs no session,
+so it never exits 4. A record it cannot read is kept, not deleted, and the
+program exits 3. A person whose `XDG_DATA_HOME` or `XDG_STATE_HOME` is not
+the default keeps their fixes, because a maintainer script cannot see those
+variables. Only the user and the system Flatpak installations are read;
+those listed in `/etc/flatpak/installations.d` are not.
 
 ## Candidate faults, not built
 

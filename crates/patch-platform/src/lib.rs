@@ -19,6 +19,7 @@ pub mod fixture;
 pub mod flatpak;
 pub mod host;
 pub mod paths;
+pub mod removal;
 pub mod store;
 
 pub use host::LinuxHost;

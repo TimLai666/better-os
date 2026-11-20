@@ -112,6 +112,7 @@ export RUST_FONTCONFIG_DLOPEN="${RUST_FONTCONFIG_DLOPEN:-1}"
 "$ROOT_DIR/packaging/generate-third-party-notices.sh" --check
 cargo build --release \
     -p manager-gui \
+    -p patch-platform \
     -p manager-cli \
     -p manager-daemon \
     -p monitor-gui \
@@ -185,6 +186,7 @@ write_autostart_override_postrm() {
         printf "better_os_login_defs='/etc/login.defs'\n"
         printf "better_os_override_mark='%s'\n" "$AUTOSTART_OVERRIDE_MARK"
         printf "better_os_override_files='%s'\n\n" "$PACKAGE_AUTOSTART_OVERRIDES"
+        cat "$ROOT_DIR/packaging/maintainer/accounts.sh"
         cat "$ROOT_DIR/packaging/maintainer/autostart-overrides.sh"
         printf '\n'
         # shellcheck disable=SC2016 # expanded by the maintainer script
@@ -209,6 +211,13 @@ PACKAGE_RELEASES_KEYBOARD=0
 #                      handoff Better Manager installed, which is how a failed
 #                      handoff is retried once Better Manager is current
 PACKAGE_HANDOFF_RETRY=0
+#   PACKAGE_BEFORE_REMOVAL_ACCOUNTS  1 for better-manager: Better Manager cannot
+#                      remove itself, so its before-removal program is run by
+#                      the maintainer scripts, as each person, when apt removes
+#                      the package: prerm runs it, postinst abort-remove runs
+#                      it with --undo, postrm deletes what it set aside
+#                      (ticket 90, packaging/maintainer/before-removal-accounts.sh)
+PACKAGE_BEFORE_REMOVAL_ACCOUNTS=0
 
 reset_package_inputs() {
     PACKAGE_BINARIES=()
@@ -222,6 +231,33 @@ reset_package_inputs() {
     PACKAGE_DAEMON_HANDOFF=0
     PACKAGE_RELEASES_KEYBOARD=0
     PACKAGE_HANDOFF_RETRY=0
+    PACKAGE_BEFORE_REMOVAL_ACCOUNTS=0
+}
+
+# Appends the before-removal fragment to the package's prerm, postinst, and
+# postrm, creating each that does not exist yet.
+add_before_removal_accounts() {
+    local staging_dir="$1"
+    local package_name="$2"
+    local script call
+    for script in prerm postinst postrm; do
+        if [[ ! -f "$staging_dir/DEBIAN/$script" ]]; then
+            printf '#!/bin/sh\nset -e\n' > "$staging_dir/DEBIAN/$script"
+            chmod 0755 "$staging_dir/DEBIAN/$script"
+        fi
+        # shellcheck disable=SC2016 # expanded by the maintainer script
+        call="better_os_before_removal_$script \"\$1\" || true"
+        {
+            printf "\n# Ticket 90: what %s changed in the people's files goes back on removal.\n" "$package_name"
+            printf "better_os_passwd_file='/etc/passwd'\n"
+            printf "better_os_login_defs='/etc/login.defs'\n"
+            printf "better_os_before_removal_program='/usr/lib/better-os/before-removal/%s'\n" "$package_name"
+            printf "better_os_before_removal_leftover='.local/state/better-os/fixes-removal-undo.json'\n\n"
+            cat "$ROOT_DIR/packaging/maintainer/accounts.sh"
+            cat "$ROOT_DIR/packaging/maintainer/before-removal-accounts.sh"
+            printf '\n%s\n' "$call"
+        } >> "$staging_dir/DEBIAN/$script"
+    done
 }
 
 # The prerm lines that give the keyboard back when the page that set its
@@ -515,6 +551,9 @@ make_package() {
     fi
     if ((PACKAGE_HANDOFF_RETRY == 1)); then
         add_handoff_hook "$staging_dir"
+    fi
+    if ((PACKAGE_BEFORE_REMOVAL_ACCOUNTS == 1)); then
+        add_before_removal_accounts "$staging_dir" "$package_name"
     fi
 
     add_installed_size "$staging_dir"
@@ -829,6 +868,7 @@ PACKAGE_BINARIES=(
     "manager-gui:usr/bin/better-manager"
     "manager-cli:usr/bin/better-manager-cli"
     "better-window-attention:usr/libexec/better-window-attention"
+    "better-manager-before-removal:usr/lib/better-os/before-removal/better-manager"
 )
 PACKAGE_DATA=(
     "packaging/manager/io.betteros.Manager.desktop:usr/share/applications/io.betteros.Manager.desktop"
@@ -858,6 +898,9 @@ PACKAGE_RECOMMENDS="better-manager-daemon (= $VERSION), better-shell-adapter (= 
 PACKAGE_ALWAYS_ON_UNITS="better-window-attention.service"
 PACKAGE_DAEMON_HANDOFF=1
 PACKAGE_RELEASES_KEYBOARD=1
+# Removing Better Manager undoes every fix it applied that has an undo
+# (ticket 90); apt is the only way it is removed.
+PACKAGE_BEFORE_REMOVAL_ACCOUNTS=1
 make_package better-manager \
     'Better OS manager desktop application' \
     'Better OS desktop application built with the shared manager and monitor contracts.'

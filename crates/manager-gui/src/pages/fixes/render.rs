@@ -26,19 +26,6 @@ fn tone_color(tone: Tone, p: &Palette) -> Rgba {
     }
 }
 
-/// Keeps a press on a control in a card's header from also opening or
-/// closing the card.
-fn inside_header(element: impl IntoElement) -> Div {
-    div()
-        .flex()
-        .flex_wrap()
-        .items_center()
-        .gap(px(8.0))
-        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .child(element)
-}
-
 fn id_for(prefix: &str, key: &super::model::RowKey) -> ElementId {
     let subject = match &key.subject {
         patch_core::Subject::Machine => "machine".to_string(),
@@ -269,7 +256,7 @@ impl ManagerApp {
             SettingsExpander::new(id_for("fixes-fault", &row.key), row.header.clone(), open)
                 .icon(icon)
                 .description(row.cause)
-                .content(inside_header(header))
+                .content(header)
                 .on_toggle(Self::act_with(cx, move |this, open: bool, _, cx| {
                     if open {
                         this.fixes.open.insert(toggle_key.clone());

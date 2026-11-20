@@ -71,6 +71,7 @@ run() {
         better_os_override_mark="$MARK"
         better_os_override_files='touchegg.desktop fusuma.desktop'
         better_os_setpriv="$WORK_DIR/setpriv"
+        . "$ROOT_DIR/packaging/maintainer/accounts.sh"
         . "$ROOT_DIR/packaging/maintainer/autostart-overrides.sh"
         better_os_forget_autostart_overrides "$@"
     )
@@ -82,6 +83,7 @@ run upgrade
 range() {
     (
         better_os_login_defs="$1"
+        . "$ROOT_DIR/packaging/maintainer/accounts.sh"
         . "$ROOT_DIR/packaging/maintainer/autostart-overrides.sh"
         printf '%s..%s' "$(better_os_login_range_value UID_MIN 1000)" "$(better_os_login_range_value UID_MAX 60000)"
     )
@@ -108,7 +110,8 @@ run remove
 # possible without root, so the helper is called directly.
 (
     better_os_setpriv="$WORK_DIR/setpriv"
-    . "$ROOT_DIR/packaging/maintainer/autostart-overrides.sh"
+    . "$ROOT_DIR/packaging/maintainer/accounts.sh"
+        . "$ROOT_DIR/packaging/maintainer/autostart-overrides.sh"
     better_os_as_account "$((me + 1))" "$((me + 1))" true
 )
 grep -qx -- "--reuid=$((me + 1)) --regid=$((me + 1)) --init-groups -- true" "$WORK_DIR/setpriv.log" && pass "another account's delete runs as that account" || fail "the delete did not switch accounts: $(cat "$WORK_DIR/setpriv.log" 2>/dev/null)"

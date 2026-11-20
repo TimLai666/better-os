@@ -5,6 +5,9 @@
 # ~/.config/autostart, marked with one line; nothing the component added may
 # outlive it (AGENTS.md), so removal deletes exactly those files.
 #
+# The login range and the account switch are accounts.sh's, which the
+# generated script includes first.
+#
 # Header variables set by the generated script:
 #   better_os_passwd_file   the passwd database to read homes from
 #   better_os_login_defs    login.defs, for the UID_MIN..UID_MAX login range
@@ -29,40 +32,6 @@
 # file the person wrote has no marker and is left alone. A custom
 # XDG_CONFIG_HOME is not visible from a maintainer script; such an override
 # stays, and the page can still remove it ("Turn back on").
-
-better_os_login_range_value() {
-    # $1 key, $2 default; a value that is not a plain number is ignored.
-    value=""
-    if [ -r "${better_os_login_defs:-}" ]; then
-        value="$(awk -v key="$1" '$1 == key { v = $2 } END { print v }' "$better_os_login_defs" 2>/dev/null)" || value=""
-    fi
-    case "$value" in
-        '' | *[!0-9]*) value="$2" ;;
-    esac
-    printf '%s\n' "$value"
-}
-
-better_os_owned_real_dir() {
-    # $1 path, $2 uid: a directory, not a link, owned by uid.
-    [ -d "$1" ] && [ ! -L "$1" ] || return 1
-    [ "$(stat -c %u -- "$1" 2>/dev/null)" = "$2" ]
-}
-
-better_os_as_account() {
-    # $1 uid, $2 gid, then the command. Already that account (a test, or a
-    # person removing their own copy): run it as is.
-    as_uid="$1"
-    as_gid="$2"
-    shift 2
-    case "$as_gid" in
-        '' | *[!0-9]*) return 1 ;;
-    esac
-    if [ "$(id -u)" = "$as_uid" ]; then
-        "$@"
-    else
-        "${better_os_setpriv:-setpriv}" --reuid="$as_uid" --regid="$as_gid" --init-groups -- "$@"
-    fi
-}
 
 better_os_forget_autostart_overrides() {
     case "${1:-}" in

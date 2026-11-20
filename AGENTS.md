@@ -444,7 +444,11 @@ GUI or dependency compiles when the relevant command was not executed.
   the package, and with `--undo` if the daemon then refuses. It never blocks a
   removal: exit 3 is a warning in Activity, exit 4 means no session and a
   pending restore Better Manager finishes at its next start. Better Touchpad's
-  puts its captured touchpad settings back. The gesture service's first run puts the Mac-style preset in
+  puts its captured touchpad settings back. Better Manager's own (it undoes
+  the fixes it applied, ticket 90) is run by its maintainer scripts instead,
+  as each person in the login range, because Better Manager cannot remove
+  itself (`packaging/maintainer/before-removal-accounts.sh`, sharing
+  `accounts.sh` with the autostart postrm). The gesture service's first run puts the Mac-style preset in
   force when no gesture file exists yet. Without both processes the Gestures
   screen and the `touchpad.gesture_bridge` health check say which is missing:
   the service owns `org.betteros.TouchpadGestures1` while it runs, and an
@@ -605,9 +609,12 @@ GUI or dependency compiles when the relevant command was not executed.
   directories: no agent session may rebuild the person's font cache or write
   their Flatpak overrides. Nobody has watched it find, fix, or undo either
   fault on a real desktop, and the Mutter scale read has been seen only in a
-  headless GNOME Shell. Removing Better Manager leaves an applied override and
-  its record in place; whether a fix must be undone at removal is the owner's
-  decision and is not built.
+  headless GNOME Shell. Removing Better Manager with apt undoes every applied
+  fix that has an undo, as each person, through the package's
+  before-removal program run by its maintainer scripts (a key the person
+  changed afterwards is left and named), and deletes the record; the rebuilt
+  font cache stays. That path has run only in tests and against generated
+  scripts, never through a real `apt remove`.
 - The login screen watch (ticket 140, ADR 0033) has run against a real
   systemd, logind, and journal only in CI's container check
   (`packaging/boot-watch/run.sh`, a stand-in `gdm.service` that never opens

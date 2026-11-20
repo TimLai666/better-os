@@ -5711,6 +5711,7 @@ name = "patch-platform"
 version = "0.2.16"
 dependencies = [
  "patch-core",
+ "serde",
  "serde_json",
  "tempfile",
  "zbus",

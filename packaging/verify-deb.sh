@@ -31,7 +31,8 @@ required_executables() {
             printf '%s\n' \
                 usr/bin/better-manager \
                 usr/libexec/better-window-attention \
-                usr/libexec/better-os/daemon-handoff
+                usr/libexec/better-os/daemon-handoff \
+                usr/lib/better-os/before-removal/better-manager
             ;;
         better-monitor)
             printf '%s\n' \
@@ -471,6 +472,24 @@ for package_name in \
                 printf 'The Better Manager prerm does not parse as sh\n' >&2
                 exit 1
             }
+            # Ticket 90: removing Better Manager undoes the fixes it applied,
+            # as each person, through its before-removal program; an
+            # abandoned removal puts them back; the postrm deletes what was
+            # set aside.
+            for script in prerm postinst postrm; do
+                grep -qxF "better_os_before_removal_$script \"\$1\" || true" "$control/$script" || {
+                    printf 'The Better Manager %s does not run the before-removal step\n' "$script" >&2
+                    exit 1
+                }
+                grep -qxF "better_os_before_removal_program='/usr/lib/better-os/before-removal/better-manager'" "$control/$script" || {
+                    printf 'The Better Manager %s names another before-removal program\n' "$script" >&2
+                    exit 1
+                }
+                sh -n "$control/$script" || {
+                    printf 'The Better Manager %s does not parse as sh\n' "$script" >&2
+                    exit 1
+                }
+            done
             # ADR 0028: the handoff for a privileged service too old to
             # install its own successor. The postinst starts it, and it hands
             # over only the exact packages this build made beside it.
