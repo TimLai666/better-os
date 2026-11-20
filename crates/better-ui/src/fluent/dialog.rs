@@ -23,6 +23,7 @@ use super::light_dismiss::{PanelOrder, panel_marker, pointer_in_child_panel};
 use super::menu::panel_frame;
 use super::{BODY, CAPTION, Key, SUBTITLE, palette, radius, spacing, text};
 use super::{Handler, ValueHandler};
+use crate::system_frame::CornerRadii;
 
 /// Which of a dialog's buttons a person pressed, or Escape.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
@@ -166,14 +167,33 @@ impl RenderOnce for ContentDialog {
         let on_result = self.on_result.clone();
         let primary_enabled = self.primary_enabled;
 
+        // The fills are drawn with `corner_fill`, so an inline dialog that is
+        // a whole window (the app chooser) keeps inside its rounded corners
+        // (ticket 141); the edges' widths stay in the layout.
+        let md = f32::from(radius::MD);
         let mut row = div()
+            .relative()
             .flex()
             .flex_none()
             .gap(spacing::SM)
             .p(spacing::XL)
-            .bg(p.window_background)
             .border_t_1()
-            .border_color(p.card_stroke);
+            .border_color(gpui::transparent_black())
+            .child(
+                super::window_frame::corner_fill(p.window_background)
+                    .rounded(CornerRadii {
+                        bottom_right: md,
+                        bottom_left: md,
+                        ..CornerRadii::SQUARE
+                    })
+                    .border(
+                        gpui::Edges {
+                            top: px(1.0),
+                            ..gpui::Edges::default()
+                        },
+                        p.card_stroke,
+                    ),
+            );
         for (index, (result, label, accent)) in self.buttons.layout().into_iter().enumerate() {
             let kind = if accent {
                 ButtonKind::Accent
@@ -208,11 +228,18 @@ impl RenderOnce for ContentDialog {
             .flex_col()
             .min_w(px(320.0))
             .max_w(px(548.0))
+            .relative()
             .rounded(radius::MD)
             .border_1()
-            .border_color(p.surface_stroke)
-            .bg(p.dialog)
-            .shadow_lg()
+            .border_color(gpui::transparent_black())
+            .child(
+                super::window_frame::corner_fill(p.dialog)
+                    .rounded(CornerRadii::uniform(md))
+                    .border(gpui::Edges::all(px(1.0)), p.surface_stroke),
+            )
+            // Floating over the smoke it has a shadow; drawn in place (in a
+            // page, or as a whole window) it sits on its surface.
+            .when(!self.inline, |d| d.shadow_lg())
             .overflow_hidden()
             .track_focus(&focus)
             .on_key_down(move |event, window, cx| {
@@ -265,7 +292,9 @@ impl RenderOnce for ContentDialog {
                 .flex()
                 .items_center()
                 .justify_center()
-                .bg(p.smoke)
+                // The smoke covers the window to its rounded corners and no
+                // further (ticket 141).
+                .child(super::window_frame::corner_fill(p.smoke))
                 .occlude()
                 .child(dialog)
                 .focus_trap(trap_id, &focus),
@@ -338,6 +367,8 @@ impl RenderOnce for Flyout {
         let order = PanelOrder::default();
         let out_order = order.clone();
         let panel = panel_frame(div().id(self.id.clone()), p)
+            .max_h(super::window_frame::overlay_max_height(window, cx))
+            .overflow_y_scroll()
             .occlude()
             .child(panel_marker(&order))
             .pt(px(15.0))
@@ -403,18 +434,23 @@ pub struct Tooltip {
 impl Render for Tooltip {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(cx);
-        text(div(), CAPTION)
-            .max_w(px(320.0))
-            .pt(px(6.0))
-            .pb(px(8.0))
-            .px(px(9.0))
-            .bg(p.flyout)
-            .border_1()
-            .border_color(p.flyout_stroke)
-            .rounded(radius::SM)
-            .shadow_md()
-            .text_color(p.text_primary)
-            .child(self.text.clone())
+        // GPUI places a tooltip anywhere in the surface, the window's shadow
+        // included: it is moved inside the window's rounded shape (ticket
+        // 141).
+        super::window_frame::inside_window(
+            text(div(), CAPTION)
+                .max_w(px(320.0))
+                .pt(px(6.0))
+                .pb(px(8.0))
+                .px(px(9.0))
+                .bg(p.flyout)
+                .border_1()
+                .border_color(p.flyout_stroke)
+                .rounded(radius::SM)
+                .shadow_md()
+                .text_color(p.text_primary)
+                .child(self.text.clone()),
+        )
     }
 }
 

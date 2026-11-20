@@ -415,6 +415,10 @@ impl RenderOnce for ComboBox {
                 Some((state.clone(), self.on_select.clone(), focus.clone())),
                 p,
             )
+            // A list taller than the window scrolls rather than being cut
+            // (ticket 141).
+            .max_h(super::window_frame::overlay_max_height(window, cx))
+            .overflow_y_scroll()
             .child(light_dismiss::panel_marker(&order))
             .on_mouse_down_out(move |_, window, cx| {
                 if !light_dismiss::pointer_in_child_panel(&out_order, window, cx) {
