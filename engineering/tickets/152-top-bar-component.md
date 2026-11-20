@@ -1,6 +1,8 @@
 # Ticket 152 — The top bar component: service, view, Better OS menu, and the window actions
 
-**Blocked by:** 151
+**Blocked by:** 200 (a Better OS window as a layer-shell surface), 203 (the
+session it is checked in). Until 2026-11-21 it was blocked by 151; see the
+dated section below.
 
 ## Why
 
@@ -9,7 +11,34 @@ a dock, with every decision in a Rust service. This ticket builds that
 skeleton and everything on the bar that needs no other ticket: the Better OS
 menu, the application name and the actions every window has, the clock's
 place, the shared states, keyboard access, monitors, sizes, and the component
-itself, so tickets 153 and 156–158 each add one part.
+itself, so tickets 156–158 and 149 each add one part. The bar carries no
+application menus (decision D5, owner, 2026-11-21): nothing here registers
+with or serves `com.canonical.AppMenu.Registrar` or exports a menu, and no
+window's own menu row changes.
+
+## Under ADR 0038's option D (2026-11-21)
+
+The owner chose a Better OS session on `cosmic-comp` beside GNOME, and ADR
+0038 says this ticket is built "with the layer-shell path first" while ticket
+151's GNOME relay waits. So, from 2026-11-21:
+
+- The view opens as `WindowKind::LayerShell` through `better_ui::layer`
+  (ticket 200): top edge, exclusive zone 32 px, one per output the setting
+  covers. The surface is behind a seam with two backends; this ticket builds
+  the layer-shell one. The GNOME dock backend (`StartView`, `ReserveStrip`,
+  hiding GNOME's panel) and every relay call below move to ticket 151 and
+  wait with it.
+- The parts that read or act on the desktop (focused window and its actions,
+  the Better OS menu's session-manager, lock, and logout calls, the key
+  bindings) are traits here, with fakes in tests; their sources in the Better
+  OS session are ticket 160's, and under GNOME ticket 151's.
+- The headless GNOME Shell check below becomes the same check in the Better
+  OS session (ticket 200's nested compositor or ticket 201's VM). The manifest
+  depends on `better-os-session` rather than `better-shell-adapter` until 151
+  is built.
+- The shared states table gains the session's rows where GNOME's do not apply
+  (no shell adapter in the session), as `design/top-bar-spec.md` section 11 is
+  brought up to date by ticket 160.
 
 ## What to build
 
@@ -30,8 +59,13 @@ itself, so tickets 153 and 156–158 each add one part.
   call (logind, GNOME's session manager, `org.gnome.ScreenSaver`,
   `org.freedesktop.Accounts`), the lockdown keys, the failure toast.
 - **Application name and the window actions** (spec section 4), through the
-  relay's `FocusChanged` and `WindowAction`; Better OS windows get About,
-  Settings…, Quit instead.
+  relay's `FocusChanged` and `WindowAction`: new window, full screen,
+  minimize, close, quit, each drawn only when the window allows it, the same
+  for every application, Better OS's own included; the Desktop state with
+  Show All Windows.
+- **The bar's menus** (spec section 5) for the Better OS menu and the
+  application name's menu: `fluent::menu` rows, separators, shortcut text,
+  truncation at 360px, type-to-select. Tray menus reuse them in ticket 156.
 - **States** (spec section 2), including the adapter missing, off, or too old,
   GNOME other than 46, fullscreen, overview, and lock screen.
 - **Keyboard and screen readers** (spec section 7): Ctrl+F2 focus, arrow
@@ -51,8 +85,9 @@ itself, so tickets 153 and 156–158 each add one part.
   `components/manifests/better-top-bar.yaml` with its `paths` for
   `$XDG_STATE_HOME/better-os/top-bar/`, a dependency on `better-shell-adapter`
   at the version that carries the panel relay, Better Manager's Settings ›
-  Top bar card (spec section 12), turning off and removing restoring every
-  entry it applied.
+  Top bar card (spec section 12; its tray rows are ticket 156's and its old
+  X11 icon rows ticket 149's), turning off and removing restoring every entry
+  it applied.
 - The clock item drawn with ticket 146's local-time function (its flyout is
   ticket 158).
 
@@ -61,15 +96,17 @@ itself, so tickets 153 and 156–158 each add one part.
 - [ ] Unit tests in `top-bar-core` for every rule named above, in both
       languages, including each width step of spec section 8 and each focus
       state of section 4.
-- [ ] In a headless GNOME Shell 46 (sandbox rules), installed from the built
-      package into the sandbox's own root: the bar appears at the top at
-      scale 1 and 2, the Better OS menu opens and each item calls the right
-      method on a fake service, a GTK test window's name and actions work,
-      fullscreen hides it, the view killed comes back, and turning the
-      component off restores GNOME's panel and the key bindings. Screenshots
+- [ ] In the Better OS session (ticket 200's nested `cosmic-comp` or ticket
+      201's VM; until 2026-11-21 this was a headless GNOME Shell 46), installed
+      from the built package: the bar appears at the top at scale 1 and 2 and
+      reserves its strip, the Better OS menu opens and each item calls the
+      right method on a fake service, a fake focus source's name and actions
+      work, fullscreen hides it, the view killed comes back, and turning the
+      component off removes the strip and restores the key bindings. Screenshots
       light and dark, zh-TW and English, in
       `/home/tim/Developer/better-os-evidence/152/`, compared with
-      `design/top-bar/rest-other-*.html` and `betteros-menu-*.html`.
+      `design/top-bar/rest-other-*.html`, `rest-betteros-*.html`,
+      `app-actions-*.html`, and `betteros-menu-*.html`.
 - [ ] Orca (or `accerciser` reading AT-SPI) in the sandbox names the bar's
       items as the spec's tables say.
 - [ ] fmt, clippy on stable, the crates' tests, `verify-deb.sh`, and the

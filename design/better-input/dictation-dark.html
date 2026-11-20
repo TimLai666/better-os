@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="zh-Hant-TW" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Better Input 語音輸入（深色）</title>
+<style>
+:root{--font:system-ui,"Inter","Segoe UI","Noto Sans CJK TC","Noto Sans TC",sans-serif}
+html[data-theme=light]{--bg:#f3f3f3;--card:rgba(255,255,255,.7);--text:rgba(0,0,0,.894);--text2:rgba(0,0,0,.62);--text3:rgba(0,0,0,.36);--accent:#005fb8;--on-accent:#fff;--subtle:rgba(0,0,0,.037);--subtle2:rgba(0,0,0,.06);--stroke:rgba(0,0,0,.06);--strong:rgba(0,0,0,.45);--flyout:#f9f9f9;--elev:rgba(0,0,0,.16);--wall1:#cfe3f4;--wall2:#9cc3e6;--win:#ffffff;--doc:#ffffff;--taskbar:rgba(238,238,238,.92);--shellpop:#fafafa;--shelltext:#2e3436;--shellsel:#3584e4}
+html[data-theme=dark]{--bg:#202020;--card:rgba(255,255,255,.05);--text:#fff;--text2:rgba(255,255,255,.77);--text3:rgba(255,255,255,.36);--accent:#60cdff;--on-accent:#000;--subtle:rgba(255,255,255,.06);--subtle2:rgba(255,255,255,.09);--stroke:rgba(255,255,255,.07);--strong:rgba(255,255,255,.55);--flyout:#2c2c2c;--elev:rgba(0,0,0,.45);--wall1:#1d2b3a;--wall2:#0d1520;--win:#242424;--doc:#1e1e1e;--taskbar:rgba(32,32,32,.92);--shellpop:#353535;--shelltext:#ffffff;--shellsel:#3584e4}
+*{box-sizing:border-box}
+body{margin:0;background:#888;color:var(--text);font:400 14px/20px var(--font);-webkit-font-smoothing:antialiased;padding:24px}
+.screen{position:relative;width:1400px;height:420px;overflow:hidden;background:linear-gradient(160deg,var(--wall1),var(--wall2));border-radius:2px;box-shadow:0 2px 12px rgba(0,0,0,.3);margin-bottom:16px}
+.win{position:absolute;left:160px;top:24px;width:1000px;height:340px;background:var(--win);border-radius:12px 12px 0 0;box-shadow:0 12px 32px rgba(0,0,0,.28);overflow:hidden}
+.win .tb{height:46px;display:flex;align-items:center;padding:0 12px;gap:8px;border-bottom:1px solid var(--stroke)}
+.win .tb .t{font-weight:600;flex:1;text-align:center}
+.win .tb .c{width:24px;height:24px;border-radius:12px;background:var(--subtle2);display:grid;place-items:center;color:var(--text2);font-size:12px}
+.doc{position:absolute;top:46px;left:0;right:0;bottom:0;background:var(--doc);padding:28px 48px;font-size:16px;line-height:28px;color:var(--text)}
+.pre{text-decoration:underline;text-underline-offset:4px;text-decoration-thickness:1px}
+.caret{display:inline-block;width:1px;height:20px;background:var(--text);vertical-align:-4px;margin:0 1px}
+.pop{position:absolute;background:var(--shellpop);color:var(--shelltext);border-radius:12px;box-shadow:0 4px 16px var(--elev);padding:8px 10px;font-size:14px;line-height:20px;z-index:3;border:1px solid var(--stroke)}
+.pop .aux{padding:2px 4px;white-space:nowrap}
+.pop .aux .tent{color:var(--text2)}
+.pop .aux .hint{color:var(--text2);font-size:12px}
+.pop .cand{display:flex;flex-direction:column;margin-top:4px}
+.pop .cand span{padding:3px 8px;border-radius:6px;display:flex;gap:10px;white-space:nowrap}
+.pop .cand span b{font-weight:400;color:var(--text2);width:12px}
+.pop .cand span.sel{background:var(--shellsel);color:#fff}
+.pop .cand span.sel b{color:#fff}
+.pop .cand span i{font-style:normal;font-size:12px;color:var(--text2)}
+.pop .cand span.sel i{color:#fff}
+.taskbar{position:absolute;left:0;right:0;bottom:0;height:45px;background:var(--taskbar);border-top:1px solid var(--stroke);display:flex;align-items:center;gap:6px;padding:0 12px;z-index:4}
+.taskbar .gap{flex:1}
+.taskbar .ind{height:30px;min-width:30px;padding:0 8px;border-radius:6px;display:grid;place-items:center;color:var(--text);background:var(--subtle2);font-weight:600}
+.taskbar .clock{font-size:12px;line-height:16px;text-align:right;color:var(--text)}
+.label{position:absolute;left:16px;top:12px;z-index:5;font-size:12px;line-height:16px;color:#fff;background:rgba(0,0,0,.5);padding:4px 8px;border-radius:4px}
+.legend{max-width:1400px;font-size:12px;line-height:16px;color:#fff}
+</style>
+</head>
+<body>
+
+<div class="screen">
+<span class="label">1 · 正在聽：穩定的字在組字區，還會變的尾巴在上面的提示裡</span>
+<div class="win"><div class="tb"><span style="width:56px"></span><span class="t">會議記錄.txt — 文字編輯器</span><span class="c">–</span><span class="c">□</span><span class="c">×</span></div>
+<div class="doc">今天的重點：<br>明天下午三點跟 David 開會，<span class="pre">討論 Q4 的</span><span class="caret"></span></div></div>
+<div class="pop" style="left:470px;top:132px"><div class="aux">🎙 正在聽… <span class="tent">roadmap 跟預算</span></div><div class="aux hint">再按 Fn+F10 停止 · Esc 取消</div></div>
+<div class="taskbar"><span class="gap"></span><span class="ind" title="輸入法：Better Input（聽）">聽</span><span class="clock">下午 3:42<br>2026/11/21</span></div>
+</div>
+
+<div class="screen">
+<span class="label">2 · 停止後：整段留在組字區，用 ↓ 換字或直接打字修改，按 Enter 送出</span>
+<div class="win"><div class="tb"><span style="width:56px"></span><span class="t">會議記錄.txt — 文字編輯器</span><span class="c">–</span><span class="c">□</span><span class="c">×</span></div>
+<div class="doc">今天的重點：<br>明天下午三點跟 David 開會，<span class="pre">討論 Q4 的 roadmap 跟<span class="caret"></span>預算。</span></div></div>
+<div class="pop" style="left:566px;top:132px"><div class="cand"><span class="sel"><b>1</b>跟</span><span><b>2</b>和</span><span><b>3</b>根<i>同音</i></span><span><b>4</b>更<i>辨識的其他結果</i></span></div></div>
+<div class="taskbar"><span class="gap"></span><span class="ind" title="輸入法：Better Input（中）">中</span><span class="clock">下午 3:42<br>2026/11/21</span></div>
+</div>
+
+<p class="legend">設計稿：在任何應用程式的文字欄位裡用語音輸入，依 design/better-input-spec.md 第 4.1、3.1 與 7.6 節。組字區的底線是應用程式自己畫的（GNOME 46 的 GTK 4 視窗只畫一種底線），所以「還會變的字」放在 GNOME 畫的候選提示裡，不靠顏色區分。候選窗與提示由 GNOME Shell 繪製，外觀依系統主題，這裡只示意位置與文字。底部是 Zorin 工作列上的輸入法指示（頂端列開啟時在頂端列）。文件內容是示意資料。另一個外觀：dictation-light.html。</p>
+</body>
+</html>

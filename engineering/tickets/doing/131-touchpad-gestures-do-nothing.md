@@ -184,3 +184,15 @@ is decided. Once the fixed build is installed:
    "exit: stopped by signal 15; GNOME has its own gestures" and starts again.
 
 The ticket stays in `doing/` until that observation is made.
+
+### 2026-11-21: what this fix is for under ADR 0038's option D
+
+The owner chose a Better OS session on `cosmic-comp` beside GNOME. GNOME stays
+installed and the default until that session meets the bar in
+`engineering/specs/better-os-session.md`, so this fix is what the owner's
+gestures run on until then, and it stays GNOME's afterwards for anyone on
+GNOME. Nothing GNOME-only is added beyond it: finger-following transitions are
+built in the session (tickets 223 and 224), not by driving GNOME Shell's
+private transition methods. The service's code carries into the session,
+where ticket 219 gives it a "released compositor" state and ticket 223 a
+`cosmic-comp` backend.

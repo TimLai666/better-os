@@ -1,8 +1,9 @@
 //! System (ticket 86, spec sections 4 and 11): the hardware controls, and
 //! which drives mount automatically (ticket 127). Power
 //! mode, the charger switch, the battery charge limit, the battery, display
-//! brightness, the keyboard backlight, fan mode, temperatures and fans, and
-//! About this PC, each drawn only where the machine has it.
+//! brightness, the keyboard backlight and its colour (ticket 136), fan mode,
+//! temperatures and fans, and About this PC, each drawn only where the
+//! machine has it.
 //!
 //! What is drawn is decided by `hardware-core`; `decide` gives it words,
 //! `state` reads and writes off the UI thread, and `render` draws it with
@@ -11,6 +12,8 @@
 pub(crate) mod copy;
 pub(crate) mod decide;
 pub(crate) mod drives;
+pub(crate) mod lighting;
+pub(crate) mod lighting_card;
 pub(crate) mod render;
 pub(crate) mod state;
 #[cfg(test)]
@@ -30,6 +33,7 @@ pub(crate) mod card {
     pub(crate) const BATTERY: &str = "system-battery";
     pub(crate) const BRIGHTNESS: &str = "system-brightness";
     pub(crate) const KEYBOARD: &str = "system-keyboard";
+    pub(crate) const LIGHTING: &str = "system-keyboard-colour";
     pub(crate) const FAN_MODE: &str = "system-fan-mode";
     pub(crate) const SENSORS: &str = "system-sensors";
     pub(crate) const ABOUT: &str = "system-about";
@@ -83,6 +87,10 @@ fn search_entries(locale: Locale) -> Vec<SearchEntry> {
             card::BRIGHTNESS,
         ),
         entry(c.keyboard, "", c.group_display, card::KEYBOARD),
+        {
+            let l = lighting::copy(locale);
+            entry(l.header, l.search, c.group_display, card::LIGHTING)
+        },
         entry(
             c.fan_mode,
             c.fan_mode_description,

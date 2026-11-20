@@ -149,3 +149,129 @@ fn a_fan_with_a_writable_pwm_is_not_a_mode_switch_and_an_unknown_device_is_ignor
     std::fs::write(&asus, "128\n").unwrap();
     assert_eq!(sysfs::fan_mode_attribute(&root), None);
 }
+
+/// Ticket 136: the owner's keyboard is `hidraw1`, an I2C LampArray, found by
+/// its report descriptor; the touchpad's `hidraw0`, a multitouch descriptor,
+/// is not one.
+#[test]
+fn the_owners_keyboard_is_found_as_a_lamp_array_by_its_descriptor() {
+    use hardware_core::lighting::{HintInterface, LightingHint};
+    let root = fixture("owner");
+    let nodes = sysfs::lamp_array_nodes(&root);
+    assert_eq!(
+        nodes,
+        vec![sysfs::LampArrayNode {
+            node: "hidraw1".into(),
+            bus: Some(sysfs::BUS_I2C),
+            vendor: Some(0x0B05),
+            product: Some(0x5570),
+        }]
+    );
+    assert!(nodes[0].built_in());
+    assert_eq!(nodes[0].device().label(), "0018:0B05:5570");
+    assert_eq!(sysfs::keyboard_rgb_mode_attribute(&root), None);
+    assert_eq!(
+        sysfs::lighting_hint(&root),
+        Presence::Present(LightingHint {
+            interface: Some(HintInterface::LampArray {
+                node: "hidraw1".into()
+            }),
+            backlight: true,
+        })
+    );
+    let touchpad = sysfs::report_descriptor(&root, "hidraw0").unwrap();
+    assert!(!hardware_core::lamparray::is_lamp_array(&touchpad));
+    assert_eq!(sysfs::report_descriptor(&root, "../hidraw1"), None);
+    assert_eq!(sysfs::report_descriptor(&root, "hidraw1/../x"), None);
+}
+
+#[test]
+fn a_tuf_laptop_is_found_by_kbd_rgb_mode_and_a_plain_laptop_by_its_backlight_alone() {
+    use hardware_core::lighting::{HintInterface, LightingHint};
+    let tuf = fixture("tuf");
+    assert!(
+        sysfs::keyboard_rgb_mode_attribute(&tuf)
+            .unwrap()
+            .ends_with("asus::kbd_backlight/kbd_rgb_mode")
+    );
+    assert_eq!(
+        sysfs::lighting_hint(&tuf),
+        Presence::Present(LightingHint {
+            interface: Some(HintInterface::AsusWmi),
+            backlight: true,
+        })
+    );
+    // A backlight and no colour interface: one colour.
+    let dir = tempfile::tempdir().unwrap();
+    let led = dir.path().join("sys/class/leds/dell::kbd_backlight");
+    std::fs::create_dir_all(&led).unwrap();
+    std::fs::write(led.join("max_brightness"), "2\n").unwrap();
+    assert_eq!(
+        sysfs::lighting_hint(&SysRoot::at(dir.path())),
+        Presence::Present(LightingHint {
+            interface: None,
+            backlight: true,
+        })
+    );
+    assert_eq!(sysfs::lighting_hint(&fixture("nothing")), Presence::Absent);
+}
+
+#[test]
+fn hidraw_nodes_are_judged_by_name_size_and_descriptor_never_trusted() {
+    let dir = tempfile::tempdir().unwrap();
+    let class = dir.path().join("sys/class/hidraw");
+    let lamp = std::fs::read(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../hardware-core/tests/fixtures/m5406wa-ite5570.rdesc"),
+    )
+    .unwrap();
+    for (name, descriptor, bus) in [
+        // A USB LampArray, names that are not nodes, a descriptor too long,
+        // one cut short, and the built-in one.
+        ("hidraw7", lamp.clone(), "0003"),
+        ("hidraw12345", lamp.clone(), "0018"),
+        ("hidrawx", lamp.clone(), "0018"),
+        ("hidraw3", [lamp.clone(), vec![0; 4096]].concat(), "0018"),
+        ("hidraw4", lamp[..300].to_vec(), "0018"),
+        ("hidraw2", lamp.clone(), "0018"),
+    ] {
+        let device = class.join(name).join("device");
+        std::fs::create_dir_all(&device).unwrap();
+        std::fs::write(device.join("report_descriptor"), descriptor).unwrap();
+        std::fs::write(
+            device.join("uevent"),
+            format!("HID_ID={bus}:00000B05:00005570\n"),
+        )
+        .unwrap();
+    }
+    let nodes: Vec<(String, Option<u16>)> = sysfs::lamp_array_nodes(&SysRoot::at(dir.path()))
+        .into_iter()
+        .map(|n| (n.node, n.bus))
+        .collect();
+    // The built-in (I2C) one first.
+    assert_eq!(
+        nodes,
+        vec![
+            ("hidraw2".to_string(), Some(0x18)),
+            ("hidraw7".to_string(), Some(0x03))
+        ]
+    );
+    // Only the built-in one is ever the keyboard: a USB Dynamic Lighting
+    // keyboard is not, even alone.
+    let built_in: Vec<String> = sysfs::built_in_lamp_arrays(&SysRoot::at(dir.path()))
+        .into_iter()
+        .map(|n| n.node)
+        .collect();
+    assert_eq!(built_in, vec!["hidraw2".to_string()]);
+    std::fs::remove_dir_all(class.join("hidraw2")).unwrap();
+    assert!(sysfs::built_in_lamp_arrays(&SysRoot::at(dir.path())).is_empty());
+    assert_eq!(
+        sysfs::lighting_hint(&SysRoot::at(dir.path())),
+        Presence::Absent,
+        "a USB LampArray alone gives the page no keyboard colour card"
+    );
+    assert!(sysfs::is_hidraw_name("hidraw0"));
+    assert!(!sysfs::is_hidraw_name("hidraw"));
+    assert!(!sysfs::is_hidraw_name("hidraw-1"));
+    assert!(!sysfs::is_hidraw_name("event3"));
+}

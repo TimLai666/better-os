@@ -26,6 +26,11 @@ pub const CHARGE_LIMIT_ACTION: &str = "org.betteros.manager.set-charge-limit";
 /// The action that gates `org.betteros.Hardware1.SetFanMode`.
 pub const FAN_MODE_ACTION: &str = "org.betteros.manager.set-fan-mode";
 
+/// The action that gates `org.betteros.Hardware1.KeyboardLighting` and
+/// `SetKeyboardLighting` (ADR 0034, ticket 136). The active local session
+/// is allowed without a prompt, as UPower allows its keyboard brightness.
+pub const KEYBOARD_LIGHTING_ACTION: &str = "org.betteros.manager.keyboard-lighting";
+
 /// The action that gates `org.betteros.Drives1.SetMountAutomatically`
 /// (ADR 0032, ticket 127).
 pub const DRIVE_MOUNTING_ACTION: &str = "org.betteros.manager.drive-mounting";
