@@ -1638,6 +1638,18 @@ impl FilesSession {
         }
     }
 
+    /// The sentence a Format or Write to Drive confirmation shows for a
+    /// device that cannot be told from another one like it (ticket 171).
+    pub fn erase_caution(&self) -> Option<String> {
+        let object_path = match &self.dialog {
+            Some(PendingDialog::Format { object_path, .. })
+            | Some(PendingDialog::WriteImage { object_path, .. }) => object_path,
+            _ => return None,
+        };
+        let row = self.devices.get(object_path)?;
+        crate::devices::erase_caution(row, crate::i18n::copy(self.locale))
+    }
+
     /// What of the running system the drive of the storage service's
     /// device holds (ticket 171): the drive listing's answer and the
     /// service's together, the stronger winning. A device the window does

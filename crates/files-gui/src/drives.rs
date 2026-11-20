@@ -501,6 +501,20 @@ pub struct DriveSources {
     pub system: SystemSourcesRead,
 }
 
+/// What a private bus's fake drives are read against in this crate's tests:
+/// nothing the system uses, every mount a person's.
+#[cfg(test)]
+fn private_bus_sources(testing: bool) -> Option<SystemSourcesRead> {
+    testing
+        .then(|| -> SystemSourcesRead { Arc::new(|| Some(SystemSources::every_mount_personal())) })
+}
+
+/// A shipped binary reads the machine whatever bus it is given.
+#[cfg(not(test))]
+fn private_bus_sources(_testing: bool) -> Option<SystemSourcesRead> {
+    None
+}
+
 /// Reads what the running system has mounted and swapped.
 pub type SystemSourcesRead = Arc<dyn Fn() -> Option<SystemSources> + Send + Sync>;
 
@@ -925,13 +939,12 @@ impl DriveSources {
         // The system's own files, and the system bus for the daemon and
         // systemd; a private bus in tests, where the files are empty.
         let testing = private.is_some();
-        // The kernel's record of what the running system uses; nothing in
-        // tests, where the private bus's drives are all there is.
-        let system: SystemSourcesRead = if testing {
-            Arc::new(|| Some(SystemSources::every_mount_personal()))
-        } else {
+        // The kernel's record of what the running system uses; in this
+        // crate's own tests, where the private bus's drives are all there
+        // is, nothing (a shipped binary has no such reading at all).
+        let system: SystemSourcesRead = private_bus_sources(testing).unwrap_or_else(|| {
             Arc::new(|| SystemSources::read(&storage_platform::Roots::system()))
-        };
+        });
         let at = Arc::clone(&link);
         let reading = Arc::clone(&system);
         let eject = move |drive: &Drive| smol::block_on(eject_through(&at, drive, &reading));

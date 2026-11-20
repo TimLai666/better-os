@@ -1145,6 +1145,52 @@ fn a_format_dialog_closes_when_its_stick_is_replaced_at_the_same_path() {
     );
 }
 
+/// Ticket 171, second review: a device whose identity is only descriptive or
+/// this connection's is named in the confirmation by what the person can
+/// check, with the sentence that it cannot be told from another like it; a
+/// stable one gets no such sentence.
+#[test]
+fn an_erase_of_a_device_with_a_weak_identity_says_what_to_check() {
+    let (rig, mut session) = plain();
+    let mut weak = report("/dev/obj", Some("/media/A"), ready());
+    weak.identity_confidence = "weak".into();
+    weak.display_name = "PHOTOS".into();
+    weak.size = 32_000_000_000;
+    weak.drive_name = Some("Generic Flash Disk".into());
+    rig.link.push(DeviceNotice::Inventory(vec![weak]));
+    session.pump();
+    session.request_format("/dev/obj");
+    let caution = session
+        .erase_caution()
+        .expect("a caution for a weak identity");
+    // The row's own name (here its mount point's), size and model.
+    assert_eq!(
+        caution,
+        crate::i18n::copy(session.locale)
+            .errors
+            .erase_identity_caution
+            .replace("{device}", "A · 29.8 GB · Generic Flash Disk")
+    );
+
+    session.dialog = None;
+    rig.link.push(DeviceNotice::Inventory(vec![report(
+        "/dev/obj",
+        Some("/media/A"),
+        ready(),
+    )]));
+    session.pump();
+    session.request_format("/dev/obj");
+    assert_eq!(
+        session.erase_caution(),
+        None,
+        "a stable identity says nothing"
+    );
+    assert_eq!(
+        crate::errors::explain("storage.erase.ambiguous", &crate::i18n::ZH_TW),
+        crate::i18n::ZH_TW.errors.erase_ambiguous
+    );
+}
+
 #[test]
 fn eject_is_available_and_reports_what_actually_happened() {
     let (rig, mut session) = plain();

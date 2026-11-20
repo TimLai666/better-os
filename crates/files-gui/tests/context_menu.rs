@@ -306,6 +306,7 @@ fn service_row(system_use: SystemUse) -> DeviceRow {
         label: "rootfs".into(),
         identity: "uuid:root".into(),
         identity_volatile: false,
+        identity_weak: false,
         mount_point: Some("/".into()),
         policy: storage_core::RemovalPolicy::DirectRemoval,
         state: storage_core::DeviceStateKind::Unknown,

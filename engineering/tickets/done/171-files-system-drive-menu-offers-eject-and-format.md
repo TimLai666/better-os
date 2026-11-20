@@ -74,3 +74,24 @@ Eject and Format.
   passed, 0 failed). The sandbox screenshots of the first round stand: the
   fixture listing's menus go through `drive_row_kind`, which this round did
   not change.
+- 2026-11-21, second review fixes: person media is
+  `/media/<account>/…` or `/run/media/<account>/…` for an account in
+  `login.defs`' login range, or `/mnt/better-os`; mount and automount units
+  under `/etc/systemd/system` and `/run/systemd/system` count as table
+  entries, and quoted tags, `LABEL=`, `PARTUUID=`, `PARTLABEL=` and
+  `/dev/disk/by-*` name the drive; a loop partition is traced through its
+  loop device; the test-only "every mount is the person's" seam builds only
+  under `cfg(test)` or the `test-support` feature, which no shipped binary's
+  dependency graph enables (`cargo tree`). The service compares an erase's
+  identity against a fresh read of the device, not its last event, and
+  refuses `storage.erase.ambiguous` when two connected devices share it; a
+  weak or volatile identity may be erased and the dialog says what to check
+  (decision in the spec). Tests for each.
+- Checks on the second-review tree: `cargo fmt --all --check`, `cargo
+  +stable clippy -D warnings --all-targets` and `cargo test --no-fail-fast`
+  for every crate changed and those depending on them (1901 passed, 0
+  failed). Nothing this round changed what the menus draw, so the first
+  round's screenshots stand.
+- The maintainer-script unification in ticket 129 (waiting for ticket 90's
+  `accounts.sh`) is the one thing outstanding across the two tickets; this
+  ticket's own work does not depend on it.

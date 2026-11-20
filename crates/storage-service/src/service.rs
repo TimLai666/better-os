@@ -112,6 +112,7 @@ impl<C: DeviceControl + Clone + 'static> StorageService<C> {
                 &DeviceHandle::new(&request.object_path),
                 request.identity.as_deref(),
             )
+            .await
             .map_err(refuse)?;
         coordinator
             .format(
@@ -142,6 +143,7 @@ impl<C: DeviceControl + Clone + 'static> StorageService<C> {
                     &DeviceHandle::new(&request.object_path),
                     request.identity.as_deref(),
                 )
+                .await
                 .map_err(refuse)?;
             let write = coordinator
                 .begin_image_write(

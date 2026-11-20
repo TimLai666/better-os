@@ -615,6 +615,12 @@ pub struct ErrorCopy {
     /// The device a Format or Write to Drive was confirmed for is gone, or
     /// another device took its place (ticket 171).
     pub erase_device_changed: &'static str,
+    /// Another connected device has the same identity: nothing is erased.
+    pub erase_ambiguous: &'static str,
+    /// A Format or Write to Drive confirmation for a device whose identity
+    /// is only descriptive or this connection's: `{device}` is its label,
+    /// size and model.
+    pub erase_identity_caution: &'static str,
     pub erase_not_confirmed: &'static str,
     pub image_unmount_failed: &'static str,
     pub image_not_a_drive: &'static str,
@@ -1150,6 +1156,8 @@ pub const EN_US: Copy = Copy {
         system_table: "The system's mount table (/etc/fstab) names this drive, so it can't be ejected or formatted.",
         system_unknown: "Better Files can't tell whether the running system uses this drive, so it can't be ejected or formatted.",
         erase_device_changed: "The drive was removed or replaced while this was open, so nothing was erased.",
+        erase_ambiguous: "Another connected drive looks exactly like this one, so Better Files can't be sure which to erase. Unplug the other one and try again.",
+        erase_identity_caution: "Better Files can't tell this drive from another one like it. Check that it is {device} before you erase it.",
         erase_busy: "Something is still writing to this drive. Wait until it finishes, then try again.",
         erase_not_confirmed: "Nothing was erased: the erase was not confirmed.",
         image_unmount_failed: "A volume on the drive ({device}) is in use and could not be unmounted, so nothing was written. Close what is using it and try again.",
@@ -1687,6 +1695,8 @@ pub const ZH_TW: Copy = Copy {
         system_table: "系統的掛載表（/etc/fstab）指定了這個磁碟，所以不能退出或格式化。",
         system_unknown: "無法確定系統是否正在使用這個磁碟，所以不能退出或格式化。",
         erase_device_changed: "這個視窗開著時磁碟被拔除或換掉了，所以沒有清除任何東西。",
+        erase_ambiguous: "另一個已連接的磁碟和這個一模一樣，Better Files 無法確定要清除哪一個。請拔除另一個後再試一次。",
+        erase_identity_caution: "Better Files 無法分辨這個磁碟和另一個相同的磁碟。清除之前，請確認它是{device}。",
         erase_busy: "還有東西正在寫入這個磁碟。請等它完成後再試一次。",
         erase_not_confirmed: "沒有清除任何東西：清除動作沒有被確認。",
         image_unmount_failed: "磁碟上的一個磁區（{device}）正在使用中，無法卸載，所以沒有寫入。請關閉使用它的程式後再試一次。",

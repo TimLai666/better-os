@@ -42,13 +42,98 @@ pub const FSTAB_END: &str = "# <<< Better OS drive mounting";
 /// Where Better OS mounts the internal drives it was asked to (ADR 0032).
 pub const MOUNT_BASE: &str = "/mnt/better-os";
 
-/// Where removable media is mounted for a person: UDisks2's `/media/<user>/`
-/// and `/run/media/<user>/` (and anything below `/media`), and Better OS's
-/// own mount root. Anything mounted elsewhere is the system's.
-pub fn is_person_media(point: &Path) -> bool {
-    ["/media", "/run/media", MOUNT_BASE]
-        .iter()
-        .any(|root| point.starts_with(root) && point != Path::new(root))
+/// Whose names count as a person's under `/media/<name>/` and
+/// `/run/media/<name>/`.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub enum People {
+    /// Any name: tables parsed from text in a test, where no account is.
+    #[default]
+    Anyone,
+    /// These account names (a test's).
+    Listed(Vec<String>),
+    /// The system's accounts in the login range (`UID_MIN`..`UID_MAX` of
+    /// `login.defs`), each name looked up through the system's account
+    /// database when asked, so a directory or network account counts too.
+    System { uid_min: u32, uid_max: u32 },
+    /// Every mount point but `/`: a fake UDisks2 on a private bus whose
+    /// volumes are mounted under a temporary directory. Built only for
+    /// tests ([`SystemSources::every_mount_personal`]).
+    EveryMount,
+}
+
+impl People {
+    fn knows(&self, name: &str) -> bool {
+        match self {
+            People::Anyone | People::EveryMount => true,
+            People::Listed(names) => names.iter().any(|known| known == name),
+            People::System { uid_min, uid_max } => {
+                account_uid(name).is_some_and(|uid| uid >= *uid_min && uid <= *uid_max)
+            }
+        }
+    }
+
+    /// The login range `login.defs` under `etc` names, 1000..=60000 where it
+    /// says nothing.
+    pub fn system(etc: &Path) -> Self {
+        let defs = std::fs::read_to_string(etc.join("login.defs")).unwrap_or_default();
+        let value = |key: &str, default: u32| {
+            defs.lines()
+                .rev()
+                .find_map(|line| {
+                    let mut fields = line.split_whitespace();
+                    (fields.next()? == key).then(|| fields.next()?.parse().ok())?
+                })
+                .unwrap_or(default)
+        };
+        People::System {
+            uid_min: value("UID_MIN", 1000),
+            uid_max: value("UID_MAX", 60000),
+        }
+    }
+}
+
+/// An account's uid, from the system's account database.
+fn account_uid(name: &str) -> Option<u32> {
+    let name = std::ffi::CString::new(name).ok()?;
+    let mut entry: libc::passwd = unsafe { std::mem::zeroed() };
+    let mut buffer = vec![0 as libc::c_char; 16 * 1024];
+    let mut found: *mut libc::passwd = std::ptr::null_mut();
+    // SAFETY: every pointer is to a live, writable value of the right type
+    // and size; `found` is only read after the call says it is set.
+    let status = unsafe {
+        libc::getpwnam_r(
+            name.as_ptr(),
+            &mut entry,
+            buffer.as_mut_ptr(),
+            buffer.len(),
+            &mut found,
+        )
+    };
+    (status == 0 && !found.is_null()).then_some(entry.pw_uid)
+}
+
+/// Where removable media is mounted for a person: UDisks2's
+/// `/media/<name>/…` and `/run/media/<name>/…` where `<name>` is one of
+/// `people`, and Better OS's own mount root. A bare `/media/backup` (a
+/// systemd mount unit, an autofs map, a service's own `mount`) is the
+/// system's, as is anything else mounted elsewhere.
+pub fn is_person_media(point: &Path, people: &People) -> bool {
+    if *people == People::EveryMount {
+        return point != Path::new("/");
+    }
+    if point.starts_with(MOUNT_BASE) && point != Path::new(MOUNT_BASE) {
+        return true;
+    }
+    ["/media", "/run/media"].iter().any(|root| {
+        let Ok(rest) = point.strip_prefix(root) else {
+            return false;
+        };
+        let mut parts = rest.components();
+        match (parts.next(), parts.next()) {
+            (Some(name), Some(_)) => people.knows(&name.as_os_str().to_string_lossy()),
+            _ => false,
+        }
+    })
 }
 
 /// What, if anything, of the running system a drive holds.
@@ -169,12 +254,11 @@ impl SystemSource {
 pub struct SystemSources {
     pub sources: Vec<SystemSource>,
     /// The device each `/etc/fstab` line outside Better OS's block names
-    /// (`UUID=…`, `LABEL=…`, `PARTUUID=…`, `/dev/…`).
+    /// (`UUID=…`, `LABEL=…`, `PARTUUID=…`, `/dev/…`), and each systemd mount
+    /// unit's `What=` under `/etc/systemd/system` and `/run/systemd/system`.
     pub fstab: Vec<String>,
-    /// Where removable media is mounted for a person, when not the
-    /// standard places ([`is_person_media`]); empty means those. A test
-    /// whose fake UDisks2 mounts under a temporary directory says so here.
-    pub media_roots: Vec<PathBuf>,
+    /// Whose `/media/<name>/` folders are a person's ([`is_person_media`]).
+    pub people: People,
 }
 
 /// Block devices that are no drive: memory and compressed swap.
@@ -293,7 +377,7 @@ pub fn parse_fstab(text: &str) -> Vec<String> {
         let Some(spec) = trimmed.split_whitespace().next() else {
             continue;
         };
-        let spec = unescape(spec);
+        let spec = unquoted_tag(&unescape(spec));
         let names_device = spec.starts_with("/dev/")
             || ["UUID=", "LABEL=", "PARTUUID=", "PARTLABEL="]
                 .iter()
@@ -305,11 +389,76 @@ pub fn parse_fstab(text: &str) -> Vec<String> {
     specs
 }
 
-/// Whether an fstab line's device field names `device`.
+/// `UUID="abcd"` as `UUID=abcd`: fstab and mount units may quote a tag's
+/// value.
+fn unquoted_tag(spec: &str) -> String {
+    match spec.split_once('=') {
+        Some((tag, value)) if !spec.starts_with('/') => {
+            let value = value
+                .strip_prefix('"')
+                .and_then(|value| value.strip_suffix('"'))
+                .or_else(|| {
+                    value
+                        .strip_prefix('\'')
+                        .and_then(|value| value.strip_suffix('\''))
+                })
+                .unwrap_or(value);
+            format!("{tag}={value}")
+        }
+        _ => spec.to_string(),
+    }
+}
+
+/// The `What=` of every `.mount` unit in `directory`, and of the `.mount`
+/// unit each `.automount` there stands for, as table entries.
+fn mount_unit_sources(directory: &Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let unit = if name.ends_with(".mount") {
+            path
+        } else if let Some(stem) = name.strip_suffix(".automount") {
+            directory.join(format!("{stem}.mount"))
+        } else {
+            continue;
+        };
+        let Ok(text) = std::fs::read_to_string(&unit) else {
+            continue;
+        };
+        for line in text.lines() {
+            if let Some(what) = line.trim().strip_prefix("What=") {
+                let what = unquoted_tag(what.trim());
+                if !what.is_empty() && !found.contains(&what) {
+                    found.push(what);
+                }
+            }
+        }
+    }
+    found
+}
+
+/// Whether an fstab line's device field names `device`, in any of its
+/// forms: a tag, or a `/dev/disk/by-*` link to one.
 fn fstab_names(spec: &str, device: &PlatformDevice) -> bool {
     let same = |value: Option<&String>, wanted: &str| {
         value.is_some_and(|value| value.eq_ignore_ascii_case(wanted))
     };
+    let spec = unquoted_tag(spec);
+    let spec = match spec.strip_prefix("/dev/disk/") {
+        Some(link) if !names_node(&spec, device) => match link.split_once('/') {
+            Some(("by-uuid", value)) => format!("UUID={value}"),
+            Some(("by-label", value)) => format!("LABEL={}", unescape_udev(value)),
+            Some(("by-partuuid", value)) => format!("PARTUUID={value}"),
+            Some(("by-partlabel", value)) => format!("PARTLABEL={}", unescape_udev(value)),
+            _ => spec.clone(),
+        },
+        _ => spec.clone(),
+    };
+    let spec = spec.as_str();
     if let Some(uuid) = spec.strip_prefix("UUID=") {
         same(device.block.id_uuid.as_ref(), uuid)
     } else if let Some(label) = spec.strip_prefix("LABEL=") {
@@ -317,11 +466,10 @@ fn fstab_names(spec: &str, device: &PlatformDevice) -> bool {
     } else if let Some(partuuid) = spec.strip_prefix("PARTUUID=") {
         same(device.block.partition_uuid.as_ref(), partuuid)
     } else if let Some(label) = spec.strip_prefix("PARTLABEL=") {
-        device
-            .block
-            .symlinks
-            .iter()
-            .any(|link| link == &format!("/dev/disk/by-partlabel/{label}"))
+        device.block.symlinks.iter().any(|link| {
+            link.strip_prefix("/dev/disk/by-partlabel/")
+                .is_some_and(|value| unescape_udev(value) == label)
+        })
     } else {
         names_node(spec, device)
     }
@@ -330,22 +478,18 @@ fn fstab_names(spec: &str, device: &PlatformDevice) -> bool {
 impl SystemSources {
     /// No mount, no swap, no fstab line, and every mount point a person's:
     /// for a fake UDisks2 on a private bus whose volumes are mounted under a
-    /// temporary directory. Never what a machine is read as.
+    /// temporary directory. Never what a machine is read as, and not in a
+    /// shipped binary.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn every_mount_personal() -> Self {
         Self {
-            media_roots: vec![PathBuf::from("/")],
+            people: People::EveryMount,
             ..Self::default()
         }
     }
 
     fn is_personal(&self, point: &Path) -> bool {
-        if self.media_roots.is_empty() {
-            is_person_media(point)
-        } else {
-            self.media_roots
-                .iter()
-                .any(|root| point.starts_with(root) && point != root.as_path())
-        }
+        is_person_media(point, &self.people)
     }
 
     /// What `/proc/self/mounts` (or `mountinfo`), `/proc/swaps` and
@@ -357,9 +501,13 @@ impl SystemSources {
         } else {
             parse_mounts(mounts)
         };
-        Self::from_tables(&mounts, &parse_swaps(swaps), Vec::new(), |_, _, _| {
-            Vec::new()
-        })
+        Self::from_tables(
+            &mounts,
+            &parse_swaps(swaps),
+            Vec::new(),
+            People::Anyone,
+            |_, _, _| Vec::new(),
+        )
     }
 
     /// The same, with an fstab.
@@ -375,11 +523,12 @@ impl SystemSources {
         mounts: &[Mount],
         swaps: &[SwapEntry],
         fstab: Vec<String>,
+        people: People,
         trace: impl Fn(Option<&str>, Option<(u32, u32)>, Option<&Path>) -> Vec<String>,
     ) -> Self {
         let mut sources = Vec::new();
         for mount in mounts {
-            if is_person_media(&mount.point) {
+            if is_person_media(&mount.point, &people) {
                 continue;
             }
             let held = if mount.point == Path::new("/") {
@@ -452,7 +601,7 @@ impl SystemSources {
         Self {
             sources,
             fstab,
-            media_roots: Vec::new(),
+            people,
         }
     }
 
@@ -478,9 +627,23 @@ impl SystemSources {
             .proc
             .parent()
             .map_or_else(|| PathBuf::from("/etc"), |root| root.join("etc"));
-        let fstab = std::fs::read_to_string(etc.join("fstab"))
+        let mut fstab = std::fs::read_to_string(etc.join("fstab"))
             .map(|text| parse_fstab(&text))
             .unwrap_or_default();
+        // Mount units an administrator or a package wrote (not the ones
+        // systemd generates from fstab, under /run/systemd/generator).
+        let run = roots
+            .proc
+            .parent()
+            .map_or_else(|| PathBuf::from("/run"), |root| root.join("run"));
+        for directory in [etc.join("systemd/system"), run.join("systemd/system")] {
+            for what in mount_unit_sources(&directory) {
+                if !fstab.contains(&what) {
+                    fstab.push(what);
+                }
+            }
+        }
+        let people = People::system(&etc);
         let numbers: Vec<((u32, u32), String)> = mounts
             .iter()
             .filter(|mount| mount.source.starts_with("/dev/"))
@@ -504,7 +667,7 @@ impl SystemSources {
             }
             found
         };
-        Some(Self::from_tables(&mounts, &swaps, fstab, trace))
+        Some(Self::from_tables(&mounts, &swaps, fstab, people, trace))
     }
 }
 
@@ -552,9 +715,41 @@ fn node_of_number(
     Some(format!("/dev/{name}"))
 }
 
+/// udev's `\x20` escapes in a `/dev/disk/by-label` link name, undone.
+fn unescape_udev(name: &str) -> String {
+    let bytes = name.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'\\'
+            && bytes.get(index + 1) == Some(&b'x')
+            && let Some(hex) = name.get(index + 2..index + 4)
+            && let Ok(value) = u8::from_str_radix(hex, 16)
+        {
+            out.push(value);
+            index += 4;
+        } else {
+            out.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// The loop device a loop partition is on (`loop0p1` is on `loop0`).
+fn loop_parent(name: &str) -> Option<String> {
+    let rest = name.strip_prefix("loop")?;
+    let (number, partition) = rest.split_once('p')?;
+    (!number.is_empty()
+        && number.bytes().all(|byte| byte.is_ascii_digit())
+        && !partition.is_empty()
+        && partition.bytes().all(|byte| byte.is_ascii_digit()))
+    .then(|| format!("loop{number}"))
+}
+
 /// `node`, the node its link resolves to, every node under it (device
-/// mapper and RAID slaves), and for a loop device the device its backing
-/// file is on, in that order and without repeats.
+/// mapper and RAID slaves), and for a loop device (or a partition of one)
+/// the device its backing file is on, in that order and without repeats.
 fn underlying(
     roots: &Roots,
     numbers: &[((u32, u32), String)],
@@ -579,6 +774,10 @@ fn underlying(
     else {
         return;
     };
+    // A partition of a loop device has no backing file of its own.
+    if let Some(parent) = loop_parent(&name) {
+        underlying(roots, numbers, &format!("/dev/{parent}"), into, depth + 1);
+    }
     let block = roots.sys.join("class/block").join(&name);
     // A loop device: the drive its file is on (a booted ISO's stick, a
     // snap's root). Not traceable when the file is gone: the loop then
@@ -797,7 +996,10 @@ mod tests {
             "/run/media/me/STICK",
             "/mnt/better-os/AB12",
         ] {
-            assert!(is_person_media(Path::new(point)), "{point}");
+            assert!(
+                is_person_media(Path::new(point), &People::Anyone),
+                "{point}"
+            );
         }
         for point in [
             "/",
@@ -807,8 +1009,180 @@ mod tests {
             "/mnt/usb",
             "/home/me/usb",
         ] {
-            assert!(!is_person_media(Path::new(point)), "{point}");
+            assert!(
+                !is_person_media(Path::new(point), &People::Anyone),
+                "{point}"
+            );
         }
+    }
+
+    /// Second review: only `/media/<account>/…` is a person's. A bare
+    /// `/media/backup` (a mount unit, an autofs map) or a name that is no
+    /// account in the login range is the system's.
+    #[test]
+    fn only_an_account_s_own_media_folder_is_a_person_s() {
+        let people = People::Listed(vec!["me".into()]);
+        assert!(is_person_media(Path::new("/media/me/STICK"), &people));
+        assert!(is_person_media(Path::new("/run/media/me/STICK"), &people));
+        for point in [
+            "/media/backup",
+            "/media/data",
+            "/media/backup/disk1",
+            "/run/media/data",
+        ] {
+            assert!(!is_person_media(Path::new(point), &people), "{point}");
+        }
+        let stick = volume("/b/sdc1", "/dev/sdc1", Some("/d/stick"), &[]);
+        let devices = [stick];
+        let mut sources = SystemSources::parse("/dev/sdc1 /media/data ext4 rw 0 0\n", "");
+        sources.people = people.clone();
+        // `parse` judged with anyone; read with these people the mount is held.
+        let held = SystemSources::from_tables(
+            &parse_mounts("/dev/sdc1 /media/data ext4 rw 0 0\n"),
+            &[],
+            Vec::new(),
+            people,
+            |_, _, _| Vec::new(),
+        );
+        assert_eq!(
+            of(&held, &devices, "/d/stick"),
+            SystemUse::SystemFolder {
+                path: "/media/data".into()
+            }
+        );
+        let _ = sources;
+        // The login range comes from login.defs, 1000..=60000 without one.
+        let etc = tempfile::tempdir().unwrap();
+        assert_eq!(
+            People::system(etc.path()),
+            People::System {
+                uid_min: 1000,
+                uid_max: 60000
+            }
+        );
+        std::fs::write(etc.path().join("login.defs"), "UID_MIN\t500\nUID_MAX 900\n").unwrap();
+        assert_eq!(
+            People::system(etc.path()),
+            People::System {
+                uid_min: 500,
+                uid_max: 900
+            }
+        );
+        // root (uid 0) is never in a login range.
+        assert!(!People::system(etc.path()).knows("root"));
+    }
+
+    /// Second review: fstab may quote a tag, or name a `/dev/disk/by-*` link.
+    #[test]
+    fn quoted_tags_and_by_links_name_the_drive() {
+        let mut data = volume("/b/sdc1", "/dev/sdc1", Some("/d/data"), &[]);
+        data.block.id_uuid = Some("ABCD-1234".into());
+        data.block.id_label = Some("My Data".into());
+        data.block.partition_uuid = Some("0f0f-01".into());
+        data.block.symlinks = vec!["/dev/disk/by-partlabel/backup\\x20part".into()];
+        for spec in [
+            "UUID=\"abcd-1234\"",
+            "UUID='ABCD-1234'",
+            "/dev/disk/by-uuid/ABCD-1234",
+            "LABEL=\"My Data\"",
+            "/dev/disk/by-label/My\\x20Data",
+            "PARTUUID=\"0F0F-01\"",
+            "/dev/disk/by-partuuid/0f0f-01",
+            "PARTLABEL=\"backup part\"",
+        ] {
+            assert!(fstab_names(spec, &data), "{spec}");
+        }
+        assert!(!fstab_names("UUID=\"ffff-0000\"", &data));
+        assert_eq!(
+            parse_fstab("UUID=\"abcd-1234\" /data ext4 defaults 0 2\n"),
+            ["UUID=abcd-1234"]
+        );
+    }
+
+    /// Second review: a systemd mount unit (or the unit an automount stands
+    /// for) under /etc or /run/systemd/system is a table entry; the units
+    /// systemd generates from fstab live elsewhere and are not read twice.
+    #[test]
+    fn mount_units_are_read_as_table_entries() {
+        let (root, roots) = tree();
+        std::fs::write(roots.proc.join("self/mounts"), "").unwrap();
+        let etc_units = root.path().join("etc/systemd/system");
+        let run_units = root.path().join("run/systemd/system");
+        std::fs::create_dir_all(&etc_units).unwrap();
+        std::fs::create_dir_all(&run_units).unwrap();
+        std::fs::write(
+            etc_units.join("media-backup.mount"),
+            "[Mount]\nWhat=/dev/disk/by-uuid/BACC-0001\nWhere=/media/backup\n",
+        )
+        .unwrap();
+        std::fs::write(
+            run_units.join("srv-data.automount"),
+            "[Automount]\nWhere=/srv/data\n",
+        )
+        .unwrap();
+        std::fs::write(
+            run_units.join("srv-data.mount"),
+            "[Mount]\nWhat=LABEL=\"Data\"\nWhere=/srv/data\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.path().join("etc/fstab"),
+            "LABEL=Data /srv/data ext4 0 0\n",
+        )
+        .unwrap();
+        let read = SystemSources::read(&roots).unwrap();
+        assert_eq!(
+            read.fstab,
+            ["LABEL=Data", "/dev/disk/by-uuid/BACC-0001"],
+            "the fstab line and the unit for it are one entry"
+        );
+        let mut backup = volume("/b/sdd1", "/dev/sdd1", Some("/d/backup"), &[]);
+        backup.block.id_uuid = Some("BACC-0001".into());
+        assert_eq!(of(&read, &[backup], "/d/backup"), SystemUse::SystemTable);
+    }
+
+    /// Second review: a system path mounted from a partition of a loop
+    /// device is traced through the loop device's backing file.
+    #[test]
+    fn a_loop_partition_is_traced_through_its_loop_device() {
+        assert_eq!(loop_parent("loop0p1").as_deref(), Some("loop0"));
+        assert_eq!(loop_parent("loop12p3").as_deref(), Some("loop12"));
+        assert_eq!(loop_parent("loop0"), None);
+        assert_eq!(loop_parent("looper"), None);
+        let (root, roots) = tree();
+        let image = root.path().join("disk.img");
+        std::fs::write(&image, b"img").unwrap();
+        let (major, minor) = device_of_file(&image).unwrap();
+        let mut mountinfo = "40 1 259:9 / /opt/tools ro - ext4 /dev/loop3p1 ro\n".to_string();
+        if major == 0 {
+            mountinfo.push_str(&format!(
+                "41 1 {major}:{minor} / /media/me/STICK rw - btrfs /dev/sdb1 rw\n"
+            ));
+        } else {
+            std::fs::create_dir_all(roots.sys.join("dev/block")).unwrap();
+            std::os::unix::fs::symlink(
+                "../../devices/usb/block/sdb/sdb1",
+                roots.sys.join(format!("dev/block/{major}:{minor}")),
+            )
+            .unwrap();
+        }
+        std::fs::write(roots.proc.join("self/mountinfo"), mountinfo).unwrap();
+        std::fs::create_dir_all(roots.sys.join("class/block/loop3/loop")).unwrap();
+        std::fs::write(
+            roots.sys.join("class/block/loop3/loop/backing_file"),
+            format!("{}\n", image.display()),
+        )
+        .unwrap();
+        let read = SystemSources::read(&roots).unwrap();
+        let devices = [volume("/b/sdb1", "/dev/sdb1", Some("/d/usb"), &[])];
+        let system = SystemDrives::find(&devices, Some(&read));
+        assert_eq!(
+            system.of_drive(Some("/d/usb")),
+            SystemUse::SystemFolder {
+                path: "/opt/tools".into()
+            }
+        );
+        assert_eq!(system.of_drive(Some("/d/other")), SystemUse::Free);
     }
 
     #[test]
@@ -1012,7 +1386,7 @@ mod tests {
         let (_root, roots) = tree();
         std::fs::write(
             roots.proc.join("self/mounts"),
-            "/dev/dm-7 / ext4 rw 0 0\n/dev/dm-8 /media/me/x ext4 rw 0 0\n",
+            "/dev/dm-7 / ext4 rw 0 0\n/dev/dm-8 /mnt/better-os/x ext4 rw 0 0\n",
         )
         .unwrap();
         std::fs::create_dir_all(roots.sys.join("class/block/dm-7/slaves/dm-6")).unwrap();

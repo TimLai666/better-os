@@ -117,13 +117,18 @@ UDisks2's devices.
 
 - **The rule is the right way round.** A drive is the person's only when
   everything of it that is mounted is mounted where removable media is
-  mounted for a person: below `/media`, `/run/media`, or Better OS's own
-  `/mnt/better-os`. A drive is **held** when any volume on it, or under an
+  mounted for a person: `/media/<name>/…` or `/run/media/<name>/…` where
+  `<name>` is an account in the login range (`login.defs`' `UID_MIN` to
+  `UID_MAX`, looked up through the system's account database), or Better
+  OS's own `/mnt/better-os`. A bare `/media/backup` is the system's. A drive is **held** when any volume on it, or under an
   unlocked container, logical volume or loop file on it (an ISO booted with
   `iso-scan`, a snap), is mounted anywhere else (`/`, `/home/<anyone>`,
   `/srv`, `/opt`, `/nix`, `/var/lib/docker`, `/tmp`, a live medium), holds
   swap in use (a partition, or the filesystem a swap file is on), or is named
-  by an `/etc/fstab` line outside Better OS's own block. A ZFS dataset holds
+  by an `/etc/fstab` line outside Better OS's own block or by the `What=`
+  of a mount or automount unit under `/etc/systemd/system` or
+  `/run/systemd/system` (a quoted tag, `UUID="…"`, and the
+  `/dev/disk/by-*` forms count the same). A ZFS dataset holds
   the drives UDisks2 reports as `zfs_member` of its pool; a bcachefs mount
   holds every member it names; a mount whose source UDisks2 does not know
   (`/dev/root`) is found by its device number. A btrfs filesystem across
@@ -169,7 +174,22 @@ UDisks2's devices.
   session compares again before sending, and the service refuses
   (`storage.erase.device_changed`) when the device at that path is another
   one. A service older than the field is asked again without it, after the
-  window's own comparison.
+  window's own comparison. The identity is read again from the device at
+  the moment of action, not from what the service last heard.
+- **A device that cannot be told from another is said to be so.** A
+  device's identity is stable (a filesystem UUID, partition UUID, serial or
+  WWN), weak (only its model, size and port) or volatile (only its kernel
+  name). Decided 2026-11-21 (second review of ticket 171): a weak or
+  volatile identity may still be formatted or written to, and the
+  confirmation names it by what the person can check, label, size and model,
+  with "Better Files can't tell this drive from another one like it. Check
+  that it is {device} before you erase it." / 「Better Files 無法分辨這個磁碟
+  和另一個相同的磁碟。清除之前，請確認它是{device}。」. When another connected
+  device has the same identity, any erase is refused
+  (`storage.erase.ambiguous`: "Another connected drive looks exactly like
+  this one, so Better Files can't be sure which to erase. Unplug the other one
+  and try again." / 「另一個已連接的磁碟和這個一模一樣，Better Files 無法確定
+  要清除哪一個。請拔除另一個後再試一次。」).
 
 Known limits: a swap file is traced to the drive its filesystem is on, and a
 loop file whose backing file is gone leaves every other drive unknown.

@@ -1221,8 +1221,9 @@ async fn a_stick_whose_system_use_cannot_be_told_is_refused() {
 }
 
 /// Ticket 171: with the Format dialog open, stick A is pulled and stick C
-/// arrives at the same object path. The confirmation names A, so C is
-/// refused and nothing is erased.
+/// takes the same object path. The service has not processed the UDisks2
+/// events yet (no Removed, no Added delivered): the device is read again at
+/// the moment of action, so C is refused and nothing is erased.
 #[tokio::test]
 async fn an_erase_confirmed_for_one_stick_is_refused_for_another_at_the_same_path() {
     let fixture = Fixture::new("replaced");
@@ -1234,25 +1235,34 @@ async fn an_erase_confirmed_for_one_stick_is_refused_for_another_at_the_same_pat
         harness
             .coordinator
             .refuse_if_replaced(&handle(), Some(&confirmed))
+            .await
             .is_ok()
     );
 
+    // Swapped underneath, no event delivered.
     harness.control.detach(&address());
     harness
-        .coordinator
-        .handle_event(PlatformEvent::Removed { address: address() })
-        .await;
-    let other = usb_stick(OBJECT, DEVICE, "C0C0-0001");
-    harness.control.attach(other.clone());
-    harness
-        .coordinator
-        .handle_event(PlatformEvent::Added(Box::new(other)))
-        .await;
-
+        .control
+        .attach(usb_stick(OBJECT, DEVICE, "C0C0-0001"));
+    assert_eq!(
+        harness.coordinator.report(&handle()).unwrap().identity,
+        confirmed,
+        "the registry has not heard yet"
+    );
     refused_with(
         harness
             .coordinator
-            .refuse_if_replaced(&handle(), Some(&confirmed)),
+            .refuse_if_replaced(&handle(), Some(&confirmed))
+            .await,
+        "storage.erase.device_changed",
+    );
+    // Gone altogether is refused too.
+    harness.control.detach(&address());
+    refused_with(
+        harness
+            .coordinator
+            .refuse_if_replaced(&handle(), Some(&confirmed))
+            .await,
         "storage.erase.device_changed",
     );
     assert!(
@@ -1261,5 +1271,30 @@ async fn an_erase_confirmed_for_one_stick_is_refused_for_another_at_the_same_pat
             .calls()
             .iter()
             .any(|call| call.starts_with("format"))
+    );
+}
+
+/// Ticket 171, second review: two connected sticks that cannot be told
+/// apart (the same serial and filesystem UUID, as cheap sticks ship) are
+/// never erased: the service cannot be sure which one the person meant.
+#[tokio::test]
+async fn an_erase_of_one_of_two_devices_alike_is_refused() {
+    let fixture = Fixture::new("alike");
+    let control = FakeDeviceControl::new([
+        usb_stick(OBJECT, DEVICE, UUID),
+        usb_stick(
+            "/org/freedesktop/UDisks2/block_devices/sdc1",
+            "/dev/sdc1",
+            UUID,
+        ),
+    ]);
+    let mut harness = harness(&fixture, control);
+    harness.coordinator.refresh_inventory().await.unwrap();
+    refused_with(
+        harness
+            .coordinator
+            .refuse_if_replaced(&handle(), None)
+            .await,
+        "storage.erase.ambiguous",
     );
 }

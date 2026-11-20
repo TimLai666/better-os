@@ -1018,6 +1018,10 @@ impl FilesApp {
                     .collect();
                 let selected = kinds.iter().position(|kind| kind == filesystem);
                 let this = cx.entity().downgrade();
+                let content = match self.session.erase_caution() {
+                    Some(caution) => content.child(fluent::label(caution, BODY, p.critical)),
+                    None => content,
+                };
                 content
                     .child(fluent::label(c.format_warning, BODY, p.critical))
                     .child(
@@ -1037,7 +1041,11 @@ impl FilesApp {
                 volumes,
                 ..
             } => {
-                let mut content = content.child(fluent::label(
+                let mut content = match self.session.erase_caution() {
+                    Some(caution) => content.child(fluent::label(caution, BODY, p.critical)),
+                    None => content,
+                };
+                content = content.child(fluent::label(
                     c.write_image_warning.replace("{device}", device_label),
                     BODY,
                     p.critical,

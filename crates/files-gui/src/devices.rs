@@ -105,6 +105,9 @@ pub struct DeviceRow {
     /// `IdentityConfidence::Volatile` means. A weak identity is still
     /// persistable and is not flagged.
     pub identity_volatile: bool,
+    /// True when the identity is only descriptive (`weak`): two devices
+    /// alike can share it. A destructive action says so (ticket 171).
+    pub identity_weak: bool,
     pub mount_point: Option<PathBuf>,
     pub policy: RemovalPolicy,
     pub state: DeviceStateKind,
@@ -131,6 +134,28 @@ pub struct DeviceRow {
     /// released Better Files can still read them. Only `Free` is ejected or
     /// formatted; a row whose drive the window has not read yet is Unknown.
     pub system_use: storage_platform::SystemUse,
+}
+
+/// What a Format or Write to Drive confirmation says when the device cannot
+/// be told from another one like it (a weak or volatile identity, ticket
+/// 171): what the person can check, its label, size and model. `None` for a
+/// device with a stable identity.
+pub fn erase_caution(row: &DeviceRow, c: &crate::i18n::Copy) -> Option<String> {
+    if !(row.identity_weak || row.identity_volatile) {
+        return None;
+    }
+    let mut parts = vec![row.label.clone()];
+    if row.size > 0 {
+        parts.push(crate::format::bytes(row.size));
+    }
+    if let Some(name) = &row.drive_name {
+        parts.push(name.clone());
+    }
+    Some(
+        c.errors
+            .erase_identity_caution
+            .replace("{device}", &parts.join(" · ")),
+    )
 }
 
 /// A drive a disk image can be written to, and what writing it erases.
@@ -588,6 +613,7 @@ pub fn row_from(report: DeviceReport) -> DeviceRow {
         label: display_label(&report),
         object_path: report.object_path,
         identity_volatile: report.identity_confidence == "volatile",
+        identity_weak: report.identity_confidence == "weak",
         identity: report.identity,
         mount_point: report.mount_point.map(PathBuf::from),
         policy: report.policy,

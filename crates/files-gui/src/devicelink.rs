@@ -567,6 +567,7 @@ async fn handle<C: DeviceControl + Clone + 'static>(
                     match embedded
                         .coordinator
                         .refuse_if_replaced(&handle, Some(&identity))
+                        .await
                     {
                         Err(error) => Err(error.to_string()),
                         Ok(()) => embedded
@@ -663,10 +664,14 @@ async fn write_image<C: DeviceControl + Clone + 'static>(
             });
         }
         Backend::Embedded(embedded) => {
-            if let Err(error) = embedded.coordinator.refuse_if_replaced(
-                &storage_core::DeviceHandle::new(object_path.clone()),
-                Some(&identity),
-            ) {
+            if let Err(error) = embedded
+                .coordinator
+                .refuse_if_replaced(
+                    &storage_core::DeviceHandle::new(object_path.clone()),
+                    Some(&identity),
+                )
+                .await
+            {
                 let _ = notices.send(DeviceNotice::Erased {
                     object_path,
                     format: false,

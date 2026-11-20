@@ -254,29 +254,44 @@ impl<C: DeviceControl> StorageCoordinator<C> {
         }
     }
 
-    /// Refuses an erase when the device at `handle` is no longer the one the
-    /// person confirmed (`expected` is its identity key, as reports carry
-    /// it): a stick pulled and another plugged in can take the same object
-    /// path (ticket 171). Nothing to compare is nothing refused.
-    pub fn refuse_if_replaced(
+    /// Refuses an erase when the device at `handle` is, read again now, no
+    /// longer the one the person confirmed (`expected` is its identity key,
+    /// as reports carry it): a stick pulled and another plugged in can take
+    /// the same object path before this service has heard of either
+    /// (ticket 171). Also refuses when another connected device has the
+    /// same identity, whatever was expected: two sticks alike in serial and
+    /// size, or two in turn at one port with no serial, cannot be told
+    /// apart, and an erase must not guess (`storage.erase.ambiguous`).
+    pub async fn refuse_if_replaced(
         &self,
         handle: &DeviceHandle,
         expected: Option<&str>,
     ) -> Result<(), ServiceError> {
-        let Some(expected) = expected else {
-            return Ok(());
+        let changed = || ServiceError::Refused("storage.erase.device_changed".to_string());
+        let devices = self.control.enumerate().await?;
+        let key_of = |device: &PlatformDevice| {
+            DeviceIdentity::from_evidence(device.identity_evidence())
+                .key()
+                .to_string()
         };
-        let now = self
-            .registry
-            .get(handle)
-            .map(|machine| machine.identity().key().to_string());
-        if now.as_deref() == Some(expected) {
-            Ok(())
-        } else {
-            Err(ServiceError::Refused(
-                "storage.erase.device_changed".to_string(),
-            ))
+        let Some(device) = devices
+            .iter()
+            .find(|device| device.address.object_path == handle.as_str())
+        else {
+            return Err(changed());
+        };
+        let key = key_of(device);
+        if expected.is_some_and(|expected| expected != key) {
+            return Err(changed());
         }
+        let alike = devices
+            .iter()
+            .filter(|other| other.classify().is_external() && key_of(other) == key)
+            .count();
+        if alike > 1 {
+            return Err(ServiceError::Refused("storage.erase.ambiguous".to_string()));
+        }
+        Ok(())
     }
 
     /// Refuses anything on a device an image is being written to.
