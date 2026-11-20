@@ -195,10 +195,16 @@ desktop, which a headless shell does not set). Not seen: the app chooser
 gallery after its own move (its binary predates that commit, same reason),
 and every window's deeper pages and menus.
 
-Still to do for "Done when": DESIGN.md's Icons section points to
-`design/design-demos/icon-directions.html`; once it points to the gallery's
-Icons page and `design/design-demos/action-icon-options.html` instead,
-`icon-directions.html` can go. The owner's go-ahead on the screens is owed.
+Done since: DESIGN.md's Icons section points to
+`design/design-demos/icon-set.html` and the gallery's Icons page, and
+`icon-directions.html` is removed (merge of 2026-11-21).
+
+**Left before this ticket closes:** the owner's go-ahead on the final
+screens. The owner approved the set on 2026-11-21 before these were redrawn
+or added: `battery`, `file`, `pointer`, `dashboard`, `pictures`, `palette`,
+`scrolling`, `startup`, `fixes`, `new-file`, `download`, `open-external`,
+`show-pane`, `view-list`, `open-terminal`; and has not seen Better Awake's
+and Better Touchpad's new navigation panes.
 
 ### Review round (2026-11-21): two reviews' findings fixed
 
