@@ -1793,7 +1793,7 @@ impl ManagerApp {
                     TableCell::from(provider_label(row.kind, c)),
                     TableCell::from(row.availability_label(c)),
                     TableCell::from(row.cadence_label(c)),
-                    TableCell::from(row.explanation.clone().unwrap_or_default()),
+                    TableCell::from(c.reason(row.explanation.as_deref()).unwrap_or_default()),
                 ]
             })
             .collect();
@@ -2072,7 +2072,8 @@ fn test_summary(test: &RuleTestView, c: &'static Copy) -> String {
         parts.push(format!(
             "{}: {}",
             provider_label(provider.kind, c),
-            provider.explanation.clone().unwrap_or_default()
+            c.reason(provider.explanation.as_deref())
+                .unwrap_or_else(|| c.unknown.to_string())
         ));
     }
     parts.join(" · ")

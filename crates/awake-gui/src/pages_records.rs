@@ -235,9 +235,7 @@ impl AwakeApp {
                                             .text_sm()
                                             .text_color(cx.theme().muted_foreground)
                                             .child(
-                                                provider
-                                                    .explanation
-                                                    .clone()
+                                                c.reason(provider.explanation.as_deref())
                                                     .unwrap_or_else(|| c.none.to_string()),
                                             ),
                                     )

@@ -627,9 +627,8 @@ impl ConditionView {
         let reported = providers.iter().find(|entry| entry.kind == provider);
         let control = match reported {
             Some(entry) if !entry.available => ConditionControl::Unavailable {
-                explanation: entry
-                    .explanation
-                    .clone()
+                explanation: c
+                    .reason(entry.explanation.as_deref())
                     // A provider reported unavailable without a reason still
                     // gets an explanation rather than an inert control.
                     .unwrap_or_else(|| c.unknown.to_string()),
