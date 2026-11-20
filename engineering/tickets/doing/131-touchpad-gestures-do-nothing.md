@@ -75,32 +75,66 @@ better-manager-daemon 0.2.16).
 ### What is fixed (branch of this ticket)
 
 - The service waits for the adapter, starts when it appears, and when it
-  goes away drops the pipeline and waits again. It exits 0 only for safe mode
-  or nothing configured; SIGTERM and SIGINT give GNOME its gestures back and
-  then end the process by that signal (`ExecMainCode=2`, read as stopped).
+  goes away drops the pipeline and waits again. It never exits on purpose:
+  with safe mode on, nothing configured, or the integration turned off by
+  itself it stays resident and idle, owning its name. SIGTERM and SIGINT give
+  GNOME its gestures back and then end the process by that signal
+  (`ExecMainCode=2`, read as stopped). Better Manager no longer counts an
+  exited unit as healthy; the startup pass and Check again start it.
+- It watches `gestures.json` and the safe mode marker and takes every change
+  at once: a gesture turned off in a window stops, a new one works, GNOME's
+  gestures are taken or given back for what now collides. It writes back only
+  verification results, conflict annotations and the switch the automatic
+  disable turns off, onto the file as it is now.
 - It owns `org.betteros.TouchpadGestures1`. The extension takes a suppression
-  only from that name's owner and restores GNOME's trackers the moment the
-  name loses its owner (ADR 0018's relay rule, no decision in GJS).
+  only from that name's owner, accepted only when its process runs
+  `/usr/bin/better-touchpad-gestured`, and restores GNOME's trackers the
+  moment the name loses its owner (ADR 0035, proposed, which applies ADR
+  0018's relay rule). The service accepts gesture signals only from the
+  adapter's current unique name.
+- On attach the service adopts what the adapter reports, so the suppression
+  the 0.2.16 pair left behind is lifted after the upgrade without a logout.
 - GNOME's gestures are suppressed only for a gesture that collides under the
   corrected model, is on, and verified, and only after a gesture has arrived
   from the adapter. The window never suppresses. With the Mac-style preset
-  nothing collides, so GNOME's three-finger gestures stay.
+  nothing collides, so GNOME's three-finger gestures stay. A restore writes
+  `enabled = true`, never a captured value.
 - The pinch signal is `(uuddts)`; a test checks every emitted signal against
   the XML.
-- The Touchpad page and the `touchpad.gesture_bridge` check say "the gesture
-  service is not running" when the adapter answers and the service does not
-  (English and Traditional Chinese).
+- One function corrects stale conflict annotations, used by the window and
+  the service.
+- The Touchpad page and the `touchpad.gesture_bridge` check tell apart
+  listening, safe mode, nothing switched on, the service not running (with
+  "Check again" as the way to start it), and the adapter missing. Every check
+  detail in the Diagnostics table is shown in Traditional Chinese when the
+  window is.
 - The journal has one line per gesture begun and ended, per action and its
   outcome, per suppress and restore with the reason, while waiting for the
-  adapter, and at exit with whether GNOME has its gestures.
+  adapter, for each configuration change, and at exit with whether GNOME has
+  its gestures.
 - A companion package's extension is turned on with its component, by the
-  startup pass, Verify, Install, Update, Restore and AddCompanions.
+  startup pass, Verify, Install, Update, Restore and AddCompanions. GNOME's
+  switch that turns off all extensions is a warning, never a failed check,
+  for every component (`engineering/specs/security-and-rollback.md`).
+
+### What stays a limit: GNOME does not let go reliably
+
+GNOME Shell 46's `workspaceAnimation.js` turns its three-finger workspace
+tracker back on after every animated workspace switch and when the overview
+hides, and the overview's workspace strip (`workspacesView.js`) and the
+application grid (`appDisplay.js`) have three-finger trackers the adapter
+never turns off. A Better OS gesture on three fingers in a direction GNOME
+uses can therefore fire beside GNOME's. Holding the trackers off against
+GNOME's own writes would be a decision in GJS, which no ADR grants. ADR 0035
+records it, the Touchpad page warns when such a gesture is on, and the
+Mac-style preset (four fingers) is not affected.
 
 ### What is left: one observation with a hand on the touchpad
 
 Nobody has made a gesture against the fixed build, and the thresholds
 (`swipe_travel`, `EventScale::swipe_pad_pixels` = 1000, activation 0.6) have
-never been tuned against a hand. Once the fixed build is installed:
+never been tuned against a hand. The owner also has to accept or reject ADR
+0035. Once the fixed build is installed:
 
 1. Log out and back in, so GNOME Shell loads the new extension. Open Better
    Manager once (its startup pass turns `shell-adapter@betteros.org` on;
@@ -108,9 +142,9 @@ never been tuned against a hand. Once the fixed build is installed:
 2. `systemctl --user status better-touchpad-gestures.service` reads
    `active (running)`.
 3. Run `journalctl --user -b -f -u better-touchpad-gestures.service`. Expect
-   "waiting for the GNOME Shell adapter extension …", then "the GNOME Shell
-   adapter appeared after N s of waiting" (or "… is on the session bus"),
-   then "gestures verified: PartiallySupported".
+   "gestures are configured", "waiting for the GNOME Shell adapter extension
+   …", then "the GNOME Shell adapter appeared after N s of waiting" (or "… is
+   on the session bus"), then "gestures verified: PartiallySupported".
 4. Swipe up with four fingers. Expect "the first gesture arrived from the
    adapter", "gesture began: swipe with 4 fingers on /dev/input/eventN, the
    global profile", "gesture ended: …", and
@@ -123,7 +157,10 @@ never been tuned against a hand. Once the fixed build is installed:
    pinching in opens Better Launcher; three fingers still do GNOME's own
    overview and workspace switching, and no "built-in gestures suppressed"
    line appears.
-6. `systemctl --user restart better-touchpad-gestures.service` logs
+6. Turn gestures off in Better Manager's Touchpad page: the journal says "the
+   gesture configuration changed" and "no gesture is switched on", and a
+   four-finger swipe does nothing. Turn them on again: it works at once.
+7. `systemctl --user restart better-touchpad-gestures.service` logs
    "exit: stopped by signal 15; GNOME has its own gestures" and starts again.
 
-The ticket stays open until that observation is made.
+The ticket stays in `doing/` until that observation is made.

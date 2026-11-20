@@ -79,8 +79,10 @@ contract.
   `manager_platform::user_units::UserUnitController`. Units come from dpkg's
   own file list under `/usr/lib/systemd/user`, never from a table by component
   id, and the health check requires an enabled component's units to be enabled
-  and either active or finished successfully (a service that exits 0 on
-  purpose, such as the touchpad gestures with nothing configured). Update and
+  and active. No unit exits on purpose: the touchpad gesture service, the one
+  that used to with nothing configured, stays resident and idle (ticket 131),
+  so an exited unit is not running and the startup pass and Check again start
+  it like a stopped one. Update and
   Restore restart a unit that is already running so the new binary runs; Verify
   starts a stopped unit before checking. Tests set
   `BETTER_OS_TEST_SYSTEMCTL_GUARD` so the real runner can never reach the
@@ -155,9 +157,11 @@ contract.
   Shell already exposes. It may hold no threshold, no cooldown, no cancellation
   rule, no conflict decision, no configuration, no per-application rule, and no
   decision of any kind, it may store nothing, it may execute nothing, and no
-  method it serves may take free text. Each relay of the shared extension acts
-  only while its Rust counterpart owns its bus name and otherwise leaves GNOME's
-  own behaviour in place. `crates/touchpad-session/tests/extension.rs` and
+  method it serves may take free text. Each relay of the shared extension, and
+  the touchpad adapter's suppression of GNOME's swipe trackers (ADR 0035,
+  proposed), acts only while its Rust counterpart owns its bus name, answers
+  only that owner, accepts the owner only when its process runs the packaged
+  service, and otherwise leaves GNOME's own behaviour in place. `crates/touchpad-session/tests/extension.rs` and
   `crates/window-attention-service/tests/extension.rs` assert those bounds
   against the files. Widening them needs a new ADR, not a commit.
 - Use GPUI with `gpui-component` for first-party desktop GUIs. `better-ui` owns
@@ -432,15 +436,32 @@ GUI or dependency compiles when the relevant command was not executed.
   adapter on the bus with that name unowned is "not running", never
   "connected" (ticket 131). The service waits for the adapter instead of
   exiting without it (a login starts it a moment before GNOME Shell enables
-  extensions), exits 0 only for safe mode or nothing configured, and ends a
-  SIGTERM by that signal after giving GNOME its gestures back. GNOME's own
-  swipe trackers are suppressed only by the service, only for a gesture that
-  collides, is on, and verified, and only once a gesture has arrived from the
-  adapter; the extension takes that request only from the service name's
-  owner and restores the moment the name loses its owner. A companion
-  package's extension (`shell-adapter@betteros.org` from
-  `better-shell-adapter`, a companion of `better-manager`) is turned on with
-  the component it travels with, read from the companion's own dpkg list.
+  extensions), never exits on purpose (with safe mode on, nothing configured,
+  or the integration turned off by itself it stays resident and idle), and
+  ends a SIGTERM by that signal after giving GNOME its gestures back. It
+  watches `gestures.json` and the safe mode marker and takes every change at
+  once; it writes back only what it owns (verification results, conflict
+  annotations, and the switch the automatic disable turns off) onto the file
+  as it is now. It accepts gesture signals only from the adapter's current
+  unique name, and on attach it adopts what the adapter reports, so a
+  suppression an older extension and service left behind is lifted. GNOME's
+  own swipe trackers are suppressed only by the service, only for a gesture
+  that collides, is on, and verified, and only once a gesture has arrived from
+  the adapter; the extension takes that request only from the service name's
+  owner running `/usr/bin/better-touchpad-gestured` (ADR 0035, proposed) and
+  restores the moment the name loses its owner. A companion package's
+  extension (`shell-adapter@betteros.org` from `better-shell-adapter`, a
+  companion of `better-manager`) is turned on with the component it travels
+  with, read from the companion's own dpkg list. GNOME's switch that turns off
+  all extensions is a warning, never a failed check, for every component.
+- Suppressing GNOME's three-finger swipes is not reliable on GNOME 46 and must
+  not be described as if it were (ADR 0035). `workspaceAnimation.js` turns its
+  tracker back on after every animated workspace switch and when the overview
+  hides, and the overview's workspace strip and application grid have
+  three-finger trackers the adapter never touches, so a Better OS gesture on
+  three fingers can fire beside GNOME's. The Touchpad page says so when such a
+  gesture is on; the Mac-style preset uses four fingers and collides with
+  nothing.
 - Three rows of the Mac-style preset do not work on GNOME 46 and must not be
   described as if they do. Four fingers down maps to the current application's
   windows and there is no shell facility for it. The two-finger application
