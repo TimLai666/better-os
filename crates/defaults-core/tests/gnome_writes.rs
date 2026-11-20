@@ -32,6 +32,7 @@ use defaults_core::{
     Selection, SystemContext,
 };
 use defaults_platform::dconf::ChangesetSender;
+use defaults_platform::dconf_profile::{ProfileEnvironment, session_database_in};
 use defaults_platform::dconf_writer::{DconfWriter, USER_WRITER_PATH};
 use defaults_platform::gvariant::{ChangeValue, Changeset};
 use defaults_platform::{AdapterSet, DconfAdapter};
@@ -530,4 +531,206 @@ fn a_tool_entry_no_schema_defines_is_unavailable_and_never_written() {
     );
     assert!(!run.apply().results[0].outcome.is_success());
     assert!(!dconf.database.exists(), "something was written");
+}
+
+// Ticket 207: the database the session's dconf profile writes to, decided by
+// `defaults_platform::dconf_profile` over the private service's own scratch
+// directories, never the developer's.
+
+impl PrivateDconf {
+    /// The scratch directory every XDG variable of the service points into.
+    fn root(&self) -> PathBuf {
+        self.database
+            .ancestors()
+            .nth(3)
+            .expect("the database is root/config/dconf/user")
+            .to_path_buf()
+    }
+
+    fn writer_at(&self, object_path: &str) -> DconfWriter {
+        DconfWriter::connect_to(&self.address, object_path).expect("the private bus is listening")
+    }
+
+    /// The profile environment of a session over this service's directories.
+    fn environment(&self, dconf_profile: Option<&str>, desktop: &str) -> ProfileEnvironment {
+        let root = self.root();
+        ProfileEnvironment {
+            dconf_profile: dconf_profile.map(str::to_string),
+            desktop: better_core::CurrentDesktop::parse(desktop),
+            mandatory_dir: root.join("run/dconf/user"),
+            uid: 1000,
+            runtime_dir: root.join("runtime"),
+            sysconf_dir: root.join("etc"),
+            data_dirs: vec![root.join("share")],
+            config_home: root.join("config"),
+            config_home_on_nfs: false,
+        }
+    }
+
+    /// The Better OS session's profile, as its package installs it.
+    fn install_session_profile(&self) {
+        let profile = self.root().join("share/dconf/profile/betteros");
+        std::fs::create_dir_all(profile.parent().unwrap()).unwrap();
+        std::fs::write(profile, "user-db:betteros\nuser-db:user\n").unwrap();
+    }
+
+    /// GNOME's own database, given values the way GNOME Settings would.
+    fn seed_gnome(&self, key: &str, value: ChangeValue) {
+        let mut change = Changeset::new("/").unwrap();
+        change.set_path(key, value).unwrap();
+        self.writer().change(&change).unwrap();
+    }
+}
+
+fn read_database(path: &Path) -> defaults_platform::gvdb::GvdbDatabase {
+    defaults_platform::gvdb::GvdbDatabase::parse(&std::fs::read(path).unwrap()).unwrap()
+}
+
+#[test]
+fn in_the_better_os_session_a_key_is_written_to_its_database_and_gnome_s_is_untouched() {
+    let dconf = dconf_or_skip!();
+    dconf.seed_gnome(
+        HOME_KEY,
+        ChangeValue::TextList(vec!["<Super>h".to_string()]),
+    );
+    let gnome_before = std::fs::read(&dconf.database).unwrap();
+    dconf.install_session_profile();
+
+    let session =
+        session_database_in(&dconf.environment(Some("betteros"), "BetterOS:COSMIC")).unwrap();
+    assert_eq!(session.path, dconf.root().join("config/dconf/betteros"));
+    assert_eq!(session.writer_path, "/ca/desrt/dconf/Writer/betteros");
+    let writer = dconf.writer_at(&session.writer_path);
+    let adapter = DconfAdapter::for_database(
+        AdapterId::GnomeKeybinding,
+        Ok(session.clone()),
+        Some(Box::new(writer)),
+    );
+    let snapshots = tempfile::tempdir().unwrap();
+    let mut run = Run::new(snapshots.path(), adapter);
+    // The session's own database holds nothing yet.
+    assert_eq!(
+        run.state(),
+        (IntegrationState::NotDefault, ObservedValue::Unset)
+    );
+
+    let applied = run.apply();
+    assert_eq!(
+        applied.results[0].outcome,
+        EntryOutcome::Applied {
+            value: list(&["<Super>f"])
+        }
+    );
+    assert_eq!(
+        read_database(&session.path).get(HOME_KEY),
+        Some(&defaults_platform::gvdb::GVariantValue::TextList(vec![
+            "<Super>f".to_string()
+        ]))
+    );
+    // Read back from the database the session reads first.
+    assert_eq!(
+        run.state(),
+        (IntegrationState::Default, keys(&["<Super>f"]))
+    );
+    assert_eq!(
+        std::fs::read(&dconf.database).unwrap(),
+        gnome_before,
+        "GNOME's database changed"
+    );
+
+    let restored = run.restore();
+    assert_eq!(
+        restored.results[0].outcome,
+        EntryOutcome::Restored {
+            value: ObservedValue::Unset
+        }
+    );
+    assert!(read_database(&session.path).get(HOME_KEY).is_none());
+    assert_eq!(
+        std::fs::read(&dconf.database).unwrap(),
+        gnome_before,
+        "GNOME's database changed on restore"
+    );
+}
+
+#[test]
+fn in_the_better_os_session_a_launcher_list_starts_from_what_the_session_shows() {
+    let dconf = dconf_or_skip!();
+    // GNOME's favourites, which the session shows through `user-db:user`
+    // while its own database holds none.
+    dconf.seed_gnome(
+        FAVORITES,
+        ChangeValue::TextList(vec!["org.example.Mine.desktop".to_string()]),
+    );
+    let gnome_before = std::fs::read(&dconf.database).unwrap();
+    dconf.install_session_profile();
+    let session =
+        session_database_in(&dconf.environment(Some("betteros"), "BetterOS:COSMIC")).unwrap();
+    let adapter = defaults_platform::LauncherEntryAdapter::for_database(
+        Ok(session.clone()),
+        vec![PathBuf::from(SCHEMAS)],
+        Some(Box::new(dconf.writer_at(&session.writer_path))),
+    );
+    let snapshots = tempfile::tempdir().unwrap();
+    let mut run = Run::declaring(snapshots.path(), Box::new(adapter), launcher_entry());
+    assert_eq!(
+        run.state(),
+        (
+            IntegrationState::NotDefault,
+            keys(&["org.example.Mine.desktop"])
+        )
+    );
+
+    assert!(run.apply().results[0].outcome.is_success());
+    assert_eq!(
+        read_database(&session.path).get(FAVORITES),
+        Some(&defaults_platform::gvdb::GVariantValue::TextList(vec![
+            "org.example.Mine.desktop".to_string(),
+            "io.betteros.Files.desktop".to_string(),
+        ]))
+    );
+    assert_eq!(
+        run.state(),
+        (IntegrationState::Default, set("io.betteros.Files.desktop"))
+    );
+    assert_eq!(std::fs::read(&dconf.database).unwrap(), gnome_before);
+}
+
+#[test]
+fn with_gnome_s_default_profile_the_write_goes_where_it_always_did() {
+    let dconf = dconf_or_skip!();
+    let session = session_database_in(&dconf.environment(None, "zorin:GNOME")).unwrap();
+    assert_eq!(session.path, dconf.database);
+    assert_eq!(session.writer_path, USER_WRITER_PATH);
+    assert!(session.beneath.is_empty());
+
+    let adapter = DconfAdapter::for_database(
+        AdapterId::GnomeKeybinding,
+        Ok(session.clone()),
+        Some(Box::new(dconf.writer_at(&session.writer_path))),
+    );
+    let snapshots = tempfile::tempdir().unwrap();
+    let mut run = Run::new(snapshots.path(), adapter);
+    assert!(run.apply().results[0].outcome.is_success());
+    assert_eq!(
+        run.state(),
+        (IntegrationState::Default, keys(&["<Super>f"]))
+    );
+    assert!(dconf.database.exists());
+    assert!(!dconf.root().join("config/dconf/betteros").exists());
+}
+
+#[test]
+fn a_session_without_its_profile_in_the_environment_writes_nothing() {
+    let dconf = dconf_or_skip!();
+    let decided = session_database_in(&dconf.environment(None, "BetterOS:COSMIC"));
+    let adapter = DconfAdapter::for_database(
+        AdapterId::GnomeKeybinding,
+        decided,
+        Some(Box::new(dconf.writer())),
+    );
+    let snapshots = tempfile::tempdir().unwrap();
+    let mut run = Run::new(snapshots.path(), adapter);
+    assert!(!run.apply().results[0].outcome.is_success());
+    assert!(!dconf.database.exists(), "GNOME's database was written");
 }

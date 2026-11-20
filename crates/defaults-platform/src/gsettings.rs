@@ -2,9 +2,10 @@
 //! (GNOME Shell's favourites, which the dash and Zorin's taskbar show) and a
 //! tool entry point.
 //!
-//! Both read the user's dconf database first and, where the user never set
-//! the key, the default the compiled GSettings schema gives it — the value
-//! GNOME itself is using. Unlike [`crate::DconfAdapter`], a launcher entry has
+//! Both read the session's dconf databases first (its own, then the user
+//! databases its profile lists beneath it, [`crate::dconf_profile`]) and,
+//! where none of them holds the key, the default the compiled GSettings
+//! schema gives it — the value the session itself is using. Unlike [`crate::DconfAdapter`], a launcher entry has
 //! to know that default: adding one application to a list the user never
 //! touched means writing the whole list GNOME was showing plus that one, and
 //! writing the application alone would empty the dock.
@@ -21,9 +22,10 @@ use std::path::PathBuf;
 
 use better_core::defaults::{AdapterId, DefaultsValue, KeyObservation, ObservedValue};
 
-use crate::dconf::{ChangesetSender, load_user_database, user_database_path};
+use crate::dconf::{ChangesetSender, DatabaseTarget, Layers, session_sender};
+use crate::dconf_profile::{ProfileError, SessionDatabase};
 use crate::gvariant::{ChangeValue, Changeset};
-use crate::gvdb::{GVariantValue, GvdbDatabase, schema_default};
+use crate::gvdb::{GVariantValue, schema_default};
 use crate::{AdapterRequest, DefaultsAdapter, WriteOutcome, WriteValue, collapse};
 
 /// The reason a key no schema defines is reported with.
@@ -83,12 +85,30 @@ impl Effective {
 }
 
 struct Keys {
-    database: PathBuf,
+    target: DatabaseTarget,
     schemas: Vec<PathBuf>,
 }
 
 impl Keys {
-    fn effective(&self, database: &GvdbDatabase, key: &str) -> Result<Effective, ObservedValue> {
+    /// The session's own database and the ones beneath it, with the
+    /// installed schemas.
+    fn for_session() -> (Self, Option<Box<dyn ChangesetSender>>) {
+        let database = crate::dconf_profile::session_database();
+        let sender = session_sender(&database);
+        (Self::for_database(database, schema_files()), sender)
+    }
+
+    fn for_database(
+        database: Result<SessionDatabase, ProfileError>,
+        schemas: Vec<PathBuf>,
+    ) -> Self {
+        Self {
+            target: DatabaseTarget::session(database),
+            schemas,
+        }
+    }
+
+    fn effective(&self, database: &Layers, key: &str) -> Result<Effective, ObservedValue> {
         // A key no schema defines is not one the session reads, whatever the
         // user's database happens to hold under that path.
         let Some(default) = default_of(&self.schemas, key) else {
@@ -102,8 +122,8 @@ impl Keys {
         })
     }
 
-    fn load(&self) -> Result<GvdbDatabase, ObservedValue> {
-        load_user_database(&self.database)
+    fn load(&self) -> Result<Layers, ObservedValue> {
+        self.target.load()
     }
 }
 
@@ -122,10 +142,14 @@ fn wrong_type(value: &GVariantValue) -> ObservedValue {
 }
 
 fn send(
+    keys: &Keys,
     sender: &mut Option<Box<dyn ChangesetSender>>,
     request: &AdapterRequest<'_>,
     changeset: &Changeset,
 ) -> WriteOutcome {
+    if let Some(error) = &keys.target.unavailable {
+        return WriteOutcome::manual(error.reason(), error.to_string());
+    }
     let Some(sender) = sender.as_mut() else {
         return WriteOutcome::manual(
             NO_WRITE_PATH,
@@ -158,7 +182,7 @@ impl LauncherEntryAdapter {
     pub fn new(database: impl Into<PathBuf>, schemas: Vec<PathBuf>) -> Self {
         Self {
             keys: Keys {
-                database: database.into(),
+                target: DatabaseTarget::file(database.into()),
                 schemas,
             },
             sender: None,
@@ -176,24 +200,28 @@ impl LauncherEntryAdapter {
         }
     }
 
-    /// The user's own database and schemas, written through the session's
-    /// dconf service when this build has the write path.
-    pub fn for_user() -> Self {
-        #[cfg(feature = "dconf-write")]
-        {
-            Self::with_sender(
-                user_database_path(),
-                schema_files(),
-                Box::new(crate::dconf::SessionSender::default()),
-            )
-        }
-        #[cfg(not(feature = "dconf-write"))]
-        {
-            Self::new(user_database_path(), schema_files())
+    /// The session's databases and schemas, written through the writer
+    /// object of the session's own database when this build has the write
+    /// path.
+    pub fn for_session() -> Self {
+        let (keys, sender) = Keys::for_session();
+        Self { keys, sender }
+    }
+
+    /// A session database decided by the caller, with `schemas`, written
+    /// through `sender` (pointed at that database's writer object).
+    pub fn for_database(
+        database: Result<SessionDatabase, ProfileError>,
+        schemas: Vec<PathBuf>,
+        sender: Option<Box<dyn ChangesetSender>>,
+    ) -> Self {
+        Self {
+            keys: Keys::for_database(database, schemas),
+            sender,
         }
     }
 
-    fn list(&self, database: &GvdbDatabase, key: &str) -> Result<Vec<String>, ObservedValue> {
+    fn list(&self, database: &Layers, key: &str) -> Result<Vec<String>, ObservedValue> {
         let effective = self.keys.effective(database, key)?;
         match effective.value() {
             GVariantValue::TextList(values) => Ok(values.clone()),
@@ -275,14 +303,14 @@ impl DefaultsAdapter for LauncherEntryAdapter {
                 WriteValue::Set {
                     value: DefaultsValue::TextList(list),
                 } => {
-                    if matches!(database.get(key), Some(GVariantValue::TextList(held)) if held == list)
+                    if matches!(database.top.get(key), Some(GVariantValue::TextList(held)) if held == list)
                     {
                         continue;
                     }
                     changeset.set_path(key, ChangeValue::TextList(list.clone()))
                 }
                 WriteValue::Clear => {
-                    if database.get(key).is_none() {
+                    if database.top.get(key).is_none() {
                         continue;
                     }
                     changeset.reset_path(key)
@@ -302,7 +330,7 @@ impl DefaultsAdapter for LauncherEntryAdapter {
         if changes == 0 {
             return WriteOutcome::AlreadyCorrect;
         }
-        send(&mut self.sender, request, &changeset)
+        send(&self.keys, &mut self.sender, request, &changeset)
     }
 }
 
@@ -321,7 +349,7 @@ impl ToolEntryPointAdapter {
     pub fn new(database: impl Into<PathBuf>, schemas: Vec<PathBuf>) -> Self {
         Self {
             keys: Keys {
-                database: database.into(),
+                target: DatabaseTarget::file(database.into()),
                 schemas,
             },
             sender: None,
@@ -339,18 +367,22 @@ impl ToolEntryPointAdapter {
         }
     }
 
-    pub fn for_user() -> Self {
-        #[cfg(feature = "dconf-write")]
-        {
-            Self::with_sender(
-                user_database_path(),
-                schema_files(),
-                Box::new(crate::dconf::SessionSender::default()),
-            )
-        }
-        #[cfg(not(feature = "dconf-write"))]
-        {
-            Self::new(user_database_path(), schema_files())
+    /// The session's databases and schemas, as
+    /// [`LauncherEntryAdapter::for_session`].
+    pub fn for_session() -> Self {
+        let (keys, sender) = Keys::for_session();
+        Self { keys, sender }
+    }
+
+    /// As [`LauncherEntryAdapter::for_database`].
+    pub fn for_database(
+        database: Result<SessionDatabase, ProfileError>,
+        schemas: Vec<PathBuf>,
+        sender: Option<Box<dyn ChangesetSender>>,
+    ) -> Self {
+        Self {
+            keys: Keys::for_database(database, schemas),
+            sender,
         }
     }
 }
@@ -431,7 +463,7 @@ impl DefaultsAdapter for ToolEntryPointAdapter {
                 return WriteOutcome::failed("dconf.invalid_key", error.to_string());
             }
         }
-        send(&mut self.sender, request, &changeset)
+        send(&self.keys, &mut self.sender, request, &changeset)
     }
 }
 

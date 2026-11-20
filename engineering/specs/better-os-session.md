@@ -403,8 +403,18 @@ start.
 (`dconf_writer.rs`, `dconf.rs`). In a session whose `DCONF_PROFILE` puts
 another writable database first, a key it writes lands in GNOME's database and
 is hidden by any value the session's database holds (ADR 0038). Ticket 207
-makes the adapter write and read the first `user-db` of the profile the
-target session uses.
+made the adapter write and read the first `user-db` of the profile the
+target session uses: `defaults_platform::dconf_profile` follows dconf's own
+lookup (a mandatory profile, then `DCONF_PROFILE`, then the runtime and `user`
+profiles, then `user-db:user`; names through `/etc/dconf/profile/` and then
+`XDG_DATA_DIRS`), and the GNOME adapters and Better Touchpad's backend read
+that database and write through `/ca/desrt/dconf/Writer/<name>`. The launcher
+entry and tool entry point also read the later `user-db` lines beneath it, so
+a list the session's own database does not hold starts from GNOME's. A
+profile whose first database is not a `user-db`, one that exists and cannot
+be read, and a process whose `XDG_CURRENT_DESKTOP` names COSMIC or Better OS
+with no `DCONF_PROFILE` (both sessions set it, so such a process does not have
+the session's environment) are reported, and nothing is written.
 
 ## Gestures
 

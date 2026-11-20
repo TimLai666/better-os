@@ -1,10 +1,14 @@
 //! GNOME keybindings and desktop settings: read out of the user's dconf
 //! database, written through the dconf service.
 //!
-//! - **Reads** the user's own dconf database directly, as a typed GVariant
-//!   value. No `gsettings`, no shell, no formatted string.
+//! - **Reads** the session's own dconf database directly, as a typed GVariant
+//!   value. No `gsettings`, no shell, no formatted string. Which database
+//!   that is comes from the session's dconf profile ([`crate::dconf_profile`]):
+//!   `~/.config/dconf/user` under GNOME, the session's own under a profile
+//!   that puts another `user-db` first.
 //! - **Writes** by sending one change set to `ca.desrt.dconf.Writer.Change`
-//!   over the session bus (the `dconf_writer` module). Every declared key goes in
+//!   over the session bus (the `dconf_writer` module), at the writer object of
+//!   that same database. Every declared key goes in
 //!   the same change set, so the service applies all of them or none. The
 //!   database file itself is never edited: the service owns it, caches it, and
 //!   rewrites it, so bytes written underneath it would be ignored or clobbered.
@@ -26,6 +30,7 @@ use std::path::{Path, PathBuf};
 
 use better_core::defaults::{AdapterId, DefaultsValue, KeyObservation, ObservedValue};
 
+use crate::dconf_profile::{ProfileError, SessionDatabase};
 use crate::gvariant::{ChangeValue, Changeset};
 use crate::gvdb::{GVariantValue, GvdbDatabase};
 use crate::{AdapterRequest, DefaultsAdapter, WriteOutcome, WriteValue, collapse};
@@ -54,9 +59,20 @@ impl ChangesetSender for crate::dconf_writer::DconfWriter {
 /// connection. A connection that fails is reported with that write and tried
 /// again on the next one.
 #[cfg(feature = "dconf-write")]
-#[derive(Default)]
 pub struct SessionSender {
+    writer_path: String,
     writer: Option<crate::dconf_writer::DconfWriter>,
+}
+
+#[cfg(feature = "dconf-write")]
+impl SessionSender {
+    /// A sender to the writer object of `database`.
+    pub fn for_database(database: &SessionDatabase) -> Self {
+        Self {
+            writer_path: database.writer_path.clone(),
+            writer: None,
+        }
+    }
 }
 
 #[cfg(feature = "dconf-write")]
@@ -64,7 +80,8 @@ impl ChangesetSender for SessionSender {
     fn send(&mut self, changeset: &Changeset) -> Result<(), String> {
         if self.writer.is_none() {
             self.writer = Some(
-                crate::dconf_writer::DconfWriter::connect().map_err(|error| error.to_string())?,
+                crate::dconf_writer::DconfWriter::connect_session(&self.writer_path)
+                    .map_err(|error| error.to_string())?,
             );
         }
         match self.writer.as_mut() {
@@ -76,7 +93,7 @@ impl ChangesetSender for SessionSender {
 
 pub struct DconfAdapter {
     id: AdapterId,
-    path: PathBuf,
+    target: DatabaseTarget,
     sender: Option<Box<dyn ChangesetSender>>,
 }
 
@@ -85,7 +102,7 @@ impl DconfAdapter {
     pub fn new(id: AdapterId, path: impl Into<PathBuf>) -> Self {
         Self {
             id,
-            path: path.into(),
+            target: DatabaseTarget::file(path.into()),
             sender: None,
         }
     }
@@ -98,47 +115,155 @@ impl DconfAdapter {
     ) -> Self {
         Self {
             id,
-            path: path.into(),
+            target: DatabaseTarget::file(path.into()),
             sender: Some(sender),
         }
     }
 
-    /// The per-user database at the location the XDG base directory
-    /// specification names, written through the session's dconf service when
-    /// this build has the write path.
-    pub fn for_user(id: AdapterId) -> Self {
-        #[cfg(feature = "dconf-write")]
-        {
-            Self::with_sender(id, user_database_path(), Box::new(SessionSender::default()))
-        }
-        #[cfg(not(feature = "dconf-write"))]
-        {
-            Self::new(id, user_database_path())
+    /// The database the session reads first, as its dconf profile decides,
+    /// written through `sender` (which a caller points at the same
+    /// database's writer object).
+    pub fn for_database(
+        id: AdapterId,
+        database: Result<SessionDatabase, ProfileError>,
+        sender: Option<Box<dyn ChangesetSender>>,
+    ) -> Self {
+        Self {
+            id,
+            target: DatabaseTarget::session(database),
+            sender,
         }
     }
 
+    /// This process's session: the database its dconf profile writes to,
+    /// written through that database's writer object when this build has the
+    /// write path. A profile that cannot be decided leaves the adapter
+    /// reporting why on every read and write.
+    pub fn for_session(id: AdapterId) -> Self {
+        let database = crate::dconf_profile::session_database();
+        let sender = session_sender(&database);
+        Self::for_database(id, database, sender)
+    }
+
+    /// The database file read, or the empty path when the session's profile
+    /// could not be decided ([`Self::unavailable`] says why).
     pub fn path(&self) -> &Path {
-        &self.path
+        &self.target.path
+    }
+
+    /// Why the session's database could not be decided, if it could not.
+    pub fn unavailable(&self) -> Option<&ProfileError> {
+        self.target.unavailable.as_ref()
     }
 
     /// Whether a change can be sent at all.
     pub fn can_write(&self) -> bool {
-        self.sender.is_some()
+        self.sender.is_some() && self.target.unavailable.is_none()
     }
 
     fn no_write_path(&self, request: &AdapterRequest<'_>) -> WriteOutcome {
+        if let Some(error) = &self.target.unavailable {
+            return WriteOutcome::manual(error.reason(), error.to_string());
+        }
         WriteOutcome::manual(
             NO_WRITE_PATH,
             format!(
                 "the dconf service owns {}; change {} in GNOME Settings instead",
-                self.path.display(),
+                self.target.path.display(),
                 request.keys().join(", ")
             ),
         )
     }
 
     fn load(&self) -> Result<GvdbDatabase, ObservedValue> {
-        load_user_database(&self.path)
+        // The session's own scope only: a key it does not hold reads as
+        // unset, and resetting it is how a restore gets back there.
+        self.target.load().map(|layers| layers.top)
+    }
+}
+
+/// The sender production uses for `database`: its writer object, when this
+/// build has the write path and the database was decided.
+pub(crate) fn session_sender(
+    database: &Result<SessionDatabase, ProfileError>,
+) -> Option<Box<dyn ChangesetSender>> {
+    #[cfg(feature = "dconf-write")]
+    {
+        database.as_ref().ok().map(|database| {
+            Box::new(SessionSender::for_database(database)) as Box<dyn ChangesetSender>
+        })
+    }
+    #[cfg(not(feature = "dconf-write"))]
+    {
+        let _ = database;
+        None
+    }
+}
+
+/// Which database files an adapter reads: the session's own, the user
+/// databases its profile lists beneath it, or why there is no answer.
+#[derive(Debug)]
+pub(crate) struct DatabaseTarget {
+    pub(crate) path: PathBuf,
+    beneath: Vec<PathBuf>,
+    pub(crate) unavailable: Option<ProfileError>,
+}
+
+/// The session's own database and the ones beneath it, read.
+pub(crate) struct Layers {
+    pub(crate) top: GvdbDatabase,
+    beneath: Vec<GvdbDatabase>,
+}
+
+impl Layers {
+    /// The value the session sees from its user databases: its own first,
+    /// then each one beneath in profile order.
+    pub(crate) fn get(&self, key: &str) -> Option<&GVariantValue> {
+        std::iter::once(&self.top)
+            .chain(&self.beneath)
+            .find_map(|database| database.get(key))
+    }
+}
+
+impl DatabaseTarget {
+    /// One database file named by the caller, with nothing beneath it.
+    pub(crate) fn file(path: PathBuf) -> Self {
+        Self {
+            path,
+            beneath: Vec::new(),
+            unavailable: None,
+        }
+    }
+
+    pub(crate) fn session(database: Result<SessionDatabase, ProfileError>) -> Self {
+        match database {
+            Ok(database) => Self {
+                path: database.path,
+                beneath: database.beneath,
+                unavailable: None,
+            },
+            Err(error) => Self {
+                path: PathBuf::new(),
+                beneath: Vec::new(),
+                unavailable: Some(error),
+            },
+        }
+    }
+
+    pub(crate) fn load(&self) -> Result<Layers, ObservedValue> {
+        if let Some(error) = &self.unavailable {
+            return Err(ObservedValue::Unknown {
+                reason: format!("{}:{error}", error.reason()),
+            });
+        }
+        Ok(Layers {
+            top: load_user_database(&self.path)?,
+            beneath: self
+                .beneath
+                .iter()
+                .map(|path| load_user_database(path))
+                .collect::<Result<_, _>>()?,
+        })
     }
 }
 
@@ -166,7 +291,8 @@ impl std::fmt::Debug for DconfAdapter {
         formatter
             .debug_struct("DconfAdapter")
             .field("id", &self.id)
-            .field("path", &self.path)
+            .field("path", &self.target.path)
+            .field("unavailable", &self.target.unavailable)
             .field("can_write", &self.can_write())
             .finish()
     }
@@ -182,14 +308,6 @@ fn change_value(value: &DefaultsValue) -> Option<ChangeValue> {
         DefaultsValue::Boolean(value) => Some(ChangeValue::Boolean(*value)),
         DefaultsValue::DesktopEntry(_) => None,
     }
-}
-
-pub(crate) fn user_database_path() -> PathBuf {
-    let config = match std::env::var("XDG_CONFIG_HOME") {
-        Ok(value) if !value.trim().is_empty() => PathBuf::from(value),
-        _ => PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".config"),
-    };
-    config.join("dconf/user")
 }
 
 fn observe(value: Option<&GVariantValue>) -> ObservedValue {
@@ -580,6 +698,66 @@ mod tests {
             WriteOutcome::Failed { ref reason, .. } if reason == "dconf.value_has_no_dconf_type"
         ));
         assert!(sender.sent.borrow().is_empty());
+    }
+
+    // Ticket 207: a session whose dconf profile cannot be decided is reported
+    // on every read and write, and nothing is sent to any writer.
+    #[test]
+    fn an_undecided_session_database_is_reported_and_nothing_is_sent() {
+        let sender = FakeSender::default();
+        let mut adapter = DconfAdapter::for_database(
+            AdapterId::GnomeKeybinding,
+            Err(ProfileError::NotTheSessionEnvironment {
+                desktop: "betteros:cosmic".to_string(),
+            }),
+            Some(Box::new(sender.clone())),
+        );
+        let component = ComponentId::new("better-files").unwrap();
+        let mut integration = integration(&[HOME]);
+        integration.target.desired = DefaultsValue::TextList(vec!["<Super>f".to_string()]);
+        let request = AdapterRequest::new(&component, &integration);
+
+        let ObservedValue::Unknown { reason } = adapter.read(&request) else {
+            panic!("an undecided database must not read as a value");
+        };
+        assert!(reason.starts_with("dconf.session_profile_not_in_environment:"));
+        assert!(!adapter.can_write());
+        let WriteOutcome::ManualActionRequired { reason, .. } = adapter.apply(&request) else {
+            panic!("an undecided database must not be written");
+        };
+        assert_eq!(reason, "dconf.session_profile_not_in_environment");
+        let restored = adapter.restore(&request, &ObservedValue::Unset);
+        assert!(!matches!(restored, WriteOutcome::Written));
+        assert!(sender.sent.borrow().is_empty());
+    }
+
+    // The session's own scope is what this adapter reads: a key only the
+    // database beneath holds reads as unset, which a restore reproduces by
+    // resetting the key in the session's own database.
+    #[test]
+    fn only_the_session_s_own_database_is_read_not_the_one_beneath() {
+        let fixture = PathBuf::from(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/dconf/user"
+        ));
+        let adapter = DconfAdapter::for_database(
+            AdapterId::GnomeKeybinding,
+            Ok(SessionDatabase {
+                name: "betteros".to_string(),
+                path: PathBuf::from("/nonexistent/dconf/betteros"),
+                writer_path: "/ca/desrt/dconf/Writer/betteros".to_string(),
+                beneath: vec![fixture],
+                origin: crate::dconf_profile::ProfileOrigin::BuiltIn,
+            }),
+            None,
+        );
+        let component = ComponentId::new("better-files").unwrap();
+        let integration = integration(&[HOME]);
+        assert_eq!(
+            adapter.read(&AdapterRequest::new(&component, &integration)),
+            ObservedValue::Unset
+        );
+        assert_eq!(adapter.path(), Path::new("/nonexistent/dconf/betteros"));
     }
 
     #[test]

@@ -1,5 +1,12 @@
-//! The GNOME backend: read the user's dconf database, write through the dconf
-//! service, verify by reading again.
+//! The GNOME backend: read the session's dconf database, write through the
+//! dconf service, verify by reading again.
+//!
+//! Which database is the session's comes from
+//! `defaults_platform::dconf_profile`, the one place Better OS decides it for
+//! Better Defaults and Better Touchpad alike: GNOME's `~/.config/dconf/user`
+//! under GNOME's profile, and the first `user-db` of the profile a session
+//! names in `DCONF_PROFILE` otherwise, written through that database's own
+//! writer object.
 //!
 //! Reading reuses `defaults-platform`'s GVDB parser, which ticket 27 built and
 //! tested against a database `dconf compile` produced. There is one dconf
@@ -17,6 +24,7 @@
 
 use std::path::{Path, PathBuf};
 
+use defaults_platform::dconf_profile::{ProfileError, SessionDatabase};
 use defaults_platform::gvdb::{GVariantValue, GvdbDatabase};
 use touchpad_core::{
     AccelerationProfile, Capabilities, ClickMethod, Reading, ScrollFactor, Sensitivity, SettingId,
@@ -184,6 +192,9 @@ fn from_gnome_speed(speed: f64) -> Option<Sensitivity> {
 
 pub struct GnomeBackend {
     database: PathBuf,
+    /// Why the session's database could not be decided, as `reason:detail`;
+    /// every read reports it rather than reading some other file.
+    unavailable: Option<String>,
     #[cfg(feature = "dconf-write")]
     writer: Option<DconfWriter>,
     capabilities: Capabilities,
@@ -192,13 +203,26 @@ pub struct GnomeBackend {
 }
 
 impl GnomeBackend {
-    /// The default per-user database location.
-    pub fn user_database_path() -> PathBuf {
-        let config = match std::env::var("XDG_CONFIG_HOME") {
-            Ok(value) if !value.trim().is_empty() => PathBuf::from(value),
-            _ => PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".config"),
-        };
-        config.join("dconf").join("user")
+    /// The database this process's session reads first and writes to.
+    pub fn session_database() -> Result<SessionDatabase, ProfileError> {
+        defaults_platform::dconf_profile::session_database()
+    }
+
+    /// A backend that reads the session's database and can change nothing,
+    /// or, when the session's profile cannot be decided, reads nothing and
+    /// says why.
+    pub fn read_only_session(device: Option<&DeviceCapabilities>) -> Self {
+        match Self::session_database() {
+            Ok(session) => Self::read_only(session.path, device),
+            Err(error) => Self::without_database(device, &error),
+        }
+    }
+
+    fn without_database(device: Option<&DeviceCapabilities>, error: &ProfileError) -> Self {
+        let mut backend =
+            Self::read_only_with_reason(PathBuf::new(), device, error.reason(), error.to_string());
+        backend.unavailable = Some(format!("{}:{error}", error.reason()));
+        backend
     }
 
     /// The backend as it runs on a real session: the user's own database, and
@@ -209,11 +233,23 @@ impl GnomeBackend {
     /// one the GUI can render.
     #[cfg(feature = "dconf-write")]
     pub fn connect(device: Option<&DeviceCapabilities>) -> Self {
-        let database = Self::user_database_path();
         let scroll = crate::scroll::SystemBusScroll::connect()
             .ok()
             .map(|scroll| Box::new(scroll) as Box<dyn ScrollChannel>);
-        match DconfWriter::connect().and_then(|writer| writer.probe().map(|()| writer)) {
+        let session = match Self::session_database() {
+            Ok(session) => session,
+            Err(error) => {
+                let backend = Self::without_database(device, &error);
+                return match scroll {
+                    Some(scroll) => backend.with_scroll(scroll, device),
+                    None => backend,
+                };
+            }
+        };
+        let database = session.path;
+        match DconfWriter::connect_session(&session.writer_path)
+            .and_then(|writer| writer.probe().map(|()| writer))
+        {
             Ok(writer) => {
                 let status = BackendStatus::reachable(
                     "gnome",
@@ -225,6 +261,7 @@ impl GnomeBackend {
                 let capabilities = capabilities_for(true, device, scroll.as_deref());
                 Self {
                     database,
+                    unavailable: None,
                     writer: Some(writer),
                     capabilities,
                     status,
@@ -270,6 +307,7 @@ impl GnomeBackend {
         let _ = device;
         Self {
             database,
+            unavailable: None,
             #[cfg(feature = "dconf-write")]
             writer: None,
             capabilities,
@@ -291,6 +329,7 @@ impl GnomeBackend {
             status: BackendStatus::reachable("gnome", format!("writing through {writer:?}")),
             capabilities: capabilities_for(true, device, None),
             database,
+            unavailable: None,
             writer: Some(writer),
             scroll: None,
         }
@@ -341,6 +380,9 @@ impl GnomeBackend {
     }
 
     fn load(&self) -> Result<GvdbDatabase, Reading> {
+        if let Some(reason) = &self.unavailable {
+            return Err(Reading::unknown(reason.clone()));
+        }
         match std::fs::read(&self.database) {
             Ok(bytes) => GvdbDatabase::parse(&bytes)
                 .map_err(|error| Reading::unknown(format!("gnome.database_unreadable:{error}"))),

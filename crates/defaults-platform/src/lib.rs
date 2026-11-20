@@ -20,6 +20,7 @@
 
 pub mod applications;
 pub mod dconf;
+pub mod dconf_profile;
 #[cfg(feature = "dconf-write")]
 pub mod dconf_writer;
 pub mod gsettings;

@@ -22,14 +22,31 @@ the session.
 
 ## Acceptance criteria
 
-- [ ] Profile parsing in the one place both the writer and the reader use,
+- [x] Profile parsing in the one place both the writer and the reader use,
       with tests for `user-db:user`, `user-db:betteros` then `user-db:user`, a
       `system-db` line, a missing profile, and an unreadable one (reported, not
       guessed).
-- [ ] Against a real `dconf-service` on a private bus with
+- [x] Against a real `dconf-service` on a private bus with
       `DCONF_PROFILE=betteros`: a write lands in `betteros`, `user` is
       unchanged byte for byte, read-back agrees; with the default profile the
       behaviour is today's.
-- [ ] `touchpad-platform`, which shares the encoder, is checked to go through
+- [x] `touchpad-platform`, which shares the encoder, is checked to go through
       the same path.
-- [ ] fmt, clippy on stable, and the crates' tests pass.
+- [x] fmt, clippy on stable, and the crates' tests pass.
+
+## Notes
+
+- `defaults_platform::dconf_profile` decides the database; `DconfAdapter`,
+  `LauncherEntryAdapter`, `ToolEntryPointAdapter` (`for_session`) and
+  `touchpad_platform::GnomeBackend` (`connect`, `read_only_session`,
+  `session_database`) all go through it, and `DconfWriter::connect_session`
+  takes the writer path it names. Tests: `dconf_profile.rs`'s unit tests over
+  scratch profiles, and four private-bus tests at the end of
+  `crates/defaults-core/tests/gnome_writes.rs`.
+- Deliberate limits, written in the module: a first `service-db` (or a
+  `user-db` on NFS, which dconf turns into one), `system-db`, or `file-db` is
+  reported and not written; `system-db` values and locks are not read, as
+  before. A process whose `XDG_CURRENT_DESKTOP` names COSMIC or `BetterOS` and
+  has no `DCONF_PROFILE` is reported rather than given GNOME's database.
+- That the session's processes really carry `DCONF_PROFILE=betteros` is the
+  session launcher's job (ticket 203) and is not exercised here.
