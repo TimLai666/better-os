@@ -328,9 +328,33 @@ GUI or dependency compiles when the relevant command was not executed.
   has it draw the frame, shadow, header, and window buttons from the current
   theme, as Chromium does; without GTK the kit draws Adwaita's frame. Do not
   paint a background on a view's root (the frame paints it with the desktop's
-  corners), and do not draw frames or window buttons in an app. The frame was
-  compared pixel by pixel with GNOME Text Editor in a headless GNOME Shell 46
-  only, not on the owner's desktop. Better Launcher is the one deliberate exception, recorded
+  corners), and do not draw frames or window buttons in an app. Since ticket
+  141 all four corners are rounded with the theme's radius, measured from
+  GTK's drawing top and bottom (ZorinBlue 15px, Adwaita 12px), and square
+  maximized, fullscreen, or tiled on any edge; the input region follows the
+  curve grown by GTK's 12px handle, and the theme's `outline` (libadwaita's
+  1px inner line) is drawn over the content as GTK draws it. GPUI clips only
+  to rectangles (`ContentMask` at `ae394f3` and on Zed's `main` of 2026-11-20),
+  so content keeps inside the curve by one kit rule (`system_frame::corners`):
+  a surface that reaches a corner paints its fill into it with
+  `window_chrome::corner_fill`; a list that scrolls past a bottom corner is
+  painted with `corner_clip(inset)`, which raises only its bottom by the
+  curve's depth at the rows' side inset, and ends its scroll extent with
+  `corner_depth` so the last row scrolls fully above the curve; a scrollbar
+  there uses `corner_scrollbar`; tooltips, menus, and panels go through
+  `inside_window`. Nothing is inset along a side. `NavigationView`, dialogs,
+  toasts, menus, and the staged-changes bar follow it; a new window or panel
+  that reaches a corner must too. Two limits follow from GPUI clipping only to
+  rectangles, at the pinned revision and on Zed's `main`: a scrolling surface
+  whose rows run its full width (Better Git's diff) gives up a band the height
+  of the corner's radius along the bottom, where its rows are not drawn while
+  they scroll past and the wheel and presses do nothing (at the end of the
+  list they are whole above it); and the gallery's samples wider than a
+  narrow window are cut at the page's padding. The frame was compared pixel
+  by pixel with GNOME Text Editor in a headless GNOME Shell 46 only (ticket
+  108; ticket 141 for all four corners and the outline, on ZorinBlue-Dark
+  and Adwaita light and dark, at scale 1 and 2, evidence in
+  `better-os-evidence/141`), not on the owner's desktop. Better Launcher is the one deliberate exception, recorded
   in code: a Start-menu panel (ticket 82) dismissed by Escape gets no titlebar, but
   it still sets `app_id` like every other window, which is what lets a dock or
   an application grid match a window to its desktop entry. Escape on Better
@@ -561,6 +585,39 @@ GUI or dependency compiles when the relevant command was not executed.
   `packaging/tests/touchpad-scroll-hardware-check.sh` is the owner's check.
   Smooth scrolling stays unavailable, because it is each application's drawing
   decision and not an input setting.
+- The keyboard's colour (ticket 136, ADR 0034) is set through
+  `manager-daemon`, for the built-in keyboard only (an I2C LampArray, or
+  asus-wmi's `kbd_rgb_mode`; USB and Bluetooth LampArrays are out of
+  scope): a LampArray by a helper unit whose private `/dev` holds its one
+  hidraw node and which drops to `nobody` once it is open (`--lamp-array`),
+  `kbd_rgb_mode` by ADR 0029's attribute helper. Both helpers share
+  `hardware::helper_sandbox()`; `ProtectKernelTunables=`,
+  `ProtectControlGroups=`, `ProtectProc=`, and `PrivateNetwork=` are left
+  out on purpose, because each brings the whole of `/sys` back (ADR 0034;
+  `IPAddressDeny=any` closes the network instead). No session
+  process opens a hidraw node and no udev rule grants one;
+  `hardware_core::lamparray` is the only parser of report descriptors and
+  `manager_daemon::keyboard_lighting` the only code with hidraw ioctls. The
+  vendor report 0x5F and the 0xFF59 copy are never written. CI's
+  `packaging/hardware-unit/check.sh` runs both helpers' units on a real
+  systemd in a container with the property lists the release daemon prints
+  (`--helper-properties`), but has no hidraw device, so no feature report
+  has gone through the sandboxed helper; the
+  lamp count, `LampArrayKind`, and level counts of the owner's M5406WA,
+  whether its intensity and the WMI backlight levels 0–3 multiply or
+  override each other, and whether the colour survives suspend are unread.
+  Level counts follow HID Usage Tables 1.4 section 26.9 (N is off plus N
+  levels). Ticket 136's notes hold the owner's check, done on a released
+  build through Better Manager. No LampArray effect is offered, by design;
+  only `kbd_rgb_mode`'s four firmware effects are, and that path has run
+  against fixture sysfs only.
+- Removing `better-manager` or `better-manager-daemon` gives the hardware
+  back (`better-manager-daemon --release-hardware` in both prerms): the
+  keyboard's colour as above, and the battery's charge limit to what it
+  read before Better OS's first write, recorded in
+  `/var/lib/better-os/hardware-before.json`. A limit set by a version
+  before that record existed, or recorded outside 60, 80, and 100, is left
+  as it is (the removal says so) until the firmware resets it.
 - Restore checks the shared application catalog and writes nothing for an
   application that is gone; the person chooses another or clears the default.
   Two limits: an entry whose `TryExec` program is missing still counts as

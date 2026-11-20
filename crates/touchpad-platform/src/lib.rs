@@ -32,6 +32,9 @@ pub mod session;
 /// `defaults-platform` so both components write dconf the same way.
 pub use defaults_platform::gvariant;
 
+/// Which dconf database the session reads, and what each refusal means to
+/// the person, shared with Better Defaults.
+pub use defaults_platform::dconf_profile;
 /// The dconf writer, shared with Better Defaults the same way.
 #[cfg(feature = "dconf-write")]
 pub use defaults_platform::dconf_writer as dconf;
@@ -315,7 +318,9 @@ fn decide_reset(outcome: WriteOutcome, reading: Reading) -> StepOutcome {
         WriteOutcome::Unsupported { reason, detail } => StepOutcome::Unsupported { reason, detail },
         WriteOutcome::Failed { reason, detail } => StepOutcome::Failed { reason, detail },
         WriteOutcome::Written => match &reading {
-            Reading::SessionDefault { .. } => StepOutcome::Applied {
+            // The session's own database holds nothing again; a value shown
+            // from a database beneath it is not one this reset left behind.
+            Reading::SessionDefault { .. } | Reading::Inherited { .. } => StepOutcome::Applied {
                 effective: reading.clone(),
             },
             Reading::Value { value } => StepOutcome::PartiallySupported {

@@ -959,7 +959,10 @@ impl Render for AppChooser {
             .flex()
             .flex_col()
             .items_center()
-            .bg(p.window_background)
+            // The chooser is the whole window: its fill keeps inside the
+            // window's rounded corners (ticket 141).
+            .relative()
+            .child(better_ui::window_chrome::corner_fill(p.window_background))
             .text_color(p.text_primary)
             // Up and Down are the search box's own cursor actions; they are
             // taken on their way down and walk the list instead.

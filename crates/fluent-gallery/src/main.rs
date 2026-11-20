@@ -2813,13 +2813,17 @@ impl Render for Gallery {
                 )
                 .on_click(Self::act(cx, |this, _, _| this.zh = !this.zh)),
             );
+        // Samples wider than a narrow window (a 720px title bar) are cut at
+        // the page's own padding, not at the window's edge, so nothing of
+        // the page reaches the window's rounded corner (ticket 141).
         let page_view = div().id("page").size_full().overflow_y_scroll().child(
             div()
                 .flex()
                 .flex_col()
                 .gap(spacing::XL)
-                .px(spacing::XL)
+                .mx(spacing::XL)
                 .pb(spacing::XL)
+                .overflow_x_hidden()
                 .child(
                     div()
                         .flex()

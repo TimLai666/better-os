@@ -663,7 +663,7 @@ pub fn describe_value(value: SettingValue, c: &'static Copy) -> String {
 
 pub fn describe_reading(reading: &Reading, c: &'static Copy) -> String {
     match reading {
-        Reading::Value { value } => describe_value(*value, c),
+        Reading::Value { value } | Reading::Inherited { value, .. } => describe_value(*value, c),
         Reading::SessionDefault { .. } => c.value_session_default.to_string(),
         Reading::Unsupported { .. } => c.unavailable.to_string(),
         Reading::PermissionDenied { .. } => c.value_permission_denied.to_string(),

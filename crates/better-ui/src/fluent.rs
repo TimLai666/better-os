@@ -45,6 +45,7 @@ pub mod progress;
 pub mod selection;
 pub mod settings_card;
 pub mod staged_bar;
+pub mod swatch;
 pub mod tabs;
 pub mod text_box;
 pub mod theme;
@@ -53,6 +54,8 @@ pub mod toast;
 pub mod toggle;
 pub mod window_frame;
 
+#[cfg(all(test, target_os = "linux"))]
+mod corner_tests;
 #[cfg(test)]
 mod interaction_tests;
 #[cfg(test)]

@@ -12,6 +12,8 @@ pub mod charge;
 pub mod display;
 pub mod fan;
 pub mod follow;
+pub mod lamparray;
+pub mod lighting;
 pub mod page;
 pub mod power;
 pub mod sensors;

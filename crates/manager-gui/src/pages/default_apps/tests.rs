@@ -142,6 +142,62 @@ fn every_aggregate_state() -> Vec<AggregateState> {
     ]
 }
 
+// Ticket 207 review finding 4: a refusal to write a database the session
+// would not read says why and what to do, in both languages, instead of
+// "needs to be done by hand" with nothing beside it.
+#[test]
+fn a_dconf_refusal_reads_as_its_sentence_not_as_manual_work() {
+    let refused = DefaultsOutcome {
+        kind: PlanKind::Restore,
+        results: vec![EntryResult {
+            component: component("better-launcher"),
+            integration: integration("launcher-shortcut"),
+            outcome: EntryOutcome::ManualActionRequired {
+                reason: "dconf.session_profile_not_in_environment".to_string(),
+                detail: Some("this process runs in a betteros:cosmic session".to_string()),
+            },
+        }],
+        baseline_snapshot: None,
+        recorded_snapshot: None,
+    };
+    for locale in [Locale::EnUs, Locale::ZhTw] {
+        let c = copy(locale);
+        let row = &result_rows(locale, &refused, &|component| component.to_string())[0];
+        assert_eq!(row.label, c.result_not_changed);
+        assert_eq!(row.tone, ResultTone::Warning);
+        let detail = row.detail.clone().unwrap_or_default();
+        assert!(!detail.is_empty());
+        assert!(!detail.contains("dconf."), "{detail} leaks a machine key");
+
+        let unknown = ObservedValue::Unknown {
+            reason: "dconf.profile_missing:the dconf profile \"betteros\" is not at …".to_string(),
+        };
+        let said = observed_label(locale, &unknown);
+        assert_ne!(said, c.value_unknown);
+        assert!(!said.contains("dconf."), "{said}");
+        let skipped = skip_reason_label(
+            locale,
+            &SkipReason::EffectiveValueUnknown {
+                reason: "dconf.profile_unreadable".to_string(),
+            },
+        );
+        assert_ne!(skipped, c.skip_value_unknown);
+    }
+    let en = observed_label(
+        Locale::EnUs,
+        &ObservedValue::Unknown {
+            reason: "dconf.session_profile_not_in_environment".to_string(),
+        },
+    );
+    let zh = observed_label(
+        Locale::ZhTw,
+        &ObservedValue::Unknown {
+            reason: "dconf.session_profile_not_in_environment".to_string(),
+        },
+    );
+    assert_ne!(en, zh);
+}
+
 #[test]
 fn all_eight_aggregate_states_render_distinctly_in_both_locales() {
     for locale in [Locale::EnUs, Locale::ZhTw] {
@@ -872,6 +928,7 @@ fn the_last_verified_time_comes_from_the_newest_snapshot_that_confirmed_it() {
         applied_value: Some(desktop("io.betteros.Files.desktop")),
         last_verified_value: Some(desktop("io.betteros.Files.desktop")),
         restore_state: RestoreState::Available,
+        dconf_database: None,
     };
     let never_verified = SnapshotEntry {
         integration_id: integration("archive-handler-group"),

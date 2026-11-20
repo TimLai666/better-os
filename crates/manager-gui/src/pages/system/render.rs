@@ -477,6 +477,13 @@ impl ManagerApp {
                 ));
             }
         }
+        // The keyboard's colour (ticket 136), right under its backlight.
+        let gap = if rows.is_empty() {
+            FIRST_CARD_GAP
+        } else {
+            CARD_GAP
+        };
+        rows.extend(self.lighting_rows(&display.lighting, gap, cx));
         rows
     }
 

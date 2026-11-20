@@ -510,8 +510,9 @@ fn row(
 }
 
 impl RenderOnce for MenuPanel {
-    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let p = palette(cx);
+        let max_height = super::window_frame::overlay_max_height(window, cx);
         let (highlight, submenu, sub_highlight) = match &self.state {
             Some(state) => {
                 let s = state.read(cx);
@@ -530,8 +531,11 @@ impl RenderOnce for MenuPanel {
         // Drawn before its items, so a submenu (drawn with them) counts as
         // a panel opened from this one (`light_dismiss`).
         let order = PanelOrder::default();
+        // A menu taller than the window scrolls rather than being cut.
         let mut panel = panel_frame(div().id(self.id.clone()), p)
             .py(px(2.0))
+            .max_h(max_height)
+            .overflow_y_scroll()
             .occlude()
             .child(panel_marker(&order));
         if let Some(state) = state.clone() {
@@ -717,12 +721,20 @@ impl RenderOnce for MenuPanel {
                         // back inside the window when the menu already sits
                         // at its edge, so a submenu of a menu opened at the
                         // right edge stays on screen.
-                        element = element.child(
-                            div().absolute().top(px(-2.0)).left(relative(1.0)).child(
-                                deferred(anchored().snap_to_window_with_margin(px(8.0)).child(sub))
+                        // Beside the row when it fits, on the parent's
+                        // other side when it does not, inside the window's
+                        // rounded shape either way (ticket 141).
+                        let span = super::window_frame::RowSpan::default();
+                        element = element
+                            .child(super::window_frame::row_span_probe(span.clone()))
+                            .child(
+                                div().absolute().top(px(-2.0)).left(relative(1.0)).child(
+                                    deferred(anchored().child(
+                                        super::window_frame::inside_window(sub).beside(span),
+                                    ))
                                     .with_priority(2),
-                            ),
-                        );
+                                ),
+                            );
                     }
                     element.into_any_element()
                 }
@@ -742,12 +754,15 @@ struct SubmenuPanel {
 }
 
 impl RenderOnce for SubmenuPanel {
-    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let p = palette(cx);
+        let max_height = super::window_frame::overlay_max_height(window, cx);
         let entries = self.panel.entries;
         let icon_column = entries.iter().any(MenuEntry::needs_icon_column);
         let mut panel = panel_frame(div().id(self.panel.id), p)
             .py(px(2.0))
+            .max_h(max_height)
+            .overflow_y_scroll()
             .occlude()
             .child(panel_marker(&PanelOrder::default()));
         for (index, entry) in entries.into_iter().enumerate() {
@@ -921,13 +936,9 @@ impl ContextMenu {
 impl RenderOnce for ContextMenu {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
         let panel = MenuPanel::new(self.id, self.entries).state(self.state, self.return_focus);
-        deferred(
-            anchored()
-                .position(self.position)
-                .snap_to_window_with_margin(px(8.0))
-                .child(panel),
-        )
-        .with_priority(1)
+        // Inside the window's rounded shape, not the shadow around it
+        // (ticket 141).
+        super::window_frame::float_at(self.position, panel)
     }
 }
 

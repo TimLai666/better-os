@@ -929,6 +929,10 @@ impl TouchpadApp {
 
 impl Render for TouchpadApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let page_scroll = window
+            .use_keyed_state("page-scroll", cx, |_, _| ScrollHandle::new())
+            .read(cx)
+            .clone();
         let c = copy(self.model.locale());
         let narrow = window.viewport_size().width < px(COMPACT_VIEWPORT_WIDTH);
         let banner = self.model.result_banner();
@@ -945,50 +949,70 @@ impl Render for TouchpadApp {
                 cx.theme().foreground,
             ))
             .child(div().relative().flex_1().min_h_0().child({
-                let content = v_flex()
-                    .size_full()
-                    .min_w_0()
-                    .child(self.top_bar(cx))
-                    .when(self.model.safe_mode(), |this| {
-                        this.child(
+                // The page keeps 20px from its sides, clear of the window's
+                // bottom trailing corner it reaches; its scrollbar's track
+                // ends above the curve (ticket 141).
+                let content =
+                    v_flex()
+                        .size_full()
+                        .min_w_0()
+                        .child(self.top_bar(cx))
+                        .when(self.model.safe_mode(), |this| {
+                            this.child(
+                                div()
+                                    .w_full()
+                                    .px_5()
+                                    .py_2()
+                                    .bg(cx.theme().warning)
+                                    .text_sm()
+                                    .text_color(cx.theme().warning_foreground)
+                                    .child(c.safe_mode_banner),
+                            )
+                        })
+                        .when_some(banner, |this, (state, text)| {
+                            let background = match state {
+                                RunState::Failed => cx.theme().danger,
+                                RunState::PartiallySupported | RunState::AwaitingSignOut => {
+                                    cx.theme().warning
+                                }
+                                _ => cx.theme().success,
+                            };
+                            this.child(
+                                div()
+                                    .w_full()
+                                    .px_5()
+                                    .py_2()
+                                    .bg(background)
+                                    .text_sm()
+                                    .child(text),
+                            )
+                        })
+                        .child(
                             div()
-                                .w_full()
-                                .px_5()
-                                .py_2()
-                                .bg(cx.theme().warning)
-                                .text_sm()
-                                .text_color(cx.theme().warning_foreground)
-                                .child(c.safe_mode_banner),
-                        )
-                    })
-                    .when_some(banner, |this, (state, text)| {
-                        let background = match state {
-                            RunState::Failed => cx.theme().danger,
-                            RunState::PartiallySupported | RunState::AwaitingSignOut => {
-                                cx.theme().warning
-                            }
-                            _ => cx.theme().success,
-                        };
-                        this.child(
-                            div()
-                                .w_full()
-                                .px_5()
-                                .py_2()
-                                .bg(background)
-                                .text_sm()
-                                .child(text),
-                        )
-                    })
-                    .child(
-                        div().flex_1().min_h_0().overflow_y_scrollbar().p_5().child(
-                            div()
-                                .w_full()
-                                .flex()
-                                .justify_center()
-                                .child(div().w_full().max_w(px(1160.0)).child(page)),
-                        ),
-                    )
-                    .into_any_element();
+                                .relative()
+                                .flex_1()
+                                .min_h_0()
+                                .child(
+                                    div()
+                                        .id("page-scroll")
+                                        .size_full()
+                                        .overflow_y_scroll()
+                                        .track_scroll(&page_scroll)
+                                        .p_5()
+                                        .child(
+                                            div().w_full().flex().justify_center().child(
+                                                div().w_full().max_w(px(1160.0)).child(page),
+                                            ),
+                                        ),
+                                )
+                                .child(better_ui::window_chrome::corner_scrollbar(
+                                    &page_scroll,
+                                    window,
+                                    cx,
+                                )),
+                        );
+                let content =
+                    better_ui::window_chrome::corner_clip(px(20.0), content).into_any_element();
                 self.navigation(content, narrow, cx)
             }))
             .children(self.update_restart.toast_layer(self.kit_locale(), cx))

@@ -45,7 +45,10 @@ impl Backup {
             captured_at,
             backend: backend.into(),
             device,
-            entries: readings.into_iter().collect(),
+            entries: readings
+                .into_iter()
+                .map(|(setting, reading)| (setting, reading.for_capture()))
+                .collect(),
         }
     }
 
@@ -76,7 +79,7 @@ impl Backup {
         let mut added = Vec::new();
         for (setting, reading) in readings {
             if let std::collections::btree_map::Entry::Vacant(slot) = self.entries.entry(setting) {
-                slot.insert(reading);
+                slot.insert(reading.for_capture());
                 added.push(setting);
             }
         }

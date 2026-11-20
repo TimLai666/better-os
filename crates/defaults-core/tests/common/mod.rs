@@ -148,6 +148,7 @@ pub fn applied_entry(
         applied_value: Some(desktop(applied)),
         last_verified_value: Some(desktop(applied)),
         restore_state: RestoreState::Available,
+        dconf_database: None,
     }
 }
 

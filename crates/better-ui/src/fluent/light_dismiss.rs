@@ -103,7 +103,9 @@ pub fn anchored_panel(panel: impl IntoElement, edge: PanelEdge) -> AnyElement {
             anchored()
                 .anchor(corner)
                 .snap_to_window_with_margin(px(8.0))
-                .child(div().mt(px(4.0)).child(panel)),
+                .child(super::window_frame::inside_window(
+                    div().mt(px(4.0)).child(panel),
+                )),
         )
         // Above a content dialog's layer (priority 2), so a list or a time
         // picker inside a dialog opens over it rather than under its smoke.

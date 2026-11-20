@@ -4,6 +4,7 @@ use crate::battery::BatteryFacts;
 use crate::charge::{ChargeLimitView, charge_limit_view};
 use crate::display::KeyboardLevels;
 use crate::fan::FanState;
+use crate::lighting::{self, LightingHint};
 use crate::power::{PowerModeView, PowerProfilesFacts, power_mode_view};
 use crate::sensors::{SensorInput, SensorRow, rows};
 use crate::{Card, Presence};
@@ -16,6 +17,8 @@ pub struct MachineFacts {
     pub battery: Presence<BatteryFacts>,
     pub brightness: Presence<u8>,
     pub keyboard: Presence<KeyboardLevels>,
+    /// The keyboard's colour interface, or its one colour (ticket 136).
+    pub lighting: Presence<LightingHint>,
     pub fan: Presence<FanState>,
     pub sensors: Vec<SensorInput>,
 }
@@ -29,6 +32,7 @@ impl MachineFacts {
             battery: Presence::Absent,
             brightness: Presence::Absent,
             keyboard: Presence::Absent,
+            lighting: Presence::Absent,
             fan: Presence::Absent,
             sensors: Vec::new(),
         }
@@ -49,6 +53,9 @@ pub struct PowerGroup {
 pub struct DisplayGroup {
     pub brightness: Card<u8>,
     pub keyboard: Card<KeyboardLevels>,
+    /// The keyboard colour card; what it shows also needs the daemon's
+    /// answer (`lighting::view`).
+    pub lighting: Card<LightingHint>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -90,10 +97,17 @@ pub fn system_view(facts: &MachineFacts) -> SystemView {
 
     let brightness: Card<u8> = facts.brightness.clone().into();
     let keyboard: Card<KeyboardLevels> = facts.keyboard.clone().into();
-    let display = (brightness.is_drawn() || keyboard.is_drawn()).then_some(DisplayGroup {
-        brightness,
-        keyboard,
-    });
+    let lighting: Card<LightingHint> = match &facts.lighting {
+        Presence::Present(hint) if !lighting::drawn(hint) => Card::Hidden,
+        other => other.clone().into(),
+    };
+    let display = (brightness.is_drawn() || keyboard.is_drawn() || lighting.is_drawn()).then_some(
+        DisplayGroup {
+            brightness,
+            keyboard,
+            lighting,
+        },
+    );
 
     let fan: Card<FanState> = facts.fan.clone().into();
     let sensors = rows(&facts.sensors);
@@ -135,6 +149,12 @@ mod tests {
             }),
             brightness: Presence::Present(60),
             keyboard: Presence::Present(KeyboardLevels::from_gnome(33, 4).unwrap()),
+            lighting: Presence::Present(LightingHint {
+                interface: Some(crate::lighting::HintInterface::LampArray {
+                    node: "hidraw1".into(),
+                }),
+                backlight: true,
+            }),
             fan: Presence::Present(FanState::Mode(FanMode::Auto)),
             sensors: vec![SensorInput {
                 chip: "k10temp".into(),
@@ -156,6 +176,7 @@ mod tests {
         let display = view.display.unwrap();
         assert!(matches!(display.brightness, Card::Live(60)));
         assert!(matches!(display.keyboard, Card::Live(_)));
+        assert!(matches!(display.lighting, Card::Live(_)));
         let cooling = view.cooling.unwrap();
         assert!(matches!(cooling.fan, Card::Live(_)));
         assert_eq!(cooling.sensors.len(), 1);
@@ -172,7 +193,7 @@ mod tests {
     #[test]
     fn each_control_is_hidden_when_absent_and_disabled_when_unreadable() {
         type Set = fn(&mut MachineFacts, bool);
-        let cases: [(&str, Set); 6] = [
+        let cases: [(&str, Set); 7] = [
             ("power mode", |f, gone| {
                 f.power_mode = if gone {
                     Presence::Absent
@@ -203,6 +224,13 @@ mod tests {
             }),
             ("keyboard", |f, gone| {
                 f.keyboard = if gone {
+                    Presence::Absent
+                } else {
+                    Presence::Unreadable("x".into())
+                }
+            }),
+            ("lighting", |f, gone| {
+                f.lighting = if gone {
                     Presence::Absent
                 } else {
                     Presence::Unreadable("x".into())
@@ -244,6 +272,10 @@ mod tests {
                             .display
                             .as_ref()
                             .map(|g| matches!(g.keyboard, Card::Disabled { .. })),
+                        "lighting" => v
+                            .display
+                            .as_ref()
+                            .map(|g| matches!(g.lighting, Card::Disabled { .. })),
                         "fan mode" => v
                             .cooling
                             .as_ref()
@@ -262,6 +294,24 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_keyboard_with_neither_a_backlight_nor_a_colour_interface_draws_no_colour_card() {
+        let mut f = MachineFacts::nothing();
+        f.lighting = Presence::Present(LightingHint {
+            interface: None,
+            backlight: false,
+        });
+        assert!(system_view(&f).is_empty());
+        f.lighting = Presence::Present(LightingHint {
+            interface: None,
+            backlight: true,
+        });
+        assert!(matches!(
+            system_view(&f).display.unwrap().lighting,
+            Card::Live(_)
+        ));
     }
 
     #[test]

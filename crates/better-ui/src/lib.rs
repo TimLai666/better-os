@@ -28,7 +28,11 @@ use gpui_component::StyledExt as _;
 pub mod window_chrome {
     use super::*;
 
-    pub use crate::fluent::window_frame::{follow_desktop_accent, root, watch_desktop};
+    pub use crate::fluent::window_frame::{
+        corner_clip, corner_depth, corner_fill, corner_scrollbar, float_at, follow_desktop_accent,
+        inside_window, root, watch_desktop, window_shape,
+    };
+    pub use crate::system_frame::CornerRadii;
 
     /// The titlebar for a window whose header is its glyph and title: the
     /// kit's [`fluent::chrome::TitleBar`], with the desktop's buttons.
