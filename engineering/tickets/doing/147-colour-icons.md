@@ -182,14 +182,8 @@ Done, one commit per crate after its checks passed:
   and find marks, the hyperlink's mark, Git's expand, Undo and Redo). Both
   were seen to fail on a planted fault.
 
-Not moved, and why:
-
-- Better Awake's eight and Better Touchpad's seven sidebar pages keep
-  toolkit icons. Both windows use gpui-component's `SidebarMenuItem`,
-  which takes only a single-colour `Icon`; a picture there needs the
-  window's navigation moved to the kit's `NavigationView`, a change to the
-  window's layout this ticket did not make. The second test names the two
-  functions that feed it. Their buttons, headers and title bars are moved.
+Not moved at stage 2, and moved in the review round below: Better Awake's
+eight and Better Touchpad's seven sidebar pages.
 
 Seen on screen: a headless GNOME Shell on a private bus with a throwaway
 home, under the 4G scope and the no-op `ibus-daemon`, screens in
@@ -205,6 +199,74 @@ Still to do for "Done when": DESIGN.md's Icons section points to
 `design/design-demos/icon-directions.html`; once it points to the gallery's
 Icons page and `design/design-demos/action-icon-options.html` instead,
 `icon-directions.html` can go. The owner's go-ahead on the screens is owed.
+
+### Review round (2026-11-21): two reviews' findings fixed
+
+- The Files preview window started GPUI with the toolkit's assets alone,
+  so its pictures drew nothing; it serves `FilesAssets`.
+  `window_icons.rs` now checks every `application()` start and every
+  `with_assets(...)` call: the type handed to GPUI must have an
+  `AssetSource` impl in its crate that calls `icon_set::load`.
+- A checked command-bar toggle and an accent button both place their icon
+  with `Placement::for_control`, so either is `OnAccent`; a disabled
+  `OnAccent` icon is `text_on_accent_disabled`.
+- `Glyph::element` draws an action at the slot it is given;
+  `Glyph::slot` gives an action alone its 18px. (Chosen over refusing the
+  combination in the type: the kit's 12 to 48px slots are all real.)
+- GPUI rasterises an `img` SVG once, at twice the size the file declares.
+  Above 24px an object is drawn from a large copy whose header declares
+  64px (same drawing and viewBox), served by `icon_set::load` under
+  `better-ui/icons/object/large/`. A test renders through GPUI's renderer
+  and fails on the old behaviour.
+- Better Awake's action buttons: a labelled one takes the action through
+  gpui-component's own icon slot (the action's mask in its placement's
+  colour) so its words stay in `label`, the accessible name; a disabled
+  one dims its icon; one with only an icon is made square at 18px.
+- Better Awake and Better Touchpad use the kit's `NavigationView` with a
+  picture per page, as Better Manager does; no accent tile behind a
+  picture; the pane's own collapse button overrides the width rule until
+  pressed again. Awake's keyboard hint and Touchpad's session line moved
+  from the old sidebar footers to the top bars. Awake's "Session defaults"
+  shows `Checklist` so the pane has one gear only.
+- Drawings: new-file's fold has a gap; download, open-external and
+  show-pane are one full-colour layer whose parts are separated by gaps;
+  view-list's lines are its body; battery (five), file and pointer are
+  filled shapes; dashboard, pictures, palette, scrolling, startup, fixes
+  and battery-charging keep to four colours with strokes counted. A new
+  two-layer action, `open-terminal`, for Run in terminal and Open
+  terminal here.
+- Tests: an object's colours count fills, strokes and mask contents; a
+  two-layer action's second layer paints less than its body and never
+  overlaps it at 96px; `window_icons.rs` fails on `IconName as`, a glob
+  import of the toolkit (across lines), and a kit SVG named by path, and
+  has no sidebar exemption. Nine glob imports were replaced by named ones.
+
+Seen on screen in this round (a headless GNOME Shell on a private bus, a
+throwaway home, each window in its own 4G scope, input through the shell's
+own Eval in unsafe mode; screens in `/tmp/claude-1000/t147-screens/round2/`):
+the Files preview playing a tone, Files with the preview pane on, its `…`
+and New menus and a context menu, Monitor's Details with tree view on and
+a process menu, Awake's navigation, Quick Sessions and a rule draft with
+its disabled remove (light and dark, set through Awake's own Appearance
+setting), Touchpad's navigation, Manager in light (its state file in the
+throwaway home), the app chooser, the gallery's Icons page in both
+appearances, and Launcher's 64px folder preview. Two faults the screens
+found are fixed: Awake's primary buttons drew their icon in the kit's
+on-accent colour on gpui-component's own primary fill (dark on black in
+light), and Touchpad's wrapping top bar stretched over its page.
+
+Open risk, not fixed here: an action alone is drawn in the desktop's
+accent. In this round's sandbox the accent the windows took was `#bde6fb`
+(the Files sidebar's selection bar), and accent-coloured icons alone all
+but vanish on the light background (the gallery's Icons page shows it). In
+the stage 2 run, before the latest merge of `main`, the same Files reload
+icon was a saturated blue. Which accent the owner's desktop gives, and
+whether an icon should use a darker accent role, is for the owner to see.
+
+Left as they are on purpose: arrows that name a command (Undo, Redo,
+move up and down, move to front, lower priority), Git's expand and wrap
+marks, and Git's toolbar Terminal button, which opens the Terminal
+application as its Editor and Files neighbours open theirs.
 
 ### Stage 2 work list: every icon the windows name
 
