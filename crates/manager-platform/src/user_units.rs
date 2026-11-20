@@ -48,7 +48,10 @@ pub enum UnitActivity {
     Starting,
     /// `inactive` after its main process ran and exited 0 with
     /// `Result=success`. A service that has nothing to do on this machine ends
-    /// like this on purpose, and it is not a problem.
+    /// like this on purpose, and it is not a problem. So a service may exit 0
+    /// only in that case: the touchpad gesture service exits 0 when safe mode
+    /// is on or no gesture is configured, waits for a missing adapter rather
+    /// than exiting, and ends a stop by its signal (ticket 131).
     Exited,
     /// `inactive` for any other reason, including never having been started,
     /// and `deactivating`.
@@ -1041,6 +1044,21 @@ mod tests {
             "Result=success\nExecMainCode=1\nExecMainStatus=3\nActiveState=inactive\nUnitFileState=enabled\n",
         );
         assert!(!exited_with_an_error.is_satisfied());
+    }
+
+    /// Ticket 131: a gesture service stopped by SIGTERM (a stop by hand, a
+    /// restart, a logout) gives GNOME's gestures back and then ends by that
+    /// signal rather than exiting 0, so systemd records `ExecMainCode=2`
+    /// (`CLD_KILLED`). That must read as stopped, never as a service that
+    /// finished on purpose, or the startup pass would leave it dead.
+    #[test]
+    fn a_service_ended_by_its_stop_signal_is_stopped_not_finished() {
+        let stopped = parse_unit_state(
+            "better-touchpad-gestures.service",
+            "Result=success\nExecMainCode=2\nExecMainStatus=15\nActiveState=inactive\nUnitFileState=enabled\n",
+        );
+        assert_eq!(stopped.activity, UnitActivity::Stopped);
+        assert!(!stopped.is_satisfied());
     }
 
     #[test]

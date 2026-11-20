@@ -431,6 +431,11 @@ pub struct GestureScreen {
     /// Whether GNOME has been asked to give up the gestures this configuration
     /// took from it, and whether it did.
     suppression: SuppressionState,
+    /// Whether the gesture service owns its bus name, or `None` when nobody
+    /// looked (offline, or no adapter to look past). The window can reach the
+    /// desktop while the service is dead, and then no gesture is recognized
+    /// at all, which the screen has to say (ticket 131).
+    service_running: Option<bool>,
 }
 
 impl GestureScreen {
@@ -473,6 +478,7 @@ impl GestureScreen {
             problem: None,
             failures: AdapterFailures::default(),
             suppression: SuppressionState::new(),
+            service_running: None,
         }
     }
 
@@ -618,6 +624,22 @@ impl GestureScreen {
         document
     }
 
+    pub fn set_service_running(&mut self, running: Option<bool>) {
+        self.service_running = running;
+    }
+
+    /// Whether the gesture service is running, as far as anyone looked.
+    pub fn service_running(&self) -> Option<bool> {
+        self.service_running
+    }
+
+    /// Why no gesture is recognized right now, when the reason is the gesture
+    /// service rather than the adapter: `true` when the adapter is reachable
+    /// and the service is not running.
+    pub fn service_stopped(&self) -> bool {
+        self.service_running == Some(false)
+    }
+
     pub fn set_known_shortcuts(&mut self, known: KnownShortcuts) {
         self.known_shortcuts = known;
     }
@@ -733,9 +755,16 @@ impl GestureScreen {
     /// preview clears the previous confirmation, so confirming one plan can
     /// never apply a different one.
     pub fn preview_preset(&mut self) {
+        self.preview_preset_as(&mac_style());
+    }
+
+    /// The same preview for another preset. The shipped one collides with
+    /// nothing GNOME 46 does (ticket 131), so the tests of the conflict
+    /// decisions preview one that does.
+    pub(crate) fn preview_preset_as(&mut self, preset: &GestureConfig) {
         let plan = PresetPlan::build(
             self.config(),
-            &mac_style(),
+            preset,
             touchpad_gestures::GNOME_46_GESTURES,
             self.adapter.as_ref(),
         );

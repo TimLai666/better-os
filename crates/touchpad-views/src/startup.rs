@@ -106,9 +106,10 @@ impl Startup {
             Err(error) => (GestureProfiles::default(), Some(error.to_string())),
         };
         let captured = gesture_store.load_capture().ok().flatten();
-        let (adapter, bridge) = build_session_adapter(&options);
+        let (adapter, bridge, service_running) = build_session_adapter(&options);
         if let Some((reachable, detail)) = bridge {
-            model.set_gesture_bridge(reachable, detail);
+            let (connected, detail) = gesture_connection(reachable, detail, service_running);
+            model.set_gesture_bridge(connected, detail);
         }
         // The gesture profile follows the device the rest of the window is
         // about, so switching the selected touchpad switches the gestures with
@@ -118,6 +119,7 @@ impl Startup {
             .map(|device| device.identity.clone());
         let mut gestures =
             GestureScreen::with_profiles(gesture_profiles, device, captured, adapter);
+        gestures.set_service_running(service_running);
         gestures.set_known_shortcuts(known_shortcuts(&options));
         gestures.verify_all(Some(&gesture_store));
         gestures.set_problem(gesture_problem);
@@ -159,11 +161,45 @@ fn unreachable_adapter_reason(user_extensions_enabled: Option<bool>) -> String {
     }
 }
 
-fn build_session_adapter(
-    options: &StartupOptions,
-) -> (Box<dyn SessionAdapter>, Option<(bool, String)>) {
+/// What the gesture connection check says (ticket 131).
+///
+/// The adapter being on the bus is half of it. The other half is the gesture
+/// service, the process that actually recognizes gestures: with the adapter
+/// there and the service dead, the window can still reach the desktop, and
+/// nothing a hand does on the touchpad is recognized. That is not connected,
+/// and the check says which half is missing.
+fn gesture_connection(
+    adapter_reachable: bool,
+    adapter_detail: String,
+    service_running: Option<bool>,
+) -> (bool, String) {
+    match (adapter_reachable, service_running) {
+        (true, Some(false)) => (
+            false,
+            "the GNOME Shell adapter answered, but the gesture service \
+             (better-touchpad-gestures.service) is not running, so no gesture is recognized \
+             and GNOME keeps its own"
+                .to_string(),
+        ),
+        (true, Some(true)) => (
+            true,
+            format!("{adapter_detail}, and the gesture service is listening"),
+        ),
+        _ => (adapter_reachable, adapter_detail),
+    }
+}
+
+/// The route, the bridge fact, and whether the gesture service owns its name
+/// (`None` when nobody looked).
+type SessionRoute = (
+    Box<dyn SessionAdapter>,
+    Option<(bool, String)>,
+    Option<bool>,
+);
+
+fn build_session_adapter(options: &StartupOptions) -> SessionRoute {
     if options.offline || options.in_memory {
-        return (Box::new(MockSessionAdapter::new()), None);
+        return (Box::new(MockSessionAdapter::new()), None, None);
     }
     let shell = match SessionBusShell::connect() {
         Ok(shell) if shell.is_reachable() => shell,
@@ -174,21 +210,29 @@ fn build_session_adapter(
                     false,
                     unreachable_adapter_reason(shell.user_extensions_enabled()),
                 )),
+                // The missing adapter is the reason to show; the service
+                // waits for it either way.
+                None,
             );
         }
         Err(error) => {
             return (
                 Box::new(MockSessionAdapter::new()),
                 Some((false, error.to_string())),
+                None,
             );
         }
     };
+    let service_running = Some(shell.gesture_service_running());
+    // The window never takes GNOME's gestures itself: the service does, once
+    // gestures arrive, and the extension refuses anyone else (ticket 131).
     let adapter = match GnomeShellAdapter::connect(Box::new(shell)) {
-        Ok(adapter) => adapter,
+        Ok(adapter) => adapter.leaving_suppression_to_the_service(),
         Err(error) => {
             return (
                 Box::new(MockSessionAdapter::new()),
                 Some((false, error.to_string())),
+                service_running,
             );
         }
     };
@@ -204,7 +248,11 @@ fn build_session_adapter(
         routes.push(Box::new(LauncherActivationAdapter::new(Box::new(registry))));
     }
     routes.push(Box::new(adapter));
-    (Box::new(RoutingAdapter::new(routes)), Some((true, detail)))
+    (
+        Box::new(RoutingAdapter::new(routes)),
+        Some((true, detail)),
+        service_running,
+    )
 }
 
 fn describe(error: StoreError) -> String {
@@ -258,6 +306,36 @@ pub fn now() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|elapsed| elapsed.as_secs())
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod gesture_connection_tests {
+    use super::gesture_connection;
+
+    #[test]
+    fn a_dead_gesture_service_is_not_connected_even_with_the_adapter_there() {
+        let (connected, detail) =
+            gesture_connection(true, "the adapter answered".to_string(), Some(false));
+        assert!(!connected);
+        assert!(detail.contains("gesture service"), "{detail}");
+        assert!(detail.contains("not running"), "{detail}");
+    }
+
+    #[test]
+    fn both_halves_there_is_connected() {
+        let (connected, detail) =
+            gesture_connection(true, "the adapter answered".to_string(), Some(true));
+        assert!(connected);
+        assert!(detail.contains("listening"), "{detail}");
+    }
+
+    #[test]
+    fn a_missing_adapter_keeps_its_own_reason() {
+        let (connected, detail) =
+            gesture_connection(false, "the adapter is not enabled".to_string(), None);
+        assert!(!connected);
+        assert_eq!(detail, "the adapter is not enabled");
+    }
 }
 
 #[cfg(test)]

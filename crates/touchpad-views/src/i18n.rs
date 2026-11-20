@@ -242,6 +242,8 @@ pub struct Copy {
     pub disable_gestures: &'static str,
     pub no_gestures: &'static str,
     pub gesture_backend_none: &'static str,
+    /// The adapter is there and the gesture service is not (ticket 131).
+    pub gesture_service_stopped: &'static str,
     /// What the compositor cannot see. Shown wherever a thumb-and-three gesture
     /// is, because the gesture works and the reason it works is not what the
     /// row appears to say.
@@ -485,6 +487,7 @@ pub const EN_US: Copy = Copy {
     disable_gestures: "Turn gestures off",
     no_gestures: "No gesture is configured yet.",
     gesture_backend_none: "The GNOME Shell adapter is not enabled on this session, so no gesture reaches the desktop yet.",
+    gesture_service_stopped: "The gesture service isn't running, so no gesture is recognized and GNOME keeps its own gestures. Better Manager starts it again the next time it opens.",
     gesture_thumb_best_effort: "The desktop reports how many fingers a gesture has and not which one is the thumb, so a thumb and three fingers is matched as four contacts.",
     gesture_launcher: "Open the launcher",
     gesture_show_desktop: "Show the desktop",
@@ -725,6 +728,7 @@ pub const ZH_TW: Copy = Copy {
     disable_gestures: "關閉手勢",
     no_gestures: "還沒有設定任何手勢。",
     gesture_backend_none: "這個工作階段沒有啟用 GNOME Shell 轉接器，所以手勢還無法真的影響桌面。",
+    gesture_service_stopped: "手勢服務沒有在執行，所以不會辨識任何手勢，GNOME 會保留自己的手勢。Better Manager 下次開啟時會再把它啟動。",
     gesture_thumb_best_effort: "桌面只會回報手勢用了幾根手指，不會說哪一根是拇指，所以拇指加三指會以四點接觸來判斷。",
     gesture_launcher: "開啟啟動器",
     gesture_show_desktop: "顯示桌面",
@@ -1179,6 +1183,7 @@ mod tests {
             copy.disable_gestures,
             copy.no_gestures,
             copy.gesture_backend_none,
+            copy.gesture_service_stopped,
             copy.gesture_thumb_best_effort,
             copy.gesture_launcher,
             copy.gesture_show_desktop,

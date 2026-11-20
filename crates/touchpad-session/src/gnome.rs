@@ -320,6 +320,8 @@ pub struct GnomeShellAdapter {
     bridge: Box<dyn ShellBridge>,
     capabilities: ActionCapabilities,
     reported: ShellCapabilities,
+    /// Whether taking GNOME's gestures is left to the gesture service.
+    suppression_left_to_service: bool,
 }
 
 impl GnomeShellAdapter {
@@ -336,7 +338,18 @@ impl GnomeShellAdapter {
             bridge,
             capabilities: Self::declare(),
             reported,
+            suppression_left_to_service: false,
         }
+    }
+
+    /// The form a window uses (ticket 131): it never turns GNOME's own
+    /// gestures off itself. Only the gesture service may, once gestures have
+    /// arrived from the adapter, and the extension refuses the request from
+    /// anyone else. Giving them back still goes through, because that only
+    /// ever returns GNOME to its own behaviour.
+    pub fn leaving_suppression_to_the_service(mut self) -> Self {
+        self.suppression_left_to_service = true;
+        self
     }
 
     /// What the extension said about itself.
@@ -419,6 +432,14 @@ impl SessionAdapter for GnomeShellAdapter {
     }
 
     fn suppress_built_in_gestures(&mut self, suppress: bool) -> SuppressionOutcome {
+        if suppress && self.suppression_left_to_service {
+            return SuppressionOutcome::Unsupported {
+                reason: "session.built_in_gestures_left_to_service".to_string(),
+                detail: "the gesture service turns GNOME's own gestures off once gestures \
+                         arrive from the adapter"
+                    .to_string(),
+            };
+        }
         match self
             .bridge
             .call(ShellRequest::SuppressBuiltInGestures(suppress))
@@ -550,6 +571,26 @@ mod tests {
 
     fn adapter(bridge: Arc<FakeShellBridge>) -> GnomeShellAdapter {
         GnomeShellAdapter::connect(Box::new(SharedShellBridge(bridge))).expect("a shell adapter")
+    }
+
+    #[test]
+    fn a_window_never_takes_gnomes_gestures_and_can_still_give_them_back() {
+        let recorded = Arc::new(FakeShellBridge::new());
+        let mut adapter = adapter(recorded.clone()).leaving_suppression_to_the_service();
+        assert!(matches!(
+            adapter.suppress_built_in_gestures(true),
+            SuppressionOutcome::Unsupported { reason, .. }
+                if reason == "session.built_in_gestures_left_to_service"
+        ));
+        assert!(recorded.calls().is_empty());
+        assert_eq!(
+            adapter.suppress_built_in_gestures(false),
+            SuppressionOutcome::Restored
+        );
+        assert_eq!(
+            recorded.calls(),
+            vec![ShellRequest::SuppressBuiltInGestures(false)]
+        );
     }
 
     #[test]
