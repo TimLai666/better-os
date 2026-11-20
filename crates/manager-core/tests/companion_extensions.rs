@@ -163,7 +163,21 @@ impl PrivilegedTransactionExecutor for NoExecutor {
 
 #[test]
 fn verifying_the_manager_turns_its_companions_extension_on() {
-    let extensions = controller(&[]);
+    verify_manager(controller(&[]));
+}
+
+/// Ticket 131: with GNOME's switch that turns off all extensions on, the
+/// manager's own check still passes. The companion's extension is put in the
+/// list for when the switch goes off, and a failed check here would have
+/// rolled Better Manager's own update back.
+#[test]
+fn the_all_extensions_off_switch_never_fails_the_managers_own_check() {
+    verify_manager(ShellExtensions::new(
+        MemoryShellSettings::new(&[], &[]).all_off(),
+    ));
+}
+
+fn verify_manager(extensions: FakeShellExtensions) {
     let manager = manager();
     let packages = packages(true);
     let mut health_paths = own_files().paths;

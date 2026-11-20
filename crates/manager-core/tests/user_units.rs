@@ -89,8 +89,8 @@ fn enabled_but_stopped(unit: &str) -> UnitState {
     UnitState::new(unit, true, UnitActivity::Stopped)
 }
 
-/// Enabled, and finished on its own with success: the touchpad gesture
-/// service when it has nothing to do.
+/// Enabled, and finished on its own with success: what the touchpad gesture
+/// service on 0.2.16 did when the adapter was late (ticket 131).
 fn exited(unit: &str) -> UnitState {
     UnitState::new(unit, true, UnitActivity::Exited)
 }
@@ -566,11 +566,11 @@ fn health_reports_a_stopped_unit_by_name() {
     );
 }
 
-/// A service that exits 0 on purpose — the touchpad gesture service with
-/// nothing to do — is an enabled component working as designed. Verify
-/// passes and starts nothing, and the startup pass leaves it alone.
+/// Ticket 131: a service that exited, even with success, is not running, and
+/// no Better OS unit exits on purpose any more. The startup pass starts it,
+/// and so does Verify (Check again), which then passes.
 #[test]
-fn a_service_that_finished_successfully_is_healthy_and_is_not_restarted() {
+fn a_service_that_exited_is_started_again_by_the_startup_pass_and_by_verify() {
     let manager = manager();
     let mut state = state_with(&awake(), record("0.2.9", true));
     let packages = FixedPackageStateProbe::new(&[("better-awake", "0.2.9")])
@@ -581,7 +581,10 @@ fn a_service_that_finished_successfully_is_healthy_and_is_not_restarted() {
     let healed = manager
         .heal_user_units(&mut state, &packages, &units)
         .expect("the startup pass runs");
-    assert!(healed.is_empty(), "{healed:?}");
+    assert_eq!(healed.len(), 1, "{healed:?}");
+    assert!(healed[0].started, "{healed:?}");
+
+    let units = FakeUserUnitController::new(&[exited(AWAKE_UNIT)]);
 
     let executor = SucceedingExecutor::new(Arc::new(Mutex::new(Vec::new())));
     let mut driver = RealDriver::new(
@@ -603,8 +606,8 @@ fn a_service_that_finished_successfully_is_healthy_and_is_not_restarted() {
         units
             .calls()
             .iter()
-            .all(|call| matches!(call, FakeUnitCall::States(_))),
-        "nothing was started: {:?}",
+            .any(|call| matches!(call, FakeUnitCall::Enable(_))),
+        "the exited unit was not started: {:?}",
         units.calls()
     );
 }
