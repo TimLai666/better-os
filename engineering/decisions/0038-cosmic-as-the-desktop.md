@@ -5,9 +5,17 @@
 Decided by the owner on 2026-11-21: **option D**, a Better OS session on
 COSMIC's compositor, beside GNOME. It was proposed that day for ticket 143 and
 revised the same day for the owner's fourth option and the gesture
-requirement. Decisions C2 to C9 below are not answered yet; until each is,
-the work that depends on it is not built. The tickets for option D are
-written from this record.
+requirement. The same day the owner answered C2 to C9: each as recommended in
+the table below. So Better Manager may add System76's APT source, its key and
+a pin limited to the session's package closure (C2, which is the explicit
+decision AGENTS.md requires before a public APT source is used); GDM stays
+(C3); Fcitx 5 with Chewing is the input method in the session (C4); Better OS
+windows take the compositor's title bar there (C5); Better Files draws the
+desktop's icons (C6); C7 does not arise under option D; `cosmic-comp` runs as
+released first and the gesture patch comes once the rest of the session works
+and upstream still offers nothing (C8); COSMIC Settings serves system
+settings at first (C9). The tickets for option D are written from this
+record.
 
 ## The owner's decisions
 
