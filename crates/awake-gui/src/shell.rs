@@ -85,7 +85,7 @@ impl AwakeApp {
         let menu =
             SidebarMenu::new().children(Section::ALL.map(|section| self.nav_item(section, cx)));
 
-        Sidebar::new("awake-sidebar")
+        let sidebar = Sidebar::new("awake-sidebar")
             .collapsible(SidebarCollapsible::Icon)
             .collapsed(compact)
             .w(px(248.0))
@@ -136,8 +136,26 @@ impl AwakeApp {
                             )
                         }),
                 ),
-            )
-            .into_any_element()
+            );
+        // The sidebar reaches the window's bottom leading corner: its fill
+        // and edge follow the corner and its contents stay inside it
+        // (ticket 141).
+        better_ui::window_chrome::corner_panel(
+            better_ui::window_chrome::corner_fill(cx.theme().tokens.sidebar).border(
+                gpui::Edges {
+                    right: px(1.0),
+                    ..gpui::Edges::default()
+                },
+                cx.theme().sidebar_border,
+            ),
+            better_ui::window_chrome::Cut::Inset,
+            sidebar
+                .bg(transparent_black())
+                .border_color(transparent_black()),
+        )
+        .h_full()
+        .flex_none()
+        .into_any_element()
     }
 
     pub(crate) fn top_bar(&self, cx: &mut Context<Self>) -> AnyElement {

@@ -191,6 +191,9 @@ pub struct Rendered {
     pub thickness: Insets,
     /// The window's top corner radius, logical pixels.
     pub corner_radius: f32,
+    /// The window's bottom corner radius, logical pixels, measured apart
+    /// from the top (ticket 141).
+    pub bottom_corner_radius: f32,
     /// The header bar's height, logical pixels.
     pub header_height: f32,
     /// The header bar background, `2 * corner + 1` logical pixels wide with
@@ -245,6 +248,7 @@ impl Rendered {
             frame_px,
             thickness: Insets::uniform(40.0),
             corner_radius: 12.0,
+            bottom_corner_radius: 12.0,
             header_height: 47.0,
             header: [header.clone(), header],
             header_text: [Color::rgb(0); 2],
@@ -664,15 +668,12 @@ impl Renderer {
     }
 
     /// The frame around a `2 * MAX_FRAME` square window, with its shadow,
-    /// border, and window background. Bottom corners are square, as in
-    /// Chromium: the content is painted over the bottom edge and would
-    /// otherwise cover their border.
+    /// border, and window background, every corner as the theme rounds it
+    /// (ticket 141; Chromium squares the bottom, because it paints content
+    /// over it, and so did ticket 108). The kit keeps the content inside the
+    /// same curve (`system_frame::corners`).
     fn frame(&self, key: &FrameKey, focused: bool, scale: u32) -> Bitmap {
-        let mut window = self.node(None, &Self::window_selector(key, focused), scale);
-        self.add_css(
-            &mut window,
-            "* { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }",
-        );
+        let window = self.node(None, &Self::window_selector(key, focused), scale);
         let pad = self.padding(&window);
         let border = self.border(&window);
         let f = MAX_FRAME as f64;
@@ -690,18 +691,40 @@ impl Renderer {
     /// The top corner radius, measured from an opaque sample as Chromium
     /// does (`ComputeTopCornerRadius`): GTK 4 does not report CSS values.
     fn corner_radius(&self, key: &FrameKey) -> u32 {
+        let sample = self.corner_sample(
+            key,
+            "border-bottom-left-radius: 0; border-bottom-right-radius: 0; \
+             border-top-right-radius: 0;",
+        );
+        super::top_corner_radius(&sample)
+    }
+
+    /// The bottom corner radius, measured the same way from a sample with
+    /// only its bottom-left corner rounded.
+    fn bottom_corner_radius(&self, key: &FrameKey) -> u32 {
+        let sample = self.corner_sample(
+            key,
+            "border-top-left-radius: 0; border-top-right-radius: 0; \
+             border-bottom-right-radius: 0;",
+        );
+        super::bottom_corner_radius(&sample)
+    }
+
+    /// The window drawn opaque black, `MAX_CORNER` square, with `square`
+    /// setting the other corners' radii to 0.
+    fn corner_sample(&self, key: &FrameKey, square: &str) -> Bitmap {
         let mut window = self.node(None, &Self::window_selector(key, false), 1);
         self.add_css(
             &mut window,
-            "window { background-image: none; background-color: black; box-shadow: none; \
-             border: none; outline: none; border-bottom-left-radius: 0; \
-             border-bottom-right-radius: 0; border-top-right-radius: 0; }",
+            &format!(
+                "window {{ background-image: none; background-color: black; box-shadow: none; \
+                 border: none; outline: none; {square} }}"
+            ),
         );
         let size = MAX_CORNER;
-        let sample = self.draw(size, size, |cr| {
+        self.draw(size, size, |cr| {
             self.render_box(&window, cr, 0.0, 0.0, size as f64, size as f64)
-        });
-        super::top_corner_radius(&sample)
+        })
     }
 
     fn header_selector(key: &FrameKey, focused: bool) -> (String, String) {
@@ -957,10 +980,10 @@ impl Renderer {
             bottom: thickness.bottom / scale as f32,
             left: thickness.left / scale as f32,
         };
-        let radius = if key.maximized || key.tiled {
-            0
+        let (radius, bottom_radius) = if key.maximized || key.tiled {
+            (0, 0)
         } else {
-            self.corner_radius(key)
+            (self.corner_radius(key), self.bottom_corner_radius(key))
         };
         let (header_height, header_padding) = self.header_height(key);
         let header_height = header_height.max(1.0).round();
@@ -1027,6 +1050,7 @@ impl Renderer {
             frame_px: MAX_FRAME * scale,
             thickness,
             corner_radius: radius as f32,
+            bottom_corner_radius: bottom_radius as f32,
             header_height,
             header: [focused_header, backdrop_header],
             header_text: [focused_text, backdrop_text],
@@ -1047,5 +1071,52 @@ impl Renderer {
     /// GTK's minor version, for the log.
     pub fn gtk_minor(&self) -> u32 {
         unsafe { (self.gtk.gtk_get_minor_version)() }
+    }
+}
+
+/// Run by hand inside a desktop session (a sandbox's; CI has no display):
+/// draws the frame for the session's theme and prints what was measured, for
+/// comparing with a GTK window (ticket 141).
+/// `cargo test -p better-ui --lib -- --ignored --nocapture measured_on_this_desktop`
+#[cfg(test)]
+mod on_this_desktop {
+    use super::Renderer;
+    use crate::system_frame::{DesktopSettings, GSettings, Tiled, WindowState};
+
+    #[test]
+    #[ignore = "needs a desktop session"]
+    fn measured_on_this_desktop() {
+        let renderer = Renderer::open().expect("GTK opens on this desktop");
+        let settings = DesktopSettings::read(&GSettings);
+        for scale in [1.0, 2.0] {
+            for dark in [false, true] {
+                let floating = WindowState::new(Some(Tiled::default()), false, false, true);
+                let rendered = renderer.render(&floating.key(&settings, dark, scale));
+                println!(
+                    "theme {:?} dark {dark} scale {scale}: {} top {} bottom {} thickness {:?}",
+                    settings.gtk_theme,
+                    rendered.drawn_by,
+                    rendered.corner_radius,
+                    rendered.bottom_corner_radius,
+                    rendered.thickness
+                );
+                // Every theme this was compared on rounds all four alike.
+                assert_eq!(rendered.corner_radius, rendered.bottom_corner_radius);
+                assert!(rendered.corner_radius > 0.0);
+                let left = Tiled {
+                    left: true,
+                    ..Tiled::default()
+                };
+                for state in [
+                    WindowState::new(Some(Tiled::default()), true, false, true),
+                    WindowState::new(Some(Tiled::default()), false, true, true),
+                    WindowState::new(Some(left), false, false, true),
+                ] {
+                    let square = renderer.render(&state.key(&settings, dark, scale));
+                    assert_eq!(square.corner_radius, 0.0, "{state:?}");
+                    assert_eq!(square.bottom_corner_radius, 0.0, "{state:?}");
+                }
+            }
+        }
     }
 }

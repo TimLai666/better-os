@@ -1873,13 +1873,13 @@ fn every_language_picker_names_the_languages_the_same_way() {
 #[test]
 fn a_window_that_loses_client_decorations_takes_input_everywhere_again() {
     use crate::system_frame::input_region_changes;
-    let first = Some((52.0, 52.0, 1176.0, 716.0));
+    let first = Some(vec![(52.0, 52.0, 1176.0, 716.0)]);
     // The first frame sets its region.
-    assert!(input_region_changes(None, first));
+    assert!(input_region_changes(None, &first));
     // Server-decorated now: the whole surface, which is a change.
-    assert!(input_region_changes(Some(first), None));
+    assert!(input_region_changes(Some(&first), &None));
     // And only once.
-    assert!(!input_region_changes(Some(None), None));
+    assert!(!input_region_changes(Some(&None), &None));
     // The early return clears it: the source says so.
     let source = include_str!("window_frame.rs");
     let early = source

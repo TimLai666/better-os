@@ -309,9 +309,22 @@ GUI or dependency compiles when the relevant command was not executed.
   has it draw the frame, shadow, header, and window buttons from the current
   theme, as Chromium does; without GTK the kit draws Adwaita's frame. Do not
   paint a background on a view's root (the frame paints it with the desktop's
-  corners), and do not draw frames or window buttons in an app. The frame was
-  compared pixel by pixel with GNOME Text Editor in a headless GNOME Shell 46
-  only, not on the owner's desktop. Better Launcher is the one deliberate exception, recorded
+  corners), and do not draw frames or window buttons in an app. Since ticket
+  141 all four corners are rounded with the theme's radius, measured from
+  GTK's drawing top and bottom (ZorinBlue 15px, Adwaita 12px), and square
+  maximized, fullscreen, or tiled on any edge; the input region follows the
+  curve grown by GTK's 12px handle. GPUI clips only to rectangles, so nothing
+  clips content to the curve for free: an element that reaches a window corner
+  draws its fill with `window_chrome::corner_fill` instead of `.bg()`, and what
+  scrolls or floats into the corner goes inside `window_chrome::corner_clip`,
+  which gives up a strip along the window's edge (the curve's 45° depth, 4px
+  at 12px, for `Cut::Inset`; the full radius for `Cut::Vertical`).
+  `NavigationView`, dialogs, toasts, and the staged-changes bar do this; a new
+  window or panel that reaches a corner must too. The frame was compared pixel
+  by pixel with GNOME Text Editor in a headless GNOME Shell 46 only (ticket
+  108; ticket 141 for the bottom corners, on ZorinBlue-Dark, ZorinBlue-Light,
+  and Adwaita light and dark, at scale 1 and 2, evidence in
+  `better-os-evidence/141`), not on the owner's desktop. Better Launcher is the one deliberate exception, recorded
   in code: a Start-menu panel (ticket 82) dismissed by Escape gets no titlebar, but
   it still sets `app_id` like every other window, which is what lets a dock or
   an application grid match a window to its desktop entry. Escape on Better

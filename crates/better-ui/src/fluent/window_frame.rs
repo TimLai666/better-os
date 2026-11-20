@@ -7,21 +7,32 @@
 //! resize from every edge and corner. The title bar's header and buttons are
 //! painted by [`super::chrome::TitleBar`] from the same drawing, so the two
 //! always agree. When GTK cannot be loaded both fall back to Adwaita's look.
+//!
+//! Every corner is rounded with the theme's radius while the window floats
+//! (ticket 141), and square while it is maximized, fullscreen, or tiled. GPUI
+//! clips content to rectangles only, so the window's shape is published
+//! ([`window_shape`]) for the containers that reach a corner: [`CornerFill`]
+//! paints a fill (and its border and shadow) with the corner rounded, and
+//! [`corner_clip`] paints contents that may scroll or float into a corner
+//! inside a rectangle that stays clear of the curve.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
 use gpui::{
-    AnyView, App, AppContext as _, Bounds, Context, Corners, CursorStyle, Decorations, Global,
-    InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels, Render, RenderImage,
-    ResizeEdge, Rgba, Styled, Task, Window, WindowId, canvas, div, point, px, size,
+    AnyElement, AnyView, App, AppContext as _, Bounds, BoxShadow, ContentMask, Context, Corners,
+    CursorStyle, Decorations, Edges, Element, ElementId, Global, GlobalElementId, Hsla,
+    InspectorElementId, InteractiveElement, IntoElement, LayoutId, MouseButton, ParentElement,
+    Pixels, Render, RenderImage, RenderOnce, ResizeEdge, Rgba, Styled, Task, Window, WindowId,
+    canvas, div, point, px, size,
 };
 use gpui_component::{ActiveTheme as _, Root};
 
 use crate::system_frame::service::{FrameService, Rendered};
 use crate::system_frame::{
-    self, Bitmap, Color, DesktopSettings, Edge, FallbackLook, Insets, Tiled, WindowState,
+    self, Bitmap, Color, CornerRadii, Cut, DesktopSettings, Edge, FallbackLook, Insets, Rect,
+    Tiled, WindowShape, WindowState,
 };
 
 /// How long a window's first frame waits for the desktop's settings and
@@ -60,7 +71,7 @@ pub struct FramedView {
     /// [`system_frame::sticky_inset`]).
     inset: Option<f32>,
     /// The input region last given to the compositor.
-    input: Option<Option<(f32, f32, f32, f32)>>,
+    input: Option<system_frame::InputRegion>,
     /// X11 cannot narrow a window's input region.
     x11: bool,
     _watch: Task<()>,
@@ -187,6 +198,23 @@ struct LastLooks(HashMap<(WindowId, bool), (Arc<Rendered>, Arc<FrameImages>)>);
 
 impl Global for LastLooks {}
 
+/// Each framed window's shape as its frame last laid it out.
+#[derive(Default)]
+struct WindowShapes(HashMap<WindowId, WindowShape>);
+
+impl Global for WindowShapes {}
+
+/// The rounded shape of the window being drawn, in window coordinates, as
+/// its frame laid it out this frame: `None` for a window with no frame of the
+/// kit's (Better Launcher's overlay), and square corners while it is
+/// maximized, fullscreen, or tiled.
+pub fn window_shape(window: &Window, cx: &App) -> Option<WindowShape> {
+    cx.try_global::<WindowShapes>()?
+        .0
+        .get(&window.window_handle().window_id())
+        .copied()
+}
+
 /// What a window's frame state is right now.
 pub fn window_state(window: &Window) -> WindowState {
     let tiling = match window.window_decorations() {
@@ -307,6 +335,13 @@ fn forget_closed_windows(cx: &mut App) {
             .0
             .retain(|(id, _), _| open.contains(id));
     }
+    if let Some(shapes) = cx.try_global::<WindowShapes>()
+        && shapes.0.keys().any(|id| !open.contains(id))
+    {
+        cx.default_global::<WindowShapes>()
+            .0
+            .retain(|id, _| open.contains(id));
+    }
 }
 
 /// Makes the Fluent accent the drawing's theme accent, or Windows 11's blue
@@ -360,12 +395,51 @@ impl FrameLook {
         }
     }
 
+    /// The top corners' radius the theme gives a floating window.
     pub fn corner_radius(&self) -> f32 {
         match self {
             FrameLook::Gtk(rendered, _) => rendered.corner_radius,
             FrameLook::Fallback(look) => look.corner_radius,
         }
     }
+
+    /// The bottom corners' radius, measured apart from the top.
+    pub fn bottom_corner_radius(&self) -> f32 {
+        match self {
+            FrameLook::Gtk(rendered, _) => rendered.bottom_corner_radius,
+            FrameLook::Fallback(look) => look.corner_radius,
+        }
+    }
+
+    /// The four corners a window in `state` has with this look.
+    pub fn corner_radii(&self, state: WindowState) -> CornerRadii {
+        system_frame::window_corner_radii(state, self.corner_radius(), self.bottom_corner_radius())
+    }
+}
+
+fn corners(radii: CornerRadii) -> Corners<Pixels> {
+    Corners {
+        top_left: px(radii.top_left),
+        top_right: px(radii.top_right),
+        bottom_right: px(radii.bottom_right),
+        bottom_left: px(radii.bottom_left),
+    }
+}
+
+fn rect(bounds: Bounds<Pixels>) -> Rect {
+    Rect::new(
+        f32::from(bounds.origin.x),
+        f32::from(bounds.origin.y),
+        f32::from(bounds.size.width),
+        f32::from(bounds.size.height),
+    )
+}
+
+fn bounds_of(rect: Rect) -> Bounds<Pixels> {
+    Bounds::new(
+        point(px(rect.x), px(rect.y)),
+        size(px(rect.width), px(rect.height)),
+    )
 }
 
 fn gpui_edge(edge: Edge) -> ResizeEdge {
@@ -393,18 +467,23 @@ fn cursor(edge: Edge) -> CursorStyle {
 impl FramedView {
     /// Gives the compositor `input` as the window's input region, when it
     /// differs from the one given last. `None` is the whole surface.
-    fn set_input(&mut self, input: Option<(f32, f32, f32, f32)>, window: &mut Window) {
-        if !system_frame::input_region_changes(self.input, input) {
+    fn set_input(&mut self, input: system_frame::InputRegion, window: &mut Window) {
+        if !system_frame::input_region_changes(self.input.as_ref(), &input) {
             return;
         }
-        self.input = Some(input);
-        match input {
-            Some((x, y, rw, rh)) => window.set_input_region(Some(&[Bounds::new(
-                point(px(x), px(y)),
-                size(px(rw), px(rh)),
-            )])),
+        match &input {
+            Some(rects) => {
+                let rects: Vec<Bounds<Pixels>> = rects
+                    .iter()
+                    .map(|(x, y, rw, rh)| {
+                        Bounds::new(point(px(*x), px(*y)), size(px(*rw), px(*rh)))
+                    })
+                    .collect();
+                window.set_input_region(Some(&rects))
+            }
             None => window.set_input_region(None),
         }
+        self.input = Some(input);
     }
 }
 
@@ -423,6 +502,9 @@ impl Render for FramedView {
             // nothing (ticket 85: the right half of Better Manager took no
             // click). The compositor's frame needs the whole surface.
             self.set_input(None, window);
+            cx.default_global::<WindowShapes>()
+                .0
+                .remove(&window.window_handle().window_id());
             return div()
                 .size_full()
                 .bg(background)
@@ -460,27 +542,27 @@ impl Render for FramedView {
         let insets = system_frame::frame_insets(inset, state.tiled, state.maximized);
         let surface = window.viewport_size();
         let (w, h) = (f32::from(surface.width), f32::from(surface.height));
+        let radii = look.corner_radii(state);
         let input = (!(state.maximized || state.tiled.all()))
-            .then(|| system_frame::input_region(w, h, insets));
+            .then(|| system_frame::input_region(w, h, insets, radii));
         self.set_input(input, window);
-        let radius = if state.maximized || state.tiled.any() {
-            0.0
-        } else {
-            look.corner_radius()
-        };
+        let shape = WindowShape::new(Rect::inside(w, h, insets), radii);
+        cx.default_global::<WindowShapes>()
+            .0
+            .insert(window.window_handle().window_id(), shape);
         let active = state.active;
         let paint_look = look.clone();
         let frame = canvas(
             |_, _, _| {},
             move |bounds, _, window, _| {
-                paint_frame(&paint_look, bounds, insets, radius, active, state, window)
+                paint_frame(&paint_look, bounds, insets, radii, active, state, window)
             },
         )
         .absolute()
         .top_0()
         .left_0()
         .size_full();
-        let zones = system_frame::resize_zones(w, h, insets, state.tiled, state.maximized)
+        let zones = system_frame::resize_zones(w, h, insets, state.tiled, state.maximized, radii)
             .into_iter()
             .map(|(edge, (x, y, zw, zh))| {
                 div()
@@ -501,6 +583,7 @@ impl Render for FramedView {
                             insets,
                             state.tiled,
                             state.maximized,
+                            radii,
                         );
                         if let Some(edge) = edge {
                             cx.stop_propagation();
@@ -528,8 +611,10 @@ impl Render for FramedView {
                     .min_w_0()
                     .overflow_hidden()
                     .bg(background)
-                    .rounded_tl(px(radius))
-                    .rounded_tr(px(radius))
+                    .rounded_tl(px(radii.top_left))
+                    .rounded_tr(px(radii.top_right))
+                    .rounded_br(px(radii.bottom_right))
+                    .rounded_bl(px(radii.bottom_left))
                     .cursor(CursorStyle::Arrow)
                     .child(self.view.clone()),
             )
@@ -545,7 +630,7 @@ fn paint_frame(
     look: &FrameLook,
     bounds: Bounds<Pixels>,
     insets: Insets,
-    radius: f32,
+    radii: CornerRadii,
     active: bool,
     state: WindowState,
     window: &mut Window,
@@ -623,9 +708,9 @@ fn paint_frame(
             }
         }
         FrameLook::Fallback(look) => {
-            // Adwaita's window shadow, border, and 12px top corners. GPUI
-            // does not grow paint bounds for blur, so the shadow stays inside
-            // the inset.
+            // Adwaita's window shadow, border, and 12px corners. GPUI does
+            // not grow paint bounds for blur, so the shadow stays inside the
+            // inset.
             let opacity = if active { 1.0 } else { 0.6 };
             let shadows = [
                 (2.0, 8.0, 2.0, 0.13),
@@ -633,12 +718,7 @@ fn paint_frame(
                 (6.0, 28.0, 8.0, 0.04),
             ];
             let content = Bounds::new(point(left, top), size(right - left, bottom - top));
-            let corners = Corners {
-                top_left: px(radius),
-                top_right: px(radius),
-                bottom_left: px(0.0),
-                bottom_right: px(0.0),
-            };
+            let corners = corners(radii);
             let list: Vec<gpui::BoxShadow> = shadows
                 .iter()
                 .map(|(y, blur, spread, alpha)| gpui::BoxShadow {
@@ -656,12 +736,7 @@ fn paint_frame(
                     point(left - px(1.0), top - px(1.0)),
                     size(right - left + px(2.0), bottom - top + px(2.0)),
                 ),
-                Corners {
-                    top_left: px(radius + 1.0),
-                    top_right: px(radius + 1.0),
-                    bottom_left: px(0.0),
-                    bottom_right: px(0.0),
-                },
+                self::corners(radii.grow(1.0)),
                 gpui::transparent_black(),
                 px(1.0),
                 border,
@@ -712,11 +787,246 @@ pub fn paint_strip(
     );
 }
 
+/// A fill that stays inside the window's rounded corners (ticket 141): a
+/// container that reaches a window corner draws its background, border, and
+/// shadow with this instead of `.bg()`, `.border_*()`, and `.shadow_*()`,
+/// because a GPUI quad is square wherever its own style says so. The corner
+/// that meets a rounded window corner gets the radius that keeps it inside
+/// ([`WindowShape::fill_radii`]); the rest keep their own. Put it first in a
+/// `relative()` element; it covers the element.
+#[derive(IntoElement)]
+pub struct CornerFill {
+    color: Hsla,
+    base: CornerRadii,
+    border: Option<(Edges<Pixels>, Hsla)>,
+    shadows: Vec<BoxShadow>,
+}
+
+/// A [`CornerFill`] of `color`.
+pub fn corner_fill(color: impl Into<Hsla>) -> CornerFill {
+    CornerFill {
+        color: color.into(),
+        base: CornerRadii::SQUARE,
+        border: None,
+        shadows: Vec::new(),
+    }
+}
+
+impl CornerFill {
+    /// The element's own corner radii, kept wherever they already stay
+    /// inside the window.
+    pub fn rounded(mut self, radii: CornerRadii) -> Self {
+        self.base = radii;
+        self
+    }
+
+    /// A border, drawn with the fill's corners.
+    pub fn border(mut self, widths: Edges<Pixels>, color: impl Into<Hsla>) -> Self {
+        self.border = Some((widths, color.into()));
+        self
+    }
+
+    /// A drop shadow, drawn with the fill's corners and kept inside the
+    /// window's curve.
+    pub fn shadow(mut self, shadows: Vec<BoxShadow>) -> Self {
+        self.shadows = shadows;
+        self
+    }
+}
+
+impl RenderOnce for CornerFill {
+    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
+        canvas(
+            |_, _, _| {},
+            move |bounds, _, window, cx| {
+                let shape = window_shape(window, cx);
+                let radii = shape
+                    .map(|shape| shape.fill_radii(rect(bounds), self.base))
+                    .unwrap_or(self.base);
+                if !self.shadows.is_empty() {
+                    // A shadow is drawn under the fill too, so it would show
+                    // past the fill's rounded corner; it is kept to the part
+                    // of the window clear of every curve.
+                    let mask = shape.map(|shape| ContentMask {
+                        bounds: bounds_of(shape.clip(
+                            shape.rect,
+                            Cut::Inset,
+                            window.scale_factor(),
+                        )),
+                    });
+                    window.with_content_mask(mask, |window| {
+                        window.paint_drop_shadows(bounds, corners(radii), &self.shadows)
+                    });
+                }
+                let (widths, border) = self
+                    .border
+                    .unwrap_or((Edges::default(), gpui::transparent_black()));
+                window.paint_quad(gpui::quad(
+                    bounds,
+                    corners(radii),
+                    self.color,
+                    widths,
+                    border,
+                    gpui::BorderStyle::Solid,
+                ));
+            },
+        )
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full()
+    }
+}
+
+/// Paints `child` inside the part of its bounds clear of the window's rounded
+/// corners (ticket 141), for contents that can scroll or float into a corner:
+/// a list's rows, a bar's contents, toasts. `cut` says which strip along the
+/// window's edge is given up where the child reaches a curve
+/// ([`WindowShape::clip`]); nothing is given up away from the corners, or
+/// while the window's corners are square. Hit testing follows the same
+/// rectangle, so a press outside the curve never reaches the child.
+pub fn corner_clip(cut: Cut, child: impl IntoElement) -> CornerClip {
+    CornerClip {
+        cut,
+        child: child.into_any_element(),
+    }
+}
+
+/// A panel that reaches a window corner, such as a sidebar: `fill` under it,
+/// its contents in [`corner_clip`]. Style the returned element as the panel's
+/// place in the layout needs (its size follows `child`).
+pub fn corner_panel(fill: CornerFill, cut: Cut, child: impl IntoElement) -> gpui::Div {
+    div().relative().child(fill).child(corner_clip(cut, child))
+}
+
+/// See [`corner_clip`].
+pub struct CornerClip {
+    cut: Cut,
+    child: AnyElement,
+}
+
+impl IntoElement for CornerClip {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
+impl CornerClip {
+    fn mask(
+        &self,
+        bounds: Bounds<Pixels>,
+        window: &Window,
+        cx: &App,
+    ) -> Option<ContentMask<Pixels>> {
+        let shape = window_shape(window, cx)?;
+        if shape.radii.is_square() {
+            return None;
+        }
+        // What of the child is visible at all: a scrolled list's rows are
+        // clipped by their viewport before they reach the window's edge.
+        let visible = rect(bounds).intersect(&rect(window.content_mask().bounds));
+        Some(ContentMask {
+            bounds: bounds_of(shape.clip(visible, self.cut, window.scale_factor())),
+        })
+    }
+}
+
+impl Element for CornerClip {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, Self::RequestLayoutState) {
+        (self.child.request_layout(window, cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut Self::RequestLayoutState,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Self::PrepaintState {
+        let mask = self.mask(bounds, window, cx);
+        window.with_content_mask(mask, |window| {
+            self.child.prepaint(window, cx);
+        });
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut Self::RequestLayoutState,
+        _: &mut Self::PrepaintState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let mask = self.mask(bounds, window, cx);
+        window.with_content_mask(mask, |window| self.child.paint(window, cx));
+    }
+}
+
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
-    use super::cut;
+    use super::{FrameLook, cut};
     use crate::system_frame::service::Rendered;
-    use crate::system_frame::{DesktopSettings, Tiled, WindowState};
+    use crate::system_frame::{CornerRadii, DesktopSettings, Tiled, WindowState, fallback_look};
+    use std::sync::Arc;
+
+    /// Ticket 141: all four corners take the radius measured from GTK's
+    /// drawing (or the fallback's) while the window floats, and every corner
+    /// is square maximized, fullscreen, or tiled on any edge.
+    #[test]
+    fn every_corner_takes_the_measured_radius_and_is_square_when_not_floating() {
+        let floating = WindowState::new(Some(Tiled::default()), false, false, true);
+        let key = floating.key(&DesktopSettings::default(), true, 1.0);
+        let mut rendered = Rendered::placeholder(key);
+        rendered.corner_radius = 15.0;
+        rendered.bottom_corner_radius = 15.0;
+        let images = Arc::new(cut(&rendered));
+        let gtk = FrameLook::Gtk(Arc::new(rendered), images);
+        let fallback = FrameLook::Fallback(fallback_look(true));
+        assert_eq!(gtk.corner_radii(floating), CornerRadii::uniform(15.0));
+        assert_eq!(fallback.corner_radii(floating), CornerRadii::uniform(12.0));
+        let left = Tiled {
+            left: true,
+            ..Tiled::default()
+        };
+        let bottom = Tiled {
+            bottom: true,
+            ..Tiled::default()
+        };
+        for state in [
+            WindowState::new(Some(Tiled::default()), true, false, true),
+            WindowState::new(Some(Tiled::default()), false, true, true),
+            WindowState::new(Some(left), false, false, true),
+            WindowState::new(Some(bottom), false, false, true),
+            WindowState::new(Some(Tiled::ALL), false, false, true),
+            WindowState::new(None, false, false, true),
+        ] {
+            assert!(gtk.corner_radii(state).is_square(), "{state:?}");
+            assert!(fallback.corner_radii(state).is_square(), "{state:?}");
+        }
+    }
 
     fn size(image: &gpui::RenderImage) -> (i32, i32) {
         let size = image.size(0);

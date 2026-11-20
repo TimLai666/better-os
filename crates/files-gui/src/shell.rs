@@ -1152,6 +1152,10 @@ impl FilesApp {
             .title(format!("{} {}", c.brand_name, c.files))
             .locale(kit_locale(self.locale()))
             .content(content)
+            // The side panels that reach the window's bottom trailing corner
+            // keep inside it themselves (`panels.rs`), so their fills reach
+            // the curve; nothing else of the page comes near it.
+            .content_clip(None)
             .on_select(move |index, window, cx| {
                 let Some(Some(target)) = select_targets.get(index).cloned() else {
                     return;

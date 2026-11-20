@@ -75,9 +75,15 @@ impl Render for AwakeApp {
                     h_flex()
                         .size_full()
                         .min_w_0()
-                        .bg(cx.theme().secondary)
+                        // The body's fill follows the window's bottom corners
+                        // and the page stays inside them (ticket 141).
+                        .relative()
+                        .child(better_ui::window_chrome::corner_fill(cx.theme().secondary))
                         .child(self.sidebar(compact, cx))
-                        .child(
+                        // Its rows and cards run its whole width: the strip
+                        // given up is along the bottom.
+                        .child(better_ui::window_chrome::corner_clip(
+                            better_ui::window_chrome::Cut::Vertical,
                             v_flex()
                                 .h_full()
                                 .flex_1()
@@ -92,7 +98,7 @@ impl Render for AwakeApp {
                                             .child(div().w_full().max_w(px(1320.0)).child(section)),
                                     ),
                                 ),
-                        ),
+                        )),
                 ),
             )
             .children(self.update_restart.toast_layer(

@@ -53,9 +53,20 @@ impl FilesApp {
             .w(px(width))
             .flex_shrink_0()
             .h_full()
+            // The panel can reach the window's bottom trailing corner: its
+            // fill and edge follow the corner and its list stays inside it
+            // (ticket 141). The edge's width stays in the layout.
             .border_l_1()
-            .border_color(p.divider)
-            .bg(p.window_background)
+            .border_color(gpui::transparent_black())
+            .child(
+                better_ui::window_chrome::corner_fill(p.window_background).border(
+                    gpui::Edges {
+                        left: px(1.0),
+                        ..gpui::Edges::default()
+                    },
+                    p.divider,
+                ),
+            )
             .on_drag_move(follow);
         let list = list
             .child(
@@ -104,7 +115,13 @@ impl FilesApp {
                 )
             })
             .children(finished.into_iter().map(|row| self.finished_card(row, cx)));
-        panel.child(list).child(edge).into_any_element()
+        panel
+            .child(better_ui::window_chrome::corner_clip(
+                better_ui::window_chrome::Cut::Inset,
+                list,
+            ))
+            .child(edge)
+            .into_any_element()
     }
 
     /// A copy or move an earlier run did not finish: where it was going,
@@ -539,6 +556,10 @@ impl FilesApp {
         let width = self.pane_edge_width(kind);
         let edge = self.pane_edge(kind, window, cx);
         let follow = self.follow_edge(kind, cx);
+        let p = better_ui::fluent::palette(cx);
+        // The slot can reach the window's bottom trailing corner: its fill and
+        // edge follow the corner and what is in it stays inside it (ticket
+        // 141).
         div()
             .id("side-slot")
             .relative()
@@ -546,7 +567,19 @@ impl FilesApp {
             .flex_shrink_0()
             .h_full()
             .on_drag_move(follow)
-            .child(inner)
+            .child(
+                better_ui::window_chrome::corner_fill(p.window_background).border(
+                    gpui::Edges {
+                        left: px(1.0),
+                        ..gpui::Edges::default()
+                    },
+                    p.divider,
+                ),
+            )
+            .child(better_ui::window_chrome::corner_clip(
+                better_ui::window_chrome::Cut::Inset,
+                inner,
+            ))
             .child(edge)
             .into_any_element()
     }
@@ -573,8 +606,8 @@ impl FilesApp {
             .p(px(16.0))
             .overflow_y_scroll()
             .border_l_1()
-            .border_color(p.divider)
-            .bg(p.window_background)
+            // The side slot draws the fill and edge (ticket 141).
+            .border_color(gpui::transparent_black())
             .child(fluent::label(c.preview, CAPTION, p.text_secondary));
 
         // The details, as folio's pane has them: what it is, how big, when it
@@ -794,8 +827,8 @@ impl FilesApp {
             .p(px(16.0))
             .overflow_y_scroll()
             .border_l_1()
-            .border_color(p.divider)
-            .bg(p.window_background)
+            // The side slot draws the fill and edge (ticket 141).
+            .border_color(gpui::transparent_black())
             .child(
                 h_flex()
                     .w_full()
@@ -891,7 +924,10 @@ impl FilesApp {
                 .flex()
                 .items_center()
                 .justify_center()
-                .bg(cx.theme().background.opacity(0.8))
+                // It covers the window to its rounded corners (ticket 141).
+                .child(better_ui::window_chrome::corner_fill(
+                    cx.theme().background.opacity(0.8),
+                ))
                 .child(
                     div()
                         .w(px(680.0))
@@ -1122,7 +1158,8 @@ impl FilesApp {
                 .flex()
                 .items_center()
                 .justify_center()
-                .bg(p.smoke)
+                // It covers the window to its rounded corners (ticket 141).
+                .child(better_ui::window_chrome::corner_fill(p.smoke))
                 .child(
                     v_flex()
                         .w(px(460.0))

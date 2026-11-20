@@ -31,24 +31,30 @@
 //! aside, as WinUI's compact display mode does: the content keeps its 48px
 //! offset, the open pane floats on the flyout fill with a shadow, and a press
 //! outside it closes it.
+//!
+//! The view reaches the window's bottom corners, so its fills and the pane's
+//! list keep inside them (ticket 141, [`super::window_frame::CornerFill`]).
 
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, App, ElementId, InteractiveElement, IntoElement, ParentElement, Pixels, RenderOnce,
-    SharedString, StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder as _, px,
+    AnyElement, App, BoxShadow, Edges, ElementId, InteractiveElement, IntoElement, ParentElement,
+    Pixels, RenderOnce, SharedString, StatefulInteractiveElement, Styled, Window, div, hsla, point,
+    prelude::FluentBuilder as _, px,
 };
 use gpui_component::{Icon, IconName};
 
 use super::badge::{Badge, InfoBadge};
 use super::button::{Button, ButtonKind};
 use super::hit_area::{ROW_GROUP, RowInset, hit_row};
+use super::window_frame::{corner_clip, corner_fill};
 use super::words::Locale;
 use super::{
     BODY, BODY_STRONG, Interaction, Key, Palette, ShownState, keyed_focus, palette, radius,
     shows_focus, size, step_index, text, with_alpha, with_focus_ring,
 };
 use super::{Handler, ValueHandler};
+use crate::system_frame::{CornerRadii, Cut};
 
 /// One line of the pane.
 #[derive(Clone)]
@@ -321,6 +327,8 @@ pub struct NavigationView {
     open_width: Option<Pixels>,
     edge: Option<AnyElement>,
     decorate: Option<RowDecorator>,
+    /// How the content is kept inside the window's bottom trailing corner.
+    content_clip: Option<Cut>,
 }
 
 /// Adds behaviour to an item's row (by its index in the pane), such as
@@ -354,7 +362,20 @@ impl NavigationView {
             open_width: None,
             edge: None,
             decorate: None,
+            content_clip: Some(Cut::Inset),
         }
+    }
+
+    /// How the content is kept inside the window's bottom trailing corner
+    /// (ticket 141). By default it gives up the curve's 45° depth along its
+    /// bottom and trailing edges, where the layer shows instead; a page whose
+    /// own panels reach that corner draws them with
+    /// [`super::window_frame::corner_fill`] and
+    /// [`super::window_frame::corner_clip`] and passes `None`, so their fills
+    /// reach the curve.
+    pub fn content_clip(mut self, cut: Option<Cut>) -> Self {
+        self.content_clip = cut;
+        self
     }
 
     /// Adds behaviour to every item's row: `decorate(index, row)`.
@@ -833,7 +854,9 @@ impl RenderOnce for NavigationView {
                     .flex_col()
                     .flex_1()
                     .min_h_0()
-                    .child(list)
+                    // Rows scrolled to the window's bottom edge (a pane with
+                    // no footer) stop short of its rounded corner.
+                    .child(corner_clip(Cut::Vertical, list))
                     .child(
                         div()
                             .absolute()
@@ -848,19 +871,43 @@ impl RenderOnce for NavigationView {
                     ),
             )
             .child(footer);
+        let mut floating_fill = None;
         if floating {
             // Open over the content: the flyout fill, an edge, and the
-            // shadow WinUI gives an overlay pane (`PaneOverlayShadowDepth`).
-            pane = pane
-                .absolute()
-                .top_0()
-                .left_0()
-                .bottom_0()
-                .bg(p.flyout)
-                .border_r_1()
-                .border_color(p.flyout_stroke)
-                .rounded_r(radius::MD)
-                .shadow_lg();
+            // shadow WinUI gives an overlay pane (`PaneOverlayShadowDepth`),
+            // drawn as one fill so its bottom-leading corner follows the
+            // window's.
+            let md = f32::from(radius::MD);
+            let fill = corner_fill(p.flyout)
+                .rounded(CornerRadii {
+                    top_right: md,
+                    bottom_right: md,
+                    ..CornerRadii::SQUARE
+                })
+                .border(
+                    Edges {
+                        right: px(1.0),
+                        ..Edges::default()
+                    },
+                    p.flyout_stroke,
+                )
+                .shadow(vec![
+                    BoxShadow {
+                        color: hsla(0., 0., 0., 0.1),
+                        offset: point(px(0.), px(10.)),
+                        blur_radius: px(15.),
+                        spread_radius: px(-3.),
+                        inset: false,
+                    },
+                    BoxShadow {
+                        color: hsla(0., 0., 0., 0.1),
+                        offset: point(px(0.), px(4.)),
+                        blur_radius: px(6.),
+                        spread_radius: px(-4.),
+                        inset: false,
+                    },
+                ]);
+            floating_fill = Some(fill);
             // The search box's suggestions float past the pane's edge; a
             // press in them is not a press outside (`light_dismiss`).
             let order = super::light_dismiss::PanelOrder::default();
@@ -910,28 +957,67 @@ impl RenderOnce for NavigationView {
                 }
             });
 
+        // The layer's fill and its top and leading edge, as one fill so the
+        // corner that meets the window's bottom trailing corner follows it.
         let content = div()
+            .relative()
             .flex_1()
             .min_w_0()
             .h_full()
-            .bg(p.layer)
+            .child(
+                corner_fill(p.layer)
+                    .rounded(CornerRadii {
+                        top_left: f32::from(radius::MD),
+                        ..CornerRadii::SQUARE
+                    })
+                    .border(
+                        Edges {
+                            top: px(1.0),
+                            left: px(1.0),
+                            ..Edges::default()
+                        },
+                        p.card_stroke,
+                    ),
+            )
+            // The edge's width stays in the layout; the fill draws it.
             .border_t_1()
             .border_l_1()
-            .border_color(p.card_stroke)
-            .rounded_tl(radius::MD)
+            .border_color(gpui::transparent_black())
             .overflow_hidden()
-            .children(self.content);
+            // Whatever the page draws (a list scrolled under the bottom edge,
+            // a bar along it, a scrollbar) stays inside the window's bottom
+            // trailing corner: the page gives up the curve's 45° depth, 4px
+            // for a 12px corner, along its bottom and trailing edges, where
+            // the layer's fill shows instead.
+            .child({
+                let page = div().size_full().children(self.content);
+                match self.content_clip {
+                    Some(cut) => corner_clip(cut, page).into_any_element(),
+                    None => page.into_any_element(),
+                }
+            });
         div()
             .relative()
             .flex()
             .size_full()
             .min_h_0()
-            .bg(p.window_background)
+            .child(corner_fill(p.window_background))
             .map(|root| {
                 if floating {
+                    // The fill and its shadow sit outside the pane, which
+                    // clips its own contents.
                     root.child(div().w(content_offset(compact, true)).flex_none())
                         .child(content)
-                        .child(pane)
+                        .child(
+                            div()
+                                .absolute()
+                                .top_0()
+                                .left_0()
+                                .bottom_0()
+                                .flex()
+                                .children(floating_fill)
+                                .child(pane),
+                        )
                 } else {
                     root.child(pane).child(content).children(edge.map(|edge| {
                         div()
