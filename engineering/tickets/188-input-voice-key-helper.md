@@ -50,3 +50,7 @@ node out of the person's session.
       account, and the bus policy; the seccomp filter test shows `EVIOCGRAB`
       refused.
 - [ ] fmt, clippy on stable, the crate's tests pass.
+
+## In the Better OS session (2026-11-21, ADR 0038 option D, decision C4)
+
+Nothing changes: the helper is a system service reading one evdev node and is the same under any session.

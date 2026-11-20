@@ -3,6 +3,13 @@
 **Blocked by:** none (the owner accepted ADR 0036 and chose shape A on
 2026-11-21, decisions D1 and D2 in `design/top-bar-spec.md` section 0)
 
+**Blocked:** waits, by ADR 0038 (owner, 2026-11-21: option D). The owner
+chose a Better OS session on `cosmic-comp` beside GNOME; ADR 0038's table
+"Which of tickets 150 to 161 should wait" puts this relay on **wait**: it is
+GNOME-only JavaScript the session never uses. It is built if the session does
+not reach the bar of `engineering/specs/better-os-session.md` ("Ready to become
+the default"), or if the owner, at ticket 228, keeps building GNOME surfaces.
+
 ## Why
 
 On GNOME 46 a Better OS window can be a panel only if GNOME Shell starts it and
@@ -69,3 +76,15 @@ tests that hold it there.
 - [ ] The extension tests above pass; the window attention relay's tests pass
       unchanged.
 - [ ] fmt, clippy on stable, and the crates' tests pass.
+
+## Notes
+
+- 2026-11-21: from ticket 152's change for option D, this ticket also holds the
+  top bar's GNOME backend when it is built: the dock surface (`StartView`,
+  `ReserveStrip`, hiding GNOME's panel and keyboard indicator), the GNOME
+  sources of the focused window and its actions, the Better OS menu's calls to
+  GNOME's session manager and `org.gnome.ScreenSaver`, the GNOME key bindings
+  through Better Defaults (`toggle-message-tray` to `--notifications`, Ctrl+F2
+  to `--focus`), and ticket 152's headless GNOME Shell check of the bar. Ticket
+  152 builds the bar's service and view on layer-shell with those parts behind
+  traits.

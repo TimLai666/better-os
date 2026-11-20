@@ -41,3 +41,7 @@ every card, state, and string in both languages; the mockups are
       zh-TW and English, in `/home/tim/Developer/better-os-evidence/190/`,
       compared with the mockups; differences fixed or recorded.
 - [ ] fmt, clippy on stable, the crates' tests pass.
+
+## In the Better OS session (2026-11-21, ADR 0038 option D, decision C4)
+
+The page gains the session's state: in the session it names the framework Better Input runs in (Fcitx 5, or Better Input's own client under S4 (a)) and shows no IBus state; the strings are added with ticket 221.

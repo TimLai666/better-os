@@ -1,7 +1,25 @@
 # Ticket 142 — A Better OS appearance component: every window has the same four rounded corners
 
 **Blocked by:** owner decision on the compositor part (see below); ticket 141
-for Better OS's own windows
+for Better OS's own windows; in the Better OS session item 3 is ticket 213 and item 2 ticket
+209 (2026-11-21, ADR 0038 option D)
+
+## Under ADR 0038's option D (2026-11-21)
+
+- **Item 1** (the GTK 3 and GTK 4 radius layer) serves GNOME and the session
+  alike: in the session GTK takes its theme from `cosmic-settings-daemon`'s
+  sync into the session's own dconf database, and the layer's radius must match
+  the compositor's clip there. Unchanged otherwise.
+- **Item 2** (compositor rounding) is already done in the Better OS session:
+  `cosmic-comp` clips every floating and tiled window to the theme's small
+  radius (ADR 0038). There it reduces to the session's theme setting that
+  radius, which is ticket 209. The GNOME half (a shell ADR and a shader
+  measurement) waits with ticket 151.
+- **Item 3** (the taskbar) is built for the session as a layer-shell program,
+  ticket 213, with the owner's D3 and D4 answers; the GNOME taskbar (a second
+  row in ADR 0036's table) waits with ticket 151.
+- **Item 4** stays: one setting feeds the GTK layer, Better OS windows, and the
+  session's theme radius.
 
 ## Why
 

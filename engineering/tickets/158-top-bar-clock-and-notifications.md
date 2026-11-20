@@ -3,6 +3,19 @@
 **Blocked by:** 152, 161 (its design of a notification island and a
 right-edge notification center may replace this flyout's notification list)
 
+## Under ADR 0038's option D (2026-11-21)
+
+ADR 0038's table: "build after 161, notifications from Better OS's own
+daemon". In the Better OS session nothing of GNOME's owns
+`org.freedesktop.Notifications`; Better OS's notification service (ticket 215)
+does, and the list, Do not disturb, activation, dismissal, and Clear all come
+from it rather than from the relay. If ticket 161's N2 makes the right-edge
+center the one list, this flyout keeps the calendar only and the bell opens
+the center (ticket 216). The clock's settings in the session are ticket 160's
+source. The GNOME half (the relay's notification members, GNOME's
+`show-banners`, the banner check in the headless shell) waits with ticket
+151.
+
 ## Why
 
 `design/top-bar-spec.md` sections 6.6 and 6.7: the clock follows GNOME's clock

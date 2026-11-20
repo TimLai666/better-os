@@ -26,3 +26,17 @@ applications open to pick a file. It does not yet. On the owner's machine
   risks.
 - Tests drive the D-Bus interface with a fake caller; nothing touches the
   person's real portal configuration.
+
+## In the Better OS session (2026-11-21, ADR 0038 option D)
+
+In the session `xdg-desktop-portal` reads `betteros-portals.conf` (the
+session's `XDG_CURRENT_DESKTOP` is `BetterOS:COSMIC`), which the session
+package ships with `default=cosmic;gtk;` (ticket 203); COSMIC's own file
+chooser is what applications get there until this ticket lands. This ticket's
+"installed and restored by Better Manager" entry therefore has two halves: on
+GNOME, the `gnome-portals.conf` entry as above; in the session, a
+`FileChooser=betteros;cosmic;` line in the session's portal configuration
+(ticket 203's file, so installing Better Files' backend changes it through
+Better Defaults' capture and restore, or the session package ships it once this
+backend exists). The dialog, the interface, and the tests are the same in both.
+`GTK_USE_PORTAL` is decided once here for both sessions.

@@ -92,3 +92,27 @@ launcher into a summoned panel:
   through Better OS's existing GNOME Shell extension (within ADR 0012 and
   0015's bounds), or drawing the panel in the extension itself. Record the
   choice and its evidence in an ADR.
+
+## In the Better OS session (2026-11-21, ADR 0038 option D)
+
+What this ticket builds is for GNOME, which stays the default. In the Better
+OS session on `cosmic-comp`:
+
+- **The panel** is a layer surface, not an `xdg_toplevel`, so the "Proving how
+  it is drawn" question above does not arise there: ticket 210 opens it on the
+  overlay layer through `better_ui::layer`. The resident service and the wide
+  layout built here are the same.
+- **Super+Space** (and Super alone, and Super+A for All apps) are bound in the
+  session's own key bindings, which the session package ships (ticket 203) and
+  ticket 210 points at Better Launcher; COSMIC's default Super+Space
+  (`InputSourceSwitch`) is unbound there, and input-source switching is Fcitx
+  5's Alt+Shift (ticket 208). No Better Defaults entry writes these in the
+  session, because they are the session's own configuration.
+- **File search** uses the same Tracker 3 query. GNOME's indexer is not
+  GNOME-only: `tracker-miner-fs-3` is installed on Zorin and Ubuntu 24.04, and
+  the session target starts it where it is installed (ticket 203; how it is
+  started outside GNOME is ticket 201's fact). The index settings this ticket
+  writes are GSettings in GNOME's dconf database, which the session reads
+  through its profile's second database (`user-db:user`), so the session
+  indexes the same folders. Where Tracker is absent, the Files sections say so
+  (ticket 210).

@@ -31,3 +31,7 @@ one-line keymap entry fixes it for everyone (spec section 5.6).
 - [ ] The test on the laptop is recorded in Notes.
 - [ ] The patch is sent; its lore.kernel.org link is in Notes.
 - [ ] The merge (or the maintainers' answer) is recorded.
+
+## In the Better OS session (2026-11-21, ADR 0038 option D, decision C4)
+
+Nothing changes.

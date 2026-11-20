@@ -104,3 +104,8 @@ paths:
   # The System page's "Switch power mode with the charger" choice (ticket 86),
   # the person's own data, read by better-window-attention at each plug event.
   - ~/.config/better-os/power-follow.json
+  # The keyboard colour the person chose on the System page (ticket 136, ADR
+  # 0034). Machine state like the charge limit, kept by better-manager-daemon
+  # for its boot-time restore; the daemon package's removal gives the
+  # keyboard back to its firmware and deletes it.
+  - /var/lib/better-os/keyboard-lighting.json

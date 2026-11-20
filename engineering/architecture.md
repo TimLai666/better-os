@@ -103,6 +103,84 @@ patch-core ──> patch-platform ──> manager-gui        Fixes page (ticket 
 `better-ui` provides GPUI presentation primitives to every GUI crate in the
 suite, not only the two that exist today.
 
+### The Better OS session (being built)
+
+The owner chose a Better OS desktop session on COSMIC's compositor beside
+GNOME ([ADR 0038](/engineering/decisions/0038-cosmic-as-the-desktop.md)); what
+it promises is `engineering/specs/better-os-session.md`, and tickets 200 to 229
+build it. GNOME stays the default until the spec's bar is met. Nothing below
+exists yet; it is the structure the tickets build to.
+
+```text
+GDM ──> better-os.desktop ──> session-launcher (start) ──> cosmic-comp ──> session-launcher --ready
+                                 environment, dconf profile    upstream,      imports env, starts
+                                 betteros, portal config       GPL-3.0-only   better-os-session.target
+                                                                 │
+                     Wayland: layer-shell, toplevel info/manager, workspaces, image copy capture,
+                     input method v2; later betteros-gesture-unstable-v1 (Better OS's patch)
+                                                                 │
+   COSMIC daemons (System76's pinned packages)        Better OS surfaces (GPUI on better_ui::layer)
+   cosmic-settings-daemon  cosmic-osd (polkit agent)  top bar + top-bar-xembed   taskbar
+   cosmic-idle  cosmic-bg  the cosmic-greeter locker  Better Launcher panel      window switcher
+   xdg-desktop-portal-cosmic  COSMIC Settings         overview                   notification service,
+   Ubuntu: Fcitx 5 + Chewing, Tracker, gnome-keyring   Better Files desktop       island, center
+                                                                 │
+   every existing Better OS user unit (graphical-session.target, which the session target binds)
+   touchpad-gesture-service ── claims swipes and pinches from the patched compositor ──>
+        org.betteros.TouchpadGestures1 Transition* signals ──> the surfaces draw the transition
+
+Better Manager ──> manager-core ──> AccountsService SetSession (the person's own account)
+            └────> manager-daemon: System76's source, key, pin, and the 14-package closure
+                   from a closed table compiled into the daemon; deferred purge after logout
+```
+
+- **Upstream as released, Better OS on top.** The compositor and the COSMIC
+  daemons are System76's packages taken as released (C8: unmodified first);
+  every surface is a Better OS Rust process on layer-shell; the session uses no
+  GJS. `cosmic-session` is not used, because its component list is fixed in
+  code; `session-launcher` and the systemd target replace it.
+- **One unit, two sessions.** Existing user units stay `WantedBy=graphical-session.target`;
+  the session target `BindsTo=` it. A component's desktop-specific half picks its
+  backend at run time from `better_core::desktop`, the one place the session is
+  read; the session's own surfaces are `WantedBy=better-os-session.target` and
+  never start under GNOME.
+- **The session never writes GNOME's settings.** Its dconf profile writes to
+  its own database (`user-db:betteros`, then GNOME's `user` read through), its
+  COSMIC configuration is its own, and carrying settings over is one way, from
+  GNOME into the session. `defaults-platform`'s dconf writer writes the first
+  database of the profile the target session uses (ticket 207); a cosmic-config
+  adapter beside it does preview, capture, apply, verify, and restore for COSMIC
+  keys (ticket 206).
+- **A third-party archive through the privileged service.** Until now
+  `manager-daemon` installed only local artifacts it verified by a manifest's
+  checksum. For the session it also installs a closed list of packages from
+  one archive APT verifies by signature (ADR 0038 C2): the source URL, the key
+  fingerprint and bytes (shipped in `better-manager-daemon`), and the 14 names
+  are compiled into the daemon; no plan or manifest can name another source,
+  key, or package; the pin gives that origin priority −1 except those names; a
+  pin or source file that differs from the table is a finding, never
+  overwritten. This is the only exception C2 made to AGENTS.md's rule on APT
+  repositories.
+- **The compositor patch is a kept fork of one change**
+  ([ADR 0039](/engineering/decisions/0039-compositor-fork-policy.md), proposed).
+  The protocol XML is Better OS's own (`GPL-3.0-or-later`); the patch series
+  and the patched `cosmic-comp` are `GPL-3.0-only`, as the work they modify,
+  and sit together with the rest of this `GPL-3.0-or-later` project because
+  "or later" includes version 3 and Better OS's processes reach the compositor
+  only over Wayland and D-Bus. The recommended layout keeps the series in this
+  repository under `compositor/cosmic-comp/`, pinned to an Epoch release tag,
+  built in ADR 0021's environments, with the exact upstream tarball, the
+  series, and the build script published beside the `.deb` as its
+  Corresponding Source. Each Epoch is followed by a closure check, a rebase,
+  the protocol tests, and a VM flow before release (ticket 226); the series is
+  dropped when upstream hands gesture progress to an outside client.
+- **The gesture contract** keeps decisions in Rust outside the compositor:
+  the patch reports what libinput reported to the one claiming client (checked
+  by executable) and drives the compositor's own workspace animation when
+  asked; thresholds, directions, and actions stay in `touchpad-gestures`; the
+  surfaces only draw the progress they are sent, accepting it only from the
+  gesture service's executable (ADR 0035's rule). The contract is in the spec.
+
 ### Component seams
 
 - **The catalog is fetched, validated, and allowed to be stale out loud.** A
@@ -446,8 +524,16 @@ collection is explicitly configured to include them.
   `org.betteros.Hardware1` (ADR 0017), one polkit action per method, the
   argument checked against its closed set before polkit is asked. The daemon
   cannot write `/sys` itself (`BindReadOnlyPaths=/sys`); each write is a
-  transient helper unit that sees only the one attribute file (ADR 0029). Everything
-  else on the page needs no root and goes to the desktop's own services:
+  transient helper unit that sees only the one attribute file (ADR 0029). The
+  keyboard's colour (ticket 136, ADR 0034) is the third: `KeyboardLighting`
+  and `SetKeyboardLighting` on the same interface, for the built-in keyboard
+  only. A HID LampArray is driven by a helper unit whose private `/dev` holds
+  its one hidraw node and which drops to `nobody` once the node is open,
+  running `--lamp-array`; both helpers share `hardware::helper_sandbox()`; the protocol (descriptor parser, report layout, scaling) is
+  `hardware_core::lamparray`, with no I/O, and the hidraw ioctls are in
+  `manager_daemon::keyboard_lighting` alone. asus-wmi's `kbd_rgb_mode` goes
+  through the attribute helper. No session process opens a hidraw node.
+  Everything else on the page needs no root and goes to the desktop's own services:
   power-profiles-daemon, gsd-power, UPower. "Switch power mode with the
   charger" runs in `better-window-attention`, the session service the
   `better-manager` package already ships, reading the person's choice from
@@ -524,6 +610,18 @@ collection is explicitly configured to include them.
   test says nothing about the one in production.
 - Localized layout coverage extends to every new GUI crate: `zh-TW` and `en-US`
   at 100%, 125%, and 150% scaling, the policy the manager GUI already follows.
+- The Better OS session's seams (planned, tickets 200 to 226): every surface's
+  rules live in a GPUI-free crate tested without a compositor; its desktop
+  sources (toplevel info and manager, workspaces, logind, Fcitx 5,
+  NetworkManager, BlueZ, the notification service) are traits with fakes, and
+  D-Bus edges are tested on a private bus. A surface is seen in a nested
+  `cosmic-comp` (System76's released binary extracted to a scratch directory,
+  never installed, inside a headless sway under the sandbox rules: ticket 200)
+  or in a disposable VM per base. `manager-daemon`'s archive steps are tested
+  with the APT driver faked, the pin against a captured copy of System76's
+  `Packages`, and the container check against a local mirror fixture with no
+  network. Gestures are tested by replaying libinput recordings in the VM.
+  Nothing of the session is installed on the owner's machine before release.
 
 ### Test matrix
 
@@ -571,6 +669,16 @@ collection is explicitly configured to include them.
 - The final runtime dependency list is target- and architecture-specific and
   must be taken from the packaged binaries rather than copied from CI's
   build-time package list.
+- System76's `noble` builds of the session's 14 packages run on Zorin OS 18's
+  and Ubuntu 24.04's own Wayland, Mesa, and PipeWire - risk: unproved (ADR
+  0038 resolved metadata only); if false the session needs Better OS to build
+  the closure itself. Ticket 201 checks it first.
+- GPUI's layer-shell surface at the pinned revision works on `cosmic-comp` -
+  risk: never run; every session surface depends on it. Ticket 200 checks it
+  first.
+- `cosmic-comp` changes behaviour between Epoch releases without notice - risk:
+  a release breaks the session; ticket 226's routine holds the closure back
+  until a release passes.
 
 ### Storage
 
@@ -627,4 +735,14 @@ verification contract.
 - [ADR 0026: The Ready to unplug rule and its two thresholds](decisions/0026-storage-readiness-rule.md)
 - [ADR 0027: Better Storage stays unprivileged](decisions/0027-storage-privileged-boundary.md)
 - [ADR 0028: The privileged service is upgraded outside its own unit](decisions/0028-daemon-upgrades-outside-its-own-unit.md)
+- [ADR 0029: Hardware writes happen in a helper unit that sees one file](decisions/0029-hardware-writes-in-a-helper-unit.md)
 - [ADR 0030: Touchpad scroll speed through an evdev/uinput pass-through](decisions/0030-touchpad-scroll-passthrough.md)
+- [ADR 0031: Touchpad scroll speed needs a privileged input pass-through](decisions/0031-touchpad-scroll-speed.md)
+- [ADR 0032: Which drives mount automatically is kept in fstab and a udev rule](decisions/0032-drive-mounting-choices.md)
+- [ADR 0033: A login screen watch restarts a hung GDM once per boot](decisions/0033-login-screen-watch.md)
+- [ADR 0035: The touchpad adapter's suppression follows the relay rule](decisions/0035-touchpad-adapter-relay-rule.md) (proposed)
+- [ADR 0036: The top bar is a Better OS window that the shell makes a dock](decisions/0036-top-bar-dock-surface.md)
+- [ADR 0037: Better Input's engine is Rust on libchewing, with 0c's MIT models](decisions/0037-better-input-engine.md) (proposed)
+- [ADR 0038: Better OS's desktop: a Better OS session on COSMIC's compositor, beside GNOME](decisions/0038-cosmic-as-the-desktop.md)
+- [ADR 0039: How Better OS keeps its patch to cosmic-comp](decisions/0039-compositor-fork-policy.md) (proposed)
+- [ADR 0040: What Better OS is, now that it has a session of its own](decisions/0040-what-better-os-is.md) (proposed)
