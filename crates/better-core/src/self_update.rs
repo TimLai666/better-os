@@ -280,6 +280,46 @@ pub enum UpdateState {
     Removed,
 }
 
+/// Where the runtime state of Better OS's maintainer scripts lives. A
+/// package's removal keeps its stamp here from its prerm to its postrm
+/// (ticket 90), and the directory exists from boot (`tmpfiles.d`).
+pub const RUN_DIR: &str = "/run/better-os";
+
+/// The stamp a package's prerm leaves while its removal runs.
+pub fn removal_stamp(run_dir: &Path, package: &str) -> PathBuf {
+    run_dir.join(format!("{package}-removal-run"))
+}
+
+/// Where a package's removal stands, from dpkg's record and the stamp.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum Removal {
+    /// Not being removed. This includes a removal that was abandoned:
+    /// dpkg then still asks for `deinstall` while the package is
+    /// `installed`, and nothing is under way.
+    #[default]
+    None,
+    /// A removal is running: its prerm left the stamp and its postrm has
+    /// not taken it away yet.
+    InProgress,
+    /// A removal stopped part way (a power cut, a killed dpkg): dpkg asks
+    /// for `deinstall` and the package is not `installed`, with no removal
+    /// running. Reinstalling the package, or removing it, finishes it.
+    Unfinished,
+}
+
+/// The one rule for "is this package being removed". The stamp decides
+/// while a removal runs; dpkg's selection alone never does, since it stays
+/// `deinstall` after an abandoned removal.
+pub fn removal(record: Option<&PackageRecord>, stamp_exists: bool) -> Removal {
+    if stamp_exists {
+        return Removal::InProgress;
+    }
+    match record {
+        Some(record) if record.removing && !record.configured => Removal::Unfinished,
+        _ => Removal::None,
+    }
+}
+
 /// Follows one program file through an update.
 pub struct UpdateTracker {
     program: ProgramFile,
@@ -290,6 +330,8 @@ pub struct UpdateTracker {
     marker: Option<Vec<Option<SystemTime>>>,
     record: Option<PackageRecord>,
     candidate: Option<(FileIdentity, Instant)>,
+    /// Where removal stamps are ([`RUN_DIR`]).
+    run_dir: PathBuf,
 }
 
 impl UpdateTracker {
@@ -316,7 +358,21 @@ impl UpdateTracker {
             marker: None,
             record: None,
             candidate: None,
+            run_dir: PathBuf::from(RUN_DIR),
         }
+    }
+
+    /// The same, with removal stamps looked for under `run_dir`.
+    pub fn with_run_dir(mut self, run_dir: impl Into<PathBuf>) -> UpdateTracker {
+        self.run_dir = run_dir.into();
+        self
+    }
+
+    /// Whether this package's removal is running now.
+    fn removal_running(&self) -> bool {
+        self.package
+            .as_deref()
+            .is_some_and(|package| removal_stamp(&self.run_dir, package).exists())
     }
 
     pub fn program(&self) -> &ProgramFile {
@@ -338,26 +394,28 @@ impl UpdateTracker {
         let identity = match self.program.on_disk() {
             OnDisk::Same => {
                 self.candidate = None;
-                // dpkg asks for a removal before it runs the prerm and long
-                // before the file goes.
-                if self.package_record().is_some_and(|record| record.removing) {
+                // The prerm leaves the stamp before anything is undone and
+                // long before the file goes; a watch on the run directory
+                // wakes this poll when it appears.
+                if self.removal_running() {
                     return UpdateState::Removed;
                 }
                 return UpdateState::Current;
             }
             OnDisk::Missing => {
                 self.candidate = None;
-                // Gone with nothing coming: dpkg no longer has the package,
-                // or is removing it. An update keeps asking for `install`.
+                if self.removal_running() {
+                    return UpdateState::Removed;
+                }
+                // Gone with nothing coming: dpkg no longer has the package.
                 // Only a package dpkg knew when the program started: a
                 // program it never knew (a development build) is being
-                // rebuilt, not removed.
-                if self.package.is_some() && self.start_version.is_some() {
-                    match self.package_record() {
-                        None => return UpdateState::Removed,
-                        Some(record) if record.removing => return UpdateState::Removed,
-                        Some(_) => {}
-                    }
+                // rebuilt, not removed. An update keeps the package.
+                if self.package.is_some()
+                    && self.start_version.is_some()
+                    && self.package_record().is_none()
+                {
+                    return UpdateState::Removed;
                 }
                 return UpdateState::InProgress;
             }
@@ -655,10 +713,22 @@ pub struct ProgramWatch {
 
 impl ProgramWatch {
     /// Calls `on_change` from the watcher's thread on every event that touches
-    /// the program's path. It should only wake whoever then calls
-    /// [`UpdateTracker::poll`].
+    /// the program's path, or anything in [`RUN_DIR`] (where a removal's
+    /// stamp appears while the program file is still there). It should only
+    /// wake whoever then calls [`UpdateTracker::poll`].
     pub fn start(
         program: &Path,
+        on_change: impl Fn() + Send + 'static,
+    ) -> Result<ProgramWatch, notify::Error> {
+        Self::start_with_run_dir(program, Path::new(RUN_DIR), on_change)
+    }
+
+    /// The same, with the run directory somewhere else (a test). A run
+    /// directory that does not exist is not watched; the stamp is still
+    /// read at each poll.
+    pub fn start_with_run_dir(
+        program: &Path,
+        run_dir: &Path,
         on_change: impl Fn() + Send + 'static,
     ) -> Result<ProgramWatch, notify::Error> {
         use notify::{RecursiveMode, Watcher as _};
@@ -667,6 +737,7 @@ impl ProgramWatch {
             .map(Path::to_path_buf)
             .ok_or_else(|| notify::Error::generic("the program has no directory"))?;
         let name = program.file_name().map(|name| name.to_os_string());
+        let runtime = run_dir.to_path_buf();
         let mut watcher =
             notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
                 let Ok(event) = event else {
@@ -674,15 +745,18 @@ impl ProgramWatch {
                     on_change();
                     return;
                 };
-                let touches = event
-                    .paths
-                    .iter()
-                    .any(|path| path.file_name().map(|n| n.to_os_string()) == name);
+                let touches = event.paths.iter().any(|path| {
+                    path.file_name().map(|n| n.to_os_string()) == name
+                        || path.parent() == Some(runtime.as_path())
+                });
                 if touches || event.need_rescan() {
                     on_change();
                 }
             })?;
         watcher.watch(&directory, RecursiveMode::NonRecursive)?;
+        if run_dir.is_dir() {
+            watcher.watch(run_dir, RecursiveMode::NonRecursive)?;
+        }
         Ok(ProgramWatch { _watcher: watcher })
     }
 }
@@ -1023,44 +1097,116 @@ mod tests {
     }
 
     #[test]
-    fn a_removal_is_seen_when_dpkg_asks_for_it_and_when_the_package_is_gone() {
+    fn a_removal_is_seen_from_its_stamp_and_when_the_package_is_gone() {
         let tmp = scratch();
         let path = tmp.path().join("better-git");
+        let run = tmp.path().join("run");
+        fs::create_dir_all(&run).unwrap();
         let _old = install(&path, "old");
         let dpkg = FakeDpkg::default();
         dpkg.set(true, "0.2.16");
-        let mut tracker = tracked(&path, &dpkg);
+        let mut tracker = tracked(&path, &dpkg).with_run_dir(&run);
         let now = Instant::now();
         assert_eq!(tracker.poll(now), UpdateState::Current);
-        // dpkg asks for the removal before the prerm, with the file there.
+        // dpkg's selection alone is not a removal: it stays `deinstall`
+        // after an abandoned one.
         dpkg.set_removing(Some("0.2.16"));
+        assert_eq!(tracker.poll(now), UpdateState::Current);
+        // The prerm's stamp is, with the file still there.
+        fs::write(removal_stamp(&run, "better-git"), "1\n").unwrap();
         assert_eq!(tracker.poll(now), UpdateState::Removed);
-        // The file gone, and then the package.
+        // The file gone, and then the package and its stamp.
         fs::remove_file(&path).unwrap();
         assert_eq!(tracker.poll(now), UpdateState::Removed);
+        fs::remove_file(removal_stamp(&run, "better-git")).unwrap();
         dpkg.set_removing(None);
         assert_eq!(tracker.poll(now), UpdateState::Removed);
         assert_eq!(decide(&UpdateState::Removed, false), RestartDecision::Stay);
     }
 
     #[test]
-    fn a_file_gone_during_an_update_is_not_a_removal() {
+    fn an_abandoned_removal_is_not_a_removal_and_a_half_one_is_unfinished() {
+        let record = |status: &str| parse_query_output(&format!("{status}\n0.2.16\n"));
+        // Abandoned: still asked for deinstall, installed, nothing running.
+        assert_eq!(
+            removal(record("deinstall ok installed").as_ref(), false),
+            Removal::None
+        );
+        // Stopped part way by a power cut.
+        assert_eq!(
+            removal(record("deinstall ok half-installed").as_ref(), false),
+            Removal::Unfinished
+        );
+        assert_eq!(
+            removal(record("deinstall reinstreq half-installed").as_ref(), false),
+            Removal::Unfinished
+        );
+        // Running: the stamp decides, whatever the record says.
+        assert_eq!(
+            removal(record("install ok installed").as_ref(), true),
+            Removal::InProgress
+        );
+        assert_eq!(removal(None, true), Removal::InProgress);
+        // Gone, or never there.
+        assert_eq!(removal(None, false), Removal::None);
+    }
+
+    #[test]
+    fn upgrades_reinstalls_and_downgrades_are_never_a_removal() {
+        // The statuses dpkg passes an upgrade, `--reinstall`, and a
+        // downgrade through: every one asks for `install`.
+        for status in [
+            "install ok installed",
+            "install ok unpacked",
+            "install ok half-configured",
+            "install ok half-installed",
+            "install reinstreq half-installed",
+            "install ok triggers-awaited",
+            "install ok triggers-pending",
+            "hold ok installed",
+        ] {
+            let record = parse_query_output(&format!("{status}\n0.2.15\n")).unwrap();
+            assert!(!record.removing, "{status}");
+            assert_eq!(removal(Some(&record), false), Removal::None, "{status}");
+        }
+        // And a tracker that sees the file replaced during one never says
+        // Removed.
         let tmp = scratch();
         let path = tmp.path().join("better-git");
+        let run = tmp.path().join("run");
+        fs::create_dir_all(&run).unwrap();
         let _old = install(&path, "old");
         let dpkg = FakeDpkg::default();
-        dpkg.set(true, "0.2.15");
-        let mut tracker = tracked(&path, &dpkg);
+        dpkg.set(true, "0.2.16");
+        let mut tracker = tracked(&path, &dpkg).with_run_dir(&run);
         fs::remove_file(&path).unwrap();
-        dpkg.set(false, "0.2.16");
+        dpkg.set(false, "0.2.15");
         assert_eq!(tracker.poll(Instant::now()), UpdateState::InProgress);
-        // A program dpkg never knew, missing while it is rebuilt.
-        let unknown = FakeDpkg::default();
-        let other = tmp.path().join("dev-build");
-        let _built = install(&other, "built");
-        let mut tracker = tracked(&other, &unknown);
-        fs::remove_file(&other).unwrap();
-        assert_eq!(tracker.poll(Instant::now()), UpdateState::InProgress);
+        let _new = install(&path, "new");
+        assert_ne!(tracker.poll(Instant::now()), UpdateState::Removed);
+    }
+
+    #[test]
+    fn the_watch_wakes_when_a_removal_stamp_appears() {
+        let tmp = scratch();
+        let path = tmp.path().join("better-git");
+        let run = tmp.path().join("run");
+        fs::create_dir_all(&run).unwrap();
+        let _program = install(&path, "program");
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let _watch = ProgramWatch::start_with_run_dir(&path, &run, move || {
+            let _ = sender.send(());
+        })
+        .unwrap();
+        // A child writes the stamp, so no descriptor of this process can
+        // reach the watch late.
+        let status = std::process::Command::new("/bin/sh")
+            .args(["-c", "printf 1 > \"$1\"", "sh"])
+            .arg(removal_stamp(&run, "better-git"))
+            .status()
+            .unwrap();
+        assert!(status.success());
+        assert!(receiver.recv_timeout(Duration::from_secs(5)).is_ok());
     }
 
     #[test]

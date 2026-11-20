@@ -13,8 +13,8 @@
 //! <root>/scale              the logical monitors' scales, space separated
 //! <root>/session            the session type
 //! <root>/system-flatpak/    a system installation
-//! <root>/data/flatpak/      the person's installation and overrides
-//! <root>/state/better-os/   the record of applied fixes
+//! <root>/.local/share/flatpak/ the person's installation and overrides
+//! <root>/.local/state/better-os/ the record of applied fixes
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -122,39 +122,8 @@ impl DisplayScales for FixtureDisplay {
 /// advance; without a private runtime directory the demo offers no fix and
 /// says why.
 pub fn private_demo_root(runtime: Option<&Path>) -> Result<PathBuf, String> {
-    use std::os::unix::fs::{DirBuilderExt, MetadataExt};
-    let runtime = runtime
-        .filter(|path| path.is_absolute())
-        .ok_or_else(|| "there is no private runtime directory (XDG_RUNTIME_DIR)".to_string())?;
-    let me = std::fs::metadata("/proc/self")
-        .map_err(|error| format!("/proc/self: {error}"))?
-        .uid();
-    let private = |path: &Path, strict: bool| -> Result<(), String> {
-        let metadata = std::fs::symlink_metadata(path)
-            .map_err(|error| format!("{}: {error}", path.display()))?;
-        if !metadata.file_type().is_dir() {
-            return Err(format!("{} is not a directory", path.display()));
-        }
-        if metadata.uid() != me {
-            return Err(format!("{} is not yours", path.display()));
-        }
-        let forbidden = if strict { 0o077 } else { 0o022 };
-        if metadata.mode() & forbidden != 0 {
-            return Err(format!("{} is open to others", path.display()));
-        }
-        Ok(())
-    };
-    private(runtime, true)?;
-    let mut path = runtime.to_path_buf();
-    for part in ["better-os", "fixes-demo"] {
-        path.push(part);
-        match std::fs::DirBuilder::new().mode(0o700).create(&path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(error) => return Err(format!("{}: {error}", path.display())),
-        }
-        private(&path, false)?;
-    }
+    let path =
+        better_core::private_dir::private_runtime_dir(runtime, &["better-os", "fixes-demo"])?;
     if !path.join("session").exists() {
         seed(&path, Seed::BothFaults).map_err(|error| format!("{}: {error}", path.display()))?;
     }

@@ -645,7 +645,13 @@ GUI or dependency compiles when the relevant command was not executed.
   and named, a fix whose undo failed stays recorded), and deletes the record;
   the rebuilt font cache stays. An encrypted home that is not mounted keeps
   its fixes. The container check in `packaging/test-daemon-e2e.sh` runs that
-  removal under a real dpkg and `setpriv`; its first run is CI's.
+  removal under a real dpkg and `setpriv`; its first run is CI's. Maintainer
+  scripts that act in people's homes keep the account library in a variable,
+  never a temporary file, and reach only plain-named accounts on mounted
+  local homes (or with a session), within 30 s each and 120 s in all
+  (`packaging/maintainer/accounts.sh` documents the interface). The Electron
+  fix may limit the app's screen sharing to X11 windows (read from
+  Chromium's source, not tried), and the card says so before Fix.
 - The login screen watch (ticket 140, ADR 0033) has run against a real
   systemd, logind, and journal only in CI's container check
   (`packaging/boot-watch/run.sh`, a stand-in `gdm.service` that never opens

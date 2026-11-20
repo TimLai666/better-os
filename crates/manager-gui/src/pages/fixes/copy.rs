@@ -37,6 +37,10 @@ pub(crate) struct FixesCopy {
     pub(crate) limit_whole_scale: &'static str,
     pub(crate) electron_version: &'static str,
     pub(crate) not_offered: &'static str,
+    pub(crate) cannot_tell: &'static str,
+    pub(crate) not_offered_unknown: &'static str,
+    pub(crate) limit_screen_sharing: &'static str,
+    pub(crate) removal_unfinished: &'static str,
     pub(crate) not_offered_fractional: &'static str,
     pub(crate) not_offered_mixed: &'static str,
 
@@ -82,7 +86,7 @@ pub(crate) struct FixesCopy {
 }
 
 const EN: FixesCopy = FixesCopy {
-    description: "Better OS checks this PC for known problems. A fix that changes your settings can always be undone.",
+    description: "Better OS checks this PC for known problems. A fix that changes your settings can be undone; a setting you change yourself afterwards is left as you made it.",
     check_again: "Check again",
     last_checked: "Last checked: {time}",
     nothing_found: "No known problems found.",
@@ -104,7 +108,7 @@ const EN: FixesCopy = FixesCopy {
 
     electron_header: "The pointer is half size over {app}",
     electron_header_any: "The pointer is half size over Electron apps",
-    electron_cause: "This app doesn't scale its pointer on Wayland; running it through XWayland fixes it.",
+    electron_cause: "This app doesn't scale its pointer on Wayland; running it through XWayland fixes it, but its screen sharing may then show only X11 windows.",
     electron_change: "Writes a Flatpak override for this app only, so it runs through XWayland, in {path}: {keys}",
     electron_undo: "Undo removes exactly these settings and leaves anything else in that file alone.",
     electron_restart: "Takes effect the next time {app} starts.",
@@ -114,6 +118,10 @@ const EN: FixesCopy = FixesCopy {
     limit_whole_scale: "Offered only when every screen uses the same whole-number scale above 100% (200%, 300%), which is where it was verified.",
     electron_version: "Uses Electron {version}.",
     not_offered: "No fix offered.",
+    cannot_tell: "Can't tell.",
+    not_offered_unknown: "Can't tell: this app's Electron version wasn't found, and its settings don't say whether it runs on Wayland.",
+    limit_screen_sharing: "Through XWayland, screen sharing from this app may show only its own windows and other X11 apps. This is read from Chromium's source and hasn't been tried.",
+    removal_unfinished: "Removing Better Manager stopped part way. Run \"sudo apt install --reinstall better-manager\" to put it back, or remove it again to finish.",
     not_offered_fractional: "No fix offered: a screen uses fractional scaling, and through XWayland the app would be drawn blurry.",
     not_offered_mixed: "No fix offered: your screens use different scales, and XWayland draws the app at one of them, so it would be blurry or the wrong size on the other. This hasn't been verified.",
 
@@ -155,7 +163,7 @@ const EN: FixesCopy = FixesCopy {
 };
 
 const ZH: FixesCopy = FixesCopy {
-    description: "Better OS 會檢查這台電腦有沒有已知的問題。會變更你設定的修正，都可以復原。",
+    description: "Better OS 會檢查這台電腦有沒有已知的問題。會變更你設定的修正都可以復原；修正之後你自己改過的設定，會保留你改的樣子。",
     check_again: "重新檢查",
     last_checked: "上次檢查：{time}",
     nothing_found: "沒有找到已知的問題。",
@@ -177,7 +185,7 @@ const ZH: FixesCopy = FixesCopy {
 
     electron_header: "{app} 的游標只有一半大",
     electron_header_any: "Electron 應用程式的游標只有一半大",
-    electron_cause: "這個應用程式在 Wayland 下不會放大游標，改用 XWayland 執行就正常。",
+    electron_cause: "這個應用程式在 Wayland 下不會放大游標，改用 XWayland 執行就正常，但分享畫面時可能只看得到 X11 程式的視窗。",
     electron_change: "只為這個應用程式寫入 Flatpak 設定，讓它改用 XWayland 執行，位置在 {path}：{keys}",
     electron_undo: "復原只會移除這幾項設定，那個檔案裡的其他內容都不會動。",
     electron_restart: "下次開啟 {app} 時生效。",
@@ -187,6 +195,10 @@ const ZH: FixesCopy = FixesCopy {
     limit_whole_scale: "只在每個螢幕都用同一個整數縮放比例（200%、300%）時提供，這是驗證過的情況。",
     electron_version: "使用 Electron {version}。",
     not_offered: "不提供修正。",
+    cannot_tell: "無法判斷。",
+    not_offered_unknown: "無法判斷：找不到這個應用程式的 Electron 版本，它的設定也沒說是否在 Wayland 下執行。",
+    limit_screen_sharing: "改用 XWayland 後，這個應用程式分享畫面時可能只看得到它自己和其他 X11 程式的視窗。這是依 Chromium 原始碼判斷，還沒實際試過。",
+    removal_unfinished: "移除 Better Manager 中途停住了。執行「sudo apt install --reinstall better-manager」可以裝回來，或再移除一次完成移除。",
     not_offered_fractional: "不提供修正：有螢幕用分數縮放，改用 XWayland 執行會讓應用程式變模糊。",
     not_offered_mixed: "不提供修正：你的螢幕縮放比例不一樣，XWayland 只會用其中一個比例畫，另一個螢幕上會變模糊或大小不對。這種情況還沒驗證過。",
 

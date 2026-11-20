@@ -174,35 +174,44 @@ PACKAGE_AUTOSTART_OVERRIDES=""
 # only files carrying it.
 AUTOSTART_OVERRIDE_MARK='X-BetterOS-HiddenBy=better-touchpad'
 
-# The block a maintainer script uses to act for each person (accounts.sh):
-# it writes accounts.sh, account-step.sh, and one fragment, after their
-# header, into a private temporary library, sources it, makes the call, and
-# removes the library. Each person's step sources the same library in its
-# own timed shell. $1 the fragment's name under packaging/maintainer, $2 its
-# header lines, $3 the call.
+# The block a maintainer script uses to act for each person (see the top of
+# packaging/maintainer/accounts.sh). The library (its header, accounts.sh,
+# account-step.sh, and one fragment) is kept in a shell variable, never in a
+# file: nothing in /tmp or $TMPDIR can be swapped for root to run, and a
+# missing or full temporary directory cannot fail the script. It is built
+# only for the actions in $4, and neither building it nor the call can fail
+# the script. $1 the fragment's name under packaging/maintainer, $2 its
+# header lines, $3 the call, $4 the case pattern of the actions that need it.
 account_block() {
     local fragment="$1"
     local header="$2"
     local call="$3"
+    local actions="$4"
     printf '\n# Acting for each person (packaging/maintainer/accounts.sh).\n'
     # shellcheck disable=SC2016 # expanded by the maintainer script
-    printf 'better_os_account_lib="$(mktemp "${TMPDIR:-/tmp}/better-os-accounts.XXXXXX")"\n'
-    # shellcheck disable=SC2016 # expanded by the maintainer script
-    printf "cat > \"\$better_os_account_lib\" <<'BETTER_OS_ACCOUNT_LIB'\n"
+    printf 'case "${1:-}" in\n'
+    printf '    %s)\n' "$actions"
+    printf "        better_os_account_library=\"\$(cat <<'BETTER_OS_ACCOUNT_LIB'\n"
     printf "better_os_login_defs='/etc/login.defs'\n"
     printf "better_os_getent='getent'\n"
     printf "better_os_setpriv='setpriv'\n"
+    printf "better_os_mounts='/proc/self/mounts'\n"
+    printf "better_os_session_root='/run/user'\n"
     printf "better_os_step_seconds='30'\n"
+    printf "better_os_total_seconds='120'\n"
     printf '%s\n' "$header"
     cat "$ROOT_DIR/packaging/maintainer/accounts.sh"
     cat "$ROOT_DIR/packaging/maintainer/account-step.sh"
     cat "$ROOT_DIR/packaging/maintainer/$fragment.sh"
     printf 'BETTER_OS_ACCOUNT_LIB\n'
+    printf ')" || better_os_account_library=""\n'
     # shellcheck disable=SC2016 # expanded by the maintainer script
-    printf '. "$better_os_account_lib"\n'
-    printf '%s || true\n' "$call"
+    printf '        if [ -n "$better_os_account_library" ]; then\n'
     # shellcheck disable=SC2016 # expanded by the maintainer script
-    printf 'rm -f "$better_os_account_lib"\n'
+    printf '            { eval "$better_os_account_library" && %s; } || true\n' "$call"
+    printf '        fi\n'
+    printf '        ;;\n'
+    printf 'esac\n'
 }
 
 # A package whose window can hide another program's autostart entry gets a
@@ -219,7 +228,7 @@ write_autostart_override_postrm() {
     {
         printf '#!/bin/sh\nset -e\n'
         # shellcheck disable=SC2016 # expanded by the maintainer script
-        account_block autostart-overrides "$header" 'better_os_forget_autostart_overrides "$1"'
+        account_block autostart-overrides "$header" 'better_os_forget_autostart_overrides "$1"' 'remove | purge'
     } > "$staging_dir/DEBIAN/postrm"
     chmod 0755 "$staging_dir/DEBIAN/postrm"
 }
@@ -268,24 +277,47 @@ reset_package_inputs() {
 add_before_removal_accounts() {
     local staging_dir="$1"
     local package_name="$2"
-    local script header
+    local run_file="/run/better-os/$package_name-removal-run"
+    local script header actions
     header="$(
         printf "better_os_before_removal_program='/usr/lib/better-os/before-removal/%s'\n" "$package_name"
         printf "better_os_before_removal_leftovers='%s'\n" \
-            ".local/state/better-os/fixes-removal-undo.json .local/state/better-os/fixes-removal-undo.json.tmp"
-        printf "better_os_run_file='/run/better-os/%s-removal-run'" "$package_name"
+            ".local/state/better-os/fixes-removal-undo.json .local/state/better-os/fixes-removal-undo.json.tmp .local/state/better-os/.fixes.json.tmp .local/state/better-os/fixes-location.json .local/state/better-os/fixes-location.json.tmp"
+        printf "better_os_run_file='%s'" "$run_file"
     )"
     for script in prerm postinst postrm; do
         if [[ ! -f "$staging_dir/DEBIAN/$script" ]]; then
             printf '#!/bin/sh\nset -e\n' > "$staging_dir/DEBIAN/$script"
             chmod 0755 "$staging_dir/DEBIAN/$script"
         fi
+        case "$script" in
+            prerm) actions='remove' ;;
+            postinst) actions='abort-remove' ;;
+            postrm) actions='remove | purge' ;;
+        esac
         {
             printf "\n# Ticket 90: what %s changed in the people's files goes back on removal.\n" "$package_name"
-            # shellcheck disable=SC2016 # expanded by the maintainer script
-            account_block before-removal-accounts "$header" "better_os_before_removal_$script \"\$1\""
+            account_block before-removal-accounts "$header" "better_os_before_removal_$script \"\$1\"" "$actions"
         } >> "$staging_dir/DEBIAN/$script"
     done
+    # The prerm's first action, before any other fragment can fail: an older
+    # removal's stamp goes, so an abort-remove can only ever read this run's.
+    if [[ "$(sed -n 2p "$staging_dir/DEBIAN/prerm")" != "set -e" ]]; then
+        printf 'The %s prerm does not start with set -e\n' "$package_name" >&2
+        exit 1
+    fi
+    {
+        sed -n 1,2p "$staging_dir/DEBIAN/prerm"
+        printf '# Ticket 90: no stamp of an older removal outlives this one.\n'
+        printf 'if [ "${1:-}" = remove ]; then rm -f %s 2>/dev/null || true; fi\n' "$run_file"
+        sed -n '3,$p' "$staging_dir/DEBIAN/prerm"
+    } > "$staging_dir/DEBIAN/prerm.new"
+    mv "$staging_dir/DEBIAN/prerm.new" "$staging_dir/DEBIAN/prerm"
+    chmod 0755 "$staging_dir/DEBIAN/prerm"
+    # /run/better-os exists from boot, so a running Better Manager can watch
+    # it for a removal's stamp (ticket 90).
+    printf 'if [ "${1:-}" = configure ]; then systemd-tmpfiles --create %s >/dev/null 2>&1 || true; fi\n' \
+        "/usr/lib/tmpfiles.d/$package_name.conf" >> "$staging_dir/DEBIAN/postinst"
 }
 
 # The prerm lines that give the keyboard back when the page that set its
@@ -903,6 +935,7 @@ PACKAGE_DATA=(
     "packaging/icons/better-manager.svg:usr/share/icons/hicolor/scalable/apps/better-manager.svg"
     "packaging/manager/better-window-attention.service:usr/lib/systemd/user/better-window-attention.service"
     "packaging/manager/org.betteros.WindowAttention1.service:usr/share/dbus-1/services/org.betteros.WindowAttention1.service"
+    "packaging/manager/better-manager.tmpfiles:usr/lib/tmpfiles.d/better-manager.conf"
 )
 # libsecret-tools is a desktop helper Better OS installs with the manager so
 # that everyday tools work without the person hunting for a package: its

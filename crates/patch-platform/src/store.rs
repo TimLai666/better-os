@@ -124,6 +124,7 @@ mod tests {
                     name: Default::default(),
                     created_file: true,
                     created_groups: vec![],
+                    sockets_before: None,
                     keys: vec![],
                 },
             }],

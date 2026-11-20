@@ -88,11 +88,20 @@ impl ManagerApp {
                 };
                 ("fixes-unavailable", Severity::Warning, text.to_string())
             }),
-            self.update_restart.program_removed().then(|| {
+            (self.update_restart.program_removed()
+                || self.fixes.removal == better_core::self_update::Removal::InProgress)
+                .then(|| {
+                    (
+                        "fixes-removed",
+                        Severity::Warning,
+                        c.program_removed.to_string(),
+                    )
+                }),
+            (self.fixes.removal == better_core::self_update::Removal::Unfinished).then(|| {
                 (
-                    "fixes-removed",
+                    "fixes-unfinished",
                     Severity::Warning,
-                    c.program_removed.to_string(),
+                    c.removal_unfinished.to_string(),
                 )
             }),
             self.fixes.interrupted.map(|n| {
@@ -220,7 +229,9 @@ impl ManagerApp {
         let c = copy(locale);
         let p = palette(cx);
         let open = self.fixes.open.contains(&row.key);
-        let can_change = self.fixes.can_change() && !self.update_restart.program_removed();
+        let can_change = self.fixes.can_change()
+            && !self.update_restart.program_removed()
+            && self.fixes.removal != better_core::self_update::Removal::InProgress;
         let working = match &self.fixes.work {
             Some(Work::Fixing(key)) if key == &row.key => Some(c.fixing),
             Some(Work::Undoing(key)) if key == &row.key => Some(c.undoing),
@@ -272,6 +283,7 @@ impl ManagerApp {
             )));
         }
         let icon = match row.state.1 {
+            _ if row.found => IconName::TriangleAlert,
             Tone::Success => IconName::CircleCheck,
             Tone::Neutral => IconName::Info,
             Tone::Warning => IconName::TriangleAlert,

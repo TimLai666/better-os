@@ -74,6 +74,11 @@ pub enum Recorded {
         /// Groups the fix added, which an undo takes out again when they are
         /// left empty.
         created_groups: Vec<String>,
+        /// The `[Context] sockets` value exactly as the person wrote it
+        /// before the fix (`None`: there was none), so an undo that takes
+        /// every socket change back writes it back character for character.
+        #[serde(default)]
+        sockets_before: Option<String>,
         keys: Vec<KeyChange>,
     },
 }
@@ -203,6 +208,7 @@ mod tests {
                 name: AppName::default(),
                 created_file: true,
                 created_groups: vec!["Context".into()],
+                sockets_before: None,
                 keys,
             },
         }

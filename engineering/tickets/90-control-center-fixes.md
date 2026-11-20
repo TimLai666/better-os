@@ -51,6 +51,49 @@ Spec section 9.
 
 ## Notes
 
+**Blocked:** waiting on CI's `package` job (the container check in
+`packaging/test-daemon-e2e.sh`, which removes `better-manager` under a real
+dpkg and `setpriv`) passing on the final head of pull request #25; this
+machine has no usable Docker. Everything else is built and checked.
+
+Second review (2026-11-21), all fixed:
+
+- **Maintainer scripts.**
+  - The account library lives in a shell variable, never a temporary
+    file, and is built only for removal, abort-remove, and purge. Nothing
+    in it can fail the script; `TMPDIR=/nonexistent` exits 0 on upgrade
+    and on removal.
+  - Account names that are not plain names are skipped and counted, and
+    output is prefixed with no `sed`.
+  - Homes are judged from the mount table (no automount is woken), with a
+    120 s deadline for the whole walk.
+  - Older stamps are cleared at the very top of the prerm.
+  - `accounts.sh` documents the interface for other scripts.
+- **Being removed.**
+  - The removal stamp in `/run/better-os` decides whether a removal is
+    running. The directory exists from boot (`tmpfiles.d`), the window
+    watches it, and "Check again" never deletes a running removal's
+    set-aside file.
+  - An abandoned removal (`deinstall ok installed`) is not "being removed".
+  - A half-done one is said on the page, with what finishes it. Upgrade,
+    reinstall, and downgrade statuses are tested never to read as a
+    removal.
+- **Demo stores.** The Touchpad page's demo store moved off `/tmp` to the
+  shared `better_core::private_dir`.
+- **Entry 2.**
+  - Says before Fix that screen sharing may show only X11 windows (read
+    from WebRTC's and Chromium's source, cited in the spec).
+  - Says "cannot tell" when an Electron-base app's version is not found.
+  - Puts the person's `sockets` text back exactly.
+- **Removal reach.** It follows a custom XDG directory the person owns
+  outside the home. The postrm and the manifest cover every half-written
+  file.
+- **The page.**
+  - The description says only what is true.
+  - Every row under "Problems found" draws the warning sign.
+  - Paths read relative to home (fixtures are laid out as a home).
+
+
 Delivered (spec: `engineering/specs/better-patch.md`):
 
 - **Engine and entries.** `patch-core` (no GPUI, no I/O) holds the `Entry`

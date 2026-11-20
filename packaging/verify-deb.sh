@@ -31,8 +31,9 @@ EXTENSION_UUID="touchpad-adapter@betteros.org"
 verify_account_block() {
     local what="$1"
     local script="$2"
-    grep -qF '. "$better_os_account_lib"' "$script" &&
-        grep -qF 'timeout -s KILL "$seconds" sh -c' "$script" &&
+    grep -qF 'eval "$better_os_account_library"' "$script" &&
+        grep -qF 'timeout -s KILL "$seconds" sh -c "$better_os_account_library"' "$script" &&
+        ! grep -qF 'mktemp' "$script" &&
         grep -qxF "better_os_getent='getent'" "$script" || {
         printf '%s does not act for each person through the timed account library\n' "$what" >&2
         exit 1
@@ -93,7 +94,8 @@ required_data_files() {
                 usr/share/applications/io.betteros.Manager.desktop \
                 usr/share/icons/hicolor/scalable/apps/better-manager.svg \
                 usr/lib/systemd/user/better-window-attention.service \
-                usr/share/dbus-1/services/org.betteros.WindowAttention1.service
+                usr/share/dbus-1/services/org.betteros.WindowAttention1.service \
+                usr/lib/tmpfiles.d/better-manager.conf
             ;;
         better-monitor)
             printf '%s\n' \
@@ -491,7 +493,7 @@ for package_name in \
             # abandoned removal puts them back; the postrm deletes what was
             # set aside.
             for script in prerm postinst postrm; do
-                grep -qxF "better_os_before_removal_$script \"\$1\" || true" "$control/$script" || {
+                grep -qF "&& better_os_before_removal_$script \"\$1\"; } || true" "$control/$script" || {
                     printf 'The Better Manager %s does not run the before-removal step\n' "$script" >&2
                     exit 1
                 }
@@ -591,7 +593,7 @@ for package_name in \
             }
             verify_account_block "Better Touchpad postrm" "$control/postrm"
             grep -qxF "better_os_override_files='touchegg.desktop fusuma.desktop'" "$control/postrm" &&
-                grep -qxF 'better_os_forget_autostart_overrides "$1" || true' "$control/postrm" || {
+                grep -qF '&& better_os_forget_autostart_overrides "$1"; } || true' "$control/postrm" || {
                 printf 'The Better Touchpad postrm does not remove its autostart overrides\n' >&2
                 exit 1
             }

@@ -122,7 +122,7 @@ fn both_faults_are_found_with_their_words_and_a_fix_button() {
     assert_eq!(zh.found[1].header, "GitHub Desktop 的游標只有一半大");
     assert_eq!(
         zh.found[1].cause,
-        "這個應用程式在 Wayland 下不會放大游標，改用 XWayland 執行就正常。"
+        "這個應用程式在 Wayland 下不會放大游標，改用 XWayland 執行就正常，但分享畫面時可能只看得到 X11 程式的視窗。"
     );
 }
 
@@ -151,7 +151,7 @@ fn all_known_problems_lists_every_entry_with_its_state() {
             ),
         ]
     );
-    assert_eq!(rows.all[1].limits.len(), 3);
+    assert_eq!(rows.all[1].limits.len(), 4);
     let zh = page_rows(Locale::ZhTw, &reports, &BTreeMap::new(), DIR);
     assert_eq!(zh.all[1].header, "Electron 應用程式的游標只有一半大");
     assert_eq!(zh.all[0].state.0, "這台電腦沒有這個問題。");
@@ -337,7 +337,7 @@ fn a_fault_whose_fix_is_not_offered_says_why_and_offers_nothing() {
         // The reason is where the cause is, read without opening the card.
         assert_eq!(electron.cause, en);
         assert!(electron.facts.contains(
-            &"This app doesn't scale its pointer on Wayland; running it through XWayland fixes it."
+            &"This app doesn't scale its pointer on Wayland; running it through XWayland fixes it, but its screen sharing may then show only X11 windows."
                 .to_string()
         ));
         assert!(electron.actions.is_empty());
@@ -354,6 +354,50 @@ fn a_fault_whose_fix_is_not_offered_says_why_and_offers_nothing() {
         assert_eq!(facts.found.len(), 1);
         assert_eq!(facts.found[0].entry, EntryId::FontconfigCache);
     }
+}
+
+#[test]
+fn an_app_whose_electron_cannot_be_found_is_listed_as_cannot_tell() {
+    let root = machine(Seed::BothFaults);
+    let active = root
+        .path()
+        .join("system-flatpak/app")
+        .join(SEEDED_APP)
+        .join("current/active");
+    std::fs::remove_dir_all(active.join("files")).unwrap();
+    let metadata = std::fs::read_to_string(active.join("metadata")).unwrap();
+    std::fs::write(
+        active.join("metadata"),
+        metadata.replace("ELECTRON_OZONE_PLATFORM_HINT=auto\n", ""),
+    )
+    .unwrap();
+    let reports = check(root.path(), &Records::default(), &[]);
+    let rows = page_rows(Locale::EnUs, &reports, &BTreeMap::new(), DIR);
+    let electron = rows.found.iter().find(|r| r.key == electron_key()).unwrap();
+    assert_eq!(electron.state.0, "Can't tell.");
+    assert!(
+        electron
+            .cause
+            .starts_with("Can't tell: this app's Electron version wasn't found")
+    );
+    assert!(electron.actions.is_empty());
+    let zh = page_rows(Locale::ZhTw, &reports, &BTreeMap::new(), DIR);
+    let electron = zh.found.iter().find(|r| r.key == electron_key()).unwrap();
+    assert_eq!(electron.state.0, "無法判斷。");
+}
+
+#[test]
+fn every_row_under_problems_found_is_drawn_as_a_problem() {
+    let root = machine(Seed::BothFaults);
+    let undone = [electron_key()];
+    let reports = check(root.path(), &Records::default(), &undone);
+    let results = BTreeMap::from([(electron_key(), RowResult::Undone { skipped: 0 })]);
+    let rows = page_rows(Locale::EnUs, &reports, &results, DIR);
+    // The undone row's state line is neutral, and it is still a problem.
+    let electron = rows.found.iter().find(|r| r.key == electron_key()).unwrap();
+    assert_eq!(electron.state.1, Tone::Neutral);
+    assert!(rows.found.iter().all(|row| row.found));
+    assert!(rows.applied.iter().all(|row| !row.found));
 }
 
 #[test]
@@ -388,11 +432,11 @@ fn the_page_says_only_settings_changing_fixes_can_be_undone() {
     let zh = super::copy::copy(Locale::ZhTw);
     assert_eq!(
         en.description,
-        "Better OS checks this PC for known problems. A fix that changes your settings can always be undone."
+        "Better OS checks this PC for known problems. A fix that changes your settings can be undone; a setting you change yourself afterwards is left as you made it."
     );
     assert_eq!(
         zh.description,
-        "Better OS 會檢查這台電腦有沒有已知的問題。會變更你設定的修正，都可以復原。"
+        "Better OS 會檢查這台電腦有沒有已知的問題。會變更你設定的修正都可以復原；修正之後你自己改過的設定，會保留你改的樣子。"
     );
 }
 

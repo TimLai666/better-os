@@ -193,6 +193,11 @@ pub enum NotOffered {
     /// app at one scale, so it is blurry or the wrong size on one of them.
     /// Not verified.
     MixedScales,
+    /// The app's Electron version could not be found and nothing in its
+    /// settings says it asks for Wayland: whether it shows the fault cannot
+    /// be told (Electron 38 and later choose Wayland on their own, older
+    /// ones only when asked).
+    ElectronVersionUnknown,
 }
 
 /// Whether a fix can be taken back, and whether it needs to be.
@@ -218,6 +223,10 @@ pub enum Limit {
     /// Offered only where every monitor has the same whole-number scale
     /// above 1, the case ticket 76 verified.
     WholeNumberScaleOnly,
+    /// Through XWayland, the app's screen sharing may show only X11
+    /// windows: Chromium picks its PipeWire capturer only in a Wayland
+    /// session.
+    ScreenSharing,
 }
 
 /// One line of "the exact change it makes".

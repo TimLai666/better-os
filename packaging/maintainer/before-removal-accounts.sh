@@ -6,7 +6,8 @@
 # component; this is the same program, run by the maintainer scripts, once
 # per person, as that person.
 #
-#   prerm remove           makes up a stamp for this dpkg run, keeps it in
+#   prerm remove           clears any older stamp first thing, makes up a
+#                          stamp for this dpkg run, keeps it in
 #                          $better_os_run_file, and runs the program, which
 #                          undoes what the package changed in the person's
 #                          files and sets aside what it replaced, stamped
@@ -53,9 +54,10 @@ better_os_before_removal_step() {
                 timeout -s KILL "${better_os_step_seconds:-30}" env -i HOME="$home" \
                 PATH=/usr/bin:/bin LC_ALL=C BETTER_OS_REMOVAL_RUN="$stamp" \
                 "$better_os_before_removal_program" "$@" < /dev/null 2>&1 \
-                | sed "s/^/Better OS ($name): /" || true
+                | better_os_prefix_lines "$name" || true
             ;;
         forget)
+            # A space-separated list of fixed relative paths, split on purpose.
             for leftover in $better_os_before_removal_leftovers; do
                 # shellcheck disable=SC2016 # expanded by the inner shell, not this one
                 better_os_as_account "$uid" "$gid" sh -c \
@@ -72,7 +74,10 @@ better_os_before_removal_prerm() {
         remove) ;;
         *) return 0 ;;
     esac
-    stamp="$(date +%s).$$"
+    # Any older stamp went at the top of this prerm (build-deb.sh puts that
+    # line before every other fragment), so an abort-remove can only read
+    # this run's.
+    stamp="$(date +%s%N).$$"
     mkdir -p "$(dirname "$better_os_run_file")" 2>/dev/null || true
     printf '%s\n' "$stamp" > "$better_os_run_file" 2>/dev/null || true
     better_os_for_each_account better_os_before_removal_step run "$stamp"

@@ -918,10 +918,8 @@ printf '== removing Better Manager undoes the fixes it applied (ticket 90) ==\n'
 # program set aside. Run under a time limit so a hang fails the job instead
 # of holding it.
 FIX_UID=1000
-fix_user="$(getent passwd "$FIX_UID" | cut -d: -f1 || true)"
-if [[ -z "$fix_user" ]]; then
+if ! getent passwd "$FIX_UID" > /dev/null; then
     useradd --create-home --uid "$FIX_UID" better-person
-    fix_user=better-person
 fi
 fix_home="$(getent passwd "$FIX_UID" | cut -d: -f6)"
 fix_app=io.github.shiftey.Desktop

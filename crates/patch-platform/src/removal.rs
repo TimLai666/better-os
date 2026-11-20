@@ -288,8 +288,12 @@ pub fn undo_before_removal(
 }
 
 /// A removal that did not finish, as Better Manager finds it at its next
-/// start: the package is still installed (this program is running) and a
-/// set-aside file is there. Returns how many fixes that removal undid, and
+/// start: a set-aside file is there while no removal is running. The caller
+/// must have checked that first (no removal stamp in /run/better-os, and
+/// dpkg reporting no removal stopped part way:
+/// `better_core::self_update::removal` is `Removal::None`): while a removal
+/// runs, the file is that removal's, and an abort-remove's `--undo` needs
+/// it. Returns how many fixes that removal undid, and
 /// deletes the file; the Fixes page says so, and the next check shows each
 /// fault that came back as found again. Nothing is reapplied on the
 /// strength of a file that might be older than this installation.

@@ -248,13 +248,22 @@ impl Entry for ElectronCursor {
             }
             _ => return Detection::CannotCheck(crate::engine::not_answered()),
         };
-        let mut candidates: Vec<&InstalledApp> = Vec::new();
+        // Each candidate, and whether its Electron could not be told.
+        let mut candidates: Vec<(&InstalledApp, bool)> = Vec::new();
         for app in apps {
-            if app.is_electron()
-                && runs_natively_on_wayland(&app.effective(), app.electron_major())
-                && !candidates.iter().any(|seen| seen.id == app.id)
+            if !app.is_electron() || candidates.iter().any(|(seen, _)| seen.id == app.id) {
+                continue;
+            }
+            let effective = app.effective();
+            if runs_natively_on_wayland(&effective, app.electron_major()) {
+                candidates.push((app, false));
+            } else if app.electron_major().is_none()
+                && runs_natively_on_wayland(&effective, Some(HINT_REMOVED_IN))
             {
-                candidates.push(app);
+                // An Electron 38 or later in this configuration is on
+                // Wayland; an older one is not. With no version file the
+                // two cannot be told apart.
+                candidates.push((app, true));
             }
         }
         if candidates.is_empty() {
@@ -278,13 +287,17 @@ impl Entry for ElectronCursor {
         Detection::Checked(
             candidates
                 .into_iter()
-                .map(|app| Finding {
+                .map(|(app, unknown)| Finding {
                     subject: Subject::FlatpakApp(app.id.clone()),
                     detail: FindingDetail::ElectronCursor {
                         name: app.name(),
                         scales: scales.clone(),
                         electron: app.electron_version.clone(),
-                        offer: offer.clone(),
+                        offer: if unknown {
+                            Offer::NotOffered(NotOffered::ElectronVersionUnknown)
+                        } else {
+                            offer.clone()
+                        },
                     },
                 })
                 .collect(),
@@ -306,6 +319,7 @@ impl Entry for ElectronCursor {
                 Limit::FlatpakOnly,
                 Limit::ElectronBaseAppOnly,
                 Limit::WholeNumberScaleOnly,
+                Limit::ScreenSharing,
                 Limit::UntilTheAppScalesItsPointer,
             ],
         }
@@ -329,6 +343,7 @@ impl Entry for ElectronCursor {
         }
         let before = override_text(answers, app)?;
         let mut file = KeyFile::parse(before.as_deref().unwrap_or(""));
+        let sockets_before = file.get(CONTEXT, SOCKETS).map(str::to_string);
         let mut created_groups: Vec<String> = Vec::new();
         let mut keys = Vec::new();
         for (key, want) in fix_keys() {
@@ -364,6 +379,7 @@ impl Entry for ElectronCursor {
                 },
                 created_file: before.is_none(),
                 created_groups,
+                sockets_before,
                 keys,
             },
         })
@@ -447,6 +463,7 @@ impl Entry for ElectronCursor {
             name,
             created_file,
             created_groups,
+            sockets_before,
             keys,
         } = &record.change
         else {
@@ -471,6 +488,26 @@ impl Entry for ElectronCursor {
                 continue;
             }
             put(&mut file, &change.key, &change.previous);
+        }
+        // Every socket change taken back and the list as it was: the
+        // person's own text goes back exactly (`x11;ssh-auth` stays without
+        // a trailing `;`).
+        let sockets_kept = kept
+            .iter()
+            .any(|change: &KeyChange| matches!(change.key, OverrideKey::Socket(_)));
+        let tokens_now = file
+            .get(CONTEXT, SOCKETS)
+            .map(keyfile::list)
+            .unwrap_or_default();
+        let tokens_before = sockets_before
+            .as_deref()
+            .map(keyfile::list)
+            .unwrap_or_default();
+        if !sockets_kept && tokens_now == tokens_before {
+            match sockets_before {
+                Some(text) => file.set(CONTEXT, SOCKETS, text),
+                None => file.remove(CONTEXT, SOCKETS),
+            }
         }
         for group in created_groups {
             file.remove_group_if_empty(group);
@@ -501,6 +538,7 @@ impl Entry for ElectronCursor {
                 name: name.clone(),
                 created_file: *created_file,
                 created_groups: created_groups.clone(),
+                sockets_before: sockets_before.clone(),
                 keys: kept,
             }),
             skipped,
@@ -655,7 +693,8 @@ sockets=x11;wayland;fallback-x11;
             (with_electron("32.3.0", &no_hint), false),
             (with_electron("32.3.0", &x11_hint), false),
             (with_electron("32.3.0", ELECTRON), true),
-            (installed(DESKTOP, &no_hint, None), false),
+            // Unknown version, no hint: listed, as "cannot tell".
+            (installed(DESKTOP, &no_hint, None), true),
         ] {
             let answers = machine(Some("wayland"), vec![2.0], vec![app.clone()]);
             assert_eq!(
@@ -702,13 +741,14 @@ sockets=x11;wayland;fallback-x11;
             ))
             .is_empty()
         );
-        // No hint: older Electron runs through XWayland on its own.
+        // No hint, and an Electron older than 38: it runs through XWayland
+        // on its own.
         let no_hint = ELECTRON.replace("ELECTRON_OZONE_PLATFORM_HINT=auto\n", "");
         assert!(
             found(&machine(
                 Some("wayland"),
                 vec![2.0],
-                vec![installed(DESKTOP, &no_hint, None)]
+                vec![with_electron("32.3.0", &no_hint)]
             ))
             .is_empty()
         );
@@ -974,6 +1014,48 @@ XDG_SESSION_TYPE=x11
         let undone = engine::undo(&ElectronCursor, &left, &mut host, true).unwrap();
         assert_eq!(undone.remaining, None);
         assert_eq!(written(&host), None);
+    }
+
+    #[test]
+    fn the_person_s_own_socket_text_comes_back_exactly() {
+        for before in [
+            "[Context]\nsockets=x11;ssh-auth\n",
+            "[Context]\nsockets = wayland ; pulseaudio\n",
+            "[Context]\nsockets=\n",
+        ] {
+            let mut host = host_with(Some(before));
+            let outcome = fix_it(&mut host);
+            engine::undo(&ElectronCursor, &outcome.record, &mut host, false).unwrap();
+            assert_eq!(written(&host).as_deref(), Some(before), "{before:?}");
+        }
+    }
+
+    #[test]
+    fn an_electron_whose_version_cannot_be_found_cannot_be_told() {
+        let no_hint = ELECTRON.replace("ELECTRON_OZONE_PLATFORM_HINT=auto\n", "");
+        let answers = machine(
+            Some("wayland"),
+            vec![2.0],
+            vec![installed(DESKTOP, &no_hint, None)],
+        );
+        let Detection::Checked(findings) = ElectronCursor.detect(&answers) else {
+            panic!("it could look");
+        };
+        assert_eq!(findings.len(), 1);
+        let FindingDetail::ElectronCursor { offer, .. } = &findings[0].detail else {
+            panic!("electron finding");
+        };
+        assert_eq!(
+            offer,
+            &Offer::NotOffered(NotOffered::ElectronVersionUnknown)
+        );
+        // Known to be older than 38, with no hint: on X11 already.
+        let answers = machine(
+            Some("wayland"),
+            vec![2.0],
+            vec![with_electron("37.2.0", &no_hint)],
+        );
+        assert!(found(&answers).is_empty());
     }
 
     #[test]

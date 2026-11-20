@@ -69,6 +69,9 @@ pub(crate) struct FaultRow {
     pub(crate) changed_elsewhere: Vec<String>,
     /// The first button is the accent one.
     pub(crate) actions: Vec<RowAction>,
+    /// Under "Problems found": drawn with the warning sign whatever its
+    /// state line says.
+    pub(crate) found: bool,
 }
 
 /// One entry on "All known problems".
@@ -125,6 +128,7 @@ fn limit_text(locale: Locale, limit: Limit) -> &'static str {
         Limit::ElectronBaseAppOnly => c.limit_base_app,
         Limit::UntilTheAppScalesItsPointer => c.limit_until_scaled,
         Limit::WholeNumberScaleOnly => c.limit_whole_scale,
+        Limit::ScreenSharing => c.limit_screen_sharing,
     }
 }
 
@@ -150,6 +154,7 @@ fn not_offered_text(locale: Locale, why: patch_core::entry::NotOffered) -> &'sta
     match why {
         patch_core::entry::NotOffered::FractionalScale => c.not_offered_fractional,
         patch_core::entry::NotOffered::MixedScales => c.not_offered_mixed,
+        patch_core::entry::NotOffered::ElectronVersionUnknown => c.not_offered_unknown,
     }
 }
 
@@ -333,6 +338,7 @@ fn fault_row(
         changed_elsewhere: changed_lines(locale, changed),
         actions,
         key,
+        found: false,
     }
 }
 
@@ -358,6 +364,11 @@ pub(crate) fn page_rows(
             let refused = not_offered(instance);
             let state = match (results.get(&key), refused) {
                 (Some(result), _) => result_line(locale, result),
+                (None, Some(patch_core::entry::NotOffered::ElectronVersionUnknown))
+                    if instance.record.is_none() =>
+                {
+                    (c.cannot_tell.to_string(), Tone::Warning)
+                }
                 (None, Some(_)) if instance.record.is_none() => {
                     (c.not_offered.to_string(), Tone::Warning)
                 }
@@ -411,6 +422,7 @@ pub(crate) fn page_rows(
                     .push(c.electron_version.replace("{version}", version));
             }
             if group_found {
+                row.found = true;
                 rows.found.push(row);
             } else {
                 rows.applied.push(row);
@@ -452,6 +464,7 @@ pub(crate) fn page_rows(
                 limit_text(locale, Limit::FlatpakOnly),
                 limit_text(locale, Limit::ElectronBaseAppOnly),
                 limit_text(locale, Limit::WholeNumberScaleOnly),
+                limit_text(locale, Limit::ScreenSharing),
             ],
         };
         rows.all.push(KnownRow {

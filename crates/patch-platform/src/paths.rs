@@ -43,12 +43,14 @@ impl Paths {
         })
     }
 
-    /// Everything under one directory, for a fixture machine.
+    /// Everything under one directory, for a fixture machine. The root is
+    /// laid out as a home (`.local/share/flatpak`, `.local/state/better-os`),
+    /// so a sandbox that makes it the window's HOME shows the paths a
+    /// person would see.
     pub fn under(root: &Path) -> Self {
         Self {
-            user_flatpak: root.join("data/flatpak"),
             system_flatpak: root.join("system-flatpak"),
-            records: root.join("state/better-os").join(RECORDS_FILE),
+            ..Self::default_for_home(root)
         }
     }
 
@@ -104,18 +106,18 @@ pub fn keep_location(home: &Path, paths: &Paths) -> Result<(), String> {
     std::fs::rename(&temporary, &file).map_err(failed)
 }
 
-/// Whether `path` stays inside `home`: absolute, no `..`, and the deepest
-/// part of it that exists, with every link followed, is under the home
-/// (links followed too). A location file can be written by anything the
-/// person runs, so nothing it names is trusted further than that.
-pub fn stays_inside(path: &Path, home: &Path) -> bool {
+/// Whether a path the location file names may be followed: absolute, with
+/// no `..`, and the deepest part of it that exists (links followed) is the
+/// person's own, either inside their home or owned by them. The removal runs
+/// as that person, so it can reach nothing they could not; a custom
+/// `XDG_DATA_HOME` such as `/data/tim/share` is theirs and is followed, a
+/// path into a directory someone else owns is not.
+pub fn followable(path: &Path, home: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
     use std::path::Component;
     if !path.is_absolute() || path.components().any(|c| c == Component::ParentDir) {
         return false;
     }
-    let Ok(home) = home.canonicalize() else {
-        return false;
-    };
     let mut existing = path.to_path_buf();
     while !existing.exists() {
         match existing.parent() {
@@ -123,9 +125,16 @@ pub fn stays_inside(path: &Path, home: &Path) -> bool {
             None => return false,
         }
     }
-    match existing.canonicalize() {
-        Ok(real) => real.starts_with(&home),
-        Err(_) => false,
+    let Ok(real) = existing.canonicalize() else {
+        return false;
+    };
+    if home.canonicalize().is_ok_and(|home| real.starts_with(home)) {
+        return true;
+    }
+    let me = std::fs::metadata("/proc/self").map(|m| m.uid());
+    match (std::fs::metadata(&real), me) {
+        (Ok(metadata), Ok(me)) => metadata.uid() == me && me != 0,
+        _ => false,
     }
 }
 
@@ -148,7 +157,7 @@ pub fn for_removal(home: &Path) -> (Paths, Option<String>) {
     let named = |key: &str| value.get(key).and_then(|v| v.as_str()).map(PathBuf::from);
     match (named("records"), named("user_flatpak")) {
         (Some(records), Some(user_flatpak))
-            if stays_inside(&records, home) && stays_inside(&user_flatpak, home) =>
+            if followable(&records, home) && followable(&user_flatpak, home) =>
         {
             (
                 Paths {
@@ -162,7 +171,7 @@ pub fn for_removal(home: &Path) -> (Paths, Option<String>) {
         _ => (
             defaults,
             Some(format!(
-                "{} names a place outside the home; not followed",
+                "{} names a place that is not yours; not followed",
                 file.display()
             )),
         ),
@@ -191,12 +200,12 @@ mod tests {
     }
 
     #[test]
-    fn a_location_outside_the_home_is_not_followed() {
+    fn a_location_that_is_not_the_person_s_is_not_followed() {
         let home = tempfile::tempdir().unwrap();
-        let elsewhere = tempfile::tempdir().unwrap();
         let defaults = Paths::default_for_home(home.path());
         for records in [
-            elsewhere.path().join("fixes.json"),
+            // Root's, not the person's.
+            PathBuf::from("/etc/better-os/fixes.json"),
             home.path().join("../escape/fixes.json"),
             PathBuf::from("relative/fixes.json"),
         ] {
@@ -209,16 +218,27 @@ mod tests {
             assert_eq!(paths, defaults);
             assert!(warning.is_some());
         }
-        // A link inside the home that leads out of it is not followed.
-        std::os::unix::fs::symlink(elsewhere.path(), home.path().join("link")).unwrap();
-        assert!(!stays_inside(
+        // A link inside the home that leads to root's directory is not
+        // followed.
+        std::os::unix::fs::symlink("/etc", home.path().join("link")).unwrap();
+        assert!(!followable(
             &home.path().join("link/fixes.json"),
             home.path()
         ));
-        assert!(stays_inside(
-            &home.path().join("a/b/fixes.json"),
-            home.path()
-        ));
+        assert!(followable(&home.path().join("a/b/fixes.json"), home.path()));
+    }
+
+    #[test]
+    fn a_location_outside_the_home_that_is_the_person_s_is_followed() {
+        let home = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let custom = Paths {
+            records: data.path().join("state/better-os/fixes.json"),
+            user_flatpak: data.path().join("share/flatpak"),
+            system_flatpak: PathBuf::from("/var/lib/flatpak"),
+        };
+        keep_location(home.path(), &custom).unwrap();
+        assert_eq!(for_removal(home.path()), (custom, None));
     }
 
     #[test]
@@ -230,7 +250,7 @@ mod tests {
         let app = patch_core::flatpak::AppId::parse("org.example.App").unwrap();
         assert_eq!(
             paths.user_override(&app),
-            Path::new("/scratch/data/flatpak/overrides/org.example.App")
+            Path::new("/scratch/.local/share/flatpak/overrides/org.example.App")
         );
     }
 }

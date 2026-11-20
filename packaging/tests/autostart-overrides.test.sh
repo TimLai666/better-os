@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC1091,SC2015,SC2030,SC2031,SC2034 # each case sources the library in a subshell with its header variables; checks read "test && pass || fail"
+# shellcheck disable=SC1091,SC2015,SC2030,SC2031,SC2034,SC2069 # each case sources the library in a subshell with its header variables; checks read "test && pass || fail"; `2>&1 >/dev/null` captures standard error alone, on purpose
 # Drives packaging/maintainer/autostart-overrides.sh against a scratch passwd
 # file and scratch homes. Nothing outside the scratch directory is read or
 # written.
@@ -65,16 +65,20 @@ chmod +x "$WORK_DIR/setpriv"
 
 # A stand-in getent that lists the scratch passwd file, as the real one lists
 # local and directory-service accounts alike.
+# shellcheck disable=SC2016 # the stand-in's own $1, expanded when it runs
 printf '#!/bin/sh\n[ "$1" = passwd ] && cat "%s/passwd"\n' "$WORK_DIR" > "$WORK_DIR/getent"
 chmod +x "$WORK_DIR/getent"
 
-# The library the generated postrm writes (build-deb.sh account_block): the
+# The library the generated postrm holds (build-deb.sh account_block): the
 # header, accounts.sh, account-step.sh, and the fragment, in that order.
 make_lib() {
     {
         printf "better_os_login_defs='%s'\n" "${LOGIN_DEFS:-$WORK_DIR/login.defs}"
         printf "better_os_getent='%s'\n" "$WORK_DIR/getent"
         printf "better_os_setpriv='%s'\n" "$WORK_DIR/setpriv"
+        printf "better_os_mounts='%s'\n" "/proc/self/mounts"
+        printf "better_os_session_root='%s'\n" "$WORK_DIR/run-user"
+        printf "better_os_total_seconds='120'\n"
         printf "better_os_step_seconds='%s'\n" "${STEP_SECONDS:-30}"
         printf "better_os_override_mark='%s'\n" "$MARK"
         printf "better_os_override_files='touchegg.desktop fusuma.desktop'\n"
@@ -87,9 +91,9 @@ make_lib() {
 run() {
     make_lib
     (
-        cd "$WORK_DIR"
-        better_os_account_lib="$WORK_DIR/lib.sh"
-        . "$better_os_account_lib"
+        cd "$WORK_DIR" || exit 1
+        better_os_account_library="$(cat "$WORK_DIR/lib.sh")"
+        eval "$better_os_account_library"
         better_os_forget_autostart_overrides "$@"
     )
 }
@@ -100,6 +104,7 @@ run upgrade
 range() {
     (
         better_os_login_defs="$1"
+        # shellcheck source=packaging/maintainer/accounts.sh
         . "$ROOT_DIR/packaging/maintainer/accounts.sh"
         printf '%s..%s' "$(better_os_login_range_value UID_MIN 1000)" "$(better_os_login_range_value UID_MAX 60000)"
     )
@@ -126,6 +131,7 @@ run remove
 # possible without root, so the helper is called directly.
 (
     better_os_setpriv="$WORK_DIR/setpriv"
+    # shellcheck source=packaging/maintainer/account-step.sh
     . "$ROOT_DIR/packaging/maintainer/account-step.sh"
     better_os_as_account "$((me + 1))" "$((me + 1))" true
 )

@@ -66,10 +66,15 @@ count and Home's "{n} known problems found". A found fault whose fix is not
 offered is listed on the page and not counted, since there is nothing to
 press.
 
-The page's description promises an undo only for what changes a setting:
-會變更你設定的修正，都可以復原。 / A fix that changes your settings can always
-be undone. The font cache fix changes no setting (it repairs a cache) and its
-card says it needs no undo.
+The page's description promises only what is true: a fix that changes a
+setting can be undone, and a setting the person changes afterwards is left
+as they made it (Undo skips it unless they confirm Undo all):
+會變更你設定的修正都可以復原；修正之後你自己改過的設定，會保留你改的樣子。 / A fix
+that changes your settings can be undone; a setting you change yourself
+afterwards is left as you made it. An undo can also fail (the override file
+was turned into a link, which is never written through); the page then says
+so and the fix stays recorded. The font cache fix changes no setting (it
+repairs a cache) and its card says it needs no undo.
 
 ## The record
 
@@ -145,7 +150,8 @@ How Electron chooses Wayland changed, and the entry follows each version:
   electron/electron#54523 (merged 2026-10-08), from Chromium 157 on main and
   backported by hand.
 
-- **Detect.** All of these must hold:
+- **Detect.** All of these must hold (when only the Electron version is
+  missing, see "cannot tell" below):
   - the session is Wayland (`XDG_SESSION_TYPE`);
   - an installed Flatpak app is Electron: it ships Electron's own `version`
     file beside its `resources.pak` (in its files or up to two folders
@@ -158,6 +164,12 @@ How Electron chooses Wayland changed, and the entry follows each version:
     `wayland`;
   - some logical monitor's scale, from Mutter's
     `org.gnome.Mutter.DisplayConfig.GetCurrentState`, is above 1.
+
+  An app on Flathub's Electron base whose `version` file is not found (it
+  is looked for in the app's files and two folders down), with the Wayland
+  socket and no hint, is the case where an Electron 38 or later would be on
+  Wayland and an older one would not. It is listed as 無法判斷。 / Can't
+  tell., with the reason and no Fix, never as "no problem".
 
   The scale is read only when there is a candidate app, and Mutter has five
   seconds to answer. Outside GNOME (the Better OS session on cosmic-comp is
@@ -189,13 +201,32 @@ How Electron chooses Wayland changed, and the entry follows each version:
 
   Every other line of the file stays as it was. The change takes effect the
   next time the app starts, and the card says so.
+- **Screen sharing.** Through XWayland, the app's screen sharing may show
+  only its own windows and other X11 apps. WebRTC's
+  `DesktopCapturer::IsRunningUnderWayland`
+  (`modules/desktop_capture/desktop_capturer.cc`) is true only when
+  `XDG_SESSION_TYPE` is `wayland` and `WAYLAND_DISPLAY` is set, and its X11
+  screen capturer is used only when that is false
+  (`modules/desktop_capture/screen_capturer_linux.cc`); Chromium's
+  `CanUsePipeWire()` (`content/public/browser/desktop_capture.cc`) is true
+  only in a Wayland session. All three were read on webrtc.googlesource.com
+  and chromium.googlesource.com at `main` on 2026-11-21. The fix sets
+  `XDG_SESSION_TYPE=x11` and removes `WAYLAND_DISPLAY`, so the app takes the
+  X11 capturer, and an X11 capturer under XWayland sees only X clients. It
+  has not been tried. The card's cause line says it before Fix is pressed
+  (…但分享畫面時可能只看得到 X11 程式的視窗。 / …but its screen sharing may then
+  show only X11 windows.), and the limits list says it was read from the
+  source and not tried.
 - **Check.** `flatpak override --user --show -- <app-id>`, Flatpak's own
   reading of the file, holds every key the fix wrote, and with the app's
   metadata, every other override layer, and its Electron version taken
   together as the app will start, it no longer runs on Wayland.
 - **Undo.** Removes exactly those keys, or puts back the values they had. It
   removes the groups the fix added when they are left empty, and the file
-  when the fix created it and it is left saying nothing.
+  when the fix created it and it is left saying nothing. When every socket
+  change is taken back, the `sockets` value goes back exactly as the person
+  wrote it (`x11;ssh-auth` stays without a trailing `;`), from the text the
+  record kept.
 
 When the fix stops being needed: no Electron release note or issue found on
 2026-11-21 says the pointer size on Wayland was fixed (searched
@@ -213,6 +244,7 @@ Limits, which the page states:
 - An app is recognized by Electron's own version file or Flathub's
   Electron base app; one that ships Electron any other way is not.
 - Offered only at one whole-number scale above 1, as above.
+- Screen sharing from the app may show only X11 windows, as above.
 - With no known Electron version and no hint, an app is not reported: an
   older Electron runs through XWayland on its own, and a newer one would
   have shipped its version file.
@@ -240,14 +272,26 @@ page is shown, and on Check again, always off the UI thread. A Fix or an Undo
 runs off the UI thread too, and the page checks again afterwards. An update
 restart waits while either is running.
 
-A window is often still open while its package is removed. The update
-watcher reports that state (`better_core::self_update::UpdateState::Removed`:
-dpkg asks for the removal, or the program file is gone and dpkg no longer has
-the package), and the page then changes nothing and says
+A window is often still open while its package is removed. The prerm's
+stamp, `/run/better-os/better-manager-removal-run`, is what says a removal
+is running: dpkg's selection alone does not, since it stays `deinstall`
+after an abandoned removal while the package is `installed`
+(`better_core::self_update::removal`). `/run/better-os` exists from boot
+(the package's `tmpfiles.d` entry), and the update watcher watches it as
+well as the program file, so the window learns of the removal from the
+stamp while its own file is still there, and reports
+`UpdateState::Removed` (also once the file is gone and dpkg no longer has
+the package). The page then changes nothing and says
 Better Manager 正在被移除，這一頁現在不會變更任何東西。 / Better Manager is
-being removed, so this page changes nothing now. A Fix or an Undo also asks
-dpkg right before it writes, and refuses while the removal is under way, so
-nothing is written that the removal has already undone.
+being removed, so this page changes nothing now. A Fix or an Undo also
+looks for the stamp right before it writes, and refuses while it is there,
+so nothing is written that the removal has already undone. A removal dpkg
+left part way (it asks for `deinstall` and the package is not `installed`,
+with no stamp: a power cut) is said, with what finishes it: 移除 Better
+Manager 中途停住了。執行「sudo apt install --reinstall better-manager」可以裝回來，
+或再移除一次完成移除。 / Removing Better Manager stopped part way. Run "sudo apt
+install --reinstall better-manager" to put it back, or remove it again to
+finish.
 
 ## Removing Better Manager
 
@@ -259,24 +303,43 @@ itself, so apt is how it goes. Its package ships the before-removal program
 person (`packaging/maintainer/before-removal-accounts.sh`, with
 `accounts.sh` and `account-step.sh`):
 
+- **The library.** The account functions (`accounts.sh`,
+  `account-step.sh`, the fragment, after their header) are kept in a shell
+  variable of the maintainer script, never in a file: nothing in `/tmp` or
+  `$TMPDIR` can be swapped for root to run, and a missing or full temporary
+  directory fails nothing. It is built only for `prerm remove`, `postinst
+  abort-remove`, and `postrm remove|purge`, and neither building it nor
+  running it can fail the script. `accounts.sh` documents the interface for
+  any other script that runs a small step as each account.
 - **Who.** Every account in the login range (`UID_MIN`..`UID_MAX` from
   `/etc/login.defs`, 1000..60000 by default) that `getent passwd` lists, so
-  LDAP, sssd, and systemd-homed accounts are reached, whose home is an
-  absolute, real directory it owns.
-- **Time limit.** Each person's whole step, root's own checks of the home
-  included, runs in its own shell under `timeout -s KILL 30`, and the listing
-  under the same limit. A home on a dead NFS server or a hung FUSE mount
-  costs 30 seconds and a line naming the account; the removal goes on and
+  LDAP, sssd, and systemd-homed accounts are reached, whose name is a plain
+  name (`[A-Za-z0-9._-]`, not starting with `-`; any other is skipped and
+  counted, and nothing of it reaches a program text), and whose home lies,
+  by the mount table alone, on a mounted local file system, or on a network
+  one while the person has a session (`/run/user/<uid>`). Root never `stat`s
+  a home to decide this, so no automount is triggered.
+- **Time limits.** Each person's whole step, root's own checks of the home
+  included, runs in its own shell under `timeout -s KILL 30`, and the
+  listing under the same limit. The whole walk stops after 120 seconds and
+  says how many people it did not reach. A home on a dead server costs at
+  most one step and a line naming the account; the removal goes on and
   dpkg's lock is let go.
 - **How.** As the person (`setpriv`), in a session of its own (`setsid`),
-  with standard input from `/dev/null`, its output through a pipe, and only
-  `HOME`, a fixed `PATH`, `LC_ALL=C`, and the run's stamp in its
-  environment, so it holds nothing of the terminal apt runs in.
-- **prerm remove** makes up a stamp for this dpkg run, keeps it in
+  with standard input from `/dev/null`, its output passed through a loop
+  that prefixes each line with the account's name (no `sed` program built
+  from data), and only `HOME`, a fixed `PATH`, `LC_ALL=C`, and the run's
+  stamp in its environment, so it holds nothing of the terminal apt runs in.
+- **prerm remove** first deletes any older stamp (this line comes before
+  every other fragment of the prerm, so a later failure of another one can
+  never leave an older stamp for abort-remove to read), then makes up a
+  stamp for this dpkg run, keeps it in
   `/run/better-os/better-manager-removal-run`, and runs the program. The
   program finds the record and the overrides at the defaults or where the
-  location file says, following it only when every path it names stays
-  inside that person's home. It sets the record and each override file a fix
+  location file says, following each path it names only when the deepest
+  part of it that exists is the person's own: inside their home, or owned
+  by them (a custom `XDG_DATA_HOME` such as `/data/tim/share` is
+  followed). It sets the record and each override file a fix
   wrote aside in `~/.local/state/better-os/fixes-removal-undo.json`, stamped.
   Then it undoes every recorded fix that has an undo, through the page's own
   undo path and rule: a key the person changed after the fix is left as they
@@ -288,14 +351,19 @@ person (`packaging/maintainer/before-removal-accounts.sh`, with
   set-aside file with this run's stamp is put back (every override file and
   the record as they were before the prerm). One with another stamp, or with
   none, is stale and deleted unused.
-- **postrm remove or purge** deletes the set-aside file and what an
-  interrupted write of it can leave, as the person, and the stamp.
+- **postrm remove or purge** deletes, as the person, the set-aside file,
+  the location file, and what an interrupted write of the record, the
+  set-aside file, or the location file can leave (`.fixes.json.tmp`,
+  `fixes-removal-undo.json.tmp`, `fixes-location.json.tmp`), and the stamp.
+  A record that still holds a fix whose undo failed is kept.
 
 A removal that fails after the prerm (dpkg does not call abort-remove then)
 leaves Better Manager installed with its fixes undone and the record gone.
-At its next start the window finds the set-aside file with the package still
-installed, deletes it, and says on the Fixes page how many fixes that removal
-undid (移除 Better Manager 沒有完成，但已經復原了 {n} 項修正。… / Removing Better
+At its next start, when no removal is running (no stamp) and dpkg does not
+report one stopped part way, the window finds the set-aside file, deletes
+it, and says on the Fixes page how many fixes that removal undid. While a
+removal runs, the set-aside file is that removal's and is never touched:
+an abort-remove's `--undo` needs it (移除 Better Manager 沒有完成，但已經復原了 {n} 項修正。… / Removing Better
 Manager didn't finish, and it had already undone {n} fixes. …); each fault
 that came back is found again by the next check and can be fixed again.
 Nothing is reapplied from a file that might be older than this installation.

@@ -130,6 +130,8 @@ struct Checked {
     /// A removal of Better Manager that did not finish, and how many fixes
     /// it undid (`patch_platform::removal::interrupted_removal`).
     interrupted: Option<usize>,
+    /// Where a removal of Better Manager stands.
+    removal: better_core::self_update::Removal,
 }
 
 /// Why nothing can be checked.
@@ -161,6 +163,10 @@ pub(crate) struct FixesState {
     /// A removal of Better Manager that did not finish undid this many
     /// fixes; said once on the page.
     pub(crate) interrupted: Option<usize>,
+    /// Where a removal of Better Manager stood at the last check: one
+    /// running stops Fix and Undo; one stopped part way is said, with what
+    /// finishes it.
+    pub(crate) removal: better_core::self_update::Removal,
     pub(crate) reading_since: Option<Instant>,
     pub(crate) work: Option<Work>,
     pub(crate) results: BTreeMap<RowKey, RowResult>,
@@ -199,7 +205,10 @@ impl FixesState {
     /// Fix and Undo are offered only with a readable record and nothing
     /// running.
     pub(crate) fn can_change(&self) -> bool {
-        self.work.is_none() && self.task.is_none() && self.record_error.is_none()
+        self.work.is_none()
+            && self.task.is_none()
+            && self.record_error.is_none()
+            && self.removal != better_core::self_update::Removal::InProgress
     }
 
     /// What Home and the pane know.
@@ -237,8 +246,12 @@ fn read(choice: &HostChoice, undone: &[RowKey]) -> Result<Checked, Unavailable> 
     }
     let (mut host, store) = open(choice).ok_or(Unavailable::NoHome)?;
     // Only the person's own home can hold what a removal set aside.
-    let interrupted = match choice {
-        HostChoice::User => {
+    // A set-aside file is a removal that did not finish only when no
+    // removal is running: while one runs, it is that removal's, and an
+    // abandoned run's `--undo` needs it.
+    let removal = removal_state(choice);
+    let interrupted = match (choice, removal) {
+        (HostChoice::User, better_core::self_update::Removal::None) => {
             home().and_then(|home| patch_platform::removal::interrupted_removal(&home))
         }
         _ => None,
@@ -253,17 +266,29 @@ fn read(choice: &HostChoice, undone: &[RowKey]) -> Result<Checked, Unavailable> 
         reports,
         records,
         interrupted,
+        removal,
     })
 }
 
-/// Whether dpkg is removing Better Manager right now: its prerm may already
+/// Where a removal of Better Manager stands, from dpkg's record and the
+/// stamp its prerm leaves in `/run/better-os` (`better_core::self_update`).
+/// A fixture machine is never being removed.
+fn removal_state(choice: &HostChoice) -> better_core::self_update::Removal {
+    use better_core::self_update::{
+        self as update, DpkgSource, PackageSource as _, RUN_DIR, Removal,
+    };
+    if *choice != HostChoice::User {
+        return Removal::None;
+    }
+    let package = manager_core::SELF_COMPONENT_ID;
+    let stamp = update::removal_stamp(std::path::Path::new(RUN_DIR), package).exists();
+    update::removal(DpkgSource::system().record(package).as_ref(), stamp)
+}
+
+/// Whether a removal of Better Manager is running now: its prerm may already
 /// have undone the fixes, so nothing new may be written.
 fn being_removed(choice: &HostChoice) -> bool {
-    use better_core::self_update::PackageSource as _;
-    *choice == HostChoice::User
-        && better_core::self_update::DpkgSource::system()
-            .record(manager_core::SELF_COMPONENT_ID)
-            .is_some_and(|record| record.removing)
+    removal_state(choice) == better_core::self_update::Removal::InProgress
 }
 
 /// How a fix or an undo ended.
@@ -334,6 +359,7 @@ impl ManagerApp {
                         if checked.interrupted.is_some() {
                             app.fixes.interrupted = checked.interrupted;
                         }
+                        app.fixes.removal = checked.removal;
                         app.fixes.record_error = checked.records.err().map(|e| e.to_string());
                         app.fixes.reports = Some(checked.reports);
                         app.fixes.checked_at = Some(now_unix_seconds());

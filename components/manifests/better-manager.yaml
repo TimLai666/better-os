@@ -119,3 +119,8 @@ paths:
   - ~/.local/state/better-os/fixes.json
   - ~/.local/state/better-os/fixes-removal-undo.json
   - ~/.local/state/better-os/fixes-location.json
+  # What an interrupted write of each can leave beside it; the postrm
+  # deletes these too.
+  - ~/.local/state/better-os/.fixes.json.tmp
+  - ~/.local/state/better-os/fixes-removal-undo.json.tmp
+  - ~/.local/state/better-os/fixes-location.json.tmp
