@@ -15,8 +15,9 @@
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, App, ElementId, InteractiveElement, IntoElement, ParentElement, Pixels, RenderOnce,
-    SharedString, StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder as _, px,
+    AnyElement, App, Div, ElementId, InteractiveElement, IntoElement, MouseButton, ParentElement,
+    Pixels, RenderOnce, SharedString, StatefulInteractiveElement, Styled, Window, div,
+    prelude::FluentBuilder as _, px,
 };
 use gpui_component::{Icon, IconName};
 
@@ -249,7 +250,7 @@ impl RenderOnce for SettingsCard {
                 disabled,
                 p,
             ))
-            .children(self.content.map(|content| div().flex_none().child(content)));
+            .children(self.content.map(header_content));
         if clickable {
             let chevron = if disabled {
                 p.text_disabled
@@ -379,6 +380,20 @@ impl SettingsExpander {
     }
 }
 
+/// The control a card's or an expander's header holds. A press on it is the
+/// control's own: it never also reaches the header's handler, so clicking a
+/// button or a switch in a clickable card does not open the card, and in an
+/// expander's header does not open or close it. GPUI's `Button` and toggle
+/// handle the click without stopping the mouse event, so the container
+/// stops it here, once, for every header.
+fn header_content(content: AnyElement) -> Div {
+    div()
+        .flex_none()
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .child(content)
+}
+
 impl RenderOnce for SettingsExpander {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let p = palette(cx);
@@ -426,7 +441,7 @@ impl RenderOnce for SettingsExpander {
                 disabled,
                 p,
             ))
-            .children(self.content.map(|content| div().flex_none().child(content)))
+            .children(self.content.map(header_content))
             .child({
                 let mut chevron = div()
                     .id("chevron")

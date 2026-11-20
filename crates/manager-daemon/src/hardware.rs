@@ -1,5 +1,6 @@
-//! `org.betteros.Hardware1`: the two hardware writes that need root (ADR
-//! 0017, spec 11.2).
+//! `org.betteros.Hardware1`: the hardware writes that need root (ADR 0017,
+//! spec 11.2): the charge limit, the fan mode, and the keyboard's colour
+//! (ADR 0034, `keyboard_lighting`).
 //!
 //! One method per control and one polkit action per method. Nothing crosses
 //! as free text or a path: the argument is checked against its closed set
@@ -26,8 +27,12 @@ use zbus::message::Header;
 use zbus::{fdo, interface};
 
 use crate::DaemonError;
-use crate::authorize::{Authorization, Authorizer, CHARGE_LIMIT_ACTION, FAN_MODE_ACTION};
+use crate::authorize::{
+    Authorization, Authorizer, CHARGE_LIMIT_ACTION, FAN_MODE_ACTION, KEYBOARD_LIGHTING_ACTION,
+};
+use crate::keyboard_lighting::{self, LampCache, LampHelper, LightingPaths};
 use crate::service::{CallGate, refuse};
+use hardware_core::lighting::{Effect, LightingChoice, Rgb, Speed, asus_wmi};
 
 pub const INTERFACE: &str = "org.betteros.Hardware1";
 
@@ -74,6 +79,9 @@ pub fn helper_accepts(path: &Path, value: &str) -> bool {
         "pwm1_enable" => FanMode::ALL
             .iter()
             .any(|m| m.pwm_enable().to_string() == value),
+        // asus-wmi's keyboard colour (ADR 0034): only a value the closed set
+        // produces, `cmd` 0 (never saved to the firmware).
+        asus_wmi::ATTRIBUTE => asus_wmi::accepts_value(value),
         _ => false,
     };
     under_devices && value_ok
@@ -89,27 +97,68 @@ pub fn escape_bind_path(path: &Path) -> String {
         .replace(':', "\\:")
 }
 
-/// The transient helper unit's properties: `/sys` is an empty read-only
-/// tmpfs with the one file bound in, no capabilities, no network, nothing
-/// else writable.
-pub fn helper_properties(path: &Path) -> Vec<String> {
+/// The sandbox every hardware helper unit runs in (ADR 0029, narrowed by
+/// ADR 0034's security review): `/sys` an empty read-only tmpfs, a private
+/// `/dev` of pseudo-devices, `/proc/sys` read-only, no network, nothing
+/// writable, a system-call allow-list, no realtime, no new privileges, and
+/// ten seconds to finish (a hung I2C ioctl would otherwise hold the
+/// keyboard's lock, and a removal's prerm, for ever). Each helper adds the
+/// one file or node it needs and its capability bounding set.
+///
+/// Four hardening options are deliberately absent: `ProtectKernelTunables=`,
+/// `ProtectControlGroups=`, and `ProtectProc=` each bring the API file
+/// systems back (`MountAPIVFS=`), and with them the whole of `/sys` over the
+/// one-file tmpfs; `PrivateNetwork=` mounts a fresh sysfs for its network
+/// namespace there, read-only but whole (seen in mountinfo, 2026-11-21). Seen on systemd 255 (transient units in a user manager,
+/// 2026-11-21: `ls /sys` lists 11 entries with any of them, 1 without), the
+/// same duplicate-mount rule ADR 0029 found. What they protect is covered
+/// otherwise: `/proc/sys` and `/proc/sysrq-trigger` are bound read-only, the
+/// cgroup tree lives under the empty `/sys`, and the LampArray helper runs
+/// as `nobody` once its node is open.
+pub fn helper_sandbox() -> Vec<String> {
     [
-        "TemporaryFileSystem=/sys:ro".to_string(),
-        format!("BindPaths={}", escape_bind_path(path)),
-        "MountAPIVFS=no".to_string(),
-        "ProtectSystem=strict".to_string(),
-        "ProtectHome=yes".to_string(),
-        "PrivateTmp=yes".to_string(),
-        "PrivateNetwork=yes".to_string(),
-        "PrivateDevices=yes".to_string(),
-        "NoNewPrivileges=yes".to_string(),
-        "CapabilityBoundingSet=".to_string(),
-        "RestrictAddressFamilies=AF_UNIX".to_string(),
-        "RestrictNamespaces=yes".to_string(),
-        "LockPersonality=yes".to_string(),
-        "SystemCallArchitectures=native".to_string(),
+        "TemporaryFileSystem=/sys:ro",
+        "MountAPIVFS=no",
+        "ProtectSystem=strict",
+        "ProtectHome=yes",
+        "PrivateTmp=yes",
+        // No network through the BPF address filter and the address
+        // families, not `PrivateNetwork=`: a private network namespace makes
+        // systemd mount a fresh (read-only) sysfs over `/sys`, which puts
+        // every sysfs file back in view over the one-file tmpfs.
+        "IPAddressDeny=any",
+        "PrivateDevices=yes",
+        "ReadOnlyPaths=/proc/sys",
+        "ReadOnlyPaths=/proc/sysrq-trigger",
+        "ProtectKernelModules=yes",
+        "ProtectKernelLogs=yes",
+        "ProtectClock=yes",
+        "ProtectHostname=yes",
+        "NoNewPrivileges=yes",
+        "RestrictSUIDSGID=yes",
+        "RestrictRealtime=yes",
+        "RestrictAddressFamilies=AF_UNIX",
+        "RestrictNamespaces=yes",
+        "LockPersonality=yes",
+        "MemoryDenyWriteExecute=yes",
+        "SystemCallArchitectures=native",
+        "SystemCallFilter=@system-service",
+        "RuntimeMaxSec=10s",
     ]
-    .to_vec()
+    .iter()
+    .map(|p| p.to_string())
+    .collect()
+}
+
+/// The attribute helper's properties: the shared sandbox with exactly the
+/// one attribute file bound writable, and no capability at all. It stays
+/// uid 0, which owns the file; its only input is its two arguments, checked
+/// against closed sets, not a device's replies.
+pub fn helper_properties(path: &Path) -> Vec<String> {
+    let mut properties = helper_sandbox();
+    properties.insert(1, format!("BindPaths={}", escape_bind_path(path)));
+    properties.push("CapabilityBoundingSet=".to_string());
+    properties
 }
 
 /// Starts this program's `--write-attribute` in a transient unit and waits.
@@ -173,6 +222,15 @@ pub struct HardwareService<A: Authorizer + 'static> {
     gate: Arc<CallGate>,
     /// See `ManagerService::runtime`: zbus polls this on its own executor.
     runtime: tokio::runtime::Handle,
+    /// The keyboard's LampArray helper (ADR 0034); `None` drives no
+    /// LampArray.
+    lamp_helper: Option<Arc<dyn LampHelper>>,
+    /// Where the keyboard's colour is kept for `--restore-hardware`.
+    lighting_paths: Option<LightingPaths>,
+    lamp_cache: Arc<LampCache>,
+    /// One keyboard change at a time, the newest only, at most ten a
+    /// second (ADR 0034).
+    lighting: Arc<Coalescer<LightingChoice>>,
 }
 
 impl<A: Authorizer + 'static> HardwareService<A> {
@@ -191,7 +249,29 @@ impl<A: Authorizer + 'static> HardwareService<A> {
             state_file: None,
             gate,
             runtime: tokio::runtime::Handle::current(),
+            lamp_helper: None,
+            lighting_paths: None,
+            lamp_cache: Arc::new(LampCache::default()),
+            lighting: Arc::new(Coalescer::new(LIGHTING_WAITERS, LIGHTING_INTERVAL)),
         }
+    }
+
+    pub fn with_lamp_helper(mut self, helper: Arc<dyn LampHelper>) -> Self {
+        self.lamp_helper = Some(helper);
+        self
+    }
+
+    pub fn with_lighting_paths(mut self, paths: LightingPaths) -> Self {
+        self.lighting_paths = Some(paths);
+        self
+    }
+
+    /// Where the keyboard's choice is read when no paths were given: a path
+    /// that holds nothing, so nothing is ever read as stored.
+    fn lighting_paths(&self) -> LightingPaths {
+        self.lighting_paths.clone().unwrap_or_else(|| {
+            LightingPaths::under(std::path::Path::new("/nonexistent/better-os-keyboard"))
+        })
     }
 
     pub fn with_state_file(mut self, path: impl Into<PathBuf>) -> Self {
@@ -224,6 +304,9 @@ impl<A: Authorizer + 'static> HardwareService<A> {
 /// one) and reads it back. Opened with `O_TRUNC`, as a shell's `>` does:
 /// sysfs ignores it, and a plain file in a test is replaced whole.
 pub fn write_attribute(path: &Path, value: &str) -> Result<String, DaemonError> {
+    // `kbd_rgb_mode` is write-only (`DEVICE_ATTR_WO`): there is nothing to
+    // read back, and the write's own success is the answer.
+    let write_only = path.file_name().and_then(|n| n.to_str()) == Some(asus_wmi::ATTRIBUTE);
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .truncate(true)
@@ -232,6 +315,9 @@ pub fn write_attribute(path: &Path, value: &str) -> Result<String, DaemonError> 
     file.write_all(value.as_bytes())
         .map_err(|error| DaemonError::WriteFailed(format!("{}: {error}", path.display())))?;
     drop(file);
+    if write_only {
+        return Ok(value.to_string());
+    }
     std::fs::read_to_string(path)
         .map(|text| text.trim().to_string())
         .map_err(|error| DaemonError::WriteFailed(format!("{}: {error}", path.display())))
@@ -285,6 +371,90 @@ fn store(path: &Path, stored: StoredHardware) -> Result<(), DaemonError> {
     let temporary = path.with_extension("json.tmp");
     std::fs::write(&temporary, text).map_err(|e| DaemonError::Storage(e.to_string()))?;
     std::fs::rename(&temporary, path).map_err(|e| DaemonError::Storage(e.to_string()))
+}
+
+/// Where the limit the battery had before Better OS first set one is kept,
+/// beside the stored choice: the value removal gives back.
+pub fn before_file(state: &Path) -> PathBuf {
+    state.with_file_name("hardware-before.json")
+}
+
+/// Records, once, the limit the battery reads before Better OS's first
+/// write: what it had from the firmware or from whatever set it before.
+/// Later writes leave the record alone.
+pub fn remember_before(root: &SysRoot, state: &Path) -> Result<(), DaemonError> {
+    let before = before_file(state);
+    if before.exists() {
+        return Ok(());
+    }
+    match sysfs::charge_limit(root) {
+        hardware_core::Presence::Present(value) => store(
+            &before,
+            StoredHardware {
+                charge_limit: value,
+            },
+        ),
+        _ => Ok(()),
+    }
+}
+
+/// Gives the battery back the limit it had before Better OS and forgets the
+/// choice, so the boot-time restore has nothing left to write: the prerm of
+/// the daemon package and of Better Manager (AGENTS.md, nothing outlives
+/// the component). Returns one line per thing it did or could not do; it
+/// never fails a removal.
+///
+/// What cannot be given back, and is said: a limit set by a version that
+/// did not record the one before (it stays as it is until the firmware
+/// resets it), and a recorded limit outside 60, 80, and 100, which the
+/// helper does not write (ADR 0029's closed set).
+pub fn release_charge_limit(
+    root: &SysRoot,
+    writer: &dyn AttributeWriter,
+    state: &Path,
+) -> Vec<String> {
+    let before = before_file(state);
+    let mut lines = Vec::new();
+    if !state.exists() && !before.exists() {
+        return lines;
+    }
+    let current = sysfs::charge_limit(root).value().copied();
+    let recorded = std::fs::read_to_string(&before)
+        .ok()
+        .and_then(|text| serde_json::from_str::<StoredHardware>(&text).ok())
+        .map(|stored| stored.charge_limit);
+    let now = current
+        .map(|v| format!("{v}%"))
+        .unwrap_or_else(|| "unreadable".to_string());
+    match recorded {
+        Some(value) if Some(value) == current => {
+            lines.push(format!("charge limit already {value}%, as before Better OS"));
+        }
+        Some(value) if charge::accepts(value) => {
+            match apply_charge_limit(root, writer, value) {
+                Ok(read) => lines.push(format!(
+                    "charge limit given back: {read}%, as before Better OS"
+                )),
+                Err(error) => lines.push(format!(
+                    "charge limit not given back ({error}); it stays at {now}"
+                )),
+            }
+        }
+        Some(value) => lines.push(format!(
+            "charge limit before Better OS was {value}%, which the helper does not write; it stays at {now}"
+        )),
+        None => lines.push(format!(
+            "the charge limit before Better OS was not recorded; it stays at {now} until the firmware resets it"
+        )),
+    }
+    for path in [state.to_path_buf(), before] {
+        match std::fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => lines.push(format!("{}: {error}", path.display())),
+        }
+    }
+    lines
 }
 
 /// What `--restore-hardware` did.
@@ -342,6 +512,11 @@ impl<A: Authorizer + 'static> HardwareService<A> {
         let writer = self.writer.clone();
         let state_file = self.state_file.clone();
         self.blocking(move || {
+            // What the battery had before Better OS's first write, for
+            // removal to give back.
+            if let Some(path) = &state_file {
+                remember_before(&root, path)?;
+            }
             let read = apply_charge_limit(&root, writer.as_ref(), percent)?;
             if let Some(path) = state_file {
                 store(&path, StoredHardware { charge_limit: read })?;
@@ -349,6 +524,100 @@ impl<A: Authorizer + 'static> HardwareService<A> {
             Ok(read)
         })
         .await
+    }
+
+    /// What the keyboard's colour interface is, what its lamps can show, and
+    /// what Better OS set, as JSON (`hardware_core::lighting::LightingReply`).
+    /// Reading a LampArray opens the device, so it is asked for like a write.
+    async fn keyboard_lighting(
+        &self,
+        #[zbus(header)] header: Header<'_>,
+    ) -> Result<String, fdo::Error> {
+        let _call = self.gate.enter().map_err(refuse)?;
+        self.authorize(&header, KEYBOARD_LIGHTING_ACTION).await?;
+        // In line behind any change, so a helper never meets another one.
+        let _turn = self.lighting.queue().await;
+        let root = self.root.clone();
+        let helper = self.lamp_helper.clone();
+        let cache = self.lamp_cache.clone();
+        let paths = self.lighting_paths();
+        self.blocking(move || {
+            let helper = helper_or_none(helper.as_deref());
+            let reply = keyboard_lighting::describe(&root, helper, &cache, &paths)?;
+            serde_json::to_string(&reply).map_err(|e| DaemonError::WriteFailed(e.to_string()))
+        })
+        .await
+    }
+
+    /// Sets the keyboard's effect (`firmware`, `static`, `breathing`,
+    /// `cycle`, `strobe`), colour, intensity (0-100), and speed (0-2), and
+    /// returns what `KeyboardLighting` then answers. An effect the keyboard
+    /// does not do itself is refused before anything is touched.
+    ///
+    /// A caller in a loop is coalesced: calls wait their turn without a
+    /// thread each, only the newest choice waiting is written, at most one
+    /// write every 100 ms, and past eight waiting a call is refused as busy.
+    #[allow(clippy::too_many_arguments)]
+    async fn set_keyboard_lighting(
+        &self,
+        #[zbus(header)] header: Header<'_>,
+        effect: &str,
+        red: u8,
+        green: u8,
+        blue: u8,
+        intensity: u8,
+        speed: u8,
+    ) -> Result<String, fdo::Error> {
+        let _call = self.gate.enter().map_err(refuse)?;
+        // Neither is echoed: they are the caller's.
+        let Some(effect) = Effect::from_wire(effect) else {
+            return Err(refuse(DaemonError::InvalidArgument("effect".to_string())));
+        };
+        let Some(speed) = Speed::from_wire(speed) else {
+            return Err(refuse(DaemonError::InvalidArgument("speed".to_string())));
+        };
+        if intensity > 100 {
+            return Err(refuse(DaemonError::InvalidArgument(
+                "intensity".to_string(),
+            )));
+        }
+        let choice = LightingChoice {
+            effect,
+            colour: Rgb::new(red, green, blue),
+            intensity,
+            speed,
+        };
+        self.authorize(&header, KEYBOARD_LIGHTING_ACTION).await?;
+        let turn = self.lighting.submit(choice).await.map_err(refuse)?;
+        let root = self.root.clone();
+        let helper = self.lamp_helper.clone();
+        let writer = self.writer.clone();
+        let cache = self.lamp_cache.clone();
+        let paths = self.lighting_paths.clone();
+        let read_paths = self.lighting_paths();
+        let newest = turn.value;
+        let wait = turn.wait;
+        let reply = self
+            .blocking(move || {
+                let helper = helper_or_none(helper.as_deref());
+                // A newer choice than this call's may be the one written:
+                // every caller waiting gets the newest one's answer.
+                if let Some(choice) = newest {
+                    std::thread::sleep(wait);
+                    let device =
+                        keyboard_lighting::apply(&root, helper, writer.as_ref(), &cache, &choice)?;
+                    if let Some(paths) = &paths {
+                        keyboard_lighting::store(paths, device, &choice)?;
+                    }
+                }
+                let reply = keyboard_lighting::describe(&root, helper, &cache, &read_paths)?;
+                serde_json::to_string(&reply).map_err(|e| DaemonError::WriteFailed(e.to_string()))
+            })
+            .await;
+        if newest.is_some() {
+            turn.written();
+        }
+        reply
     }
 
     /// Sets the fan mode to `auto` or `full` and returns what it reads back:
@@ -369,6 +638,107 @@ impl<A: Authorizer + 'static> HardwareService<A> {
         self.blocking(move || apply_fan_mode(&root, writer.as_ref(), mode))
             .await
     }
+}
+
+/// How many keyboard changes may wait for their turn before a call is
+/// refused as busy.
+pub const LIGHTING_WAITERS: usize = 8;
+
+/// The shortest time between two keyboard writes.
+pub const LIGHTING_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// Keeps only the newest value waiting and spaces the work out (ADR 0034's
+/// review, finding 8). Callers wait on an async lock, so a caller in a loop
+/// costs no thread per call; the first caller through the lock takes the
+/// newest value submitted so far, and a caller that finds nothing left
+/// (a later one's value was already taken) has nothing to write. The lock is
+/// `tokio::sync::Mutex`, which needs no runtime to poll, so it is safe on
+/// zbus's own executor.
+pub struct Coalescer<T> {
+    latest: std::sync::Mutex<Option<T>>,
+    waiting: std::sync::atomic::AtomicUsize,
+    gate: tokio::sync::Mutex<Option<std::time::Instant>>,
+    limit: usize,
+    interval: std::time::Duration,
+}
+
+/// A caller's turn: the value to write, if any is left, and how long to
+/// wait first so writes stay `interval` apart. Holding it holds the lock.
+pub struct Turn<'a, T> {
+    pub value: Option<T>,
+    pub wait: std::time::Duration,
+    guard: tokio::sync::MutexGuard<'a, Option<std::time::Instant>>,
+}
+
+impl<T> Turn<'_, T> {
+    /// The value was written now.
+    pub fn written(mut self) {
+        *self.guard = Some(std::time::Instant::now());
+    }
+}
+
+struct Waiting<'a>(&'a std::sync::atomic::AtomicUsize);
+
+impl Drop for Waiting<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+impl<T> Coalescer<T> {
+    pub fn new(limit: usize, interval: std::time::Duration) -> Coalescer<T> {
+        Coalescer {
+            latest: std::sync::Mutex::new(None),
+            waiting: std::sync::atomic::AtomicUsize::new(0),
+            gate: tokio::sync::Mutex::new(None),
+            limit,
+            interval,
+        }
+    }
+
+    /// Hands `value` in as the newest and waits for a turn.
+    pub async fn submit(&self, value: T) -> Result<Turn<'_, T>, DaemonError> {
+        let before = self
+            .waiting
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let _waiting = Waiting(&self.waiting);
+        if before >= self.limit {
+            return Err(DaemonError::Busy);
+        }
+        if let Ok(mut latest) = self.latest.lock() {
+            *latest = Some(value);
+        }
+        let guard = self.gate.lock().await;
+        let value = self.latest.lock().ok().and_then(|mut latest| latest.take());
+        let wait = guard
+            .map(|last| self.interval.saturating_sub(last.elapsed()))
+            .unwrap_or_default();
+        Ok(Turn { value, wait, guard })
+    }
+
+    /// Waits for a turn without a value: a read in line behind the writes.
+    pub async fn queue(&self) -> tokio::sync::MutexGuard<'_, Option<std::time::Instant>> {
+        self.gate.lock().await
+    }
+}
+
+/// A service built without a LampArray helper finds none to drive.
+struct NoLampHelper;
+
+impl LampHelper for NoLampHelper {
+    fn run(
+        &self,
+        _node: &str,
+        _command: keyboard_lighting::LampCommand,
+    ) -> Result<Option<hardware_core::lamparray::Description>, DaemonError> {
+        Err(DaemonError::WriteFailed(
+            "this daemon was built without the keyboard helper".to_string(),
+        ))
+    }
+}
+
+fn helper_or_none(helper: Option<&dyn LampHelper>) -> &dyn LampHelper {
+    helper.unwrap_or(&NoLampHelper)
 }
 
 #[cfg(test)]
@@ -411,6 +781,19 @@ mod tests {
         assert!(helper_accepts(limit, "60"));
         assert!(!helper_accepts(limit, "75"));
         assert!(!helper_accepts(limit, "80\n"));
+        let rgb =
+            Path::new("/sys/devices/platform/asus-nb-wmi/leds/asus::kbd_backlight/kbd_rgb_mode");
+        assert!(helper_accepts(rgb, "0 1 255 0 0 2"));
+        assert!(!helper_accepts(rgb, "1 1 255 0 0 2"));
+        assert!(!helper_accepts(rgb, "0 4 255 0 0 2"));
+        assert!(!helper_accepts(
+            Path::new("/sys/kernel/kbd_rgb_mode"),
+            "0 0 1 2 3 1"
+        ));
+        assert!(!helper_accepts(
+            Path::new("/sys/devices/platform/asus-nb-wmi/leds/asus::kbd_backlight/kbd_rgb_state"),
+            "0 1 1 1 1"
+        ));
         assert!(helper_accepts(fan, "0"));
         assert!(helper_accepts(fan, "2"));
         assert!(!helper_accepts(fan, "1"));
@@ -444,6 +827,35 @@ mod tests {
         assert!(properties.contains(&"CapabilityBoundingSet=".to_string()));
         assert!(properties.contains(&"NoNewPrivileges=yes".to_string()));
         assert!(!properties.iter().any(|p| p.starts_with("ReadWritePaths")));
+        // ADR 0034's review: the shared hardening, every line of it.
+        for wanted in [
+            "PrivateDevices=yes",
+            "ReadOnlyPaths=/proc/sys",
+            "ReadOnlyPaths=/proc/sysrq-trigger",
+            "ProtectKernelModules=yes",
+            "ProtectKernelLogs=yes",
+            "ProtectClock=yes",
+            "RestrictSUIDSGID=yes",
+            "SystemCallFilter=@system-service",
+            "MemoryDenyWriteExecute=yes",
+            "RuntimeMaxSec=10s",
+        ] {
+            assert!(properties.contains(&wanted.to_string()), "{wanted}");
+        }
+        // These would bring the whole of /sys back over the one-file tmpfs.
+        assert!(properties.contains(&"IPAddressDeny=any".to_string()));
+        for refused in [
+            "PrivateNetwork",
+            "ProtectKernelTunables",
+            "ProtectControlGroups",
+            "ProtectProc",
+            "MountAPIVFS=yes",
+        ] {
+            assert!(
+                !properties.iter().any(|p| p.starts_with(refused)),
+                "{refused}"
+            );
+        }
     }
 
     #[test]
@@ -477,5 +889,96 @@ mod tests {
             restore(&root, &DirectWriter, &state),
             Err(DaemonError::Storage(_))
         ));
+    }
+
+    /// ADR 0034's review, finding 8: a caller in a loop writes the newest
+    /// value only, spaced out, and too many waiting are refused.
+    #[test]
+    fn the_newest_change_is_written_and_the_rest_are_coalesced() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let coalescer =
+                std::sync::Arc::new(Coalescer::new(3, std::time::Duration::from_millis(100)));
+            let first = coalescer.submit(1).await.unwrap();
+            assert_eq!(first.value, Some(1));
+            assert_eq!(first.wait, std::time::Duration::ZERO);
+            // Three more arrive while the first is being written.
+            let mut waiting = Vec::new();
+            for value in [2, 3, 4] {
+                let c = coalescer.clone();
+                waiting.push(tokio::spawn(async move {
+                    let turn = c.submit(value).await;
+                    turn.map(|t| {
+                        let value = t.value;
+                        let wait = t.wait;
+                        if value.is_some() {
+                            t.written();
+                        }
+                        (value, wait)
+                    })
+                }));
+            }
+            for _ in 0..10 {
+                tokio::task::yield_now().await;
+            }
+            // A fourth waiting is one too many.
+            assert!(matches!(
+                coalescer.submit(5).await.map(|t| t.value),
+                Err(DaemonError::Busy)
+            ));
+            first.written();
+            let mut written = Vec::new();
+            for handle in waiting {
+                let (value, wait) = handle.await.unwrap().unwrap();
+                if let Some(value) = value {
+                    written.push(value);
+                    assert!(wait > std::time::Duration::from_millis(50), "{wait:?}");
+                }
+            }
+            // Only the newest of the three was written.
+            assert_eq!(written, vec![4]);
+        });
+    }
+
+    /// The coordinator's finding: the charge limit and its boot restore
+    /// must not outlive the component.
+    #[test]
+    fn release_gives_the_limit_back_and_forgets_the_choice() {
+        let dir = tempfile::tempdir().unwrap();
+        let attribute = battery(dir.path(), "BAT1", "100\n");
+        let root = SysRoot::at(dir.path());
+        let state = dir.path().join("var/hardware.json");
+        // Nothing set: nothing done, nothing said.
+        assert!(release_charge_limit(&root, &DirectWriter, &state).is_empty());
+        // The first write records 100; a later one keeps that record.
+        remember_before(&root, &state).unwrap();
+        apply_charge_limit(&root, &DirectWriter, 80).unwrap();
+        store(&state, StoredHardware { charge_limit: 80 }).unwrap();
+        remember_before(&root, &state).unwrap();
+        apply_charge_limit(&root, &DirectWriter, 60).unwrap();
+        let lines = release_charge_limit(&root, &DirectWriter, &state);
+        assert_eq!(
+            lines,
+            vec!["charge limit given back: 100%, as before Better OS"]
+        );
+        assert_eq!(std::fs::read_to_string(&attribute).unwrap(), "100");
+        assert!(!state.exists() && !before_file(&state).exists());
+        // Set by an older version that recorded nothing: said, and left.
+        std::fs::write(&attribute, "80\n").unwrap();
+        store(&state, StoredHardware { charge_limit: 80 }).unwrap();
+        let lines = release_charge_limit(&root, &DirectWriter, &state);
+        assert!(lines[0].contains("was not recorded"), "{lines:?}");
+        assert!(lines[0].contains("80%"), "{lines:?}");
+        assert!(!state.exists());
+        // A recorded limit outside the helper's set: said, and left.
+        store(&before_file(&state), StoredHardware { charge_limit: 90 }).unwrap();
+        store(&state, StoredHardware { charge_limit: 80 }).unwrap();
+        let lines = release_charge_limit(&root, &DirectWriter, &state);
+        assert!(lines[0].contains("was 90%"), "{lines:?}");
+        assert_eq!(std::fs::read_to_string(&attribute).unwrap(), "80\n");
+        assert!(!state.exists() && !before_file(&state).exists());
     }
 }

@@ -10,3 +10,7 @@ serde.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true
+
+[features]
+# A LampArray in memory (`lamparray::fake`), for tests and sandbox stand-ins.
+test-support = []

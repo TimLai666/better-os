@@ -15,6 +15,13 @@
 //!     With `BETTER_OS_TEST_BOOT_WATCH_DIR` set, its BootWatch1 (ticket 140)
 //!     writes the login screen watch's setting there.
 //!
+//!     The keyboard (ticket 136) is the owner's LampArray (`hidraw1`, the
+//!     real report descriptor, a fake device behind it), or with
+//!     `BETTER_OS_STANDIN_KEYBOARD=tuf` an asus-wmi `kbd_rgb_mode`, or with
+//!     `white` a LampArray with no colour channel, or with `chassis` one
+//!     that says it is a chassis light. Point the window's
+//!     `BETTER_OS_DEBUG_SYS_ROOT` at the path this prints.
+//!
 //! Runs until killed. Built only with the `test-support` feature.
 
 use std::sync::Arc;
@@ -23,6 +30,9 @@ use hardware_platform::fakes::{self, FakeProfiles};
 use hardware_platform::sysfs::SysRoot;
 use manager_daemon::authorize::{FakeAuthorizer, FakeDismissingAuthorizer};
 use manager_daemon::hardware::{DirectWriter, HardwareService};
+use manager_daemon::keyboard_lighting::FakeLampHelper;
+
+const M5406WA: &[u8] = include_bytes!("../../hardware-core/tests/fixtures/m5406wa-ite5570.rdesc");
 use manager_daemon::service::{CallGate, OBJECT_PATH};
 
 fn stand_in_root() -> tempfile::TempDir {
@@ -41,7 +51,37 @@ fn stand_in_root() -> tempfile::TempDir {
     std::os::unix::fs::symlink(&platform, chip.join("device")).unwrap();
     std::fs::create_dir_all(sys.join("class/hwmon")).unwrap();
     std::os::unix::fs::symlink(&chip, sys.join("class/hwmon/hwmon8")).unwrap();
+    let led = sys.join("class/leds/asus::kbd_backlight");
+    std::fs::create_dir_all(&led).unwrap();
+    std::fs::write(led.join("max_brightness"), "3\n").unwrap();
+    std::fs::write(led.join("brightness"), "1\n").unwrap();
+    if keyboard() == "tuf" {
+        std::fs::write(led.join("kbd_rgb_mode"), "").unwrap();
+    } else {
+        let device = sys.join("class/hidraw/hidraw1/device");
+        std::fs::create_dir_all(&device).unwrap();
+        std::fs::write(device.join("report_descriptor"), M5406WA).unwrap();
+        std::fs::write(device.join("uevent"), "HID_ID=0018:00000B05:00005570\n").unwrap();
+    }
     dir
+}
+
+fn keyboard() -> String {
+    std::env::var("BETTER_OS_STANDIN_KEYBOARD").unwrap_or_else(|_| "lamp".to_string())
+}
+
+fn lamp_helper() -> Arc<FakeLampHelper> {
+    let helper = FakeLampHelper::new("hidraw1", M5406WA);
+    if keyboard() == "white" {
+        let mut device = helper.device.lock().unwrap();
+        device.levels.red = 0;
+        device.levels.green = 0;
+        device.levels.blue = 0;
+    }
+    if keyboard() == "chassis" {
+        helper.device.lock().unwrap().kind = 7;
+    }
+    Arc::new(helper)
 }
 
 #[tokio::main]
@@ -69,6 +109,8 @@ async fn main() {
             let parsed: zbus::Address = address.parse().unwrap();
             let builder = zbus::connection::Builder::address(parsed).unwrap();
             let sys = SysRoot::at(root.path());
+            let lighting = manager_daemon::keyboard_lighting::LightingPaths::under(root.path());
+            eprintln!("stand-in sysfs root: {}", root.path().display());
             let _daemon = match auth {
                 "grant" => builder
                     .serve_at(
@@ -78,7 +120,9 @@ async fn main() {
                             Arc::new(DirectWriter),
                             sys,
                             gate,
-                        ),
+                        )
+                        .with_lamp_helper(lamp_helper())
+                        .with_lighting_paths(lighting.clone()),
                     )
                     .unwrap(),
                 "deny" => builder
@@ -89,7 +133,9 @@ async fn main() {
                             Arc::new(DirectWriter),
                             sys,
                             gate,
-                        ),
+                        )
+                        .with_lamp_helper(lamp_helper())
+                        .with_lighting_paths(lighting.clone()),
                     )
                     .unwrap(),
                 _ => builder
@@ -100,7 +146,9 @@ async fn main() {
                             Arc::new(DirectWriter),
                             sys,
                             gate,
-                        ),
+                        )
+                        .with_lamp_helper(lamp_helper())
+                        .with_lighting_paths(lighting.clone()),
                     )
                     .unwrap(),
             }
