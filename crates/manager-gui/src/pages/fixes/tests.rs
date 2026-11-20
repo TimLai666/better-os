@@ -330,7 +330,16 @@ fn a_fault_whose_fix_is_not_offered_says_why_and_offers_nothing() {
         let reports = check(root.path(), &Records::default(), &[]);
         let rows = page_rows(Locale::EnUs, &reports, &BTreeMap::new(), DIR);
         let electron = rows.found.iter().find(|r| r.key == electron_key()).unwrap();
-        assert_eq!(electron.state, (en.to_string(), Tone::Warning));
+        assert_eq!(
+            electron.state,
+            ("No fix offered.".to_string(), Tone::Warning)
+        );
+        // The reason is where the cause is, read without opening the card.
+        assert_eq!(electron.cause, en);
+        assert!(electron.facts.contains(
+            &"This app doesn't scale its pointer on Wayland; running it through XWayland fixes it."
+                .to_string()
+        ));
         assert!(electron.actions.is_empty());
         let zh_rows = page_rows(Locale::ZhTw, &reports, &BTreeMap::new(), DIR);
         let electron = zh_rows
@@ -338,7 +347,8 @@ fn a_fault_whose_fix_is_not_offered_says_why_and_offers_nothing() {
             .iter()
             .find(|r| r.key == electron_key())
             .unwrap();
-        assert_eq!(electron.state.0, zh);
+        assert_eq!(electron.state.0, "不提供修正。");
+        assert_eq!(electron.cause, zh);
         // Home and the pane count only what can be acted on: the font cache.
         let facts = FixesFacts::of(&reports);
         assert_eq!(facts.found.len(), 1);

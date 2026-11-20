@@ -36,6 +36,7 @@ pub(crate) struct FixesCopy {
     pub(crate) limit_until_scaled: &'static str,
     pub(crate) limit_whole_scale: &'static str,
     pub(crate) electron_version: &'static str,
+    pub(crate) not_offered: &'static str,
     pub(crate) not_offered_fractional: &'static str,
     pub(crate) not_offered_mixed: &'static str,
 
@@ -112,6 +113,7 @@ const EN: FixesCopy = FixesCopy {
     limit_until_scaled: "No Electron release says it fixed this pointer on Wayland, so nothing here can tell when the fix is no longer needed. After the app updates, undo it to see whether the pointer is right on its own.",
     limit_whole_scale: "Offered only when every screen uses the same whole-number scale above 100% (200%, 300%), which is where it was verified.",
     electron_version: "Uses Electron {version}.",
+    not_offered: "No fix offered.",
     not_offered_fractional: "No fix offered: a screen uses fractional scaling, and through XWayland the app would be drawn blurry.",
     not_offered_mixed: "No fix offered: your screens use different scales, and XWayland draws the app at one of them, so it would be blurry or the wrong size on the other. This hasn't been verified.",
 
@@ -184,6 +186,7 @@ const ZH: FixesCopy = FixesCopy {
     limit_until_scaled: "目前沒有 Electron 版本說明已修好 Wayland 下的游標大小，所以這裡無法判斷何時不再需要這項修正。應用程式更新後，可以先復原，看看游標是不是已經正常。",
     limit_whole_scale: "只在每個螢幕都用同一個整數縮放比例（200%、300%）時提供，這是驗證過的情況。",
     electron_version: "使用 Electron {version}。",
+    not_offered: "不提供修正。",
     not_offered_fractional: "不提供修正：有螢幕用分數縮放，改用 XWayland 執行會讓應用程式變模糊。",
     not_offered_mixed: "不提供修正：你的螢幕縮放比例不一樣，XWayland 只會用其中一個比例畫，另一個螢幕上會變模糊或大小不對。這種情況還沒驗證過。",
 

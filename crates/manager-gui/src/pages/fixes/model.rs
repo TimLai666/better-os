@@ -358,8 +358,8 @@ pub(crate) fn page_rows(
             let refused = not_offered(instance);
             let state = match (results.get(&key), refused) {
                 (Some(result), _) => result_line(locale, result),
-                (None, Some(why)) if instance.record.is_none() => {
-                    (not_offered_text(locale, why).to_string(), Tone::Warning)
+                (None, Some(_)) if instance.record.is_none() => {
+                    (c.not_offered.to_string(), Tone::Warning)
                 }
                 (None, _) => state_line(locale, &instance.state),
             };
@@ -400,6 +400,12 @@ pub(crate) fn page_rows(
                 &instance.changed_elsewhere,
                 override_dir,
             );
+            // A fix not offered says why where the cause would be, so the
+            // reason is read without opening the card; the cause moves in.
+            if let (Some(why), None) = (refused, &instance.record) {
+                row.facts.push(row.cause.to_string());
+                row.cause = not_offered_text(locale, why);
+            }
             if let Some(version) = electron_of(instance) {
                 row.facts
                     .push(c.electron_version.replace("{version}", version));
