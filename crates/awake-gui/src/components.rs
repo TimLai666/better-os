@@ -273,3 +273,24 @@ impl AwakeApp {
             .into_any_element()
     }
 }
+
+/// An action icon on one of gpui-component's buttons (ticket 147). Those
+/// buttons take only the toolkit's single-colour `Icon`, so the picture goes
+/// in as the button's first child, before its words. On a primary (accent)
+/// button it turns to the text on accent colour so it never sits accent on
+/// accent; elsewhere it is drawn as beside a label.
+pub(crate) fn action_icon(
+    picture: better_ui::icon_set::Picture,
+    primary: bool,
+    cx: &gpui::App,
+) -> gpui::AnyElement {
+    use better_ui::icon_set::Placement;
+    use gpui::IntoElement as _;
+    let placement = if primary {
+        Placement::OnAccent
+    } else {
+        Placement::Labelled
+    };
+    better_ui::icon_set::action(picture, placement, better_ui::fluent::palette(cx), false)
+        .into_any_element()
+}

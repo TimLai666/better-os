@@ -104,8 +104,12 @@ impl AwakeApp {
                             .child(
                                 Button::new("rules-new")
                                     .primary()
-                                    .icon(IconName::Plus)
-                                    .label(c.new_rule)
+                                    .child(crate::components::action_icon(
+                                        better_ui::icon_set::Picture::Add,
+                                        true,
+                                        cx,
+                                    ))
+                                    .child(c.new_rule)
                                     .on_click(
                                         cx.listener(|this, _, window, cx| {
                                             this.new_rule(window, cx)
@@ -563,8 +567,12 @@ impl AwakeApp {
                         )
                         .child(
                             Button::new("draft-add-group")
-                                .icon(IconName::Plus)
-                                .label(c.add_group)
+                                .child(crate::components::action_icon(
+                                    better_ui::icon_set::Picture::Add,
+                                    false,
+                                    cx,
+                                ))
+                                .child(c.add_group)
                                 .disabled(group_count >= awake_core::MAX_GROUPS_PER_RULE)
                                 .on_click(
                                     cx.listener(|this, _, window, cx| this.add_group(window, cx)),
@@ -694,7 +702,11 @@ impl AwakeApp {
                     ))
                     .child(
                         Button::new(SharedString::from(format!("group-remove-{index}")))
-                            .icon(IconName::Delete)
+                            .child(crate::components::action_icon(
+                                better_ui::icon_set::Picture::Delete,
+                                false,
+                                cx,
+                            ))
                             .disabled(group_count <= 1)
                             .on_click(cx.listener(move |this, _, cx_window, cx| {
                                 let _ = cx_window;
@@ -722,8 +734,12 @@ impl AwakeApp {
                             "add-condition-{index}-{}",
                             provider.as_key()
                         )))
-                        .icon(IconName::Plus)
-                        .label(provider_label(provider, c))
+                        .child(crate::components::action_icon(
+                            better_ui::icon_set::Picture::Add,
+                            false,
+                            cx,
+                        ))
+                        .child(provider_label(provider, c))
                         // A provider that cannot be read here is not offered as
                         // something to add. The list still shows it, so nobody
                         // is left wondering where the option went.

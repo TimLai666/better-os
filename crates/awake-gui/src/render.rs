@@ -66,7 +66,7 @@ impl Render for AwakeApp {
             // window draws its own or it cannot be closed, minimized,
             // maximized or moved.
             .child(better_ui::window_chrome::title_bar(
-                Icon::new(IconName::Sun).small(),
+                better_ui::icon_set::picture(better_ui::icon_set::Picture::KeepAwake, 16.0),
                 copy(self.locale).application_name,
                 cx.theme().foreground,
             ))

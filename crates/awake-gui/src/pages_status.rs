@@ -363,8 +363,12 @@ impl AwakeApp {
                                         "add-preset-{}",
                                         preset_key(length)
                                     )))
-                                    .icon(IconName::Plus)
-                                    .label(length.label(c))
+                                    .child(crate::components::action_icon(
+                                        better_ui::icon_set::Picture::Add,
+                                        false,
+                                        cx,
+                                    ))
+                                    .child(length.label(c))
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         this.add_preset(length, cx)
                                     }))
@@ -429,7 +433,11 @@ impl AwakeApp {
                     .child(
                         Button::new(SharedString::from(format!("preset-start-{index}")))
                             .primary()
-                            .icon(IconName::Play)
+                            .child(crate::components::action_icon(
+                                better_ui::icon_set::Picture::Play,
+                                true,
+                                cx,
+                            ))
                             .on_click(
                                 cx.listener(move |this, _, _, cx| this.start_preset(index, cx)),
                             ),
@@ -463,7 +471,11 @@ impl AwakeApp {
                     )
                     .child(
                         Button::new(SharedString::from(format!("preset-remove-{index}")))
-                            .icon(IconName::Delete)
+                            .child(crate::components::action_icon(
+                                better_ui::icon_set::Picture::Delete,
+                                false,
+                                cx,
+                            ))
                             // The menu must keep one length, or it offers a
                             // submenu that starts nothing.
                             .disabled(count <= 1)

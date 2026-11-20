@@ -4,7 +4,7 @@
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
-    ActiveTheme, Icon, IconName,
+    ActiveTheme, IconName,
     button::{Button, ButtonVariants},
     sidebar::{
         Sidebar, SidebarCollapsible, SidebarFooter, SidebarGroup, SidebarHeader, SidebarMenu,
@@ -101,7 +101,10 @@ impl AwakeApp {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .child(Icon::new(IconName::Sun)),
+                            .child(better_ui::icon_set::picture(
+                                better_ui::icon_set::Picture::KeepAwake,
+                                20.0,
+                            )),
                     )
                     .when(!compact, |header| {
                         header.child(
@@ -125,7 +128,10 @@ impl AwakeApp {
                         .min_w_0()
                         .items_center()
                         .gap_2()
-                        .child(Icon::new(IconName::Info).small())
+                        .child(better_ui::icon_set::picture(
+                            better_ui::icon_set::Picture::Keyboard,
+                            16.0,
+                        ))
                         .when(!compact, |row| {
                             row.child(
                                 div()
@@ -180,11 +186,18 @@ impl AwakeApp {
                     ),
             )
             .child(
+                // The kit's loading ring takes the icon's place while busy.
                 Button::new("refresh")
                     .primary()
-                    .icon(Icon::empty().path(better_ui::fluent::glyphs::REFRESH))
-                    .label(c.refresh)
-                    .loading(self.busy)
+                    .when(self.busy, |b| b.icon(IconName::Loader).loading(true))
+                    .when(!self.busy, |b| {
+                        b.child(crate::components::action_icon(
+                            better_ui::icon_set::Picture::Refresh,
+                            true,
+                            cx,
+                        ))
+                    })
+                    .child(c.refresh)
                     .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
             )
             .into_any_element()
