@@ -524,9 +524,10 @@ pub fn restore(
 /// the firmware, whose own setting comes back at the next start. Returns
 /// what could not be done; it never fails the removal.
 pub fn release(root: &SysRoot, helper: &dyn LampHelper, state: &Path) -> Vec<String> {
-    match load(state) {
-        Ok(None) => return Vec::new(),
-        Ok(Some(_)) | Err(_) => {}
+    // Nothing stored: Better OS never took the keyboard. A file that cannot
+    // be read is no proof of that, so the keyboard is given back then too.
+    if let Ok(None) = load(state) {
+        return Vec::new();
     }
     match find_keyboard(root, helper, &LampCache::default()) {
         Ok(Some((node, _))) => match helper.run(&node, LampCommand::GiveBack) {

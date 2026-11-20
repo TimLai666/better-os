@@ -299,10 +299,8 @@ pub fn parse_descriptor(bytes: &[u8]) -> Result<Vec<Field>, DescriptorError> {
                     } else {
                         collections.push((page, usage));
                     }
-                } else if tag == 0xC {
-                    if collections.pop().is_none() {
-                        return Err(DescriptorError::UnbalancedCollection { at });
-                    }
+                } else if tag == 0xC && collections.pop().is_none() {
+                    return Err(DescriptorError::UnbalancedCollection { at });
                 }
                 usages.clear();
                 usage_min = None;

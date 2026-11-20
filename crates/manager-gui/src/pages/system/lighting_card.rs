@@ -227,18 +227,25 @@ impl ManagerApp {
                 .icon(IconName::Palette)
                 .description(description)
                 .content(
-                    ComboBox::new("system-lighting-effect", items, selected)
-                        .min_width(px(SLIDER_WIDTH + 52.0))
-                        .on_select(Self::act_with(cx, move |this, index: usize, _, cx| {
-                            if let Some(effect) = effects.get(index).copied()
-                                && Some(effect) != this.lighting_effect()
-                            {
-                                this.system.lighting.open = effect.uses_colour()
-                                    || effect.uses_speed()
-                                    || this.system.lighting.open;
-                                this.set_lighting(LightingChoice { effect, ..base }, cx);
-                            }
-                        })),
+                    // A press on the list is the list's: it does not also
+                    // open or close the expander under it.
+                    div()
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .child(
+                            ComboBox::new("system-lighting-effect", items, selected)
+                                .min_width(px(SLIDER_WIDTH + 52.0))
+                                .placeholder(c.choose_effect)
+                                .on_select(Self::act_with(cx, move |this, index: usize, _, cx| {
+                                    if let Some(effect) = effects.get(index).copied()
+                                        && Some(effect) != this.lighting_effect()
+                                    {
+                                        this.system.lighting.open = effect.uses_colour()
+                                            || effect.uses_speed()
+                                            || this.system.lighting.open;
+                                        this.set_lighting(LightingChoice { effect, ..base }, cx);
+                                    }
+                                })),
+                        ),
                 )
                 .on_toggle(Self::act_with(cx, |this, open: bool, _, cx| {
                     this.system.lighting.open = open;
@@ -335,7 +342,7 @@ impl ManagerApp {
         }
         let note = super::decide::sentences(self.locale, &[words::note(live, c), c.at_startup]);
         expander.row(
-            SettingsRow::new(c.effect).content(div().max_w(px(420.0)).child(label(
+            SettingsRow::new(c.about_effects).content(div().max_w(px(420.0)).child(label(
                 note,
                 BODY,
                 p.text_secondary,
@@ -344,11 +351,11 @@ impl ManagerApp {
     }
 
     fn lighting_current(&self) -> Option<LightingChoice> {
-        let shown = self.system.lighting.shown;
-        shown.or_else(|| match &self.system.lighting.reply {
+        let stored = match &self.system.lighting.reply {
             Some(Ok(reply)) => reply.stored,
             _ => None,
-        })
+        };
+        self.system.lighting.shown.or(stored)
     }
 
     fn lighting_effect(&self) -> Option<Effect> {
