@@ -24,8 +24,28 @@
 //! unescaped. A name whose raw dashes do not fit either form is not guessed at:
 //! it yields nothing.
 //!
+//! Who escapes (read 2026-11-21): GNOME's `gnome-desktop`
+//! (`libgnome-desktop/gnome-systemd.c`, `systemd_unit_name_escape`, since
+//! `12367c1`, 2020-07-29, "Change naming scheme to conform to systemd
+//! convention") writes `app-gnome-<id>-<pid>.scope` escaped, and Budgie
+//! launches through the same library (`budgie-session`,
+//! `gnome-session/gsm-autostart-app.c`, `gnome_start_systemd_scope`);
+//! Flatpak escapes (`common/flatpak-run.c`, `app-flatpak-%s-%s.scope` of
+//! `systemd_unit_name_escape`). Cinnamon does not: its copy of the function
+//! (`linuxmint/cinnamon-desktop`, `libcinnamon-desktop/gnome-systemd.c`)
+//! keeps `-` among the valid characters of `g_strcanon` and writes
+//! `app-cinnamon-%s-%d.scope`, so a Cinnamon id with a dash reaches the name
+//! with raw dashes. For a scope whose launcher is `cinnamon`, everything
+//! between the launcher and the last part is the id. That cannot misread an
+//! escaped name: an escaping launcher's id has no raw dash, and a three-part
+//! Cinnamon name reads the same either way. Any other name with too many raw
+//! dashes still yields nothing, because nothing says where its id ends.
+//!
 //! This is the one reading of the scheme; Better Monitor's grouping and Better
 //! Awake's application trigger both call it.
+
+/// The one launcher known to write an id's dashes unescaped.
+const CINNAMON: &str = "cinnamon";
 
 /// What an application unit's name says.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -61,10 +81,16 @@ pub fn parse_application_unit(unit: &str) -> Option<ApplicationUnit> {
         }
     } else {
         let stem = unit.strip_suffix(".scope")?;
-        let parts: Vec<&str> = stem.strip_prefix("app-")?.split('-').collect();
+        let body = stem.strip_prefix("app-")?;
+        let parts: Vec<&str> = body.split('-').collect();
         match parts.as_slice() {
             [id, random] if !random.is_empty() => (None, *id),
             [launcher, id, random] if !random.is_empty() => (Some(*launcher), *id),
+            // Cinnamon writes its ids' dashes raw; see the module notes.
+            [CINNAMON, .., random] if parts.len() > 3 && !random.is_empty() => {
+                let id = &body[CINNAMON.len() + 1..body.len() - random.len() - 1];
+                (Some(CINNAMON), id)
+            }
             _ => return None,
         }
     };
@@ -220,6 +246,30 @@ mod tests {
         );
         // Bytes that are not UTF-8 are shown as systemd wrote them.
         assert_eq!(unescape_unit_name("a\\xffb"), "a\\xffb");
+    }
+
+    // Review finding 11: Cinnamon keeps an id's dashes raw.
+    #[test]
+    fn a_cinnamon_scope_keeps_the_raw_dashes_of_its_id() {
+        assert_eq!(
+            parse_application_unit("app-cinnamon-my-code-1234.scope"),
+            unit(Some("cinnamon"), "my-code")
+        );
+        assert_eq!(
+            parse_application_unit("app-cinnamon-org.example.Mail-alarm-notify-77.scope"),
+            unit(Some("cinnamon"), "org.example.Mail-alarm-notify")
+        );
+        assert_eq!(
+            parse_application_unit("app-cinnamon-org.example.Viewer-5.scope"),
+            unit(Some("cinnamon"), "org.example.Viewer")
+        );
+        // An escaping launcher's names read as before.
+        assert_eq!(
+            parse_application_unit("app-gnome-my\\x2dcode-1234.scope"),
+            unit(Some("gnome"), "my-code")
+        );
+        // A launcher nobody showed writes raw dashes is not guessed at.
+        assert_eq!(parse_application_unit("app-xfce-my-code-1234.scope"), None);
     }
 
     #[test]
