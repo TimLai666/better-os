@@ -1,6 +1,7 @@
 //! Which block devices are drives a person would call one (ticket 122), shared
 //! by Better Files' sidebar and Better Manager's Drives section (ticket 127).
-//! Nothing here reads the machine but `names_device`'s link resolution.
+//! Nothing here reads the machine but `names_device`'s link resolution and
+//! `running_system_name`, which asks `better_core::host`.
 
 use std::path::{Path, PathBuf};
 
@@ -63,6 +64,67 @@ pub struct Drive {
     /// For a removable drive: a USB stick, a memory card, or an external
     /// disk, which the sidebar draws differently. `None` for other kinds.
     pub form: Option<RemovableForm>,
+}
+
+/// What a drive is called, before a window puts it into its own words
+/// (ticket 138). Better Files and Better Manager both name drives through
+/// [`Drive::naming`], so a drive never has two names.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DriveName<'a> {
+    /// The running system's drive, by the running system's name ("Zorin
+    /// OS"), whatever its filesystem label says.
+    System(&'a str),
+    /// The running system's drive when its os-release names no system: the
+    /// window's fixed wording ("System drive"), never a guessed name.
+    UnnamedSystem,
+    /// Its filesystem label.
+    Label(&'a str),
+    /// No label: named by its size, in bytes.
+    Size(u64),
+}
+
+impl<'a> DriveName<'a> {
+    /// The name of the drive the running system is on, when the system
+    /// calls itself `system`: also what a path bar's root crumb says.
+    pub fn of_system(system: Option<&'a str>) -> Self {
+        match system {
+            Some(name) => DriveName::System(name),
+            None => DriveName::UnnamedSystem,
+        }
+    }
+}
+
+/// The running system's name, read once through `better_core::host`, the one
+/// place that reads os-release.
+pub fn running_system_name() -> Option<&'static str> {
+    static NAME: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    NAME.get_or_init(better_core::host::running_system_name)
+        .as_deref()
+}
+
+impl Drive {
+    /// What this drive is called on this machine.
+    pub fn naming(&self) -> DriveName<'_> {
+        self.naming_with(running_system_name())
+    }
+
+    /// What this drive is called when the running system calls itself
+    /// `system`. Only the drive the running system is on takes that name;
+    /// another Linux install on another partition keeps its label or its size
+    /// (its own os-release is not read).
+    pub fn naming_with<'a>(&'a self, system: Option<&'a str>) -> DriveName<'a> {
+        if self.kind == DriveKind::System {
+            return DriveName::of_system(system);
+        }
+        match &self.label {
+            Some(label) => DriveName::Label(label),
+            None => DriveName::Size(
+                self.capacity
+                    .map(|capacity| capacity.total)
+                    .unwrap_or(self.size),
+            ),
+        }
+    }
 }
 
 /// Buses a drive is plugged into and pulled out of. A USB hard disk often
@@ -505,4 +567,75 @@ pub fn fixture_drives(path: &Path) -> Vec<Drive> {
         })
         .collect();
     drives
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Capacity, Drive, DriveKind, DriveName};
+
+    fn drive(kind: DriveKind, label: Option<&str>) -> Drive {
+        Drive {
+            key: "key".into(),
+            label: label.map(str::to_string),
+            kind,
+            mount_point: None,
+            object_path: None,
+            device_path: None,
+            drive_object: None,
+            backing: None,
+            locked: false,
+            uuid: None,
+            size: 263_000_000_000,
+            ejectable: false,
+            capacity: None,
+            auto_mount: None,
+            form: None,
+        }
+    }
+
+    #[test]
+    fn the_running_systems_drive_is_named_after_it_with_or_without_a_label() {
+        let unlabelled = drive(DriveKind::System, None);
+        let labelled = drive(DriveKind::System, Some("rootfs"));
+        for system in [&unlabelled, &labelled] {
+            assert_eq!(
+                system.naming_with(Some("Zorin OS")),
+                DriveName::System("Zorin OS")
+            );
+        }
+    }
+
+    #[test]
+    fn a_system_with_no_name_gets_the_fixed_wording_and_not_its_label() {
+        assert_eq!(
+            drive(DriveKind::System, Some("rootfs")).naming_with(None),
+            DriveName::UnnamedSystem
+        );
+        assert_eq!(
+            drive(DriveKind::System, None).naming_with(None),
+            DriveName::UnnamedSystem
+        );
+    }
+
+    #[test]
+    fn another_linux_partition_keeps_its_label_or_its_size() {
+        assert_eq!(
+            drive(DriveKind::Internal, Some("Fedora")).naming_with(Some("Zorin OS")),
+            DriveName::Label("Fedora")
+        );
+        let mut unlabelled = drive(DriveKind::Internal, None);
+        assert_eq!(
+            unlabelled.naming_with(Some("Zorin OS")),
+            DriveName::Size(263_000_000_000)
+        );
+        // A mounted one is named by the size its filesystem reports.
+        unlabelled.capacity = Some(Capacity {
+            total: 250_000_000_000,
+            free: 1,
+        });
+        assert_eq!(
+            unlabelled.naming_with(Some("Zorin OS")),
+            DriveName::Size(250_000_000_000)
+        );
+    }
 }

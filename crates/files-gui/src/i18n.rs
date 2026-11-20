@@ -196,6 +196,8 @@ pub struct Copy {
     pub drive_free_of: &'static str,
     /// A drive with no label, named by its size.
     pub drive_of_size: &'static str,
+    /// The running system's drive when its os-release names no system.
+    pub drive_system_unnamed: &'static str,
     /// Under a drive that is not mounted, after its size.
     pub drive_not_mounted: &'static str,
     /// Under an encrypted drive that is still locked, after its size.
@@ -776,6 +778,7 @@ pub const EN_US: Copy = Copy {
     clear_finished: "Clear",
     drive_free_of: "{free} free of {total}",
     drive_of_size: "{size} drive",
+    drive_system_unnamed: "System drive",
     drive_not_mounted: "Not mounted",
     drive_locked: "Locked",
     mount_automatically: "Mount automatically",
@@ -1306,6 +1309,7 @@ pub const ZH_TW: Copy = Copy {
     clear_finished: "清除",
     drive_free_of: "可用 {free}，共 {total}",
     drive_of_size: "{size} 磁碟",
+    drive_system_unnamed: "系統磁碟",
     drive_not_mounted: "未掛載",
     drive_locked: "已鎖定",
     mount_automatically: "自動掛載",

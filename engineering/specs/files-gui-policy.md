@@ -73,6 +73,36 @@ Dragging a favourite between two other favourites to reorder is modelled
 (`BookmarkFile::move_to`) and reachable from the buttons and the keyboard. The
 pointer reorder gesture inside the sidebar is not wired yet.
 
+## The sidebar's order
+
+Owner, 2026-11-16 (ticket 132). Top to bottom: the places (Home, the
+person's folders, Recent, Trash), Favorites, Applications, Dropbox, each
+plugin's section, Devices (This PC and the drives), the tailnet's machines.
+The drives sit above the other computers. `sidebar::NAV_ORDER` is the one
+place the order is written; the pane draws its groups in that order, and the
+keyboard moves through them in the order they are drawn.
+
+## The system drive is named after the running system
+
+Owner, 2026-11-16 (ticket 138). The drive the running system lives on
+(`DriveKind::System`, the one mounted at `/`) is called what the running
+system calls itself: `NAME` in its os-release ("Zorin OS"), or `PRETTY_NAME`
+when there is no `NAME`, whatever its filesystem label says. The file is read
+only by `better_core::host` (`/etc/os-release`, and `/usr/lib/os-release`
+when that is missing, as os-release(5) orders them). When neither names a
+system, the drive is "System drive" / 「系統磁碟」, never a guessed
+distribution. Every other drive keeps its label, or is named by its size;
+another Linux install on another partition is not looked into.
+
+`drive_mounts::listing::Drive::naming` decides the name, so the sidebar, the
+This PC tiles, the path bar's root crumb (which opens `/`), search's "in …"
+at `/`, the drive's dialogs and notices, and Better Manager's Drives section
+all say the same thing. A storage-service device that the drive listing also
+has (`drives::is_device`: the same block or the same mount point, such as the
+running system on an external SSD) is drawn as that drive, and its toasts and
+confirmations use the drive's name too. No Properties view for a drive exists
+yet; one built later takes its name from `Drive::naming`.
+
 ## Devices without the storage service
 
 Ticket 35 connected the Devices section to the storage layer, and

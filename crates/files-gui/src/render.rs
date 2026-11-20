@@ -393,9 +393,11 @@ impl FilesApp {
                 sidebar_menu(kind, c)
             }
             (MenuTarget::Sidebar(_), Some(NavTarget::Device(device))) => {
-                let drive = self.session.drives().iter().find(|drive| {
-                    drive.object_path.as_deref() == Some(device.object_path.as_str())
-                });
+                let drive = self
+                    .session
+                    .drives()
+                    .iter()
+                    .find(|drive| crate::drives::is_device(drive, device));
                 sidebar_menu(
                     SidebarKind::Device {
                         mounted: device.mount_point.is_some(),
@@ -708,9 +710,7 @@ impl FilesApp {
                         .session
                         .drives()
                         .iter()
-                        .find(|drive| {
-                            drive.object_path.as_deref() == Some(device.object_path.as_str())
-                        })
+                        .find(|drive| crate::drives::is_device(drive, device))
                         .map(|drive| drive.key.clone()),
                     _ => None,
                 };
