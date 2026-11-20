@@ -8193,6 +8193,7 @@ version = "0.2.16"
 dependencies = [
  "better-actions",
  "launcher-platform",
+ "libc",
  "tempfile",
  "tokio",
  "touchpad-core",

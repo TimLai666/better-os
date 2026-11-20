@@ -22,6 +22,14 @@
  * and copied unchanged. Nothing else about a device is read, nothing is
  * computed from the node, and nothing about any device is kept.
  *
+ * Turning GNOME's own swipe trackers off follows the rule ADR 0018 set for the
+ * shared adapter: it holds only while the Rust counterpart, the gesture
+ * service, owns org.betteros.TouchpadGestures1. Only that name's current owner
+ * may ask for it, and the moment the name loses its owner (the service
+ * stopped, crashed, or the session is ending) GNOME's trackers are put back.
+ * Nothing here judges whether to suppress; the watch only makes sure a request
+ * never outlives the process that made it (ticket 131).
+ *
  * If this file grows a decision, the exception has been abused. The right
  * answer is to move the decision back into Rust, not to widen the exception.
  *
@@ -45,6 +53,9 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 const BUS_NAME = 'org.betteros.TouchpadAdapter1';
 const OBJECT_PATH = '/org/betteros/TouchpadAdapter1';
 const INTERFACE_FILE = 'org.betteros.TouchpadAdapter1.xml';
+/** The gesture service: the one caller whose request to suppress is kept. */
+const COUNTERPART = 'org.betteros.TouchpadGestures1';
+const ACCESS_DENIED = 'org.freedesktop.DBus.Error.AccessDenied';
 
 /** The wire values for a gesture phase. The Rust side has the same four. */
 const PHASE_BEGIN = 0;
@@ -83,6 +94,7 @@ export default class TouchpadAdapterExtension extends Extension {
     enable() {
         this._suppressed = false;
         this._trackerState = [];
+        this._counterpart = null;
 
         const xml = this._interfaceXml();
         this._exported = Gio.DBusExportedObject.wrapJSObject(xml, this);
@@ -94,12 +106,30 @@ export default class TouchpadAdapterExtension extends Extension {
             null,
             null,
             null);
+        this._watchId = Gio.bus_watch_name(
+            Gio.BusType.SESSION,
+            COUNTERPART,
+            Gio.BusNameWatcherFlags.NONE,
+            (_connection, _name, owner) => {
+                this._counterpart = owner;
+            },
+            () => {
+                // The gesture service is gone, whatever the reason: GNOME
+                // gets its own gestures back at once.
+                this._counterpart = null;
+                this._restoreBuiltInGestures();
+            });
 
         this._capturedId = global.stage.connect(
             'captured-event', (_actor, event) => this._onEvent(event));
     }
 
     disable() {
+        if (this._watchId) {
+            Gio.bus_unwatch_name(this._watchId);
+            this._watchId = null;
+        }
+        this._counterpart = null;
         if (this._capturedId) {
             global.stage.disconnect(this._capturedId);
             this._capturedId = null;
@@ -156,7 +186,7 @@ export default class TouchpadAdapterExtension extends Extension {
         const phase = wirePhase(event.get_gesture_phase());
         if (phase === null)
             return;
-        this._exported.emit_signal('PinchGesture', new GLib.Variant('(uuddt)', [
+        this._exported.emit_signal('PinchGesture', new GLib.Variant('(uuddts)', [
             phase,
             event.get_touchpad_gesture_finger_count(),
             event.get_gesture_pinch_scale(),
@@ -196,16 +226,27 @@ export default class TouchpadAdapterExtension extends Extension {
     }
 
     /**
-     * Turns GNOME's own three- and four-finger swipe trackers off, or puts them
-     * back exactly as they were. The trackers are objects the shell owns; this
+     * Turns GNOME's own three-finger swipe trackers off, or puts them back
+     * exactly as they were. The trackers are objects the shell owns; this
      * flips the `enabled` property each one already has rather than reaching
      * into how they work.
+     *
+     * Turning them off is taken only from the gesture service's current owner,
+     * so the request ends with that process. Putting them back is taken from
+     * anyone, because it only ever returns GNOME to its own behaviour.
      */
-    SuppressBuiltInGestures(suppress) {
-        if (suppress)
+    SuppressBuiltInGesturesAsync([suppress], invocation) {
+        if (suppress) {
+            if (this._counterpart === null || invocation.get_sender() !== this._counterpart) {
+                invocation.return_dbus_error(
+                    ACCESS_DENIED, `only ${COUNTERPART} may turn GNOME's gestures off`);
+                return;
+            }
             this._suppressBuiltInGestures();
-        else
+        } else {
             this._restoreBuiltInGestures();
+        }
+        invocation.return_value(null);
     }
 
     _swipeTrackers() {

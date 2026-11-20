@@ -5,15 +5,18 @@ PartOf=graphical-session.target
 After=graphical-session.target
 
 [Service]
-# Type=simple. The service owns no bus name: it is a client of the GNOME Shell
-# adapter extension's name and of Better Launcher's, so there is nothing for
+# Type=simple. The service owns org.betteros.TouchpadGestures1 while it runs
+# (the adapter extension gives GNOME its gestures back when that name loses its
+# owner), but nothing activates it by that name, so there is nothing for
 # systemd to wait on at exec time.
 Type=simple
 ExecStart=/usr/bin/better-touchpad-gestured
-# on-failure, not always. The service exits successfully and on purpose in
-# three cases — safe mode is on, no gesture is configured, and the adapter
-# extension is not enabled — and restarting it for those would be a loop that
-# hides the reason instead of showing it in the journal.
+# on-failure, not always. The service exits successfully and on purpose in two
+# cases only, safe mode is on and no gesture is configured, and restarting it
+# for those would be a loop that hides the reason instead of showing it in the
+# journal. A missing adapter extension is not one of them: the service waits
+# for it (ticket 131). Stopped by SIGTERM it gives GNOME's gestures back and
+# ends by that signal, which systemd records as a stop.
 Restart=on-failure
 
 # Hardening for an unprivileged user unit, chosen the same way

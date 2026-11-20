@@ -41,6 +41,15 @@ pub const BUS_NAME: &str = "org.betteros.TouchpadAdapter1";
 pub const OBJECT_PATH: &str = "/org/betteros/TouchpadAdapter1";
 pub const INTERFACE_NAME: &str = "org.betteros.TouchpadAdapter1";
 
+/// The name the gesture service owns for as long as it runs (ticket 131).
+///
+/// The extension keeps GNOME's own swipe trackers off only while this name has
+/// an owner, and takes a request to turn them off only from that owner. So a
+/// service that stops, crashes, or is killed with its session can never leave
+/// the desktop without its gestures. Better Touchpad's page asks whether it
+/// has an owner to tell "the service is listening" from "it is not running".
+pub const SERVICE_BUS_NAME: &str = "org.betteros.TouchpadGestures1";
+
 /// Every method the extension serves, and every signal it emits. The names are
 /// here once so that the client, the tests, and the interface XML can be
 /// checked against each other rather than against memory.
@@ -254,6 +263,26 @@ impl ShellGestureEvent {
 pub trait ShellEvents: Send {
     /// The next event, or `None` when the stream has ended.
     fn recv(&mut self) -> Option<ShellGestureEvent>;
+}
+
+/// Everything the gesture service waits for, on one stream (ticket 131).
+///
+/// The adapter comes and goes with GNOME Shell: it is not on the bus yet when
+/// a login starts the service, and it leaves and comes back when the shell
+/// restarts or the extension is turned off and on. The service waits on this
+/// stream rather than exiting when the adapter is missing, which is what left
+/// it dead for a whole session on five of seven logins.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SessionEvent {
+    /// The adapter extension now owns its bus name.
+    AdapterAppeared,
+    /// The adapter's bus name lost its owner.
+    AdapterVanished,
+    Gesture(ShellGestureEvent),
+    /// The service was asked to stop (SIGTERM, SIGINT).
+    Stop,
+    /// The session bus connection is gone.
+    Closed,
 }
 
 /// A recorded stream, replayed in order and then ended.

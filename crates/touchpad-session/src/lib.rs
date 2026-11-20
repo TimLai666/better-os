@@ -47,15 +47,15 @@ pub use adapter::{
     SessionAdapter, SuppressionOutcome, VerificationResult,
 };
 pub use gnome::{
-    FakeShellBridge, GnomeShellAdapter, InputDeviceNode, RecordedShellEvents, ShellBridge,
-    ShellCapabilities, ShellError, ShellEvents, ShellGestureEvent, ShellRequest,
+    FakeShellBridge, GnomeShellAdapter, InputDeviceNode, RecordedShellEvents, SessionEvent,
+    ShellBridge, ShellCapabilities, ShellError, ShellEvents, ShellGestureEvent, ShellRequest,
     WorkspaceDirection,
 };
 pub use mock::{Invocation, MockSessionAdapter};
 pub use routing::RoutingAdapter;
 
 #[cfg(feature = "gnome-shell")]
-pub use bus::{SessionBusShell, SessionBusShellEvents};
+pub use bus::{ServiceBus, ServiceBusError, SessionBusShell, SessionBusShellEvents};
 
 #[cfg(feature = "launcher-activation")]
 pub use launcher::{LauncherActivationAdapter, launcher_sample};

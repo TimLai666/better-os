@@ -35,6 +35,25 @@
 //!   through the suppression state machine, so the desktop cannot be left
 //!   without its own gestures by a Better OS process that stopped.
 //!
+//! And ticket 131 added the fourth: **never suppress while not working.**
+//! GNOME's own swipe gestures are taken away only for a gesture that really
+//! collides with one of them under the current model, that is switched on,
+//! that verified against the adapter, and only once a gesture has actually
+//! arrived from the adapter, which is the evidence that the event path works.
+//! A pipeline that has seen nothing takes nothing. When the adapter leaves the
+//! bus or the service stops, GNOME has its gestures back: the extension
+//! restores them itself the moment the service's bus name loses its owner,
+//! and [`serve`] restores them on every way out it controls.
+//!
+//! ## Waiting for the adapter
+//!
+//! A login starts this service a moment before GNOME Shell enables its
+//! extensions, so the adapter is very often not on the bus yet. [`serve`]
+//! waits for it, starts when it appears, and when it goes away (a shell
+//! restart, the extension turned off) gives GNOME its gestures back and waits
+//! again. It ends only when it is asked to, when the session bus goes, or when
+//! the integration turned itself off.
+//!
 //! ## Which pad
 //!
 //! Gesture profiles are per device, and since ADR 0015 each event names the
@@ -52,13 +71,14 @@ use std::path::PathBuf;
 
 use touchpad_core::TouchpadStore;
 use touchpad_gestures::{
-    AdapterFailures, CompositorGesture, CompositorPhase, EventRecognizer, GestureConfig,
-    GestureEvent, GestureEventKind, GestureProfiles, GestureStore, RunState, SuppressionEvent,
-    SuppressionState, plan::bind_all,
+    AdapterFailures, CompositorGesture, CompositorGestureKind, CompositorPhase, EventRecognizer,
+    GNOME_46_GESTURES, GestureConfig, GestureEvent, GestureEventKind, GestureProfiles,
+    GestureStore, RunState, SuppressionEvent, SuppressionState, VerificationRecord,
+    conflict::annotate, detect_conflicts, plan::bind_all,
 };
 use touchpad_session::{
-    InputDeviceNode, InvocationOutcome, SessionAdapter, ShellEvents, ShellGestureEvent,
-    SuppressionOutcome,
+    GnomeShellAdapter, InputDeviceNode, InvocationOutcome, ServiceBus, SessionAdapter,
+    SessionEvent, ShellEvents, ShellGestureEvent, SuppressionOutcome,
 };
 
 /// Turns the device node a gesture arrived with into the stable identity a
@@ -229,6 +249,15 @@ pub struct GesturePipeline {
     failures: AdapterFailures,
     performed: Vec<Performed>,
     problem: Option<String>,
+    /// Whether a gesture has arrived from the adapter this pipeline performs
+    /// through: the evidence that the event path works, without which GNOME's
+    /// own gestures are never taken (ticket 131).
+    events_seen: bool,
+    /// Whether the "GNOME keeps its gestures until one arrives" line was
+    /// written, so it is written once.
+    told_waiting_for_evidence: bool,
+    /// Journal lines not yet handed out, in order.
+    journal: Vec<String>,
 }
 
 impl GesturePipeline {
@@ -269,6 +298,9 @@ impl GesturePipeline {
             failures: AdapterFailures::default(),
             performed: Vec::new(),
             problem: None,
+            events_seen: false,
+            told_waiting_for_evidence: false,
+            journal: Vec::new(),
         };
         pipeline.build_recognizers();
         pipeline
@@ -335,43 +367,132 @@ impl GesturePipeline {
             let Some(profile) = self.profile_mut(&key).cloned() else {
                 continue;
             };
-            let (verified, report) = bind_all(&profile, self.adapter.as_mut());
+            let (mut verified, report) = bind_all(&profile, self.adapter.as_mut());
+            // What collides is worked out again against the model as it
+            // stands, so a file annotated by a build with a wrong model (all
+            // of 0.2.16's, which said GNOME took four fingers) is corrected
+            // here and on the window's next read (ticket 131).
+            let conflicts = detect_conflicts(&verified, GNOME_46_GESTURES);
+            annotate(&mut verified, &conflicts);
             if let Some(slot) = self.profile_mut(&key) {
                 *slot = verified;
             }
             worst = worst.max(report.state());
         }
         self.save();
+        self.note(format!("gestures verified: {worst:?}"));
         worst
     }
 
-    /// Asks the desktop to give up the gestures the confirmed configuration
-    /// took from it.
+    /// The gestures that take one of GNOME's own away, by id: switched on in a
+    /// profile that is on, colliding with GNOME 46's trackers as the model now
+    /// stands, and verified to perform through the adapter.
     ///
-    /// The decision was made and confirmed in the window, and it is recorded in
-    /// the stored configuration: a gesture that is enabled and conflicts with a
-    /// built-in one is one the user chose to keep. Re-deciding it here would be
-    /// a second opinion about something the user already answered.
+    /// Taking a gesture is the person's decision and is recorded in the stored
+    /// configuration: a colliding gesture they kept switched on is one they
+    /// chose over GNOME's (resolving it the other way switches ours off). The
+    /// collision itself is not read from the file, because a file written by a
+    /// build with a wrong model would take GNOME's gestures for nothing; and a
+    /// gesture that cannot be performed takes nothing, because suppressing
+    /// GNOME's for it would leave the person with neither.
+    pub fn colliding_gestures(&self) -> Vec<String> {
+        let mut colliding = Vec::new();
+        for (_, profile) in self.each_profile() {
+            if !profile.enabled {
+                continue;
+            }
+            for conflict in detect_conflicts(profile, GNOME_46_GESTURES) {
+                let Some(gesture) = profile.get(&conflict.gesture) else {
+                    continue;
+                };
+                let verified = matches!(
+                    gesture.last_verification,
+                    VerificationRecord::Verified { .. }
+                );
+                let id = gesture.id.to_string();
+                if gesture.enabled && verified && !colliding.contains(&id) {
+                    colliding.push(id);
+                }
+            }
+        }
+        colliding
+    }
+
+    /// Whether a gesture has arrived from the adapter yet.
+    pub fn has_seen_events(&self) -> bool {
+        self.events_seen
+    }
+
+    /// Takes GNOME's own gestures away when, and only when, the pipeline has
+    /// shown it works and a gesture really needs them (ticket 131); gives them
+    /// back otherwise.
     ///
     /// GNOME 46 has one set of swipe trackers for every pad, so a gesture any
     /// pad's profile takes from the desktop is taken on every pad.
     pub fn suppress_built_in_gestures(&mut self) -> SuppressionOutcome {
-        let wanted = self.each_profile().any(|(_, profile)| {
-            profile.enabled
-                && profile
-                    .gestures
-                    .iter()
-                    .any(|gesture| gesture.enabled && gesture.conflict.conflicts())
-        });
-        self.suppression.transition(
+        let colliding = self.colliding_gestures();
+        if !colliding.is_empty() && !self.events_seen && !self.told_waiting_for_evidence {
+            self.told_waiting_for_evidence = true;
+            self.note(format!(
+                "GNOME keeps its own gestures until a gesture arrives from the adapter; \
+                 then {} take them",
+                colliding.join(", ")
+            ));
+        }
+        let wanted = !colliding.is_empty() && self.events_seen;
+        let before = self.suppression.is_suppressed();
+        let outcome = self.suppression.transition(
             SuppressionEvent::PlanApplied { wanted },
             self.adapter.as_mut(),
-        )
+        );
+        let after = self.suppression.is_suppressed();
+        match &outcome {
+            SuppressionOutcome::Suppressed if !before => self.note(format!(
+                "built-in gestures suppressed: gestures arrive from the adapter, and {} \
+                 collide with GNOME's three-finger swipes",
+                colliding.join(", ")
+            )),
+            SuppressionOutcome::Restored if before && !after => self.note(
+                "built-in gestures restored: no gesture that works collides with GNOME's"
+                    .to_string(),
+            ),
+            SuppressionOutcome::Failed { reason, detail } => self.note(format!(
+                "built-in gestures could not be {}: {reason}: {detail}",
+                if wanted { "suppressed" } else { "restored" }
+            )),
+            SuppressionOutcome::Unsupported { reason, .. } if wanted => {
+                self.note(format!("built-in gestures cannot be suppressed: {reason}"))
+            }
+            _ => {}
+        }
+        outcome
     }
 
     /// Gives the desktop its own gestures back.
     pub fn restore_built_in_gestures(&mut self, event: SuppressionEvent) -> SuppressionOutcome {
-        self.suppression.transition(event, self.adapter.as_mut())
+        let before = self.suppression.is_suppressed();
+        let outcome = self.suppression.transition(event, self.adapter.as_mut());
+        match &outcome {
+            SuppressionOutcome::Restored if before => self.note(format!(
+                "built-in gestures restored ({}): GNOME has its own gestures back",
+                event.key()
+            )),
+            SuppressionOutcome::Failed { reason, detail } => self.note(format!(
+                "built-in gestures could not be restored ({}): {reason}: {detail}",
+                event.key()
+            )),
+            _ => {}
+        }
+        outcome
+    }
+
+    /// The journal lines written since the last call, in order.
+    pub fn take_journal(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.journal)
+    }
+
+    fn note(&mut self, line: String) {
+        self.journal.push(line);
     }
 
     /// Applies one event from the extension.
@@ -386,6 +507,13 @@ impl GesturePipeline {
         let Some(compositor) = CompositorGesture::from_shell(event) else {
             return Vec::new();
         };
+        if !self.events_seen {
+            // The event path works: the extension saw a gesture and it reached
+            // this process. That is what taking GNOME's gestures waits for.
+            self.events_seen = true;
+            self.note("the first gesture arrived from the adapter".to_string());
+            self.suppress_built_in_gestures();
+        }
         let device = event.device();
         // The profile is chosen when a gesture begins, and only then.
         let beginning =
@@ -423,6 +551,24 @@ impl GesturePipeline {
                 _ => self.live.as_ref().map(|live| live.profile.clone()),
             },
         };
+        let ended = match compositor.phase {
+            CompositorPhase::Begin => Some("began"),
+            CompositorPhase::End => Some("ended"),
+            CompositorPhase::Cancel => Some("was cancelled"),
+            CompositorPhase::Update => None,
+        };
+        if let (Some(what), Some(key)) = (ended, profile.as_ref()) {
+            self.note(format!(
+                "gesture {what}: {} with {} fingers on {}, {}",
+                match compositor.kind {
+                    CompositorGestureKind::Swipe => "swipe",
+                    CompositorGestureKind::Pinch => "pinch",
+                },
+                compositor.fingers,
+                device.map_or_else(|| "an unknown device".to_string(), InputDeviceNode::wire),
+                profile_words(key),
+            ));
+        }
         if let Some(profile) = profile
             && let Some(recognizer) = self.recognizers.get_mut(&profile)
         {
@@ -492,9 +638,22 @@ impl GesturePipeline {
                 InvocationOutcome::Unsupported { .. } => RunState::PartiallySupported,
                 InvocationOutcome::Failed { .. } => RunState::Failed,
             };
+            self.note(format!(
+                "performed {} for {} ({}): {}",
+                action.key(),
+                event.gesture,
+                profile_words(profile),
+                outcome_words(&outcome),
+            ));
             if self.failures.record(state) {
                 self.auto_disable();
             }
+        } else if let InvocationOutcome::Failed { reason, detail } = &outcome {
+            self.note(format!(
+                "{} for {} failed during the gesture: {reason}: {detail}",
+                action.key(),
+                event.gesture
+            ));
         }
 
         Some(Performed {
@@ -531,8 +690,11 @@ impl GesturePipeline {
         if let Err(error) = self.store.record_turned_off(self.failures.consecutive()) {
             self.problem = Some(error.to_string());
         }
-        self.suppression
-            .transition(SuppressionEvent::Disabled, self.adapter.as_mut());
+        self.note(format!(
+            "gestures turned off: {} gestures in a row failed through the adapter",
+            self.failures.consecutive()
+        ));
+        self.restore_built_in_gestures(SuppressionEvent::Disabled);
     }
 
     /// Writes the profiles this pipeline holds back into the stored document.
@@ -564,6 +726,196 @@ impl GesturePipeline {
         }
         StopReason::StreamEnded
     }
+}
+
+/// A profile as a journal line names it.
+fn profile_words(profile: &ProfileKey) -> String {
+    match profile {
+        None => "the global profile".to_string(),
+        Some(identity) => format!("the profile for {identity}"),
+    }
+}
+
+/// An invocation's outcome as a journal line names it.
+fn outcome_words(outcome: &InvocationOutcome) -> String {
+    match outcome {
+        InvocationOutcome::Invoked => "done".to_string(),
+        InvocationOutcome::Ignored { reason } => format!("ignored ({reason})"),
+        InvocationOutcome::Unsupported { reason, .. } => format!("unsupported ({reason})"),
+        InvocationOutcome::Failed { reason, detail } => format!("failed ({reason}: {detail})"),
+    }
+}
+
+/// What the service waits on: the adapter's comings and goings, its
+/// gestures, and a stop. [`ServiceBus`] is the session-bus one; a test drives
+/// [`serve`] with a scripted one.
+pub trait ServiceSession {
+    /// Whether the adapter extension is on the bus now.
+    fn adapter_present(&mut self) -> bool;
+    /// The adapter's route, once it is there.
+    fn connect_adapter(&mut self) -> Result<Box<dyn SessionAdapter>, String>;
+    /// Blocks until something happens.
+    fn next_event(&mut self) -> SessionEvent;
+}
+
+impl ServiceSession for ServiceBus {
+    fn adapter_present(&mut self) -> bool {
+        ServiceBus::adapter_present(self)
+    }
+
+    fn connect_adapter(&mut self) -> Result<Box<dyn SessionAdapter>, String> {
+        GnomeShellAdapter::connect(Box::new(self.shell()))
+            .map(|adapter| Box::new(adapter) as Box<dyn SessionAdapter>)
+            .map_err(|error| error.to_string())
+    }
+
+    fn next_event(&mut self) -> SessionEvent {
+        ServiceBus::next_event(self)
+    }
+}
+
+/// Why [`serve`] returned, and whether GNOME has its own gestures.
+///
+/// `restored` is true when nothing of GNOME's is held any more: given back, or
+/// never taken. The extension also gives them back by itself once the
+/// service's bus name has no owner, so a `false` here is a restore that will
+/// still happen, said in the journal.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ServiceExit {
+    /// SIGTERM or SIGINT.
+    Stopped { restored: bool },
+    /// The integration turned itself off after a failing adapter. Nothing is
+    /// configured to listen for now, which is the one reason the service ends
+    /// on purpose.
+    TurnedOff { restored: bool },
+    /// The session bus is gone.
+    Closed { restored: bool },
+    /// The adapter appeared and did not answer, or the configuration could
+    /// not be read when it did.
+    Failed(String),
+}
+
+/// Runs the service until it is asked to stop (ticket 131).
+///
+/// It waits for the adapter rather than exiting without it, starts a pipeline
+/// built by `pipeline_for` each time the adapter appears (so a configuration
+/// changed meanwhile is read again), and drops that pipeline when the adapter
+/// goes. Every journal line goes to `log`.
+pub fn serve(
+    session: &mut dyn ServiceSession,
+    pipeline_for: &mut dyn FnMut(Box<dyn SessionAdapter>) -> Result<GesturePipeline, String>,
+    log: &mut dyn FnMut(String),
+) -> ServiceExit {
+    let mut pipeline: Option<GesturePipeline> = None;
+    let mut waiting_since = None;
+
+    if session.adapter_present() {
+        match attach(session, pipeline_for, log, None) {
+            Ok(started) => pipeline = Some(started),
+            Err(error) => return ServiceExit::Failed(error),
+        }
+    } else {
+        log(format!(
+            "waiting for the GNOME Shell adapter extension ({}) to appear on the session bus",
+            touchpad_session::gnome::BUS_NAME
+        ));
+        waiting_since = Some(std::time::Instant::now());
+    }
+
+    loop {
+        match session.next_event() {
+            SessionEvent::AdapterAppeared => {
+                if pipeline.take().is_some() {
+                    log("the adapter was replaced; starting again with the new one".to_string());
+                }
+                match attach(session, pipeline_for, log, waiting_since.take()) {
+                    Ok(started) => pipeline = Some(started),
+                    Err(error) => return ServiceExit::Failed(error),
+                }
+            }
+            SessionEvent::AdapterVanished => {
+                // The extension restores GNOME's trackers itself when it is
+                // disabled, and a shell that went away took them with it, so
+                // there is nobody to call. What this process held goes with
+                // the pipeline.
+                if pipeline.take().is_some() {
+                    log(
+                        "the GNOME Shell adapter left the session bus; GNOME keeps its own \
+                         gestures, and no gesture is recognized until it is back"
+                            .to_string(),
+                    );
+                }
+                if waiting_since.is_none() {
+                    log("waiting for the GNOME Shell adapter extension to come back".to_string());
+                    waiting_since = Some(std::time::Instant::now());
+                }
+            }
+            SessionEvent::Gesture(event) => {
+                let Some(running) = pipeline.as_mut() else {
+                    continue;
+                };
+                running.observe(&event);
+                for line in running.take_journal() {
+                    log(line);
+                }
+                if !running.is_enabled() {
+                    let restored = !running.suppression().is_suppressed();
+                    if let Some(problem) = running.problem() {
+                        log(problem.to_string());
+                    }
+                    return ServiceExit::TurnedOff { restored };
+                }
+            }
+            SessionEvent::Stop => {
+                return ServiceExit::Stopped {
+                    restored: give_back(pipeline.as_mut(), log),
+                };
+            }
+            SessionEvent::Closed => {
+                return ServiceExit::Closed {
+                    restored: give_back(pipeline.as_mut(), log),
+                };
+            }
+        }
+    }
+}
+
+/// Starts a pipeline on an adapter that just appeared.
+fn attach(
+    session: &mut dyn ServiceSession,
+    pipeline_for: &mut dyn FnMut(Box<dyn SessionAdapter>) -> Result<GesturePipeline, String>,
+    log: &mut dyn FnMut(String),
+    waiting_since: Option<std::time::Instant>,
+) -> Result<GesturePipeline, String> {
+    match waiting_since {
+        Some(since) => log(format!(
+            "the GNOME Shell adapter appeared after {:.1} s of waiting",
+            since.elapsed().as_secs_f32()
+        )),
+        None => log("the GNOME Shell adapter is on the session bus".to_string()),
+    }
+    let adapter = session
+        .connect_adapter()
+        .map_err(|error| format!("the GNOME Shell adapter did not answer: {error}"))?;
+    let mut pipeline = pipeline_for(adapter)?;
+    pipeline.verify();
+    pipeline.suppress_built_in_gestures();
+    for line in pipeline.take_journal() {
+        log(line);
+    }
+    Ok(pipeline)
+}
+
+/// Gives GNOME its gestures back on the way out, and says whether they are.
+fn give_back(pipeline: Option<&mut GesturePipeline>, log: &mut dyn FnMut(String)) -> bool {
+    let Some(pipeline) = pipeline else {
+        return true;
+    };
+    let outcome = pipeline.restore_built_in_gestures(SuppressionEvent::Restored);
+    for line in pipeline.take_journal() {
+        log(line);
+    }
+    matches!(outcome, SuppressionOutcome::Restored)
 }
 
 /// Whether safe mode is on for this store directory.

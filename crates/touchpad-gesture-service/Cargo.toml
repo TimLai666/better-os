@@ -15,6 +15,9 @@ path = "src/lib.rs"
 
 [dependencies]
 better-actions.workspace = true
+# sigwait for SIGTERM and SIGINT, so GNOME's gestures are given back before
+# the service goes (ticket 131).
+libc.workspace = true
 touchpad-core.workspace = true
 touchpad-gestures.workspace = true
 # Only for the clone's phys prefix (ADR 0030): a gesture on the scroll
