@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="zh-Hant-TW" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Better Manager 日期和時間（深色）</title>
+<style>
+:root{--font:system-ui,"Inter","Segoe UI","Noto Sans CJK TC","Noto Sans TC",sans-serif}
+html[data-theme=light]{--bg:#f3f3f3;--card:rgba(255,255,255,.7);--card-solid:#fbfbfb;--ctl:rgba(255,255,255,.7);--ctl-hover:rgba(249,249,249,.5);--text:rgba(0,0,0,.894);--text2:rgba(0,0,0,.62);--text3:rgba(0,0,0,.36);--accent:#005fb8;--on-accent:#fff;--subtle:rgba(0,0,0,.037);--stroke:rgba(0,0,0,.06);--cstroke:rgba(0,0,0,.0578);--strong:rgba(0,0,0,.45);--crit:#c42b1c;--ok:#0f7b0f;--warn:#9d5d00;--critbg:#fde7e9;--okbg:#dff6dd;--warnbg:#fff4ce;--infobg:rgba(246,246,246,.5);--flyout:#f9f9f9;--knob:#fff;--track:rgba(0,0,0,.45);--elev:rgba(0,0,0,.16)}
+html[data-theme=dark]{--bg:#202020;--card:rgba(255,255,255,.05);--card-solid:#2b2b2b;--ctl:rgba(255,255,255,.06);--ctl-hover:rgba(255,255,255,.08);--text:#fff;--text2:rgba(255,255,255,.77);--text3:rgba(255,255,255,.36);--accent:#60cdff;--on-accent:#000;--subtle:rgba(255,255,255,.06);--stroke:rgba(255,255,255,.07);--cstroke:rgba(0,0,0,.1);--strong:rgba(255,255,255,.55);--crit:#ff99a4;--ok:#6ccb5f;--warn:#fce100;--critbg:#442726;--okbg:#393d1b;--warnbg:#433519;--infobg:rgba(255,255,255,.03);--flyout:#2c2c2c;--knob:#000;--track:rgba(255,255,255,.55);--elev:rgba(0,0,0,.4)}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:400 14px/20px var(--font);-webkit-font-smoothing:antialiased}
+.win{min-height:100vh;display:flex;flex-direction:column}
+.tb{height:32px;display:flex;align-items:center;gap:8px;padding:0 0 0 8px;flex:none}
+.tb .back{width:40px;height:32px;display:grid;place-items:center;border-radius:4px;color:var(--text)}
+.tb .back:hover{background:var(--subtle)}
+.tb .appname{font-size:12px;line-height:16px;color:var(--text)}
+.tb .caps{margin-left:auto;display:flex}
+.tb .caps span{width:46px;height:32px;display:grid;place-items:center;color:var(--text2)}
+.body{flex:1;display:flex;min-height:0}
+nav{width:320px;flex:none;padding:4px 4px 8px;display:flex;flex-direction:column;gap:4px}
+.search{margin:4px 12px 12px;height:32px;border-radius:4px;background:var(--ctl);border:1px solid var(--stroke);border-bottom-color:var(--strong);display:flex;align-items:center;padding:0 10px;gap:8px;color:var(--text2)}
+.search span{flex:1}
+.nav-item{position:relative;height:36px;display:flex;align-items:center;gap:16px;padding:0 12px 0 16px;border-radius:4px;margin:0 4px;color:var(--text)}
+.nav-item:hover{background:var(--subtle)}
+.nav-item.sel{background:var(--subtle)}
+.nav-item.sel::before{content:"";position:absolute;left:0;top:10px;width:3px;height:16px;border-radius:2px;background:var(--accent)}
+.nav-item .badge{margin-left:auto;min-width:16px;height:16px;padding:0 4px;border-radius:8px;background:var(--accent);color:var(--on-accent);font-size:11px;line-height:16px;text-align:center;font-weight:600}
+.nav-item .dot{margin-left:auto;width:6px;height:6px;border-radius:3px;background:var(--accent)}
+.nav-spacer{flex:1}
+main{flex:1;min-width:0;overflow:auto;padding:0 24px 40px 32px}
+.content{max-width:1000px}
+h1{font:600 28px/36px var(--font);margin:10px 0 24px}
+.crumb{font:600 28px/36px var(--font);margin:10px 0 24px;display:flex;align-items:center;gap:12px}
+.crumb .prev{color:var(--text2)}
+.group-h{font:600 14px/20px var(--font);margin:24px 0 8px}
+.cards{display:flex;flex-direction:column;gap:4px}
+.card{background:var(--card);border:1px solid var(--cstroke);border-radius:4px;min-height:68px;display:flex;align-items:center;gap:16px;padding:12px 16px}
+.card.click:hover{background:var(--ctl-hover)}
+.card .lead{color:var(--text);flex:none;display:grid;place-items:center;width:20px}
+.card .txt{flex:1;min-width:0}
+.card .h{font-weight:400}
+.card .d{font-size:12px;line-height:16px;color:var(--text2)}
+.card .d.warn{color:var(--warn);display:flex;align-items:center;gap:4px}
+.card .trail{flex:none;display:flex;align-items:center;gap:12px;color:var(--text2)}
+.exp{background:var(--card);border:1px solid var(--cstroke);border-radius:4px}
+.exp>.card{border:0;background:transparent}
+.exp .row{border-top:1px solid var(--cstroke);padding:10px 16px 10px 52px;display:flex;align-items:center;gap:16px;min-height:48px}
+.exp .row .k{flex:1}
+.exp .row .v{color:var(--text2)}
+.btn{height:32px;padding:0 12px;border-radius:4px;border:1px solid var(--stroke);background:var(--ctl);color:var(--text);font:400 14px/20px var(--font);display:inline-flex;align-items:center;gap:8px;white-space:nowrap}
+.btn.accent{background:var(--accent);color:var(--on-accent);border-color:transparent}
+.btn.split{padding:0}
+.btn.split span{padding:0 12px;height:100%;display:flex;align-items:center}
+.btn.split span+span{border-left:1px solid rgba(255,255,255,.3);padding:0 8px}
+html[data-theme=dark] .btn.split span+span{border-left-color:rgba(0,0,0,.25)}
+.combo{height:32px;min-width:200px;padding:0 10px 0 11px;border-radius:4px;border:1px solid var(--stroke);background:var(--ctl);display:inline-flex;align-items:center;justify-content:space-between;gap:12px;color:var(--text)}
+.tog{display:inline-flex;align-items:center;gap:12px;color:var(--text)}
+.sw{width:40px;height:20px;border-radius:10px;border:1px solid var(--track);position:relative;background:transparent}
+.sw::after{content:"";position:absolute;width:12px;height:12px;border-radius:6px;top:3px;left:3px;background:var(--text2)}
+.sw.on{background:var(--accent);border-color:var(--accent)}
+.sw.on::after{left:23px;background:var(--knob)}
+.slider{display:flex;align-items:center;gap:12px}
+.slider .track{width:200px;height:4px;border-radius:2px;background:var(--track);position:relative}
+.slider .fill{position:absolute;left:0;top:0;bottom:0;border-radius:2px;background:var(--accent)}
+.slider .thumb{position:absolute;top:-8px;width:20px;height:20px;border-radius:10px;background:var(--card-solid);border:1px solid var(--stroke);box-shadow:0 1px 2px var(--elev);margin-left:-10px}
+.slider .thumb::after{content:"";position:absolute;inset:4px;border-radius:6px;background:var(--accent)}
+.slider .val{min-width:44px;text-align:right;color:var(--text2)}
+.radios{display:flex;gap:24px}
+.radio{display:flex;align-items:center;gap:8px;color:var(--text)}
+.radio i{width:20px;height:20px;border-radius:10px;border:1px solid var(--strong);display:inline-block;position:relative}
+.radio.on i{border:0;background:var(--accent)}
+.radio.on i::after{content:"";position:absolute;inset:5px;border-radius:5px;background:var(--knob)}
+.banner{display:flex;align-items:center;gap:20px;background:var(--card);border:1px solid var(--cstroke);border-radius:4px;padding:20px 24px}
+.banner .dev{width:88px;height:56px;border-radius:4px;border:2px solid var(--text2);position:relative;flex:none}
+.banner .dev::after{content:"";position:absolute;left:-10px;right:-10px;bottom:-8px;height:6px;border-radius:0 0 4px 4px;background:var(--text2)}
+.banner .name{font:600 20px/28px var(--font)}
+.banner .meta{font-size:12px;line-height:16px;color:var(--text2)}
+.banner .bat{margin-left:auto;display:flex;align-items:center;gap:8px;color:var(--text2)}
+.status-ic{flex:none;width:20px;height:20px;border-radius:10px;display:grid;place-items:center;font:700 12px/1 var(--font)}
+.status-ic.warn{background:var(--warn);color:var(--bg)}
+.status-ic.info{background:var(--accent);color:var(--on-accent)}
+.status-ic.ok{background:var(--ok);color:var(--bg)}
+.infobar{display:flex;align-items:flex-start;gap:12px;border:1px solid var(--cstroke);border-radius:4px;padding:14px 16px;background:var(--infobg);margin-bottom:8px}
+.infobar.warn{background:var(--warnbg)}
+.infobar .t{font-weight:600;margin-right:8px}
+.list .li{height:48px;display:flex;align-items:center;gap:12px;padding:0 16px;border-top:1px solid var(--cstroke)}
+.list .li:first-child{border-top:0}
+.list .li .c{font-size:12px;line-height:16px;color:var(--text2)}
+.selbar{display:flex;gap:4px;margin:-8px 0 16px}
+.selbar span{height:32px;padding:0 12px;display:flex;align-items:center;position:relative;color:var(--text2);border-radius:4px}
+.selbar span.on{color:var(--text)}
+.selbar span.on::after{content:"";position:absolute;left:50%;margin-left:-8px;bottom:0;width:16px;height:3px;border-radius:2px;background:var(--accent)}
+.big{font:600 20px/28px var(--font)}
+.cap{font-size:12px;line-height:16px;color:var(--text2)}
+.note{max-width:1000px;margin-top:32px;font-size:12px;line-height:16px;color:var(--text3)}
+.sev-warn{color:var(--warn)} .sev-ok{color:var(--ok)}
+@media (max-width:1000px){nav{width:48px}nav .lbl,nav .search span,nav .badge{display:none}.search{margin:4px 4px 12px;padding:0;justify-content:center;border:0;background:transparent}.nav-item{padding:0;justify-content:center;margin:0}.nav-item .dot{position:absolute;right:8px;top:8px}main{padding:0 16px 40px}}
+
+.nav-item img,.nav-item svg.obj{flex:none}
+.lead svg.obj{display:block}
+.card .h small{color:var(--text2)}
+.link{color:var(--text2);font-size:12px;display:inline-flex;align-items:center;gap:6px}
+.pw{height:32px;width:320px;padding:0 8px 0 11px;border-radius:4px;border:1px solid var(--stroke);border-bottom:2px solid var(--accent);background:var(--ctl);display:inline-flex;align-items:center;justify-content:space-between;color:var(--text)}
+.chk{display:inline-flex;align-items:center;gap:8px}
+.chk i{width:18px;height:18px;border-radius:4px;border:1px solid var(--strong);display:inline-block}
+.chk.on i{background:var(--accent);border-color:var(--accent);position:relative}
+.chk.on i::after{content:"";position:absolute;left:5px;top:1px;width:5px;height:10px;border:solid var(--on-accent);border-width:0 2px 2px 0;transform:rotate(45deg)}
+.net{padding:10px 16px 10px 52px;border-top:1px solid var(--cstroke);display:flex;align-items:center;gap:12px;min-height:52px}
+.net .n{flex:1}
+.net .s{font-size:12px;color:var(--text2)}
+.net.open{flex-wrap:wrap;background:var(--subtle)}
+.net.open .form{flex-basis:100%;display:flex;flex-direction:column;gap:10px;padding:4px 0 6px}
+.net.open .form .row2{display:flex;gap:8px;justify-content:flex-end}
+.canvas{height:180px;border-radius:4px;background:var(--subtle);border:1px solid var(--cstroke);position:relative;margin-bottom:4px}
+.mon{position:absolute;border-radius:4px;display:grid;place-items:center;font:600 28px/1 var(--font)}
+.mon.sel{background:var(--accent);color:var(--on-accent)}
+.mon.other{background:var(--card-solid);border:1px solid var(--strong);color:var(--text)}
+.meter{width:200px;height:4px;border-radius:2px;background:var(--track);position:relative;overflow:hidden}
+.meter span{position:absolute;left:0;top:0;bottom:0;background:var(--ok)}
+.mute{width:32px;height:32px;border-radius:4px;display:grid;place-items:center;border:1px solid var(--stroke);background:var(--ctl)}
+.disabled{opacity:.36}
+.clock{font:600 40px/52px var(--font)}
+.dialog-scrim{position:fixed;inset:0;background:rgba(0,0,0,.3);display:grid;place-items:center}
+</style>
+</head>
+<body>
+<div class="win">
+<div class="tb"><span class="back" title="上一頁"><svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 12H5M12 19l-7-7 7-7"/></svg></span><span class="appname">Better Manager</span><span class="caps"><span><svg class="ic" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/></svg></span><span><svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 5h14v14H5z"/></svg></span><span><svg class="ic" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg></span></span></div>
+<div class="body">
+<nav aria-label="導覽"><div class="search"><svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16zM21 21l-4.3-4.3"/></svg><span>尋找設定</span></div><div class="nav-item"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" class="obj" viewBox="0 0 24 24"><defs><linearGradient id="dashboard-a" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#e6ecf4"/><stop offset="1" stop-color="#bcc7d6"/></linearGradient></defs><rect x="2.5" y="3.5" width="19" height="17" rx="2.4" fill="url(#dashboard-a)"/><path d="M8.6 8.4a3.6 3.6 0 1 1-3.6 3.6" fill="none" stroke="#2f7de1" stroke-width="2.6"/><rect x="14" y="12" width="2.2" height="5.6" rx="1" fill="#1fae64"/><rect x="17.6" y="7.4" width="2.2" height="10.2" rx="1" fill="#f5a623"/></svg>
+<span class="lbl">首頁</span></div><div class="nav-item"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" class="obj" viewBox="0 0 24 24"><defs><linearGradient id="computer-a" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#4aa8ff"/><stop offset="1" stop-color="#2565c9"/></linearGradient></defs><rect x="3.5" y="4" width="17" height="11.6" rx="1.6" fill="#3b4868"/><rect x="5" y="5.5" width="14" height="8.6" rx=".8" fill="url(#computer-a)"/><path d="M1.5 16.6h21l-1.2 2.6a1.5 1.5 0 0 1-1.4.9H4.1a1.5 1.5 0 0 1-1.4-.9z" fill="#a3aebf"/><rect x="10" y="16.6" width="4" height="1" rx=".5" fill="#6b7a90"/></svg>
+<span class="lbl">系統</span></div><div class="nav-item"><svg class="obj" width="16" height="16" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><rect x="4" y="2" width="16" height="20" rx="8" fill="url(#bt-a)"/><defs><linearGradient id="bt-a" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#5aa9ff"/><stop offset="1" stop-color="#1d5fd1"/></linearGradient></defs><path d="M8.2 8.4 15.4 15 12 18.2V5.8l3.4 3.2-7.2 6.6" fill="none" stroke="#fff" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="lbl">藍牙與裝置</span></div><div class="nav-item"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" class="obj" viewBox="0 0 24 24"><defs><linearGradient id="network-a" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#6fb8ff"/><stop offset="1" stop-color="#2f74d8"/></linearGradient></defs><path d="M12 9v3.5M6 16v-3.5h12V16" fill="none" stroke="#6b7a90" stroke-width="1.8" stroke-linejoin="round"/><rect x="8.2" y="2.5" width="7.6" height="6.5" rx="1.4" fill="url(#network-a)"/><rect x="2.2" y="15" width="7.6" height="6.5" rx="1.4" fill="#1fae64"/><rect x="14.2" y="15" width="7.6" height="6.5" rx="1.4" fill="#1fae64"/></svg>
+<span class="lbl">網路和網際網路</span></div><div class="nav-item"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" class="obj" viewBox="0 0 24 24"><defs><linearGradient id="palette-a" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#f3d3a3"/><stop offset="1" stop-color="#c9975a"/></linearGradient></defs><path d="M12 2.5c5.5 0 9.5 3.7 9.5 8.3 0 3-2.3 4.6-4.6 4.6h-1.6a1.7 1.7 0 0 0-1.2 2.9 1.7 1.7 0 0 1-1.2 2.9H12a9.4 9.4 0 0 1 0-18.7zM10.799999999999999 16.2A1.6 1.6 0 1 0 7.6 16.2A1.6 1.6 0 1 0 10.799999999999999 16.2Z" fill="url(#palette-a)" fill-rule="evenodd"/><circle cx="7.4" cy="10.4" r="1.7" fill="#e5484d"/><circle cx="10.6" cy="6.6" r="1.7" fill="#f5b120"/><circle cx="15.2" cy="6.8" r="1.7" fill="#1fae64"/><circle cx="17.8" cy="10.6" r="1.7" fill="#2f7de1"/></svg>
+<span class="lbl">個人化</span></div><div class="nav-item"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" class="obj" viewBox="0 0 24 24"><rect x="3" y="3" width="8" height="8" rx="2" fill="#2f7de1"/><rect x="13" y="3" width="8" height="8" rx="2" fill="#f5a623"/><rect x="3" y="13" width="8" height="8" rx="2" fill="#1fae64"/><rect x="13" y="13" width="8" height="8" rx="2" fill="#e5484d"/></svg>
+<span class="lbl">應用程式</span><span class="badge">2</span></div><div class="nav-item"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" class="obj" viewBox="0 0 24 24"><defs><linearGradient id="user-a" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#6fb8ff"/><stop offset="1" stop-color="#2565c9"/></linearGradient></defs><circle cx="12" cy="7.6" r="4.6" fill="url(#user-a)"/><path d="M3.5 21a8.5 8.5 0 0 1 17 0v.5h-17z" fill="url(#user-a)"/></svg>
+<span class="lbl">帳戶</span></div><div class="nav-item sel"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" class="obj" viewBox="0 0 24 24"><defs><linearGradient id="globe-a" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#7cc8ff"/><stop offset="1" stop-color="#1f6fd1"/></linearGradient></defs><circle cx="12" cy="12" r="9.5" fill="url(#globe-a)"/><path d="M7.3 4.2c1.6.9 1.4 2.6 3 3.2 1.4.5 2.3-.6 3.3.4.9 1-.2 2.4-1.4 2.9-1.6.6-2.9-.4-4.1.6-1.1 1-.3 2.6-1.3 3.6-.8.8-2 .5-3.2-.4A9.5 9.5 0 0 1 7.3 4.2zM15.2 13.3c1.3-.6 2.9.1 3.4 1.3.6 1.4-.3 3.2-1.7 4.3a9.5 9.5 0 0 1-3.3 1.4c-.4-1.5.4-2.6.3-4-.1-1.4.1-2.4 1.3-3z" fill="#43c470"/></svg>
+<span class="lbl">時間與語言</span></div><div class="nav-item"><svg class="obj" width="16" height="16" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="ax-a" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#5aa9ff"/><stop offset="1" stop-color="#1d5fd1"/></linearGradient></defs><circle cx="12" cy="12" r="10" fill="url(#ax-a)"/><circle cx="12" cy="6.6" r="1.7" fill="#fff"/><path d="M6.5 9.2 12 10.4l5.5-1.2M12 10.4v3.4l-2.4 5M12 13.8l2.4 5" fill="none" stroke="#fff" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="lbl">協助工具</span></div><div class="nav-item"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" class="obj" viewBox="0 0 24 24"><defs><linearGradient id="shield-a" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#6fb8ff"/><stop offset="1" stop-color="#2565c9"/></linearGradient></defs><path d="M12 2.2 20 5v6.2c0 5-3.4 9-8 10.6-4.6-1.6-8-5.6-8-10.6V5z" fill="url(#shield-a)"/><path d="M12 4.6v14.7c3.2-1.5 5.6-4.5 5.6-8.1V6.6z" fill="#ffffff" opacity=".35"/></svg>
+<span class="lbl">隱私權與安全性</span></div><div class="nav-item"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" class="obj" viewBox="0 0 24 24"><defs><linearGradient id="keep-awake-a" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#58a6ff"/><stop offset="1" stop-color="#2050c8"/></linearGradient></defs><path d="M1.8 12C4.4 7.4 8 5.2 12 5.2s7.6 2.2 10.2 6.8c-2.6 4.6-6.2 6.8-10.2 6.8S4.4 16.6 1.8 12z" fill="#ffffff" stroke="#5b6b82" stroke-width="1.2" stroke-linejoin="round"/><circle cx="12" cy="12" r="4.6" fill="url(#keep-awake-a)"/><circle cx="12" cy="12" r="2" fill="#1b2438"/><circle cx="13.3" cy="10.6" r=".9" fill="#ffffff"/></svg>
+<span class="lbl">保持清醒</span></div><div class="nav-item"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" class="obj" viewBox="0 0 24 24"><defs><linearGradient id="fixes-a" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#d5dce6"/><stop offset="1" stop-color="#7f8da3"/></linearGradient></defs><g transform="rotate(45 12 12)"><rect x="11.1" y="1.5" width="1.8" height="11" rx=".6" fill="#8b97aa"/><rect x="9.4" y="12" width="5.2" height="10" rx="2.2" fill="#f2711c"/></g><g transform="rotate(-45 12 12)"><path d="M10.5 1.46A4.4 4.4 0 1 0 13.5 1.46V5.4H10.5Z" fill="url(#fixes-a)"/><rect x="9.9" y="8.6" width="4.2" height="13.4" rx="2.1" fill="url(#fixes-a)"/></g></svg>
+<span class="lbl">修正</span></div><div class="nav-spacer"></div><div class="nav-item"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" class="obj" viewBox="0 0 24 24"><defs><linearGradient id="settings-a" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#b4c1d1"/><stop offset="1" stop-color="#66788f"/></linearGradient></defs><path d="M19.45 10.52 L22.00 12.00 L21.81 13.95 L19.02 14.91 L18.32 16.22 L19.07 19.07 L17.56 20.31 L14.91 19.02 L13.48 19.45 L12.00 22.00 L10.05 21.81 L9.09 19.02 L7.78 18.32 L4.93 19.07 L3.69 17.56 L4.98 14.91 L4.55 13.48 L2.00 12.00 L2.19 10.05 L4.98 9.09 L5.68 7.78 L4.93 4.93 L6.44 3.69 L9.09 4.98 L10.52 4.55 L12.00 2.00 L13.95 2.19 L14.91 4.98 L16.22 5.68 L19.07 4.93 L20.31 6.44 L19.02 9.09ZM15.20 12.00A3.2 3.2 0 1 0 8.80 12.00A3.2 3.2 0 1 0 15.20 12.00Z" fill="url(#settings-a)" fill-rule="evenodd"/></svg>
+<span class="lbl">設定</span></div></nav>
+<main><div class="content">
+<div class="crumb"><span class="prev">時間與語言</span><svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg><span>日期和時間</span></div><div class="banner"><svg class="obj" width="48" height="48" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="cl-a" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#dfe5ee"/></linearGradient></defs><circle cx="12" cy="12" r="9.5" fill="url(#cl-a)" stroke="#2f7ae0" stroke-width="1.8"/><path d="M12 6.5V12l3.6 2.4" fill="none" stroke="#3b4868" stroke-width="1.8" stroke-linecap="round"/></svg><div><div class="clock">下午3:42</div><div class="meta">2026年11月21日 星期六 · (UTC+08:00) 台北</div></div></div><div class="group-h"></div><div class="cards"><div class="card "><span class="lead"></span><div class="txt"><div class="h">自動設定時間</div><div class="d">從網際網路同步</div></div><div class="trail"><span class="tog">開啟<span class="sw on"></span></span></div></div><div class="card disabled"><span class="lead"></span><div class="txt"><div class="h">手動設定日期和時間</div></div><div class="trail"><span class="btn disabled">變更</span></div></div><div class="card "><span class="lead"><svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" class="obj" viewBox="0 0 24 24"><defs><linearGradient id="globe-a" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#7cc8ff"/><stop offset="1" stop-color="#1f6fd1"/></linearGradient></defs><circle cx="12" cy="12" r="9.5" fill="url(#globe-a)"/><path d="M7.3 4.2c1.6.9 1.4 2.6 3 3.2 1.4.5 2.3-.6 3.3.4.9 1-.2 2.4-1.4 2.9-1.6.6-2.9-.4-4.1.6-1.1 1-.3 2.6-1.3 3.6-.8.8-2 .5-3.2-.4A9.5 9.5 0 0 1 7.3 4.2zM15.2 13.3c1.3-.6 2.9.1 3.4 1.3.6 1.4-.3 3.2-1.7 4.3a9.5 9.5 0 0 1-3.3 1.4c-.4-1.5.4-2.6.3-4-.1-1.4.1-2.4 1.3-3z" fill="#43c470"/></svg>
+</span><div class="txt"><div class="h">時區</div></div><div class="trail"><span class="combo" style="min-width:240px">(UTC+08:00) 台北<svg class="ic" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></span></div></div><div class="card disabled"><span class="lead"></span><div class="txt"><div class="h">自動設定時區</div><div class="d">這個桌面還不能調整這項設定。</div></div><div class="trail"><span class="tog">關閉<span class="sw"></span></span></div></div></div><div class="group-h">時鐘</div><div class="cards"><div class="card "><span class="lead"></span><div class="txt"><div class="h">24 小時制</div></div><div class="trail"><span class="tog">關閉<span class="sw"></span></span></div></div><div class="card "><span class="lead"></span><div class="txt"><div class="h">顯示星期</div></div><div class="trail"><span class="tog">開啟<span class="sw on"></span></span></div></div><div class="card "><span class="lead"></span><div class="txt"><div class="h">顯示日期</div></div><div class="trail"><span class="tog">開啟<span class="sw on"></span></span></div></div><div class="card "><span class="lead"></span><div class="txt"><div class="h">顯示秒數</div></div><div class="trail"><span class="tog">關閉<span class="sw"></span></span></div></div><div class="card "><span class="lead"><svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" class="obj" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="17" rx="2.4" fill="#ffffff" stroke="#8d97a8" stroke-width=".8"/><path d="M3 6.4A2.4 2.4 0 0 1 5.4 4h13.2A2.4 2.4 0 0 1 21 6.4V9H3z" fill="#e5484d"/><rect x="7" y="2.3" width="2" height="4" rx="1" fill="#a52c30"/><rect x="15" y="2.3" width="2" height="4" rx="1" fill="#a52c30"/><path d="M6 11.5h2.6v2.4H6zM10.7 11.5h2.6v2.4h-2.6zM15.4 11.5H18v2.4h-2.6zM6 16h2.6v2.4H6zM10.7 16h2.6v2.4h-2.6z" fill="#8d97a8"/></svg>
+</span><div class="txt"><div class="h">一週的第一天</div></div><div class="trail"><span class="combo" style="min-width:200px">星期日<svg class="ic" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></span></div></div></div>
+</div>
+<p class="note">設計稿：控制項外觀依 DESIGN.md 與 better_ui::fluent，圖示依 better_ui::icon_set（ticket 147；新的物件圖示依 design/system-settings-spec.md 第 16 節的清單草繪），文案與行為依 design/system-settings-spec.md。Better OS 工作階段裡的日期和時間（第 11 節）：自動設定時區在工作階段裡沒有後端；時鐘群組寫的是頂部列讀的設定。 另一個外觀：datetime-light.html。</p>
+</main>
+</div>
+</div>
+</body>
+</html>
