@@ -104,12 +104,13 @@ impl AwakeApp {
                             .child(
                                 Button::new("rules-new")
                                     .primary()
-                                    .child(crate::components::action_icon(
+                                    .icon(crate::components::action_icon(
                                         better_ui::icon_set::Picture::Add,
                                         true,
+                                        false,
                                         cx,
                                     ))
-                                    .child(c.new_rule)
+                                    .label(c.new_rule)
                                     .on_click(
                                         cx.listener(|this, _, window, cx| {
                                             this.new_rule(window, cx)
@@ -567,12 +568,13 @@ impl AwakeApp {
                         )
                         .child(
                             Button::new("draft-add-group")
-                                .child(crate::components::action_icon(
+                                .icon(crate::components::action_icon(
                                     better_ui::icon_set::Picture::Add,
                                     false,
+                                    group_count >= awake_core::MAX_GROUPS_PER_RULE,
                                     cx,
                                 ))
-                                .child(c.add_group)
+                                .label(c.add_group)
                                 .disabled(group_count >= awake_core::MAX_GROUPS_PER_RULE)
                                 .on_click(
                                     cx.listener(|this, _, window, cx| this.add_group(window, cx)),
@@ -701,17 +703,23 @@ impl AwakeApp {
                         cx,
                     ))
                     .child(
-                        Button::new(SharedString::from(format!("group-remove-{index}")))
-                            .child(crate::components::action_icon(
-                                better_ui::icon_set::Picture::Delete,
-                                false,
-                                cx,
-                            ))
-                            .disabled(group_count <= 1)
-                            .on_click(cx.listener(move |this, _, cx_window, cx| {
+                        crate::components::square_icon_button(Button::new(SharedString::from(
+                            format!("group-remove-{index}"),
+                        )))
+                        .child(crate::components::action_alone(
+                            better_ui::icon_set::Picture::Delete,
+                            false,
+                            group_count <= 1,
+                            cx,
+                        ))
+                        .tooltip(c.delete)
+                        .disabled(group_count <= 1)
+                        .on_click(cx.listener(
+                            move |this, _, cx_window, cx| {
                                 let _ = cx_window;
                                 this.remove_group(index, cx)
-                            })),
+                            },
+                        )),
                     ),
             )
             .children(
@@ -734,12 +742,13 @@ impl AwakeApp {
                             "add-condition-{index}-{}",
                             provider.as_key()
                         )))
-                        .child(crate::components::action_icon(
+                        .icon(crate::components::action_icon(
                             better_ui::icon_set::Picture::Add,
                             false,
+                            !available,
                             cx,
                         ))
-                        .child(provider_label(provider, c))
+                        .label(provider_label(provider, c))
                         // A provider that cannot be read here is not offered as
                         // something to add. The list still shows it, so nobody
                         // is left wondering where the option went.

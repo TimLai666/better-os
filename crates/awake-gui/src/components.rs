@@ -275,22 +275,132 @@ impl AwakeApp {
 }
 
 /// An action icon on one of gpui-component's buttons (ticket 147). Those
-/// buttons take only the toolkit's single-colour `Icon`, so the picture goes
-/// in as the button's first child, before its words. On a primary (accent)
-/// button it turns to the text on accent colour so it never sits accent on
-/// accent; elsewhere it is drawn as beside a label.
+/// buttons take a toolkit `Icon` before their label, and give the button its
+/// accessible name from the label alone, so a labelled button keeps both by
+/// taking this icon: the action's main file drawn as the mask it is, in the
+/// colour its placement gives it (on a primary button the text on accent
+/// colour), dimmed when the button is disabled. A toolkit `Icon` draws one
+/// layer, so only an action drawn in one layer goes here.
 pub(crate) fn action_icon(
     picture: better_ui::icon_set::Picture,
     primary: bool,
+    disabled: bool,
+    cx: &gpui::App,
+) -> gpui_component::Icon {
+    debug_assert!(
+        picture.second_layer().is_none(),
+        "{} has a second layer an Icon cannot draw",
+        picture.name()
+    );
+    let colour = labelled_icon_colour(picture, primary, disabled, better_ui::fluent::palette(cx));
+    gpui_component::Icon::empty()
+        .path(picture.path())
+        .text_color(colour)
+}
+
+/// The colour [`action_icon`] draws in: the placement's body colour, the
+/// disabled text on accent on a disabled primary button, and the body at
+/// the disabled opacity on any other disabled button.
+pub(crate) fn labelled_icon_colour(
+    picture: better_ui::icon_set::Picture,
+    primary: bool,
+    disabled: bool,
+    palette: &better_ui::fluent::Palette,
+) -> gpui::Rgba {
+    use better_ui::icon_set::{DISABLED_OPACITY, Placement, action_colours};
+    let placement = Placement::for_control(primary, false);
+    let (body, _) = action_colours(picture, placement, palette, disabled);
+    if disabled && !primary {
+        better_ui::fluent::with_alpha(body, DISABLED_OPACITY)
+    } else {
+        body
+    }
+}
+
+/// An action alone on a gpui-component button with no words: the picture,
+/// both layers, at 18px, dimmed when the button is disabled. The caller
+/// makes the button square with [`square_icon_button`].
+pub(crate) fn action_alone(
+    picture: better_ui::icon_set::Picture,
+    primary: bool,
+    disabled: bool,
     cx: &gpui::App,
 ) -> gpui::AnyElement {
     use better_ui::icon_set::Placement;
     use gpui::IntoElement as _;
-    let placement = if primary {
-        Placement::OnAccent
-    } else {
-        Placement::Labelled
-    };
-    better_ui::icon_set::action(picture, placement, better_ui::fluent::palette(cx), false)
-        .into_any_element()
+    better_ui::icon_set::action(
+        picture,
+        Placement::for_control(primary, true),
+        better_ui::fluent::palette(cx),
+        disabled,
+    )
+    .into_any_element()
+}
+
+/// A gpui-component button holding only an icon child, sized as that kit's
+/// own icon button (32px square): it sizes a button as an icon button only
+/// when it has no children, and skips its own sizing once padding is set.
+pub(crate) fn square_icon_button(
+    button: gpui_component::button::Button,
+) -> gpui_component::button::Button {
+    use gpui::Styled as _;
+    button.size_8().p_0()
+}
+
+#[cfg(test)]
+mod action_button_tests {
+    use better_ui::fluent::{LIGHT, with_alpha};
+    use better_ui::icon_set::{DISABLED_OPACITY, Picture};
+
+    use super::labelled_icon_colour;
+
+    /// A disabled button's icon is dimmed with it: the quiet grey at the
+    /// disabled opacity, and on a primary button the disabled text on accent.
+    #[test]
+    fn a_disabled_button_dims_its_icon() {
+        let live = labelled_icon_colour(Picture::Add, false, false, &LIGHT);
+        assert_eq!(live, LIGHT.icon_quiet);
+        assert_eq!(
+            labelled_icon_colour(Picture::Add, false, true, &LIGHT),
+            with_alpha(LIGHT.icon_quiet, DISABLED_OPACITY)
+        );
+        assert_eq!(
+            labelled_icon_colour(Picture::Add, true, true, &LIGHT),
+            LIGHT.text_on_accent_disabled
+        );
+        assert_eq!(
+            labelled_icon_colour(Picture::Add, true, false, &LIGHT),
+            LIGHT.text_on_accent
+        );
+    }
+
+    /// Every button with an action icon keeps its words in `label`, where
+    /// gpui-component takes the accessible name from, and every button with
+    /// an action alone is made square as that kit's icon buttons are.
+    #[test]
+    fn action_buttons_keep_their_name_and_their_shape() {
+        let mut faults = Vec::new();
+        for (name, text) in [
+            ("shell.rs", include_str!("shell.rs")),
+            ("pages_status.rs", include_str!("pages_status.rs")),
+            ("pages_rules.rs", include_str!("pages_rules.rs")),
+        ] {
+            for (at, _) in text.match_indices("components::action_icon(") {
+                let rest = &text[at..];
+                let chain = &rest[..rest.find(".on_click(").unwrap_or(rest.len())];
+                if !chain.contains(".label(") {
+                    faults.push(format!("{name}: an action icon on a button without .label"));
+                }
+            }
+            for (at, _) in text.match_indices("components::action_alone(") {
+                let before = &text[at.saturating_sub(240)..at];
+                if !before.contains("square_icon_button(") {
+                    faults.push(format!(
+                        "{name}: an action alone on a button not made square"
+                    ));
+                }
+            }
+        }
+        assert!(faults.is_empty(), "{faults:#?}");
+    }
 }

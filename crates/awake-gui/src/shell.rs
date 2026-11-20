@@ -189,15 +189,14 @@ impl AwakeApp {
                 // The kit's loading ring takes the icon's place while busy.
                 Button::new("refresh")
                     .primary()
-                    .when(self.busy, |b| b.icon(IconName::Loader).loading(true))
-                    .when(!self.busy, |b| {
-                        b.child(crate::components::action_icon(
-                            better_ui::icon_set::Picture::Refresh,
-                            true,
-                            cx,
-                        ))
-                    })
-                    .child(c.refresh)
+                    .icon(crate::components::action_icon(
+                        better_ui::icon_set::Picture::Refresh,
+                        true,
+                        false,
+                        cx,
+                    ))
+                    .label(c.refresh)
+                    .loading(self.busy)
                     .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
             )
             .into_any_element()

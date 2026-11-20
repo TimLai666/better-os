@@ -363,12 +363,13 @@ impl AwakeApp {
                                         "add-preset-{}",
                                         preset_key(length)
                                     )))
-                                    .child(crate::components::action_icon(
+                                    .icon(crate::components::action_icon(
                                         better_ui::icon_set::Picture::Add,
+                                        false,
                                         false,
                                         cx,
                                     ))
-                                    .child(length.label(c))
+                                    .label(length.label(c))
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         this.add_preset(length, cx)
                                     }))
@@ -431,16 +432,17 @@ impl AwakeApp {
                     .gap_2()
                     .flex_wrap()
                     .child(
-                        Button::new(SharedString::from(format!("preset-start-{index}")))
-                            .primary()
-                            .child(crate::components::action_icon(
-                                better_ui::icon_set::Picture::Play,
-                                true,
-                                cx,
-                            ))
-                            .on_click(
-                                cx.listener(move |this, _, _, cx| this.start_preset(index, cx)),
-                            ),
+                        crate::components::square_icon_button(Button::new(SharedString::from(
+                            format!("preset-start-{index}"),
+                        )))
+                        .primary()
+                        .child(crate::components::action_alone(
+                            better_ui::icon_set::Picture::Play,
+                            true,
+                            false,
+                            cx,
+                        ))
+                        .on_click(cx.listener(move |this, _, _, cx| this.start_preset(index, cx))),
                     )
                     .when(!is_default, |row| {
                         row.child(
@@ -470,18 +472,20 @@ impl AwakeApp {
                             ),
                     )
                     .child(
-                        Button::new(SharedString::from(format!("preset-remove-{index}")))
-                            .child(crate::components::action_icon(
-                                better_ui::icon_set::Picture::Delete,
-                                false,
-                                cx,
-                            ))
-                            // The menu must keep one length, or it offers a
-                            // submenu that starts nothing.
-                            .disabled(count <= 1)
-                            .on_click(
-                                cx.listener(move |this, _, _, cx| this.remove_preset(index, cx)),
-                            ),
+                        crate::components::square_icon_button(Button::new(SharedString::from(
+                            format!("preset-remove-{index}"),
+                        )))
+                        .child(crate::components::action_alone(
+                            better_ui::icon_set::Picture::Delete,
+                            false,
+                            count <= 1,
+                            cx,
+                        ))
+                        .tooltip(c.delete)
+                        // The menu must keep one length, or it offers a
+                        // submenu that starts nothing.
+                        .disabled(count <= 1)
+                        .on_click(cx.listener(move |this, _, _, cx| this.remove_preset(index, cx))),
                     ),
             )
             .into_any_element()
