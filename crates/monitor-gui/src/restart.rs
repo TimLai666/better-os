@@ -60,6 +60,30 @@ impl ResourceKey {
     }
 }
 
+/// A process closed on the Details tree: its PID and start token, so a new
+/// process on the same PID is not taken for it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub(crate) struct ClosedProcess {
+    pub(crate) pid: u32,
+    pub(crate) started: Option<u64>,
+}
+
+impl ClosedProcess {
+    pub(crate) fn of(key: &monitor_views::ProcessKey) -> Self {
+        ClosedProcess {
+            pid: key.pid,
+            started: key.started,
+        }
+    }
+
+    pub(crate) fn key(&self) -> monitor_views::ProcessKey {
+        monitor_views::ProcessKey {
+            pid: self.pid,
+            started: self.started,
+        }
+    }
+}
+
 /// A selected row on the Processes page.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -82,9 +106,8 @@ pub(crate) struct MonitorView {
     pub(crate) app_sort: (usize, bool),
     pub(crate) app_selection: Option<SelectionKey>,
     pub(crate) expanded: Vec<String>,
-    /// The processes closed on the Details page's tree, by PID: a restart
-    /// keeps every process, so the PIDs still name them.
-    pub(crate) collapsed: Vec<u32>,
+    /// The processes closed on the Details page's tree. 0.2.16 wrote none.
+    pub(crate) closed_processes: Vec<ClosedProcess>,
     pub(crate) process_sort: (usize, bool),
     pub(crate) selected_pid: Option<u32>,
     pub(crate) startup_sort: Option<(usize, bool)>,
@@ -109,7 +132,7 @@ impl Default for MonitorView {
             app_sort: (column_index(AppColumn::Cpu), false),
             app_selection: None,
             expanded: Vec::new(),
-            collapsed: Vec::new(),
+            closed_processes: Vec::new(),
             process_sort: (process_column_index(ProcessColumn::CpuUtilization), false),
             selected_pid: None,
             startup_sort: None,
@@ -182,7 +205,7 @@ impl SelectionKey {
 #[cfg(test)]
 mod tests {
     use super::{
-        MonitorView, ResourceKey, SelectionKey, column_index, column_of, page_of,
+        ClosedProcess, MonitorView, ResourceKey, SelectionKey, column_index, column_of, page_of,
         process_column_index, process_column_of,
     };
     use crate::app::{Page, Resource};
@@ -229,7 +252,16 @@ mod tests {
             page: Page::Processes.index(),
             filter: "fire".into(),
             expanded: vec!["firefox".into()],
-            collapsed: vec![1200, 4],
+            closed_processes: vec![
+                ClosedProcess {
+                    pid: 1200,
+                    started: Some(170_000_000_050),
+                },
+                ClosedProcess {
+                    pid: 4,
+                    started: None,
+                },
+            ],
             app_selection: Some(SelectionKey::Process(42)),
             startup_sort: Some((2, true)),
             ..MonitorView::default()
@@ -240,5 +272,21 @@ mod tests {
         let older: MonitorView = serde_json::from_str(r#"{"page":1}"#).unwrap();
         assert_eq!(page_of(older.page), Page::Processes);
         assert_eq!(older.resource, ResourceKey::Cpu);
+    }
+
+    /// 0.2.16's window wrote every field but the closed processes; its
+    /// hand-off still reads, with nothing closed.
+    #[test]
+    fn a_handoff_from_0_2_16_reads_with_nothing_closed() {
+        let view = MonitorView {
+            filter: "fire".into(),
+            expanded: vec!["firefox".into()],
+            ..MonitorView::default()
+        };
+        let mut written = serde_json::to_value(&view).unwrap();
+        written.as_object_mut().unwrap().remove("closed_processes");
+        let read: MonitorView = serde_json::from_value(written).unwrap();
+        assert_eq!(read, view);
+        assert!(read.closed_processes.is_empty());
     }
 }

@@ -154,6 +154,26 @@ pub struct VisibleRow {
     /// Whether its children are shown: false for a row the person closed,
     /// and for a row with none.
     pub expanded: bool,
+    /// The position among the visible rows of the row it hangs under.
+    pub parent: Option<usize>,
+}
+
+/// A process as the tree remembers it: its PID and its start token, so a
+/// new process that takes the PID of one the person closed opens as new.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub struct ProcessKey {
+    pub pid: u32,
+    /// [`ProcessFacts::start_token`]; `None` when it was not collected.
+    pub started: Option<u64>,
+}
+
+impl ProcessKey {
+    pub fn of(process: &ProcessFacts) -> Self {
+        ProcessKey {
+            pid: process.pid,
+            started: process.start_token(),
+        }
+    }
 }
 
 /// A sortable, filterable, optionally hierarchical process table.
@@ -164,8 +184,13 @@ pub struct ProcessTableModel {
     filter: String,
     tree_mode: bool,
     show_command_line: bool,
-    /// The processes whose children the person hid in tree mode, by PID.
-    collapsed: Vec<u32>,
+    /// The processes whose children the person hid in tree mode.
+    collapsed: Vec<ProcessKey>,
+    /// The ones hidden while a search is typed: a search shows every
+    /// ancestor of a match open, and what the person closes during it is
+    /// kept apart and forgotten when the search changes, so the tree is as
+    /// they left it once the search is cleared.
+    filter_collapsed: Vec<ProcessKey>,
     visible: Vec<VisibleRow>,
 }
 
@@ -179,6 +204,7 @@ impl ProcessTableModel {
             tree_mode: false,
             show_command_line: false,
             collapsed: Vec::new(),
+            filter_collapsed: Vec::new(),
             visible: Vec::new(),
         };
         model.rebuild();
@@ -242,8 +268,16 @@ impl ProcessTableModel {
     }
 
     pub fn set_filter(&mut self, filter: impl Into<String>) {
-        self.filter = filter.into();
+        let filter = filter.into();
+        if filter != self.filter {
+            self.filter_collapsed.clear();
+        }
+        self.filter = filter;
         self.rebuild();
+    }
+
+    fn filtering(&self) -> bool {
+        !self.filter.trim().is_empty()
     }
 
     pub fn tree_mode(&self) -> bool {
@@ -255,28 +289,68 @@ impl ProcessTableModel {
         self.rebuild();
     }
 
-    /// The processes whose children are hidden in tree mode.
-    pub fn collapsed(&self) -> &[u32] {
+    /// The processes whose children are hidden in tree mode with no
+    /// search typed.
+    pub fn collapsed(&self) -> &[ProcessKey] {
         &self.collapsed
     }
 
-    /// Hide only these processes' children in tree mode. A PID that has no
-    /// process in this round is forgotten, so a reused PID opens as new.
-    pub fn set_collapsed(&mut self, mut collapsed: Vec<u32>) {
-        collapsed.sort_unstable();
-        collapsed.dedup();
-        self.collapsed = collapsed;
+    /// The ones closed while the current search is typed.
+    pub fn filter_collapsed(&self) -> &[ProcessKey] {
+        &self.filter_collapsed
+    }
+
+    /// Hide only these processes' children in tree mode. One that has no
+    /// process in this round is forgotten.
+    pub fn set_collapsed(&mut self, collapsed: Vec<ProcessKey>) {
+        self.collapsed = normalized(collapsed);
         self.rebuild();
     }
 
-    /// Show (`true`) or hide a process's children in tree mode.
-    pub fn set_expanded(&mut self, pid: u32, expanded: bool) {
-        let mut collapsed = self.collapsed.clone();
-        collapsed.retain(|candidate| *candidate != pid);
+    pub fn set_filter_collapsed(&mut self, collapsed: Vec<ProcessKey>) {
+        self.filter_collapsed = normalized(collapsed);
+        self.rebuild();
+    }
+
+    /// Show (`true`) or hide a process's children in tree mode, in the
+    /// set that is in force: the search's while one is typed.
+    pub fn set_expanded(&mut self, key: ProcessKey, expanded: bool) {
+        let mut set = if self.filtering() {
+            self.filter_collapsed.clone()
+        } else {
+            self.collapsed.clone()
+        };
+        set.retain(|candidate| *candidate != key);
         if !expanded {
-            collapsed.push(pid);
+            set.push(key);
         }
-        self.set_collapsed(collapsed);
+        if self.filtering() {
+            self.set_filter_collapsed(set);
+        } else {
+            self.set_collapsed(set);
+        }
+    }
+
+    /// Where a selection on `selected` goes when the person closes
+    /// `closed`: onto the closed row when it was inside its branch, as
+    /// `TreeView` and File Explorer move it, so no command acts on a row
+    /// nobody can see.
+    pub fn selection_after_closing(&self, closed: u32, selected: u32) -> u32 {
+        let parent_of: HashMap<u32, u32> = self
+            .processes
+            .iter()
+            .filter_map(|process| process.parent().map(|parent| (process.pid, parent)))
+            .collect();
+        let mut cursor = parent_of.get(&selected).copied();
+        // Bounded, so a parent cycle cannot loop.
+        for _ in 0..self.processes.len() {
+            match cursor {
+                Some(pid) if pid == closed => return closed,
+                Some(pid) => cursor = parent_of.get(&pid).copied(),
+                None => break,
+            }
+        }
+        selected
     }
 
     pub fn show_command_line(&self) -> bool {
@@ -298,9 +372,10 @@ impl ProcessTableModel {
     }
 
     fn rebuild(&mut self) {
-        let live: std::collections::HashSet<u32> =
-            self.processes.iter().map(|process| process.pid).collect();
-        self.collapsed.retain(|pid| live.contains(pid));
+        let live: std::collections::HashSet<ProcessKey> =
+            self.processes.iter().map(ProcessKey::of).collect();
+        self.collapsed.retain(|key| live.contains(key));
+        self.filter_collapsed.retain(|key| live.contains(key));
         let matching = self.matching_indices();
         self.visible = if self.tree_mode {
             self.build_tree(&matching)
@@ -314,6 +389,7 @@ impl ProcessTableModel {
                     depth: 0,
                     has_children: false,
                     expanded: false,
+                    parent: None,
                 })
                 .collect()
         };
@@ -433,28 +509,38 @@ impl ProcessTableModel {
         // An explicit stack rather than recursion: a deep process tree must
         // not be able to overflow the render thread's stack. A hidden row is
         // still visited, so a closed branch is not appended as orphans below.
-        let mut stack: Vec<(usize, u16, bool)> =
-            roots.into_iter().rev().map(|i| (i, 0, true)).collect();
-        while let Some((index, depth, shown)) = stack.pop() {
+        let closed = if self.filtering() {
+            &self.filter_collapsed
+        } else {
+            &self.collapsed
+        };
+        let mut stack: Vec<(usize, u16, bool, Option<usize>)> = roots
+            .into_iter()
+            .rev()
+            .map(|i| (i, 0, true, None))
+            .collect();
+        while let Some((index, depth, shown, parent)) = stack.pop() {
             if visited[index] {
                 continue;
             }
             visited[index] = true;
-            let pid = self.processes[index].pid;
-            let kids = children.get(&pid);
+            let process = &self.processes[index];
+            let kids = children.get(&process.pid);
             let has_children = kids.is_some_and(|kids| !kids.is_empty());
-            let expanded = has_children && self.collapsed.binary_search(&pid).is_err();
+            let expanded = has_children && closed.binary_search(&ProcessKey::of(process)).is_err();
             if shown {
                 rows.push(VisibleRow {
                     index,
                     depth,
                     has_children,
                     expanded,
+                    parent,
                 });
             }
+            let position = shown.then(|| rows.len() - 1);
             if let Some(kids) = kids {
                 for child in kids.iter().rev() {
-                    stack.push((*child, depth.saturating_add(1), shown && expanded));
+                    stack.push((*child, depth.saturating_add(1), shown && expanded, position));
                 }
             }
         }
@@ -472,9 +558,16 @@ impl ProcessTableModel {
             depth: 0,
             has_children: false,
             expanded: false,
+            parent: None,
         }));
         rows
     }
+}
+
+fn normalized(mut keys: Vec<ProcessKey>) -> Vec<ProcessKey> {
+    keys.sort_unstable();
+    keys.dedup();
+    keys
 }
 
 /// Order two processes by one column.
@@ -794,7 +887,7 @@ mod tests {
     fn a_closed_tree_row_hides_its_whole_branch_and_opens_again() {
         let mut model = ProcessTableModel::new(sample());
         model.set_tree_mode(true);
-        let firefox = model.processes[model.visible_rows()[1].index].pid;
+        let firefox = ProcessKey::of(&model.processes[model.visible_rows()[1].index]);
         assert!(model.visible_rows()[1].expanded);
         model.set_expanded(firefox, false);
         // firefox-tab is hidden, and not appended below as an orphan.
@@ -811,22 +904,73 @@ mod tests {
     }
 
     #[test]
-    fn closing_the_root_hides_every_descendant_and_a_gone_pid_is_forgotten() {
+    fn closing_the_root_hides_every_descendant_and_a_gone_process_is_forgotten() {
         let mut model = ProcessTableModel::new(sample());
         model.set_tree_mode(true);
-        let root = model.processes[model.visible_rows()[0].index].pid;
+        let root = ProcessKey::of(&model.processes[model.visible_rows()[0].index]);
         model.set_expanded(root, false);
         assert_eq!(names(&model), vec!["systemd"]);
         // A leaf is never open.
         model.set_expanded(root, true);
         assert!(!model.visible_rows()[3].has_children);
         assert!(!model.visible_rows()[3].expanded);
-        model.set_collapsed(vec![root, 999_999]);
-        assert_eq!(
-            model.collapsed(),
-            [root],
-            "a PID with no process is dropped"
-        );
+        let gone = ProcessKey {
+            pid: 999_999,
+            started: None,
+        };
+        model.set_collapsed(vec![root, gone]);
+        assert_eq!(model.collapsed(), [root], "one with no process is dropped");
+    }
+
+    /// A new process on the PID of one the person closed is a different
+    /// process: it opens as new.
+    #[test]
+    fn a_reused_pid_does_not_inherit_a_closed_branch() {
+        let mut model = ProcessTableModel::new(sample());
+        model.set_tree_mode(true);
+        let firefox = ProcessKey::of(&model.processes[model.visible_rows()[1].index]);
+        model.set_expanded(firefox, false);
+        assert_eq!(names(&model).len(), 3);
+        let mut reborn = sample();
+        reborn[1].start_time = Field::Value(1_800_000_000.0);
+        model.update(reborn);
+        assert_eq!(names(&model).len(), 4, "the new firefox is open");
+        assert!(model.collapsed().is_empty(), "the old one is forgotten");
+    }
+
+    /// A search shows every ancestor of a match open, even one the person
+    /// closed, and what they had closed is closed again once it is cleared.
+    #[test]
+    fn a_search_opens_a_closed_ancestor_of_a_match_and_clearing_it_closes_it_again() {
+        let mut model = ProcessTableModel::new(sample());
+        model.set_tree_mode(true);
+        let firefox = ProcessKey::of(&model.processes[model.visible_rows()[1].index]);
+        model.set_expanded(firefox, false);
+        model.set_filter("firefox-tab");
+        assert_eq!(names(&model), vec!["systemd", "firefox", "firefox-tab"]);
+        assert!(model.visible_rows()[1].expanded);
+        // Closed during the search, it stays closed for that search only.
+        model.set_expanded(firefox, false);
+        assert_eq!(names(&model), vec!["systemd", "firefox"]);
+        assert_eq!(model.collapsed(), [firefox]);
+        assert_eq!(model.filter_collapsed(), [firefox]);
+        model.set_filter("firefox-ta");
+        assert_eq!(names(&model).len(), 3, "a changed search starts open");
+        model.set_filter("");
+        assert_eq!(names(&model), vec!["systemd", "firefox", "gedit"]);
+        assert!(model.filter_collapsed().is_empty());
+    }
+
+    #[test]
+    fn each_tree_row_knows_the_row_it_hangs_under() {
+        let mut model = ProcessTableModel::new(sample());
+        model.set_tree_mode(true);
+        let parents: Vec<Option<usize>> =
+            model.visible_rows().iter().map(|row| row.parent).collect();
+        // systemd, firefox, firefox-tab, gedit.
+        assert_eq!(parents, vec![None, Some(0), Some(1), Some(0)]);
+        model.set_tree_mode(false);
+        assert!(model.visible_rows().iter().all(|row| row.parent.is_none()));
     }
 
     #[test]

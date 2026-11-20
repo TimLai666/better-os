@@ -795,8 +795,9 @@ pub(crate) struct TableSettings {
     /// The applications the person opened, by group key.
     pub(crate) expanded: Vec<String>,
     /// The processes whose children the person hid on the Details page's
-    /// tree, by PID.
-    pub(crate) collapsed: Vec<u32>,
+    /// tree, and those hidden while the current search is typed.
+    pub(crate) collapsed: Vec<monitor_views::ProcessKey>,
+    pub(crate) filter_collapsed: Vec<monitor_views::ProcessKey>,
 }
 
 impl TableSettings {
@@ -816,6 +817,9 @@ impl TableSettings {
         }
         if model.collapsed() != self.collapsed.as_slice() {
             model.set_collapsed(self.collapsed.clone());
+        }
+        if model.filter_collapsed() != self.filter_collapsed.as_slice() {
+            model.set_filter_collapsed(self.filter_collapsed.clone());
         }
     }
 

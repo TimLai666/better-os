@@ -404,6 +404,27 @@ pub(crate) fn app_lines(model: &AppsModel, column: AppColumn, ascending: bool) -
     lines
 }
 
+/// Each Processes line's parent, by line index: a process hangs under the
+/// application line above it; applications and headings have none.
+pub(crate) fn app_line_parents(lines: &[AppLine]) -> Vec<Option<usize>> {
+    let mut group = None;
+    lines
+        .iter()
+        .enumerate()
+        .map(|(index, line)| match line {
+            AppLine::Section { .. } => {
+                group = None;
+                None
+            }
+            AppLine::Group { .. } => {
+                group = Some(index);
+                None
+            }
+            AppLine::Member { .. } => group,
+        })
+        .collect()
+}
+
 pub(crate) fn app_row(model: &AppsModel, services: bool, index: usize) -> Option<&AppRow> {
     if services {
         model.services().get(index)

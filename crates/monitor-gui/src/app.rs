@@ -26,7 +26,9 @@ use monitor_core::{
 use monitor_ipc::StatusDocument;
 use monitor_store::{Incident, Inventory, InventoryDiff};
 use monitor_views::grouping::GroupingPrecedence;
-use monitor_views::{AppsModel, OverviewModel, ProcessColumn, ProcessFacts, ProcessTableModel};
+use monitor_views::{
+    AppsModel, OverviewModel, ProcessColumn, ProcessFacts, ProcessKey, ProcessTableModel,
+};
 
 use crate::charts::{BuiltRound, LiveHistory, Readings, TableSettings};
 use crate::i18n::Locale;
@@ -238,9 +240,10 @@ pub(crate) struct MonitorApp {
     /// The applications open on the Processes page, kept here so a round
     /// built off the window's thread opens the same ones.
     pub(crate) expanded: Vec<String>,
-    /// The processes closed on the Details page's tree, by PID, kept here
-    /// for the same reason.
-    pub(crate) collapsed: Vec<u32>,
+    /// The processes closed on the Details page's tree, kept here for the
+    /// same reason, and those closed while the current search is typed.
+    pub(crate) collapsed: Vec<ProcessKey>,
+    pub(crate) filter_collapsed: Vec<ProcessKey>,
     round_generation: u64,
     applied_generation: u64,
     pub(crate) processes: ProcessTableModel,
@@ -384,6 +387,7 @@ impl MonitorApp {
             app_selection: None,
             expanded: Vec::new(),
             collapsed: Vec::new(),
+            filter_collapsed: Vec::new(),
             round_generation: 0,
             applied_generation: 0,
             processes,
@@ -510,6 +514,7 @@ impl MonitorApp {
             precedence: self.precedence.clone(),
             expanded: self.expanded.clone(),
             collapsed: self.collapsed.clone(),
+            filter_collapsed: self.filter_collapsed.clone(),
         }
     }
 
@@ -564,7 +569,9 @@ impl MonitorApp {
         self.expanded.retain(|key| apps.is_expanded(key));
         let processes = &self.processes;
         self.collapsed
-            .retain(|pid| processes.collapsed().contains(pid));
+            .retain(|key| processes.collapsed().contains(key));
+        self.filter_collapsed
+            .retain(|key| processes.filter_collapsed().contains(key));
         // A resource that went away (a disk unplugged) is not left selected
         // on a page that can no longer draw it.
         match &self.resource {
@@ -590,6 +597,7 @@ impl MonitorApp {
             |app, state, _: &gpui_component::input::InputEvent, cx| {
                 let text = state.read(cx).value().to_string();
                 app.processes.set_filter(text.clone());
+                app.filter_collapsed = app.processes.filter_collapsed().to_vec();
                 app.apps.set_filter(text);
                 cx.notify();
             },
@@ -726,9 +734,13 @@ impl MonitorApp {
 
     /// Show (`true`) or hide a process's children on the Details page's
     /// tree.
-    pub(crate) fn set_process_expanded(&mut self, pid: u32, expanded: bool) {
-        self.processes.set_expanded(pid, expanded);
+    pub(crate) fn set_process_expanded(&mut self, key: ProcessKey, expanded: bool) {
+        self.processes.set_expanded(key, expanded);
         self.collapsed = self.processes.collapsed().to_vec();
+        self.filter_collapsed = self.processes.filter_collapsed().to_vec();
+        if !expanded && let Some(selected) = self.selected_pid {
+            self.selected_pid = Some(self.processes.selection_after_closing(key.pid, selected));
+        }
     }
 
     /// Open or close an application's processes on the Processes page.
@@ -740,6 +752,12 @@ impl MonitorApp {
             }
         } else {
             self.expanded.retain(|k| k != key);
+            // A process selected inside the group moves onto the group.
+            if let Some(AppSelection::Process(pid)) = self.app_selection
+                && self.apps.group_holds(key, pid)
+            {
+                self.app_selection = Some(AppSelection::Group(key.to_string()));
+            }
         }
     }
 
@@ -1117,7 +1135,11 @@ impl MonitorApp {
         self.app_sort = (column_of(view.app_sort.0), view.app_sort.1);
         self.app_selection = view.app_selection.map(|key| key.selection());
         self.expanded = view.expanded;
-        self.collapsed = view.collapsed;
+        self.collapsed = view
+            .closed_processes
+            .iter()
+            .map(|closed| closed.key())
+            .collect();
         self.processes.set_collapsed(self.collapsed.clone());
         self.processes.set_sort(
             process_column_of(view.process_sort.0),
@@ -1171,7 +1193,11 @@ impl better_ui::restart::Restartable for MonitorApp {
             app_sort: (column_index(self.app_sort.0), self.app_sort.1),
             app_selection: self.app_selection.as_ref().map(SelectionKey::of),
             expanded: self.expanded.clone(),
-            collapsed: self.collapsed.clone(),
+            closed_processes: self
+                .collapsed
+                .iter()
+                .map(crate::restart::ClosedProcess::of)
+                .collect(),
             process_sort: (
                 process_column_index(process_column),
                 ascending(process_direction),

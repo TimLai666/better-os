@@ -436,6 +436,8 @@ struct TableHarness {
     selected: Option<usize>,
     invoked: Vec<usize>,
     expanded: Vec<(usize, bool)>,
+    /// Says which row is each row's parent, for Left and Right to move.
+    parents: bool,
 }
 
 impl Render for TableHarness {
@@ -449,8 +451,17 @@ impl Render for TableHarness {
         rows.push(vec![TableCell::new("Terminal").indent(1)]);
         let view = cx.entity().downgrade();
         let (select, invoke, expand) = (view.clone(), view.clone(), view);
+        let parents: Vec<Option<usize>> = (0..rows.len())
+            .map(|row| (self.open && (row == 1 || row == 2)).then_some(0))
+            .collect();
+        let table = DetailsTable::new("tree", vec![Column::new("Name")], rows);
+        let table = if self.parents {
+            table.parents(parents)
+        } else {
+            table
+        };
         div().size_full().p(px(20.0)).child(
-            DetailsTable::new("tree", vec![Column::new("Name")], rows)
+            table
                 .presorted()
                 .selected(self.selected)
                 .on_select(move |index, _, cx| {
@@ -485,6 +496,7 @@ fn table_harness(cx: &mut TestAppContext) -> (Entity<TableHarness>, &mut VisualT
         selected: None,
         invoked: Vec::new(),
         expanded: Vec::new(),
+        parents: false,
     })
 }
 
@@ -636,5 +648,42 @@ fn escape_gives_focus_back_to_a_toolbar_arrow_segment(cx: &mut TestAppContext) {
     view.read_with(cx, |h, cx| {
         assert!(h.menu.read(cx).is_open(), "the segment had focus again");
         assert_eq!(h.primary, 0);
+    });
+}
+
+/// With each row's parent given, Right on an open row moves to its first
+/// child and Left on a child moves back to its parent, as `TreeView` does.
+#[gpui::test]
+fn right_and_left_move_between_a_tree_row_and_its_children(cx: &mut TestAppContext) {
+    let (view, cx) = table_harness(cx);
+    view.update(cx, |h, cx| {
+        h.parents = true;
+        cx.notify();
+    });
+    let row = bounds(cx, "table-row-0");
+    press(cx, point(row.right() - px(20.0), row.center().y));
+    cx.simulate_keystrokes("right");
+    view.read_with(cx, |h, _| {
+        assert!(h.open);
+        assert_eq!(h.selected, Some(0), "opening does not move");
+    });
+    cx.simulate_keystrokes("right");
+    view.read_with(cx, |h, _| {
+        assert_eq!(h.selected, Some(1), "to the first child")
+    });
+    cx.simulate_keystrokes("down left");
+    view.read_with(cx, |h, _| {
+        assert_eq!(h.selected, Some(0), "from the second child to its parent");
+        assert!(h.open, "moving to the parent does not close it");
+    });
+    cx.simulate_keystrokes("left");
+    view.read_with(cx, |h, _| {
+        assert!(!h.open, "Left on the open parent closes it")
+    });
+    // Terminal has no parent: Left does nothing.
+    cx.simulate_keystrokes("down left");
+    view.read_with(cx, |h, _| {
+        assert_eq!(h.selected, Some(1));
+        assert_eq!(h.expanded, [(0, true), (0, false)]);
     });
 }

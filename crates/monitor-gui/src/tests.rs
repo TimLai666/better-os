@@ -1746,6 +1746,7 @@ fn a_round_built_off_the_window_thread_keeps_the_tables_settings() {
         precedence: monitor_views::grouping::GroupingPrecedence::default(),
         expanded: vec![key.clone()],
         collapsed: Vec::new(),
+        filter_collapsed: Vec::new(),
     };
     // A round that carries no process report still builds, with empty
     // tables that show the same settings.
@@ -2365,7 +2366,11 @@ fn what_was_closed_while_a_round_was_built_stays_closed() {
         command_lines: false,
         precedence: monitor_views::grouping::GroupingPrecedence::default(),
         expanded: Vec::new(),
-        collapsed: vec![100],
+        collapsed: vec![monitor_views::ProcessKey {
+            pid: 100,
+            started: ProcessFacts::synthetic(100, "alpha").start_token(),
+        }],
+        filter_collapsed: Vec::new(),
     };
     current.apply_apps(&mut apps);
     assert!(!apps.is_expanded(&key));
@@ -2379,5 +2384,79 @@ fn what_was_closed_while_a_round_was_built_stays_closed() {
             .iter()
             .any(|line| matches!(line, tables::AppLine::Member { .. })),
         "no process of a closed group is listed"
+    );
+}
+
+/// Each process line hangs under the application line above it, for Left
+/// to move to and Right to come from (review of ticket 145).
+#[test]
+fn a_process_line_hangs_under_its_application_line() {
+    use tables::AppLine;
+    let lines = [
+        AppLine::Section {
+            services: false,
+            count: 2,
+        },
+        AppLine::Group {
+            services: false,
+            index: 0,
+        },
+        AppLine::Member { process: 3 },
+        AppLine::Member { process: 4 },
+        AppLine::Group {
+            services: false,
+            index: 1,
+        },
+        AppLine::Section {
+            services: true,
+            count: 1,
+        },
+        AppLine::Group {
+            services: true,
+            index: 0,
+        },
+        AppLine::Member { process: 7 },
+    ];
+    assert_eq!(
+        tables::app_line_parents(&lines),
+        vec![None, None, Some(1), Some(1), None, None, None, Some(6)]
+    );
+}
+
+/// Closing a group or a branch moves a selection inside it onto the closed
+/// row, so End task never acts on a row nobody can see.
+#[test]
+fn a_selection_inside_a_closed_row_moves_onto_it() {
+    let mut a = ProcessFacts::synthetic(100, "alpha");
+    a.cgroup = Field::Value(
+        "/user.slice/user-1000.slice/user@1000.service/app.slice/app-gnome-alpha-1.scope".into(),
+    );
+    let mut b = ProcessFacts::synthetic(101, "alpha-helper");
+    b.cgroup = a.cgroup.clone();
+    b.parent_pid = Field::Value(100);
+    let mut c = ProcessFacts::synthetic(102, "alpha-grandchild");
+    c.cgroup = a.cgroup.clone();
+    c.parent_pid = Field::Value(101);
+    let d = ProcessFacts::synthetic(200, "beta");
+    let processes = vec![a, b, c, d];
+    let apps = monitor_views::AppsModel::new(
+        processes.clone(),
+        monitor_views::grouping::GroupingPrecedence::default(),
+    );
+    let key = apps.applications()[0].group.key.clone();
+    assert!(apps.group_holds(&key, 101));
+    assert!(!apps.group_holds(&key, 200));
+    let table = ProcessTableModel::new(processes);
+    assert_eq!(table.selection_after_closing(100, 102), 100, "a grandchild");
+    assert_eq!(table.selection_after_closing(100, 101), 100);
+    assert_eq!(
+        table.selection_after_closing(101, 100),
+        100,
+        "an ancestor stays"
+    );
+    assert_eq!(
+        table.selection_after_closing(100, 200),
+        200,
+        "elsewhere stays"
     );
 }

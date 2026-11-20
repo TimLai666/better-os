@@ -74,3 +74,46 @@ The owner reported on 2026-11-16 (Better Monitor 0.2.16):
   marked graphics figure was not on screen: this machine's card reports its
   utilization from the driver, so the note does not appear; the mark is held
   by the test above.
+- Review fixes:
+  - Closing a row moves a selection inside it onto the closed row, on the
+    Details tree (`ProcessTableModel::selection_after_closing`) and on the
+    Processes page (`AppsModel::group_holds`), so End task, End process tree,
+    and Properties never act on a hidden row.
+  - A search shows every ancestor of a match open, even one the person
+    closed; what they close during a search is kept apart and forgotten when
+    the search changes, so the tree is as they left it once it is cleared.
+    The Processes page has no such case: its search matches application
+    names only, so a closed group never hides a match.
+  - Closed processes are remembered by PID and start token
+    (`ProcessKey`, the same token a process action checks), so a new process
+    on a closed PID opens as new. The update hand-off stores them as
+    `closed_processes`; a 0.2.16 hand-off, which has none, still reads.
+  - `DetailsTable::parents` gives `TreeView`'s other keys where a window
+    says each row's parent: Right on an open row moves to its first child,
+    Left on a child moves to its parent. Both Monitor tables pass it; a table
+    that does not behaves as before.
+  - The graphics card's marked note sits right after the figures it marks.
+- Seen live (screen updates not paused), English: a selected child whose
+  parent is closed with its arrow moves onto the parent, and the branch stays
+  closed 3 and 7 seconds later while rows reorder
+  (`en-US-7` to `en-US-10`); on the Processes page a selected process moves
+  onto its group when the group is closed, still closed 4 seconds later
+  (`en-US-11` to `en-US-13`). No process action was clicked.
+
+### Checks that ran
+
+Run in the worktree through the build lock wrapper, on 2026-11-21:
+
+- `cargo fmt --all --check`: exit 0.
+- `cargo +stable clippy -p better-ui -p monitor-views -p monitor-gui -p git-gui
+  -p manager-gui -p app-chooser-gui -p fluent-gallery -p awake-gui
+  -p launcher-gui -p touchpad-gui --all-targets -- -D warnings` (rustc
+  1.97.1): exit 0.
+- `cargo test -p better-ui -p monitor-views -p monitor-gui -p git-gui`:
+  exit 0, 534 passed, 0 failed.
+- Not run: clippy and tests of `files-gui`, a dependent of `better-ui`. It
+  does not build on this machine: `glib-sys` finds no `glib-2.0` through
+  pkg-config (GStreamer, through `files-preview`). Nothing in `files-gui`
+  changed.
+- `escape_gives_focus_back_to_a_toolbar_arrow_segment` was also run with the
+  focus hand-back removed, and failed, so it guards the fix.

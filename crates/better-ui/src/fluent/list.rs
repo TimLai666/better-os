@@ -1033,7 +1033,10 @@ type ContextHandler = Rc<dyn Fn(usize, gpui::Point<Pixels>, &mut Window, &mut Ap
 /// WinUI's `TreeView` draws one: a single press anywhere in the chevron's
 /// hit area (the row's full height, wider than the glyph) opens or closes
 /// it without selecting or invoking the row, and Right and Left open and
-/// close the selected row. A double click keeps meaning invoke.
+/// close the selected row. A double click keeps meaning invoke. A window
+/// that says which row is each row's parent ([`DetailsTable::parents`])
+/// also gets the rest of `TreeView`'s keys: Right on an open row moves to
+/// its first child, and Left on a row that is not open moves to its parent.
 #[derive(IntoElement)]
 pub struct DetailsTable {
     id: ElementId,
@@ -1049,6 +1052,7 @@ pub struct DetailsTable {
     on_invoke: Option<IndexHandler>,
     on_context_menu: Option<ContextHandler>,
     on_expand: Option<ExpandHandler>,
+    parents: Option<Rc<Vec<Option<usize>>>>,
 }
 
 /// A tree row asked to open (`true`) or close (`false`), by its index.
@@ -1083,6 +1087,7 @@ impl DetailsTable {
             on_invoke: None,
             on_context_menu: None,
             on_expand: None,
+            parents: None,
         }
     }
 
@@ -1157,22 +1162,42 @@ impl DetailsTable {
         self.on_expand = Some(Rc::new(handler));
         self
     }
+
+    /// Each row's parent, by index into the rows given, for Left and Right
+    /// to move between a row and its parent or first child. Indentation
+    /// cannot say it: it also lines rows up (a group with one process is
+    /// indented to sit under the named groups). Without it the keys only
+    /// open and close.
+    pub fn parents(mut self, parents: Vec<Option<usize>>) -> Self {
+        self.parents = Some(Rc::new(parents));
+        self
+    }
 }
 
-/// The tree key rule [`DetailsTable`] follows: whether a key asks the
-/// selected row, whose cell's expander is `expander`, to open
-/// (`Some(true)`) or close (`Some(false)`). `None` when the key does
-/// nothing there: Right on an open row, Left on a closed one, or a row
-/// with no children.
-///
-/// Moving to a parent or a first child, as `TreeView` also does, is left
-/// out: a table's indentation also lines rows up (a group with one process
-/// is indented to sit under the named groups), so it cannot say which row
-/// is a parent.
-pub fn tree_step(expander: Option<bool>, key: Key) -> Option<bool> {
+/// What Right or Left does on a tree's selected row.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TreeStep {
+    /// Open (`true`) or close (`false`) the selected row.
+    Open(bool),
+    /// Select this row, by index into the rows given.
+    Select(usize),
+}
+
+/// The tree key rule [`DetailsTable`] follows, `TreeView`'s: Right opens a
+/// closed row and moves from an open one to its `first_child`; Left closes
+/// an open row and moves from any other row to its `parent`. `None` when
+/// the key does nothing there.
+pub fn tree_step(
+    expander: Option<bool>,
+    parent: Option<usize>,
+    first_child: Option<usize>,
+    key: Key,
+) -> Option<TreeStep> {
     match (key, expander) {
-        (Key::Right, Some(false)) => Some(true),
-        (Key::Left, Some(true)) => Some(false),
+        (Key::Right, Some(false)) => Some(TreeStep::Open(true)),
+        (Key::Right, Some(true)) => first_child.map(TreeStep::Select),
+        (Key::Left, Some(true)) => Some(TreeStep::Open(false)),
+        (Key::Left, _) => parent.map(TreeStep::Select),
         _ => None,
     }
 }
@@ -1211,6 +1236,7 @@ struct RowParts {
     on_invoke: Option<IndexHandler>,
     on_context_menu: Option<ContextHandler>,
     on_expand: Option<ExpandHandler>,
+    parents: Option<Rc<Vec<Option<usize>>>>,
 }
 
 fn table_row(position: usize, parts: &RowParts, p: &Palette) -> gpui::AnyElement {
@@ -1452,6 +1478,7 @@ impl RenderOnce for DetailsTable {
             on_invoke: self.on_invoke.clone(),
             on_context_menu: self.on_context_menu.clone(),
             on_expand: self.on_expand.clone(),
+            parents: self.parents.clone(),
         });
 
         let body: gpui::AnyElement = if count == 0 {
@@ -1545,9 +1572,32 @@ impl RenderOnce for DetailsTable {
                         .rows
                         .get(row)
                         .and_then(|cells| cells.iter().find_map(|cell| cell.expander));
-                    if let Some(open) = tree_step(expander, key) {
-                        cx.stop_propagation();
-                        expand(row, open, window, cx);
+                    let parents = parts.parents.as_deref();
+                    let parent = parents.and_then(|parents| parents.get(row).copied().flatten());
+                    // The first row below it, in the order drawn, whose
+                    // parent it is.
+                    let first_child = parents.and_then(|parents| {
+                        let at = position?;
+                        parts.order[at + 1..]
+                            .iter()
+                            .copied()
+                            .find(|candidate| parents.get(*candidate) == Some(&Some(row)))
+                    });
+                    match tree_step(expander, parent, first_child, key) {
+                        Some(TreeStep::Open(open)) => {
+                            cx.stop_propagation();
+                            expand(row, open, window, cx);
+                        }
+                        Some(TreeStep::Select(next)) => {
+                            if let Some(select) = parts.on_select.as_ref() {
+                                cx.stop_propagation();
+                                if let Some(at) = parts.order.iter().position(|r| *r == next) {
+                                    key_scroll.scroll_to_item(at, gpui::ScrollStrategy::Center);
+                                }
+                                select(next, window, cx);
+                            }
+                        }
+                        None => {}
                     }
                 } else if let Some(next) = table_step(position, parts.order.len(), key)
                     && let Some(select) = parts.on_select.as_ref()

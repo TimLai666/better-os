@@ -24,7 +24,7 @@ use gpui::*;
 use gpui_component::{Icon, IconName};
 use monitor_core::CollectorHealth;
 use monitor_views::overview::ResourceVerdict;
-use monitor_views::{ProcessColumn, SortDirection};
+use monitor_views::{ProcessColumn, ProcessKey, SortDirection};
 
 use crate::app::{MenuTarget, MonitorApp, Page, Resource};
 use crate::charts::{AdapterKind, CAPACITY, SeriesKey};
@@ -579,6 +579,7 @@ impl MonitorApp {
             selection_of,
         );
         DetailsTable::new("processes", columns, rows)
+            .parents(crate::tables::app_line_parents(&lines))
             .presorted()
             .fill()
             .sort(sort_index.map(|column| SortState { column, ascending }))
@@ -668,6 +669,11 @@ impl MonitorApp {
             .iter()
             .filter_map(|row| self.processes.row(row.index).map(|process| process.pid))
             .collect();
+        let keys: Vec<ProcessKey> = visible
+            .iter()
+            .filter_map(|row| self.processes.row(row.index).map(ProcessKey::of))
+            .collect();
+        let parents: Vec<Option<usize>> = visible.iter().map(|row| row.parent).collect();
         let selected = self
             .selected_pid
             .and_then(|pid| pids.iter().position(|candidate| *candidate == pid));
@@ -704,10 +710,10 @@ impl MonitorApp {
                 column,
                 ascending: direction == SortDirection::Ascending,
             });
-        let (select_pids, invoke_pids, expand_pids, menu_pids) =
-            (pids.clone(), pids.clone(), pids.clone(), pids);
+        let (select_pids, invoke_pids, menu_pids) = (pids.clone(), pids.clone(), pids);
         let sort_columns = columns_shown.clone();
         DetailsTable::new("details", columns, rows)
+            .parents(if tree { parents } else { Vec::new() })
             .presorted()
             .fill()
             .sort(sort)
@@ -734,8 +740,8 @@ impl MonitorApp {
             // children (ticket 145); a double click still opens Properties.
             .on_expand({
                 let expand = Self::act_with(cx, move |this, (index, open): (usize, bool), _, _| {
-                    if let Some(pid) = expand_pids.get(index).copied() {
-                        this.set_process_expanded(pid, open);
+                    if let Some(key) = keys.get(index).copied() {
+                        this.set_process_expanded(key, open);
                     }
                 });
                 move |index, open, window, cx| expand((index, open), window, cx)
@@ -1598,14 +1604,10 @@ impl MonitorApp {
         ] {
             facts = facts.child(crate::shell::property_row(name, value, none, p));
         }
-        // The utilization figure is marked with the same sign (ticket 145).
-        if let Some(note) = crate::card_notes::gpu_utilization_note(&gpu, c) {
-            facts = facts.child(div().pt(spacing::SM).child(label(
-                note,
-                CAPTION,
-                p.text_secondary,
-            )));
-        }
+        // Right under the figures, beside the Utilization figure it marks
+        // with the same sign (ticket 145).
+        let note = crate::card_notes::gpu_utilization_note(&gpu, c)
+            .map(|note| label(note, CAPTION, p.text_secondary));
         let mut page = div()
             .flex()
             .flex_col()
@@ -1633,6 +1635,7 @@ impl MonitorApp {
             .child(chart)
             .children(memory_chart)
             .child(stats)
+            .children(note)
             .child(facts);
         page = page
             .child(section_title(c.gpu_apps, p))
