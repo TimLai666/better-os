@@ -1,52 +1,42 @@
 # Better OS top bar
 
-A menu bar across the top of the screen, as on macOS: the Better OS menu and
-the focused application's menus on the left, the tray, input method, network,
-sound, battery, clock, and notifications on the right. This file says what the
-bar contains, how each part behaves in every state, the exact copy in both
-languages, how it is built on GNOME 46, and how it sits with the taskbar at the
-bottom. The decision it needs is
-[ADR 0036](/engineering/decisions/0036-top-bar-dock-surface.md) (proposed);
-the work is cut into tickets 150 to 160. The look follows `DESIGN.md`, and
-every control named here is a `better_ui::fluent` control. The mockups in
-`design/top-bar/` draw the bar in both appearances, in zh-TW, on a 1440 × 900
-logical screen (the owner's display at scale 2) with Zorin's taskbar as
-decision D3 (a) leaves it: `rest-betteros` (a Better OS window focused, full
-menus), `rest-other` (another application, shared actions only),
-`betteros-menu`, `app-menu`, `tray-overflow`, `clock-flyout`, and `rest-960`
-(a 960-wide screen), each as `-light.html` and `-dark.html`. The English copy is
-in the tables below.
+A bar across the top of the screen: the Better OS menu and the focused
+application's name on the left, the tray, input method, network, sound,
+battery, clock, and notifications on the right. It does not carry
+applications' menus: every window keeps its own menu row, and the bar offers
+what a window does not have (owner, 2026-11-21, decision D5). This file says
+what the bar contains, how each part behaves in every state, the exact copy in
+both languages, how it is built on GNOME 46, and how it sits with the taskbar
+at the bottom. Its shell decision is
+[ADR 0036](/engineering/decisions/0036-top-bar-dock-surface.md) (accepted);
+the work is cut into tickets 149, 150 to 152, and 156 to 160. The look follows
+`DESIGN.md`, and every control named here is a `better_ui::fluent` control.
+The mockups in `design/top-bar/` draw the bar in both appearances, in zh-TW, on
+a 1440 × 900 logical screen (the owner's display at scale 2) with Zorin's
+taskbar as decision D3 (a) leaves it: `rest-betteros` (a Better OS window
+focused) and `rest-other` (another application), which have the same shape,
+`betteros-menu`, `app-actions` (the application name's menu open),
+`tray-overflow`, `clock-flyout`, and `rest-960` (a 960-wide screen), each as
+`-light.html` and `-dark.html`. The English copy is in the tables below.
 
 Where this file and a ticket differ, the ticket decides behaviour and this file
 decides layout and copy.
 
-## 0. Decisions that are the owner's
+## 0. The owner's decisions
 
-Nothing below is built until these are answered. Each has a recommendation and
-what each answer costs.
+All seven were answered by the owner on 2026-11-21. D5 and D6 were answered
+differently from what the first version of this design recommended, and the
+sections below follow the answers.
 
-**Answered by the owner on 2026-11-21:** D1 is (A), the Better OS window made
-a dock. D2: ADR 0036 is accepted. D3 is (a) now and (c) once ticket 142's
-taskbar exists. D4 is (a) until ticket 94 makes Better Launcher a complete
-start menu, then (b). D7 is (a), the Better OS flyout. D5 (answered the same day): the bar
-carries no application menus at all. A window keeps its own menu row and the
-bar offers other things: the Better OS menu, the focused application's name
-with the actions every window has, and the status area. The sections and
-tickets below that describe handing menus to the bar (the AppMenu registrar,
-`com.canonical.dbusmenu` export from `better-ui`, tickets 153 to 155) are
-being revised to match and are not to be built as written. D6 (answered the same day): accepted; old
-X11 (XEmbed) tray icons are not shown while the bar is on, and the bar's
-settings card says so.
-
-| # | Decision | Recommendation | What each choice costs |
+| # | Question | Answer (2026-11-21) | Refused |
 | --- | --- | --- | --- |
-| D1 | **Which shape the bar is.** (A) A Better OS window drawn by Rust and GPUI, which GNOME Shell makes a *dock* and places at the top (section 9.3). (B) GNOME's own top panel, put back at the top of the screen, with a Better OS menu and an application menu that the extension draws in JavaScript (section 9.5). | **A.** | **A:** everything is Fluent and every decision is Rust with tests; the right side (tray host, network, sound, battery, input method, clock, notifications) is rebuilt in Rust, which is most of tickets 156–158. The extension grows a fourth kind of power: it starts one fixed program. **B:** the right side is GNOME's and works on the first day (about three tickets instead of ten), but the bar looks like Zorin's panel, not Fluent; the extension would hold the menu tree and draw labels it was sent, which breaks the "keeps nothing, takes no free text" bounds far more widely than A, and the mockups in `design/top-bar/` would not describe it. |
-| D2 | **Accept ADR 0036**, which widens ADR 0018's bounds for the panel relay: start exactly one fixed program as a Wayland client and make its window a dock; reserve a strip of the screen; hide GNOME's own top panel while the bar runs; report the focused window and the shell's notifications; perform the window actions every window has. | **Accept.** | **Accept:** shape A can be built. **Refuse:** on GNOME 46 nothing but GNOME Shell can draw a panel (section 9.1), so the bar cannot exist without some JavaScript beyond today's bounds; the honest outcome is no top bar on GNOME, and a top bar only on COSMIC if ticket 143 goes that way (section 11). |
-| D3 | **What happens to Zorin's bottom taskbar while the bar is on.** (a) It stays as it is, minus the things the bar now shows: its clock and its system menu (its tray icons already left with the tray switch, section 6.1). (b) It becomes a dock: centred icons, no clock, no system menu, no tray, hidden when a window touches it. (c) Ticket 142's Better OS taskbar replaces it. | **(a) now, (c) when ticket 142 ships.** | **(a):** one Better Defaults entry (two element flags in Zorin's own setting), undone exactly; Zorin's taskbar keeps its Start button and window list. **(b):** four more Zorin settings written (position of elements, intellihide, sizes), a bigger visible change, and still Zorin's code. **(c):** depends on ticket 142's own ADR and build; the two Better OS surfaces then share the dock relay this design adds, and Zorin's taskbar is turned off by the component (ticket 142's rule). Section 10 has the geometry for each. |
-| D4 | **Ticket 142's taskbar left end**, which this bar affects because power, restart, lock, and log out move here: (a) the Better OS button beside Show Applications, Zorin's start button kept; (b) the Better OS button replaces Zorin's start button. | **(a) until ticket 94 makes Better Launcher a complete start menu, then (b).** | **(a):** two buttons that both open "everything" for a while. **(b):** Zorin's menu (with its own power items) goes away, so this bar's Better OS menu must be installed whenever (b) is: ticket 142's manifest declares the top bar as a dependency in that shape. |
-| D5 | **A Better OS window's own menu row while the bar shows its menus.** (a) Hidden, as on macOS. (b) Kept as well. | **(a).** | **(a):** one place for menus; when the bar is off, missing, or has not accepted the window's menus within one second, the window shows its row again, so a window is never without menus. **(b):** the same commands twice on screen. |
-| D6 | **Old X11 tray icons (XEmbed).** Zorin's AppIndicator extension also shows these. While the bar is on, that extension is off (section 6.1), and the bar shows StatusNotifierItems only. | **Accept: XEmbed icons are not shown while the bar is on.** | **Accept:** a program that only has an XEmbed icon has no icon while the bar is on; the bar's settings card says so. **Refuse:** keep Zorin's AppIndicator extension on and let both draw every StatusNotifierItem, which breaks the owner's "they show in the bar and not in the taskbar". |
-| D7 | **Notifications in the bar.** (a) The clock opens a Better OS flyout that lists GNOME's notifications, relayed from the shell to the bar service only. (b) The clock opens GNOME's own calendar and notification list, which on Zorin lives in the bottom taskbar and opens from the bottom of the screen. | **(a).** | **(a):** a notification's app, title, and body cross the session bus to `better-top-bar` (the counterpart, checked by its executable path, as ADR 0018 does), ticket 151 carries the relay and ticket 158 the flyout. **(b):** nothing crosses; the calendar and the list stay at the bottom while the clock sits at the top. |
+| D1 | Which shape the bar is | **(A)** A Better OS window drawn by Rust and GPUI, which GNOME Shell makes a dock and places at the top (section 9.3). | (B) GNOME's own top panel moved back to the top, with menus drawn in JavaScript (section 9.5). |
+| D2 | ADR 0036, which widens ADR 0018's bounds for the panel relay | **Accepted.** | Refusing it, which leaves no top bar on GNOME. |
+| D3 | Zorin's bottom taskbar while the bar is on | **(a) now:** it stays, minus its clock and system menu. **(c) once ticket 142's taskbar exists:** that taskbar replaces it. Section 10. | (b) Zorin's taskbar turned into a centred, hiding dock. |
+| D4 | Ticket 142's taskbar left end | **(a)** the Better OS button beside Show Applications, **until ticket 94 makes Better Launcher a complete start menu, then (b)** the Better OS button replaces Zorin's start button. | Going to (b) before Better Launcher is a complete start menu. |
+| D5 | Applications' menus | **The bar carries no application menus at all.** The owner: the bar is not there to replace a window's menus but to offer other things. A window keeps its own menu row, always. The left side is the Better OS menu and the focused application's name, which opens the actions every window has (section 4). Nothing registers with or serves `com.canonical.AppMenu.Registrar`, `better-ui` exports no `com.canonical.dbusmenu` menus, no window hides its menu row, and the bar never shows File, Edit, or View for any application, Better OS's own included. | Global menus in the bar, with a Better OS window's own row hidden (the first recommendation) or kept as well. Section 9.7 records what that would have taken. |
+| D6 | Old X11 (XEmbed) tray icons | **Shown in the bar too**, through a small Rust bridge of Better OS's own that takes the XEmbed tray selection on XWayland and offers each icon to the bar as a StatusNotifierItem, as KDE's `xembedsniproxy` does (sections 6.1 and 9.6). Zorin's AppIndicator extension is still off while the bar is on, which is what frees the selection. | Not showing XEmbed icons while the bar is on (the first recommendation); keeping Zorin's AppIndicator extension on beside the bar. |
+| D7 | Notifications in the bar | **(a)** The clock opens a Better OS flyout that lists GNOME's notifications, relayed from the shell to the bar service only (section 6.7). | (b) The clock opens GNOME's own calendar and list, which on Zorin opens from the bottom taskbar. |
 
 ## Sources this design was checked against
 
@@ -90,8 +80,18 @@ Read on the owner's machine on 2026-11-21, without writing anything:
   `systemMenu`, `dateMenu`, `desktopButton`, all visible.
 - Zorin's AppIndicator extension `zorin-appindicator@zorinos.com` owns
   `org.kde.StatusNotifierWatcher` (`busctl --user list`: owner `gnome-shell`),
-  ships `statusNotifierWatcher.js` and `trayIconsManager.js` (XEmbed), and has
+  ships `statusNotifierWatcher.js` and `trayIconsManager.js`, and has
   `legacy-tray-enabled true`, `tray-pos 'right'`; five items were registered.
+  Its XEmbed tray is GNOME Shell's own `Shell.TrayManager`, which the extension
+  creates (`trayIconsManager.js:67`); GNOME Shell holds no tray selection of
+  its own while the extension is off.
+- XWayland: package `xwayland 2:23.2.6-1ubuntu0.8`. It starts on demand: the
+  socket `/tmp/.X11-unix/X0` existed (created at login) while no `Xwayland`
+  process ran (`pgrep -x Xwayland` found none). When it starts, Mutter runs
+  `/etc/xdg/Xwayland-session.d/` (`00-at-spi`, `00-xrdb`, `10-ibus-x11` on the
+  machine) and the user units of `gnome-session-x11-services.target`
+  (`org.gnome.SettingsDaemon.XSettings.service`, which is `PartOf` that target,
+  in `/usr/lib/systemd/user/`).
 - `org.freedesktop.Notifications` and `org.gtk.Notifications` are owned by
   GNOME Shell. `pipewire-pulse`, `ibus-daemon --panel disable` (GNOME Shell is
   the ibus panel), and `gsd-power` run; NetworkManager and UPower are on the
@@ -112,8 +112,15 @@ Read on the owner's machine on 2026-11-21, without writing anything:
   compositor lacks it) and `WindowKind::AnchoredPopup` (`xdg_popup`,
   `platform.rs:2008-2014`). It connects with `Connection::connect_to_env()`
   (`wayland/client.rs:639`), which takes `WAYLAND_SOCKET` first
-  (`wayland-client-0.31.15/src/conn.rs:46-52`). Zed itself draws an in-window
-  application menu on Linux (`crates/title_bar/src/application_menu.rs`).
+  (`wayland-client-0.31.15/src/conn.rs:46-52`).
+- `Cargo.lock`: `x11rb 0.13.2` and `x11rb-protocol 0.13.2`
+  (`MIT OR Apache-2.0`, `docs/third-party-licenses.md:1100-1101`), pulled in by
+  `gpui_linux`, which enables the `xkb`, `randr`, `xinput`, `cursor`,
+  `resource_manager`, `sync`, and `dri3` features
+  (`gpui_linux/Cargo.toml:120-129`). x11rb 0.13.2's own `Cargo.toml` has
+  `composite`, `damage`, `xfixes`, `shape`, and `xtest` features that only turn
+  on modules of `x11rb-protocol` (lines 77-137). `xcb 1.7.0` (`MIT`) is also in
+  the lock and links libxcb.
 - Better OS's own code: Better Git draws File, View, Repository, and Branch in
   its titlebar (`crates/git-gui/src/render.rs:583-960`); `awake-tray` and
   `monitor-tray` each serve their own `com.canonical.dbusmenu`
@@ -139,29 +146,18 @@ Read from upstream sources on 2026-11-21:
   (<https://gitlab.gnome.org/GNOME/mutter/-/issues/973>) and issue 1053, where
   the maintainers wrote that Mutter does not want to support arbitrary third
   party panels (<https://gitlab.gnome.org/GNOME/mutter/issues/1053>).
-- GTK `main`, `gtk/gtkapplication-wayland.c`
-  (<https://raw.githubusercontent.com/GNOME/gtk/main/gtk/gtkapplication-wayland.c>):
-  a GTK 4 `GtkApplication` window calls
-  `gdk_wayland_toplevel_set_dbus_properties` with the application's menubar
-  and app-menu object paths, which reach Mutter through `gtk_shell1`.
-- KDE bug 424485 (<https://bugs.kde.org/show_bug.cgi?id=424485>): GTK's
-  Wayland window-to-menu link is `gtk_shell1`, which KWin does not implement;
-  GTK 4 dropped GtkModule loading, so `appmenu-gtk-module` cannot reach a
-  GTK 4 application.
-- Chromium `main`, `chrome/browser/ui/views/frame/dbus_appmenu_registrar.cc`
-  and `ui/ozone/platform/wayland/host/wayland_toplevel_window.cc`
-  (<https://raw.githubusercontent.com/chromium/chromium/main/chrome/browser/ui/views/frame/dbus_appmenu_registrar.cc>,
-  <https://raw.githubusercontent.com/chromium/chromium/main/ui/ozone/platform/wayland/host/wayland_toplevel_window.cc>):
-  on X11 it calls `com.canonical.AppMenu.Registrar.RegisterWindow`; on
-  Wayland it announces the menu only through `org_kde_kwin_appmenu_manager`.
-- Mozilla bug 1883184, "Initial support for GTK global menu"
-  (<https://bugzilla.mozilla.org/show_bug.cgi?id=1883184>): landed in
-  Firefox 125, disabled by default, exporting with libdbusmenu.
-- Qt's Wayland platform plugin wraps `org_kde_kwin_appmenu_manager`
-  (<https://codebrowser.dev/qt6/qtbase/src/plugins/platforms/wayland/qwaylandappmenu_p.h.html>);
-  Qt's `QGenericUnixTheme` exports a `QMenuBar` and registers it with
-  `com.canonical.AppMenu.Registrar` (KDE review
-  <https://phabricator.kde.org/D3085?id=9146>).
+- KDE's `xembedsniproxy`, plasma-workspace `master`, directory
+  `xembed-sni-proxy/` (<https://invent.kde.org/plasma/plasma-workspace/-/tree/master/xembed-sni-proxy>),
+  files `fdoselectionmanager.cpp`, `sniproxy.cpp`, `xcbutils.h`,
+  `xtestsender.cpp`, and `CMakeLists.txt`, read on 2026-11-21 at the commit
+  that last changed `sniproxy.cpp`, `6e3f75f1` (2026-05-01, "xembed-sni-proxy:
+  fix scroll event race condition on Wayland"). Licence
+  `LGPL-2.1-or-later`; the bridge in section 9.6 follows its method and copies
+  none of its code. What each part does is cited by line in section 9.6.
+- Section 9.7's sources on global menus: GTK `gtkapplication-wayland.c`, KDE
+  bug 424485, Chromium's `dbus_appmenu_registrar.cc` and
+  `wayland_toplevel_window.cc`, Mozilla bug 1883184, Qt's `qwaylandappmenu_p.h`
+  and KDE review D3085, with their URLs there.
 - libcosmic's panel applet chapter
   (<https://pop-os.github.io/libcosmic-book/panel-applets.html>) and the Arch
   wiki's COSMIC page (<https://wiki.archlinux.org/title/Cosmic>).
@@ -170,10 +166,10 @@ Read from upstream sources on 2026-11-21:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────────────┐
-│ ◆  Better Files  檔案  編輯  檢視  前往  視窗  說明        ▴ ◈ ◈ ◈  注  ᯤ  🔊  🔋 87%  11月21日 週六 下午3:42  🔔 │ 32
+│ ◆  Better Files                                  ▴ ◈ ◈ ◈  酷  ᯤ  🔊  🔋 87%  11月21日 週六 下午3:42  🔔 │ 32
 └─────────────────────────────────────────────────────────────────────────────────────────┘
- ▲  ▲             ▲                                    ▲          ▲   ▲   ▲    ▲         ▲               ▲
- │  app name      app menus                            overflow   tray    IME net  sound battery  clock      notifications
+ ▲  ▲                                             ▲          ▲   ▲   ▲    ▲         ▲               ▲
+ │  app name (its window actions)                 overflow   tray    IME net  sound battery  clock      notifications
  Better OS menu
 ```
 
@@ -184,15 +180,16 @@ Read from upstream sources on 2026-11-21:
   bottom edge in the card stroke. No shadow, no radius: it meets the screen's
   edges. The bar follows the person's appearance like every Better OS window
   (ADR 0019).
-- **Items**: each item is a button 32px tall, 8px side padding (12px for menu
-  titles), with the subtle fill on hover and while its menu is open, 4px
-  radius inset 2px from the bar's top and bottom. Text is Body (14/20); the
-  application name is Body Strong. Icons are 16px. Tray and status icons are
-  single-colour symbolic icons (`DESIGN.md`, Icons), the Better OS mark is the
-  one coloured picture.
-- **Order**, leading to trailing: Better OS menu, application name, application
-  menus, then a flexible gap, then tray, input method, network, sound,
-  battery, clock, notifications. Nothing is centred.
+- **Items**: each item is a button 32px tall, 8px side padding, with the
+  subtle fill on hover and while its menu is open, 4px radius inset 2px from
+  the bar's top and bottom. Text is Body (14/20); the application name is Body
+  Strong. Icons are 16px. Tray and status icons are single-colour symbolic
+  icons (`DESIGN.md`, Icons) where the program gives a symbolic name; the
+  Better OS mark is the one coloured picture Better OS adds.
+- **Order**, leading to trailing: Better OS menu, application name, then a
+  flexible gap, then tray, input method, network, sound, battery, clock,
+  notifications. Nothing is centred, and nothing sits between the application
+  name and the gap: the bar never shows an application's own menus (D5).
 - **Menus and flyouts** drop from the bar: menus are `fluent::menu` (8px
   radius, flyout fill, shadow), their top edge 4px under the bar, their
   leading edge aligned with the item's leading edge (trailing edge for items on
@@ -259,7 +256,11 @@ Accessible name of the button: Better OS 選單 / Better OS menu.
 
 The focused window's application name in Body Strong, as GNOME names it
 (`Shell.WindowTracker`'s application for the window, from its desktop entry,
-in the person's language). Truncated with an ellipsis at 200px.
+in the person's language). Truncated with an ellipsis at 200px. It is the same
+for every application, Better OS's own included: the name, and a menu of the
+actions every window has. What an application can do beyond that is in its
+own window, on its own menu row or command bar, which the bar never hides or
+repeats (D5).
 
 | State | What is drawn |
 | --- | --- |
@@ -281,116 +282,51 @@ Its menu, the actions every window has:
 | Quit | 結束 {app} | Quit {app} | — | `Shell.App.request_quit()` | always |
 
 The shortcut column shows only shortcuts GNOME itself binds (`close` is
-`<Alt>F4` on the machine); the bar never invents one. For a Better OS window
-these items are not drawn here: its own Window and File menus carry them
-(section 5.2), and the application name opens a menu of About {app}, Settings…
-and Quit {app}, as on macOS.
+`<Alt>F4` on the machine); the bar never invents one, and it does not read a
+window's own key map. An item the window does not allow is not drawn, never
+drawn disabled, so the menu is never a list of things that cannot be done. A
+Quit that the application answers by asking about unsaved work is the
+application's own dialog; the bar does not wait for it.
 
-Accessible name: {app} 的應用程式選單 / {app} application menu.
+Accessible name of the button: {app} 選單 / {app} menu.
 
-## 5. Application menus
+## 5. Menus the bar draws
 
-### 5.1 Where a window's menus come from
+The bar draws three kinds of menu, all as `fluent::menu`: the Better OS menu
+(section 3), the application name's menu (section 4), and a tray item's own
+menu, which the item serves over `com.canonical.dbusmenu` and the bar reads as
+a client (section 6.1). The bar serves no menu to anyone. The rules below hold
+for all three; the third is the only one whose contents come from another
+program, so most of them exist for it.
 
-The bar asks, in this order, and uses the first that answers for the focused
-window:
-
-| Source | Which programs | How the bar finds the menu | Protocol |
-| --- | --- | --- | --- |
-| Better OS registration | every Better OS window (section 5.2) | the window's process registers its menu with `org.betteros.TopBar1.Menus.Register(o path)`; the service matches the caller's PID (`GetConnectionUnixProcessID`) to the focused window's PID the shell reports, and the window's own `app_id` | `com.canonical.dbusmenu` |
-| GTK's window link | GTK 3 and GTK 4 `GtkApplication` windows that set a menubar, and GTK 3 windows with `appmenu-gtk-module` loaded | Mutter's `get_gtk_unique_bus_name` and `get_gtk_menubar_object_path`, reported by the shell | `org.gtk.Menus` and `org.gtk.Actions` |
-| AppMenu registrar | X11 and XWayland programs: Qt with its platform theme, Chromium and Electron on X11, GTK 3 with `appmenu-gtk-module` | the bar service owns `com.canonical.AppMenu.Registrar` and looks up the window's X11 id, which the shell reports for an X11 window | `com.canonical.dbusmenu` |
-| none of these | everything else | — | the actions every window has (section 4) only |
-
-The registrar is taken only when no other program owns
-`com.canonical.AppMenu.Registrar`; when one does, the bar uses it as a client
-(`GetMenuForWindow`) instead and says so in its settings card. When the bar is
-turned off, the name is released.
-
-What exports a menu today, so the person knows what to expect:
-
-| Toolkit | Exports a menu the bar can show on GNOME 46 Wayland | Evidence |
-| --- | --- | --- |
-| Better OS (GPUI) | Yes, after ticket 154 | GPUI has none (`gpui_linux/.../platform.rs:616-628`); `better-ui` adds it |
-| GTK 4 / libadwaita | Only a `GtkApplication` that sets a menubar; libadwaita applications normally have none (they use a header-bar menu) | `gtkapplication-wayland.c` |
-| GTK 3 | A `GtkApplication` with a menubar, natively; any `GtkMenuBar` only with `appmenu-gtk-module`, which is not installed on the machine | `gtkapplication-wayland.c` (same path in GTK 3), KDE bug 424485 |
-| Qt 5 / 6 | Only under XWayland (registrar); on Wayland Qt announces it through `org_kde_kwin_appmenu`, which Mutter does not offer | Qt's `qwaylandappmenu`, the registry list above |
-| Chromium, Electron | Only under XWayland (registrar); on Wayland only `org_kde_kwin_appmenu` | Chromium's `dbus_appmenu_registrar.cc`, `wayland_toplevel_window.cc` |
-| Firefox | Off by default since 125; when enabled it uses libdbusmenu and a Wayland annotation protocol Mutter 46 does not offer | Mozilla bug 1883184 |
-
-The ticket's premise that "GTK 4 applications have no menu bar to export" is
-partly wrong: GTK 4 does link a `GtkApplication` menubar to its window through
-`gtk_shell1`, and GNOME Shell can read it. Few GNOME applications set one.
-
-### 5.2 Better OS's own applications
-
-Every Better OS window that has menus exports all of them, and the bar shows
-them after the application name. Each window's menus are built from one model
-in `better-ui` (ticket 154), which is also what draws its in-window menu row
-when the bar is not there. The rule for what is in them: **every command the
-window offers in its command bar, its context menus, or its key map is in
-exactly one menu, with its shortcut**, and a test asserts it per window. The
-standard menus, in this order, with their fixed items:
-
-| Menu | zh-TW | English | Fixed items (zh-TW / English) |
-| --- | --- | --- | --- |
-| Application (the name) | {app} | {app} | 關於 {app} / About {app} · 設定… / Settings… (only if the window has settings) · 結束 {app} / Quit {app} (Ctrl+Q) |
-| File | 檔案 | File | 開新視窗 / New Window (Ctrl+N, where the window supports more than one) · 關閉視窗 / Close Window (Ctrl+W) |
-| Edit | 編輯 | Edit | 復原 / Undo (Ctrl+Z) · 重做 / Redo (Ctrl+Shift+Z) · 剪下 / Cut (Ctrl+X) · 複製 / Copy (Ctrl+C) · 貼上 / Paste (Ctrl+V) · 全選 / Select All (Ctrl+A) · 尋找 / Find (Ctrl+F) — each disabled when the focused field or view cannot do it |
-| View | 檢視 | View | the window's own view commands |
-| (the window's own menus) | | | Better Git's 儲存庫 / Repository and 分支 / Branch; Better Files' 前往 / Go |
-| Window | 視窗 | Window | 最小化 / Minimize · 全螢幕 / Enter Full Screen · 關閉視窗 / Close Window · then one item per open window of the application, the focused one checked |
-| Help | 說明 | Help | 鍵盤快速鍵 / Keyboard Shortcuts · 回報問題 / Report a Problem (opens the project's issue page) · 關於 {app} / About {app} |
-
-Per window, in tickets 154 and 155:
-
-| Window | Menus |
-| --- | --- |
-| Better Git | today's four (File, View, Repository, Branch) with their items unchanged (`render.rs:860-960`), plus Edit, Window, Help |
-| Better Files | File, Edit, View, Go, Window, Help |
-| Better Monitor | File (Export…), Edit, View (its views and grouping), Window, Help |
-| Better Manager | File, Edit, View (one item per page), Window, Help |
-| Better Launcher, the app chooser | none: they are panels and dialogs, not applications, and the bar keeps showing the window behind them |
-
-A menu item's state (enabled, checked) is the window's own and changes while
-the menu is open, through dbusmenu's `ItemsPropertiesUpdated`. Activating an
-item sends dbusmenu's `Event("clicked")`, which the window turns into the same
-action its in-window menu or key performs.
-
-### 5.3 Drawing a menu
-
-- Titles in Body, 12px side padding. A title the window marks disabled is in
-  disabled text and opens nothing.
 - Items are `fluent::menu` rows: an icon slot (16px) only when any item in the
   menu has an icon or a check, the label, the shortcut in secondary text at the
   trailing edge, a chevron for a submenu. Separators are 1px card stroke with
   4px above and below. A check item shows a check glyph; a radio item a dot.
 - A label longer than 360px is truncated with an ellipsis; its full text is the
   tooltip and the accessible name.
-- An item a toolkit marks hidden is not drawn. A submenu that is empty is drawn
-  disabled.
-- Mnemonics (`_File`, `&File`) are not shown as underlines; the character is
-  used for type-to-select inside an open menu.
-- A menu whose exporter does not answer within 500 ms opens with one disabled
+- An item a tray item marks hidden is not drawn; one it marks disabled is drawn
+  in disabled text. A submenu that is empty is drawn disabled.
+- Mnemonics (`_Quit`) are not shown as underlines; the character is used for
+  type-to-select inside an open menu.
+- A tray item's menu changes while it is open when the item sends
+  `LayoutUpdated` or `ItemsPropertiesUpdated`; the bar sends `AboutToShow`
+  before opening a submenu and `Event("clicked")` when an item is chosen.
+- A tray menu whose item does not answer within 500 ms opens with one disabled
   row: 這個應用程式沒有回應。 / This app isn't responding. The bar never waits
   longer than that before opening something.
 
-### 5.4 When there are more menus than room
-
-Menus that do not fit between the application name and the right side are
-moved, from the last, into a 更多 / More (`»`) menu whose submenus are the
-moved menus. The right side is never pushed off the bar: section 8 says what
-shrinks first.
-
 ## 6. The right side
 
-### 6.1 The tray (StatusNotifierItem)
+### 6.1 The tray
 
 While the bar is on, every StatusNotifierItem shows here and not in the bottom
-taskbar (owner, 2026-11-12). The bar service is the `StatusNotifierHost`, and
+taskbar (owner, 2026-11-12), and so does every old X11 (XEmbed) tray icon,
+through the bridge (D6). The bar service is the `StatusNotifierHost`, and
 the `StatusNotifierWatcher` while it is on, because the watcher on the machine
 today is Zorin's AppIndicator extension, and that extension must be off for
-its icons to leave the taskbar.
+its icons to leave the taskbar. With it off, nothing holds the X11 tray
+selection, and Better OS's bridge takes it (section 9.6).
 
 **The switch is one Better Defaults entry**, "Tray icons in the top bar",
 applied when the bar is turned on and restored when it is turned off or
@@ -403,31 +339,51 @@ removed, with Better Defaults' capture, apply, verify, and restore:
 | Neither present | nothing to change; the entry reports "nothing to do" | — |
 
 The order matters and is the service's: on turning on, it takes
-`org.kde.StatusNotifierWatcher` the moment the extension releases it; on
-turning off, it releases the name before the extension is put back. Items that
-follow the specification watch the watcher's name and register again with the
-new owner (Better OS's own trays do since tickets 97 and 102; that libappindicator and the other toolkits' items do is not verified here, and ticket 156 checks it).
-An item that does not re-register is missing until it restarts; the bar's
-settings card lists how many items were registered before the switch and how
-many came back, so a missing one is visible: 有 {n} 個系統匣圖示沒有回來，重新開啟那個應用程式就會出現。 /
+`org.kde.StatusNotifierWatcher` the moment the extension releases it, and the
+bridge then takes the X11 tray selection; on turning off, the bridge releases
+the selection and the service releases the watcher name before the extension
+is put back. Items that follow the specification watch the watcher's name and
+register again with the new owner (Better OS's own trays do since tickets 97
+and 102; that libappindicator and the other toolkits' items do is not verified
+here, and ticket 156 checks it). XEmbed programs that follow the system tray
+specification watch for the `MANAGER` message the new selection owner sends
+and dock again. An item that does neither is missing until it restarts; the
+bar's settings card lists how many items were registered before the switch and
+how many came back, so a missing one is visible: 有 {n} 個系統匣圖示沒有回來，重新開啟那個應用程式就會出現。 /
 {n} tray icons didn't come back; reopening that app brings it back.
 
 Icons: `IconName` from the icon theme, or `IconPixmap` scaled to 16 logical
 pixels (32 at scale 2, picking the nearest size the item offers), with the
 item's `Status`: `Passive` items go to the overflow, `NeedsAttention` shows
-`AttentionIconName` or the pixmap and a dot. Clicking: primary button calls
-`Activate(x, y)` when the item has no menu or `ItemIsMenu` is false, else
-opens its `com.canonical.dbusmenu` menu, drawn as section 5.3; secondary button
-opens the menu; middle button `SecondaryActivate`; scroll `Scroll`. Tooltip:
-`ToolTip`'s title, else `Title`. Accessible name: the same text, then
+`AttentionIconName` or the pixmap and a dot. Clicking:
+
+| Input | An item with a `Menu` | An item without one (every bridged XEmbed icon) |
+| --- | --- | --- |
+| Primary button | `Activate(x, y)` when `ItemIsMenu` is false, else opens its menu (section 5) | `Activate(x, y)` |
+| Secondary button | opens its menu | `ContextMenu(x, y)`: the program draws its own menu |
+| Middle button | `SecondaryActivate(x, y)` | `SecondaryActivate(x, y)` |
+| Scroll | `Scroll(delta, orientation)` | the same |
+
+`x` and `y` are the item's position in logical screen coordinates, the bottom
+edge of the item, so a menu the program draws itself opens under the bar.
+Tooltip: `ToolTip`'s title, else `Title`. Accessible name: the same text, then
 系統匣 / tray.
+
+A bridged XEmbed icon is an ordinary item to the bar: it is drawn, ordered,
+and moved to the overflow like any other, and the bar does not know it is
+bridged. It differs in what the program can offer, which section 9.6 lists:
+its picture is a copy of what the program drew, so it is a coloured icon
+rather than a symbolic one; it is never `Passive` or `NeedsAttention`; its
+tooltip is its window's name; and its menu, when it has one, is the program's
+own X11 menu, drawn by the program in its own style, not a `fluent::menu`.
 
 **Overflow.** At most six items are shown on the bar (four below 1280px wide);
 the rest, and every `Passive` item, sit behind a `▴` chevron that opens a
 flyout: a grid of 48 × 40px cells, six per row, each the item's icon with its
-title under it in Caption, truncated to the cell. Which items stay on the bar: the ones the person dragged
-there (order is kept by item id in the service's own state,
-`$XDG_STATE_HOME/better-os/top-bar/tray.json`), then registration order.
+title under it in Caption, truncated to the cell. Which items stay on the bar:
+the ones the person dragged there (order is kept by item id in the service's
+own state, `$XDG_STATE_HOME/better-os/top-bar/tray.json`), then registration
+order.
 
 | | zh-TW | English |
 | --- | --- | --- |
@@ -436,7 +392,19 @@ there (order is kept by item id in the service's own state,
 | Overflow hint (Caption) | 拖曳圖示到頂端列就會固定顯示。 | Drag an icon to the top bar to keep it there. |
 | Overflow empty | 沒有其他圖示。 | No other icons. |
 | No items at all | the chevron and the area are not drawn | — |
-| XEmbed icons (D6) | the bar's settings card | 舊式的 X11 系統匣圖示不會顯示在頂端列。 | Old X11 tray icons aren't shown in the top bar. |
+
+**Old X11 icons: what the person sees in each state of the bridge.** The bar
+itself shows nothing about the bridge; the Top bar card (section 12) says what
+is wrong when an XEmbed icon cannot be shown.
+
+| Bridge state | The bar | The Top bar card (zh-TW / English) |
+| --- | --- | --- |
+| Holding the selection, XWayland running | every docked icon, as an item | — |
+| XWayland not started yet (it starts on demand, when the first X11 program opens) | nothing to show: no X11 program runs, so no XEmbed icon exists | — |
+| This desktop has no XWayland | — | 這個桌面沒有 X11 相容層（XWayland），所以不會有舊式的 X11 系統匣圖示。 / This desktop has no X11 compatibility layer (XWayland), so there are no old X11 tray icons. |
+| Another program holds the X11 tray selection | no XEmbed icon is shown; the bridge takes the selection the moment that program lets it go | 另一個程式正在顯示舊式的 X11 系統匣圖示，所以這些圖示不會出現在頂端列。 / Another program is showing old X11 tray icons, so they won't appear in the top bar. |
+| XWayland ended (it stops when its last X11 program closes, or it crashed) | the bridged items leave; they come back when XWayland and the programs start again | — |
+| The bridge's unit failed | the bridged items leave | 無法顯示舊式的 X11 系統匣圖示。 / 重試 · Old X11 tray icons can't be shown. / Try again |
 
 ### 6.2 Input method
 
@@ -574,6 +542,10 @@ banners themselves stay GNOME's: the bar does not draw pop-ups.
 The flyout lists what the shell reports; the bar service keeps the list in
 memory only and writes no notification anywhere.
 
+Ticket 161 (the owner's request of 2026-11-21 for a notification island at
+the top right and a notification center on the right edge) may replace the
+notification half of this flyout; ticket 158 waits for its design.
+
 Accessible names: 通知，{n} 則未讀 / Notifications, {n} unread; 日期與時間：{date} /
 Date and time: {date}.
 
@@ -581,12 +553,15 @@ Date and time: {date}.
 
 | Key | What it does |
 | --- | --- |
-| Ctrl+F2 | focuses the bar: the Better OS menu is highlighted (macOS's "move focus to the menu bar") |
-| Left, Right | move between items; with a menu open, open the neighbouring menu |
+| Ctrl+F2 | focuses the bar: the Better OS menu is highlighted |
+| Left, Right | move between items; with a menu open, open the neighbouring item's menu or flyout |
 | Down, Enter, Space | open the highlighted item's menu or flyout; in a menu, Down and Up move, Right opens a submenu, Left closes it |
 | type a letter | in an open menu, jump to the next item starting with it |
 | Escape | close the menu; a second Escape returns focus to the window that had it |
 | Super+V, Super+M | open the notifications flyout |
+
+The bar's keys never reach an application: Ctrl+F2 focuses the bar, not a
+window's menu row, and a window's own menu keys (F10, Alt) stay the window's.
 
 Super+V and Super+M are GNOME's own keys for its calendar and notification
 list (`org.gnome.shell.keybindings toggle-message-tray ['<Super>v',
@@ -597,14 +572,22 @@ the bar off restores `toggle-message-tray` and removes the custom bindings,
 with the changed-elsewhere rule ticket 94 uses. The custom bindings run
 `better-top-bar --focus` and `better-top-bar --notifications`, which ask the
 running service over its bus name. `<Super>n` stays GNOME's
-`focus-active-notification`, which acts on GNOME's banner. A dock does not take focus by itself; the shell focuses the bar's window
-when the service asks (the panel relay's `FocusView`), and gives focus back to
-the window that had it when the menu closes.
+`focus-active-notification`, which acts on GNOME's banner. A dock does not
+take focus by itself; the shell focuses the bar's window when the service asks
+(the panel relay's `FocusView`), and gives focus back to the window that had it
+when the menu closes.
 
 Every item, menu, and row has an accessible name (the tables above) and a role
-(menu bar, menu item, check menu item, button, toggle button), exposed through
-GPUI's AccessKit adapter. Status changes the person should hear (battery low
-at 10%, a network lost) are announced politely, never more than once per
+(tool bar for the bar; button with a menu for the Better OS mark, the
+application name, and a tray item with a menu; button for the tray items
+without one; toggle button; menu and menu item, check menu item, radio menu
+item inside menus), exposed through GPUI's AccessKit adapter. The bar is named
+頂端列 / Top bar. It is not a menu bar to a screen reader, because it holds no
+application's menus: a screen reader that offers "go to the menu bar" goes to
+the window's own. A bridged XEmbed icon's accessible name is its window's name,
+then 系統匣 / tray, like any item; what the program's own X11 menu tells a
+screen reader is the program's. Status changes the person should hear (battery
+low at 10%, a network lost) are announced politely, never more than once per
 change.
 
 Focus is drawn with `DESIGN.md`'s focus visual, only when it came from the
@@ -617,10 +600,9 @@ OS menu, the application name, and the clock's time are always visible:
 
 1. Below 1280 logical px: the clock drops the date and weekday; at most four
    tray items.
-2. Then application menus move into 更多 / More from the last (section 5.4).
-3. Below 1024: the battery drops its percentage text; tray items all go into
+2. Below 1024: the battery drops its percentage text; tray items all go into
    the overflow.
-4. Below 960: the application name truncates to 120px. (The machine's own
+3. Below 960: the application name truncates to 120px. (The machine's own
    display is 1440 logical px wide at scale 2; 960 is the narrowest width
    Better OS windows are designed for, and a display set to a larger scale or a
    small external monitor reaches it.)
@@ -630,15 +612,17 @@ The mockup `rest-960-*.html` draws the 960px bar.
 **Scale.** The bar is laid out in logical pixels; at scale 2 everything is
 twice as many physical pixels and drawn sharp (GPUI renders at the output's
 scale). Fractional scale through `wp_fractional_scale_manager_v1`, which the
-compositor offers. Mockups are drawn at scale 1.
+compositor offers. Mockups are drawn at scale 1. A bridged XEmbed icon is a
+picture the program drew in X11 pixels; section 9.6 says how its size and
+scale are handled.
 
 **Monitors.** The bar is on the primary monitor (Mutter's primary, the one
 with GNOME's top panel). A setting, 在所有螢幕顯示頂端列 / Show the top bar on
-every display, off by default, draws one bar per monitor; each shows the menus
-of the focused window, as macOS does. A monitor connected or removed, or the
-primary changed, moves or adds the bar within a second (the shell reports
-`monitors-changed`). A monitor with its own scale gets a bar drawn at that
-scale.
+every display, off by default, draws one bar per monitor; each shows the name
+and actions of the focused window, as macOS does. A monitor connected or
+removed, or the primary changed, moves or adds the bar within a second (the
+shell reports `monitors-changed`). A monitor with its own scale gets a bar
+drawn at that scale.
 
 **Right to left.** Not supported in this release: Better OS ships zh-TW and
 English only (`engineering/specs/language-policy.md`). The layout is described
@@ -672,7 +656,9 @@ disabled, or the bar is removed. Nothing is written to any setting for that.
   inside a Wayland session, GPUI would run its X11 backend for this one
   window, and on a display at scale 2 an X11 window's sharpness and placement
   depend on XWayland's scaling mode, which `experimental-features` controls
-  and which Better OS must not change. It was not tried on the machine.
+  and which Better OS must not change. It was not tried on the machine. (The
+  XEmbed bridge of section 9.6 is an X11 client too, but it draws nothing on
+  screen: it only reads pictures.)
 
 So the shell has to take part. The question is how little it does.
 
@@ -686,7 +672,7 @@ fullscreen window. It can place any window (`move_frame`), reserve a strip of
 the screen with an invisible chrome actor (`Main.layoutManager.addChrome(actor,
 {affectsStruts: true, trackFullscreen: true})`, as Zorin's taskbar does at
 `panelManager.js:723-726`), focus a window, and read every window's
-application, PID, GTK menu paths, and X11 id. Zorin's own desktop icons
+application and PID. Zorin's own desktop icons
 extension uses the same route for its desktop window
 (`zorin-desktop-icons@zorinos.com/extension.js:511-525`,
 `emulateX11WindowType.js:216-232`). On GNOME 46 a client can become a dock
@@ -695,26 +681,27 @@ outside process connect as such a client, are not callable from GJS.
 
 ### 9.3 The shape: a Better OS window the shell makes a dock (D1 A)
 
-Two Better OS processes, and the relay inside the shell:
+Three Better OS processes, and the relay inside the shell:
 
 ```
  better-top-bar.service (user unit, Rust)          the shell (GJS relay)            better-top-bar-view (GPUI)
  ───────────────────────────────────────          ─────────────────────            ──────────────────────────
  owns org.betteros.TopBar1                 ──► StartView() ──► spawnv(fixed path) ──► connects through
  decides everything: layout, menus,                make_dock, move_frame,              WAYLAND_SOCKET, draws
- tray host + watcher, registrar,           ◄── FocusChanged, Monitors, Fullscreen    the bar and its menus
+ tray host + watcher,                      ◄── FocusChanged, Monitors, Fullscreen    the bar and its menus
  network, sound, battery, clock,           ──► ReserveStrip(monitor, edge, px)        (xdg_popup), talks only
  notifications list                        ◄── Notification*, InputSources            to the service
-                                           ──► WindowAction(id, action)
+        ▲                                  ──► WindowAction(id, action)
+        │ StatusNotifierItem, one bus connection per icon (the same protocol as any tray item)
+ better-top-bar-xembed.service (user unit, Rust) ◄──► XWayland: the _NET_SYSTEM_TRAY_S0 selection, docked icon windows
 ```
 
 - **`better-top-bar`** (crate `top-bar-service`, a systemd user unit in the
   `better-top-bar` package, enabled by installing like every service). It owns
   `org.betteros.TopBar1`, is the StatusNotifierHost and Watcher (section 6.1),
-  the AppMenu registrar (5.1), reads NetworkManager, UPower, the audio server,
-  and the clock settings, holds the notification list, and decides every state
-  in this file in `top-bar-core`, a crate with no GPUI dependency and with the
-  tests.
+  reads NetworkManager, UPower, the audio server, and the clock settings, holds
+  the notification list, and decides every state in this file in
+  `top-bar-core`, a crate with no GPUI dependency and with the tests.
 - **`better-top-bar-view`** (crate `top-bar-gui`), at
   `/usr/libexec/better-os/top-bar-view`, started by the shell and by nothing
   else. It draws what the service tells it, as a GPUI window on the shell's
@@ -723,6 +710,11 @@ Two Better OS processes, and the relay inside the shell:
   place would lose the shell's connection, so when its program is replaced it
   exits instead and the service asks the shell for a new one (AGENTS.md's
   restart rule is met: the new program runs within seconds).
+- **`better-top-bar-xembed`** (crate `top-bar-xembed`), at
+  `/usr/libexec/better-os/top-bar-xembed`, its own user unit in the same
+  package: the XEmbed bridge (section 9.6). It speaks only StatusNotifierItem
+  to the service, exactly as any tray program does, so the service has no
+  XEmbed code.
 - **The panel relay** in `shell-adapter@betteros.org`, under ADR 0036: active
   only while `/usr/libexec/better-top-bar` owns `org.betteros.TopBar1`. It
   starts the view on request, makes its window a dock and places it, reserves
@@ -747,7 +739,7 @@ counterpart `org.betteros.TopBar1`. No argument of any method is a string.
 | `FocusView(t window)` / `ActivateWindow(t window)` | | Focus the view's window; give focus back to a window (`Main.activateWindow`). |
 | `WindowAction(t window, u action)` | | 0 minimize, 1 fullscreen, 2 leave fullscreen, 3 close (`delete`), 4 open a new window of its application, 5 quit its application (`request_quit`). |
 | `ShowOverview()` | | `Main.overview.show()`. |
-| `FocusChanged(t window, s app_id, s app_name, u pid, u client_type, t xwindow, s gtk_bus_name, s gtk_menubar_path, u flags)` signal | | The focused window as the shell sees it; `flags` bits: can minimize, can fullscreen, is fullscreen, can close, can open new window, belongs to the view's client (`owns_window`); whether a window is a Better OS panel is decided in Rust from its `app_id`. Empty strings and 0 where a value does not exist. |
+| `FocusChanged(t window, s app_id, s app_name, u pid, u client_type, u flags)` signal | | The focused window as the shell sees it; `flags` bits: can minimize, can fullscreen, is fullscreen, can close, can open new window, belongs to the view's client (`owns_window`); whether a window is a Better OS panel is decided in Rust from its `app_id`. Empty strings and 0 where a value does not exist. It carries no X11 window id and no GTK menu paths: those were for application menus, which D5 removed (ADR 0036's amendment). |
 | `Monitors(a(uiiiidb))` signal | | Index, logical x, y, width, height, scale, is primary, for every monitor, on `monitors-changed`. |
 | `FullscreenChanged(u monitor, b)` signal | | |
 | `InputSources(a(uss) sources, u current)` signal, `ActivateInputSource(u index)` | | GNOME's input sources as the shell's `InputSourceManager` has them (index, id, short name); the engine's properties as GNOME's keyboard indicator holds them with a serial number; `ActivateInputProperty(u serial, u index)` resolves the index against the shell's current list at call time and is refused when the serial is stale. |
@@ -756,49 +748,216 @@ counterpart `org.betteros.TopBar1`. No argument of any method is a string.
 
 Every method checks the caller against the counterpart's unique name and the
 counterpart's executable, as ADR 0018 does; every signal goes to the
-counterpart only.
+counterpart only. The XEmbed bridge needs nothing from the relay.
 
-### 9.5 Shape B, for comparison (D1 B)
+### 9.5 Shape B, for comparison (D1 B, refused)
 
 Zorin's taskbar puts GNOME's panel back at the top when its
 `stockgs-keep-top-panel` is true (`panelManager.js:67`), and then every
 AppIndicator icon, the keyboard indicator, quick settings, and the date menu
 are in that top panel with no Better OS code. Better Defaults would write that
 one setting, plus `panel-element-positions` to hide the bottom panel's own
-copies. What is missing is the left side: GNOME 46 has no application menu in
-its panel, so the extension would add a Better OS menu button and an
-application menu button and draw their menus (`PopupMenu`) from the dbusmenu
-trees the same Rust service exports, keeping the tree and the labels in
+copies. What is missing is the left side: GNOME 46 has no application name
+button with window actions in its panel, so the extension would add a Better
+OS menu button and an application button and draw their menus (`PopupMenu`)
+from trees the Rust service sends, keeping the tree and the labels in
 JavaScript. It is fewer tickets and less risk on the right side, and it is not
 Fluent; ADR 0036 records why it was not chosen.
 
-### 9.6 What GPUI and `better-ui` need for exporting menus
+### 9.6 The XEmbed bridge (D6)
 
-GPUI has no Linux menu export (sources above), and Better OS's windows do not
-use GPUI's `set_menus` at all: Better Git draws its own menu row. So the work
-is in `better-ui`, not in GPUI:
+Old X11 programs show a tray icon by the system tray specification: a program
+looks for the owner of the X selection `_NET_SYSTEM_TRAY_S<screen>`, sends it
+a `_NET_SYSTEM_TRAY_OPCODE` client message with `SYSTEM_TRAY_REQUEST_DOCK`,
+and the owner embeds the program's small icon window with XEmbed. On a Wayland
+session such a program runs on XWayland, and today Zorin's AppIndicator
+extension owns the selection through GNOME Shell's `Shell.TrayManager`
+(sources). The bridge takes the selection instead while the bar is on and
+turns every docked icon into a StatusNotifierItem.
 
-- **A menu model** in `better-ui`'s GPUI-free part: menus, items (label,
-  shortcut, enabled, checked, radio group, submenu, separator), and an action
-  id per item, built by each window from its own state. The in-window menu row
-  (`fluent::menu`) draws from it, so the two can never differ.
-- **A `com.canonical.dbusmenu` exporter** for that model: `GetLayout`,
-  `GetGroupProperties`, `Event`, `AboutToShow`, `LayoutUpdated`,
-  `ItemsPropertiesUpdated`. The exporter code that `awake-tray` and
-  `monitor-tray` each have today moves into one crate, `dbusmenu`, which the
-  trays, the windows, and the bar's host all use (AGENTS.md: one rule, one
-  place).
-- **Registration** with `org.betteros.TopBar1.Menus.Register(o)` from the
-  window's own session-bus connection, once per process, with the menu of
-  whichever of its windows is active; and the window hides its own row while
-  the bar has accepted the registration (D5).
-- **Nothing in GPUI.** Exporting through GTK's `gtk_shell1` link would need
-  GPUI's Wayland connection to bind `gtk_shell1` and call
-  `gtk_surface1.set_dbus_properties`, and the bar would then have to speak
-  `org.gtk.Menus` to Better OS windows. A Better OS registration keyed by PID is
-  enough because the bar and the windows are both ours; if a GPUI change is ever
-  wanted (for other desktops to see Better OS menus), it is `gtk_shell1` support
-  upstream in `gpui_linux`, not something this design needs.
+**How `xembedsniproxy` does it** (plasma-workspace `master`, read 2026-11-21,
+cited by file and line; it is the model, not a dependency):
+
+| Step | `xembedsniproxy` | Where |
+| --- | --- | --- |
+| Take the selection | `KSelectionOwner` on `_NET_SYSTEM_TRAY_S<n>` without forcing (`claim(false)`), and logs and gives up if another owner has it | `fdoselectionmanager.cpp:51-72`, `198-207` |
+| Offer an alpha visual | sets `_NET_SYSTEM_TRAY_VISUAL` on the owner window to a 32-bit TrueColor visual when the screen has one | `fdoselectionmanager.cpp:209-213`, `xcbutils.h:122-165` |
+| Accept a dock request | `SYSTEM_TRAY_REQUEST_DOCK` in a `_NET_SYSTEM_TRAY_OPCODE` client message | `fdoselectionmanager.cpp:128-135` |
+| Hold the icon window | creates an override-redirect 32 × 32 container (`s_embedSize = 32`), sets its opacity to 0 and its input region empty, reparents the icon window into it, sends `XEMBED_EMBEDDED_NOTIFY`, and adds the icon to its save-set so the icon goes back to the root window if the proxy dies | `sniproxy.cpp:49`, `117-177` |
+| Keep the picture readable | `composite_redirect_window(…, MANUAL)` on the icon window, so it renders off screen | `sniproxy.cpp:166-169` |
+| Notice a change | one `Damage` object per icon (`REPORT_LEVEL_NON_EMPTY`); each `DamageNotify` triggers a new capture and a `DamageSubtract`. The first paint sends no damage, so one capture is taken 500 ms after docking | `fdoselectionmanager.cpp:55-66`, `83-92`, `147-153`; `sniproxy.cpp:206-209` |
+| Capture | `GetImage` of the icon window, converted by depth (24, 30, 32; 16 and 1); a 24-bit picture gets a mask from its corner colour; a fully transparent capture is skipped as a known X11 glitch; anything larger than 32 × 32 is scaled down keeping its aspect | `sniproxy.cpp:216-235`, `305-393` |
+| Resize | an icon window that asks to resize is allowed up to 32 × 32; moves are ignored | `fdoselectionmanager.cpp:155-165`, `sniproxy.cpp:238-271` |
+| Undock | on `UnmapNotify` or `DestroyNotify` of the icon window | `fdoselectionmanager.cpp:137-146` |
+| Be an item | one session-bus connection per icon, because a watcher cannot see one object of a shared connection go away; `Category` `ApplicationStatus`, `Status` `Active`, `ItemIsMenu` false, `Title` from the window's name, `Id` the title or the window id, the picture as `IconPixmap` | `sniproxy.cpp:92-96`, `471`, `490-531` |
+| Forward input | `Activate` → button 1, `SecondaryActivate` → button 2, `ContextMenu` → button 3, `Scroll` → buttons 4/5 (vertical) or 6/7 (horizontal); the container is moved under the click point, made clickable for 300 ms, and the press and release are sent as X events when the icon selected button events, else through XTest; on Wayland it also warps the pointer into the icon window. A Wine icon shaped with the Shape extension is clicked at its first shaped point | `sniproxy.cpp:194-204`, `397-466`, `534-662`; `xtestsender.cpp` |
+
+**What Better OS's bridge is.** `top-bar-xembed`, a Rust program, its own
+systemd user unit `better-top-bar-xembed.service` in the `better-top-bar`
+package, at `/usr/libexec/better-os/top-bar-xembed`. It does what the table
+above does, in Rust, with these choices:
+
+- **Its own unit, not part of `better-top-bar`.** An X11 connection is a
+  failure the service should not share: a hung XWayland or a misbehaving icon
+  window must not stop the tray host, the clock, or the notifications. And it
+  needs nothing from the service but the StatusNotifierItem protocol, so the
+  service stays free of X11. Under AGENTS.md's unit rules it is a user unit
+  like the service: dpkg's file list names it, `manager-core` enables and
+  starts it on install and enable, stops and disables it on disable and
+  removal, and the startup pass starts it again if someone stopped it by hand;
+  the package's postinst `try-restart`s it after an update. It is `PartOf` and
+  `After` `better-top-bar.service`, so it stops and restarts with the bar.
+- **It never starts XWayland.** On GNOME 46, connecting to the X socket is
+  what starts XWayland on demand (sources: the socket exists while no
+  `Xwayland` runs), and a bridge that connected at login would start an X
+  server on every login for nothing. So the bridge stays running and connected
+  to nothing X11 until XWayland is up: it watches the user manager's
+  `gnome-session-x11-services.target` over `org.freedesktop.systemd1`
+  (subscribed to that unit's `PropertiesChanged`, no timer), and when the
+  target becomes active it reads `DISPLAY` from the user manager's
+  `Environment` and connects. When the target stops, or the X connection
+  closes, it drops every item and waits again. A desktop where that target does
+  not exist (`LoadState` `not-found`) and `DISPLAY` is unset has no XWayland:
+  the bridge reports that state (section 6.1) and waits for the target. The
+  unit is `active` in every one of these states, which is what the health
+  check asks of an enabled unit.
+- **The selection is taken only while the bar's watcher is up.** It claims
+  `_NET_SYSTEM_TRAY_S0` (the screen number from `DISPLAY`) with
+  `SetSelectionOwner` and then checks `GetSelectionOwner`, never forcing it
+  from another owner, and announces itself with the ICCCM `MANAGER` client
+  message on the root window so waiting programs dock. While another program
+  owns it, the bridge selects XFixes selection-owner events for it and claims
+  it the moment it is released (no polling). It releases the selection, and
+  undocks every icon back to the root window, when
+  `org.kde.StatusNotifierWatcher` or `org.betteros.TopBar1` loses its owner,
+  on `SelectionClear` (another program took it: the card says so), and before
+  it exits. The unit stops before the bar's service puts Zorin's extension back
+  (section 6.1), so the two never contend.
+- **X11 from Rust: `x11rb`.** `x11rb 0.13.2` is already in `Cargo.lock`
+  through GPUI's X11 backend, under `MIT OR Apache-2.0`. The bridge uses its
+  pure-Rust `RustConnection` (no libxcb linked) with the `composite`,
+  `damage`, `xfixes`, `shape`, and `xtest` features, which only enable modules
+  of `x11rb-protocol` that is in the lock too; no new crate is expected, and
+  ticket 149 confirms the lockfile and the licence inventory are unchanged
+  or regenerates them. The `xcb` crate also in the lock links libxcb and is not
+  used.
+- **Change is noticed by Damage, never by polling.** One `Damage` object per
+  docked icon window at `NonEmpty`; a `DamageNotify` marks the icon dirty, and
+  the bridge captures it with `GetImage` at most once per 100 ms per icon
+  (damage inside that window is merged into one capture), then
+  `DamageSubtract`s. One capture 500 ms after docking covers the first paint,
+  as `xembedsniproxy` does. Idle cost: no timer runs and no request is sent
+  while no icon changes; the process sleeps in its event loop. A capture is
+  `32 × 32 × 4` = 4 KiB read and one `NewIcon` signal; an icon animating
+  continuously costs at most ten of each per second, which ticket 149
+  measures.
+- **Size and scale 2.** The container is 32 × 32 X pixels, and the bridge
+  announces `_NET_SYSTEM_TRAY_ORIENTATION` horizontal and
+  `_NET_SYSTEM_TRAY_ICON_SIZE` 32 so toolkits that read them draw at that
+  size. The picture offered is the size the icon window has, at most 32 × 32,
+  larger scaled down keeping its aspect. The bar's own rule (section 6.1)
+  picks the pixmap nearest to 32 physical pixels at scale 2 and draws it at 16
+  logical pixels, so at scale 2 a 32-pixel picture is drawn one to one, and
+  at scale 1 it is halved. With `experimental-features` `[]`, as on the
+  machine, Mutter lays monitors out in physical pixels and XWayland's
+  coordinates are physical pixels too; with `scale-monitor-framebuffer` they
+  are logical. The bridge reads the layout mode from
+  `org.gnome.Mutter.DisplayConfig.GetCurrentState`'s `layout-mode` and
+  converts the logical `x`, `y` the bar sends into X root coordinates with the
+  monitor's scale. That this conversion is right on the machine is the first
+  thing ticket 149 checks.
+- **Transparency.** The owner window's `_NET_SYSTEM_TRAY_VISUAL` names a
+  32-bit TrueColor visual when the X screen has one, and the containers use
+  it, so an icon that draws with alpha gives a picture with alpha; its
+  premultiplied pixels are converted to the straight ARGB32, network byte
+  order, that `IconPixmap` carries. An icon that draws on a 24-bit visual has
+  no alpha: the container's background is the bar's own fill for the current
+  appearance (`#f3f3f3` or `#202020`, changed when the appearance changes), so
+  an icon with a `ParentRelative` background blends with the bar, and when
+  all four corner pixels share one colour that colour is made transparent, as
+  `xembedsniproxy` does. A capture that comes back fully transparent is
+  ignored and the previous picture kept. Depths other than 1, 16, 24, 30, and
+  32 are not converted and the icon is shown as missing (its title in the
+  overflow, no picture).
+- **What is forwarded.** `Activate`, `SecondaryActivate`, `ContextMenu`, and
+  `Scroll` as buttons 1, 2, 3, and 4 to 7, as in the table above: the
+  container is moved under the converted click point and made clickable for
+  300 ms, and the press and release go as X events when the icon window or a
+  child selected button events, else through XTest. The program's own X11
+  menu opens where the program puts it and is drawn by the program; the bridge
+  does not read, copy, or restyle it. Each item is on its own session-bus
+  connection, for the reason in the table, and registers with
+  `RegisterStatusNotifierItem` by its bus name.
+- **What is not forwarded.** Keyboard input, pointer motion and hover (so a
+  program's own hover tooltip never shows), drag and drop onto an icon, XEmbed
+  focus and activation messages beyond `EMBEDDED_NOTIFY`, and any balloon
+  message a program sends with `SYSTEM_TRAY_BEGIN_MESSAGE` (it is dropped;
+  ticket 149 records which programs on the machine send one).
+- **What an item says.** `Id` the icon window's `WM_CLASS` class, with `-2`,
+  `-3` added for a second and third icon of the same class, so the person's
+  drag order (section 6.1) survives a restart of the program; `Title` the
+  window's `_NET_WM_NAME`, else `WM_NAME`, else the `WM_CLASS` class;
+  `Category` `ApplicationStatus`; `Status` `Active`; `ItemIsMenu` false; no
+  `Menu`. Nothing a program draws or names is written anywhere; the bridge
+  keeps its items in memory only.
+
+**Limits, stated plainly.**
+
+- The bar shows a copy of a picture. It cannot make an XEmbed icon symbolic,
+  recolour it for the dark appearance, or show it sharper than the program
+  drew it; at scale 2 an icon that draws 16 X pixels is enlarged and soft.
+- The menu of an XEmbed program is its own X11 menu, not a Fluent menu, and
+  the bar's keyboard navigation and screen-reader names do not reach into it.
+- Whether a forwarded click reaches a GTK 2 or GTK 3 icon on XWayland under
+  Mutter is not known: the pointer is over the bar, a Wayland surface, not over
+  any X window, and `xembedsniproxy`'s pointer warp is tested on KWin. Where the
+  X server thinks the pointer is decides where a program's menu opens and
+  whether its popup grab works. Ticket 149 tries it first and stops for the
+  owner if it fails.
+- A program that docks once at start and does not watch for `MANAGER` has no
+  icon if it started before the bridge held the selection, until it restarts;
+  the card's count of icons that did not come back (section 6.1) includes it.
+- No attention state, no `Passive` state, and no tooltip beyond the window's
+  name: XEmbed has none of them.
+- No XWayland, no icons: on a session without it there is nothing to bridge,
+  and on COSMIC the bridge applies only if ticket 143 finds XWayland there.
+
+### 9.7 Why the bar shows no application menus (D5)
+
+The first version of this design had the bar show the focused window's menus,
+as macOS does. The owner decided against it (D5). The findings that design was
+built on are kept here because they show what the decision gives up and what
+it saves.
+
+What exported a menu the bar could have shown on GNOME 46 Wayland:
+
+| Toolkit | Exports a menu | Evidence |
+| --- | --- | --- |
+| Better OS (GPUI) | No: GPUI stores `set_menus` and exports nothing on Linux, and Better OS windows draw their own rows | `gpui_linux/src/linux/platform.rs:616-628`; `crates/git-gui/src/render.rs:583-960` |
+| GTK 4 / libadwaita | Only a `GtkApplication` that sets a menubar, linked to its window through `gtk_shell1`; libadwaita applications normally have none | GTK `gtkapplication-wayland.c` (<https://raw.githubusercontent.com/GNOME/gtk/main/gtk/gtkapplication-wayland.c>) |
+| GTK 3 | A `GtkApplication` with a menubar; any `GtkMenuBar` only with `appmenu-gtk-module`, not installed on the machine, and GTK 4 dropped module loading | the same file; KDE bug 424485 (<https://bugs.kde.org/show_bug.cgi?id=424485>) |
+| Qt 5 / 6 | Only under XWayland through `com.canonical.AppMenu.Registrar`; on Wayland through `org_kde_kwin_appmenu`, which Mutter does not offer | Qt `qwaylandappmenu_p.h` (<https://codebrowser.dev/qt6/qtbase/src/plugins/platforms/wayland/qwaylandappmenu_p.h.html>), KDE review D3085 (<https://phabricator.kde.org/D3085?id=9146>) |
+| Chromium, Electron | Only under XWayland through the registrar; on Wayland only `org_kde_kwin_appmenu` | Chromium `dbus_appmenu_registrar.cc` and `wayland_toplevel_window.cc` (<https://raw.githubusercontent.com/chromium/chromium/main/chrome/browser/ui/views/frame/dbus_appmenu_registrar.cc>, <https://raw.githubusercontent.com/chromium/chromium/main/ui/ozone/platform/wayland/host/wayland_toplevel_window.cc>) |
+| Firefox | Off by default since 125, and its Wayland path needs a protocol Mutter 46 does not offer | Mozilla bug 1883184 (<https://bugzilla.mozilla.org/show_bug.cgi?id=1883184>) |
+
+So on the owner's desktop the bar would have shown real menus for Better OS's
+own windows (after building an export for them), a few GTK applications, and
+X11 programs, and only the shared actions for the browsers, Electron
+applications, libadwaita applications, and native Wayland Qt. What D5 gives
+up is that mix; what it saves is three tickets of work and three standing
+costs: owning `com.canonical.AppMenu.Registrar` and speaking `org.gtk.Menus`
+to other programs, a menu model and dbusmenu exporter in `better-ui` that
+every Better OS window would have to keep complete, and a window that hides
+its own row while the bar has its menus and must show it again within a
+second when the bar is gone. Ticket 95's premise that "GTK 4 applications have
+no menu bar to export" was partly wrong (GTK 4 does link a `GtkApplication`
+menubar through `gtk_shell1`), which did not change the outcome: few GNOME
+applications set one.
+
+The bar still reads `com.canonical.dbusmenu`, as a client, for one thing: a
+tray item's menu (section 6.1). `awake-tray` and `monitor-tray` serve that
+protocol for their own tray menus. Ticket 150 puts the server half they share
+and the client half the bar needs in one crate.
 
 ## 10. The taskbar at the bottom
 
@@ -806,12 +965,12 @@ Today (owner's machine): Zorin's taskbar at the bottom, 45px, holding Zorin's
 start menu, Show Applications, the window list, the tray, the system menu
 (network, sound, battery, power), the clock, and the desktop button.
 
-| | Zorin taskbar kept (D3 a) | Zorin taskbar as a dock (D3 b) | Better OS taskbar (D3 c, ticket 142) |
+| | Zorin taskbar kept (D3 a, now) | Zorin taskbar as a dock (D3 b, refused) | Better OS taskbar (D3 c, once ticket 142 ships) |
 | --- | --- | --- | --- |
 | Top edge | the bar, 32px reserved | the bar | the bar |
 | Bottom edge | Zorin's taskbar, 45px reserved | Zorin's taskbar, centred, intellihide on, nothing reserved | Better OS's taskbar, reserved by the same `ReserveStrip(monitor, 1, px)` |
 | Clock, system menu, tray at the bottom | hidden through Zorin's `panel-element-positions` (`dateMenu`, `systemMenu` `visible: false`); `rightBox` stays, because it holds shell indicators the bar cannot draw (drive menu, printers, Zorin Connect), minus GNOME's keyboard indicator, which the relay hides while the bar shows the input method | hidden the same way | not drawn: the Better OS taskbar has none while the bar is on |
-| Start / Better OS button | Zorin's | Zorin's | ticket 142's (D4) |
+| Start / Better OS button | Zorin's | Zorin's | ticket 142's (D4: beside Show Applications until ticket 94, then in place of Zorin's) |
 | Power, restart, lock, log out | the bar's Better OS menu and Zorin's menu | the same | the bar's Better OS menu only |
 | What Better Defaults writes | one entry, two flags | one entry, five keys | none for Zorin's taskbar beyond ticket 142's "off while it runs" |
 
@@ -826,12 +985,6 @@ Rules that hold in all three:
   path in ADR 0036's closed table) and the same `ReserveStrip`, so one relay
   carries both.
 
-Recommendation: **(a) now, (c) when ticket 142 ships.** (a) is the smallest
-visible change that meets the owner's tray rule and leaves the person's
-taskbar recognisable; (b) changes how a person switches windows for no gain
-the bar brings; (c) is the long-term answer and is already decided in
-direction.
-
 ## 11. On COSMIC
 
 If ticket 143 makes COSMIC the desktop, the bar becomes simpler: cosmic-comp
@@ -839,10 +992,12 @@ offers layer-shell, on which COSMIC's own panel and its applets are built
 (libcosmic's panel applet chapter), so `better-top-bar-view` would open its
 window as GPUI's `WindowKind::LayerShell` anchored to the top edge with an
 exclusive zone, and the panel relay is not needed. The tray host, network,
-sound, battery, clock, and menus are the same Rust, since none of them depends
-on GNOME; the input-method and notification parts would need COSMIC's own
-sources instead of GNOME Shell's, which ticket 143's evaluation must name.
-Whether COSMIC's panel is turned off or kept is that ticket's decision.
+sound, battery, clock, and the bar's own menus are the same Rust, since none of
+them depends on GNOME; the focused window, the input method, and the
+notifications would need COSMIC's own sources instead of GNOME Shell's, and the
+XEmbed bridge's way of noticing XWayland would need COSMIC's, which ticket
+143's evaluation must name. Whether COSMIC's panel is turned off or kept is
+that ticket's decision.
 
 ## 12. Better Manager: the Top bar card
 
@@ -853,26 +1008,35 @@ under Settings › 頂端列 / Top bar:
 | | zh-TW | English |
 | --- | --- | --- |
 | Header | 頂端列 | Top bar |
-| Description | 螢幕上方的選單列：Better OS 選單、應用程式選單、系統匣、時鐘和通知。 | The menu bar at the top of the screen: the Better OS menu, app menus, tray, clock, and notifications. |
+| Description | 螢幕上方的列：Better OS 選單、目前應用程式的視窗動作、系統匣、時鐘和通知。 | The bar at the top of the screen: the Better OS menu, the current app's window actions, tray, clock, and notifications. |
 | Every display | 在所有螢幕顯示頂端列 | Show the top bar on every display |
-| Tray note (Caption) | 頂端列開啟時，系統匣圖示會從工作列移到這裡。 | While the top bar is on, tray icons move here from the taskbar. |
-| XEmbed note | 舊式的 X11 系統匣圖示不會顯示在頂端列。 | Old X11 tray icons aren't shown in the top bar. |
-| Registrar held by another program | 另一個程式正在提供應用程式選單，頂端列會使用它。 | Another program provides app menus; the top bar uses it. |
+| Tray note (Caption) | 頂端列開啟時，系統匣圖示（包括舊式的 X11 圖示）會從工作列移到這裡。 | While the top bar is on, tray icons, old X11 ones included, move here from the taskbar. |
+| Icons that did not come back | 有 {n} 個系統匣圖示沒有回來，重新開啟那個應用程式就會出現。 | {n} tray icons didn't come back; reopening that app brings it back. |
+| No XWayland | 這個桌面沒有 X11 相容層（XWayland），所以不會有舊式的 X11 系統匣圖示。 | This desktop has no X11 compatibility layer (XWayland), so there are no old X11 tray icons. |
+| X11 tray selection held by another program | 另一個程式正在顯示舊式的 X11 系統匣圖示，所以這些圖示不會出現在頂端列。 | Another program is showing old X11 tray icons, so they won't appear in the top bar. |
+| Bridge failed | 無法顯示舊式的 X11 系統匣圖示。 / 重試 | Old X11 tray icons can't be shown. / Try again |
 
-Turning the component off in Apps stops the service, closes the view, gives
-GNOME's panel back, and restores every Better Defaults entry it applied (the
-tray switch, the taskbar flags, the key bindings); removing it does the
-same and deletes `$XDG_STATE_HOME/better-os/top-bar/` unless the person unticks
-"Also delete my settings and history".
+The last three rows are shown only in their state (section 6.1); Try again
+asks Better Manager to start the bridge's unit again through
+`UserUnitController`, like any component unit.
+
+Turning the component off in Apps stops the service and the bridge, closes the
+view, gives GNOME's panel back, and restores every Better Defaults entry it
+applied (the tray switch, the taskbar flags, the key bindings); removing it
+does the same and deletes `$XDG_STATE_HOME/better-os/top-bar/` unless the
+person unticks "Also delete my settings and history".
 
 ## 13. Copy that is new to the kit
 
 | Key | zh-TW | English |
 | --- | --- | --- |
-| more_menus | 更多 | More |
 | app_not_responding | 這個應用程式沒有回應。 | This app isn't responding. |
 | desktop | 桌面 | Desktop |
 | show_all_windows | 顯示所有視窗 | Show All Windows |
+| app_menu_name | {app} 選單 | {app} menu |
+| xembed_no_xwayland | 這個桌面沒有 X11 相容層（XWayland），所以不會有舊式的 X11 系統匣圖示。 | This desktop has no X11 compatibility layer (XWayland), so there are no old X11 tray icons. |
+| xembed_selection_taken | 另一個程式正在顯示舊式的 X11 系統匣圖示，所以這些圖示不會出現在頂端列。 | Another program is showing old X11 tray icons, so they won't appear in the top bar. |
+| xembed_failed | 無法顯示舊式的 X11 系統匣圖示。 | Old X11 tray icons can't be shown. |
 
 ## 14. Not verified, and owned by a ticket
 
@@ -883,5 +1047,10 @@ same and deletes `$XDG_STATE_HOME/better-os/top-bar/` unless the person unticks
 | That an `xdg_popup` grab from a click on a dock (which is not focused) gets keyboard input | 151 |
 | That hiding `panelBox` drops its strut, and that GNOME's notification banners do not draw over the bar | 151, 158 |
 | That every StatusNotifierItem on the machine re-registers when the watcher changes owner | 156 |
+| That `gnome-session-x11-services.target` goes active when XWayland starts on demand and inactive when it stops, and that `DISPLAY` is in the user manager's environment by then | 149, first step |
+| That a forwarded click reaches a GTK 2 and a GTK 3 XEmbed icon on XWayland under Mutter 46 while the pointer is over the bar, through X events and through XTest, and where each program's own menu opens | 149, first step |
+| That logical bar coordinates convert to the right X root coordinates in Mutter's physical layout mode at scale 2 (the machine's) and in logical layout mode | 149, first step |
+| That Mutter draws nothing for an override-redirect container at opacity 0 with an empty input region, and that `GetImage` on a redirected icon window returns its picture under XWayland | 149 |
+| Which programs on the owner's machine dock an XEmbed icon, and that each comes back when the bridge takes the selection | 149, then 159 with the owner |
 | The bar on the owner's desktop, at scale 2, with the person's own taskbar | 159 |
 | The bar on COSMIC | 160, after ticket 143's decision |

@@ -8,7 +8,7 @@ Working documents for the people and agents developing Better OS. Documentation 
 | [specs/](specs/) | One file per feature or policy: what it promises, what it leaves out, how to tell it is done (Better Files policies, storage safety signals, touchpad mapping, release packaging, security and rollback, and the rest) | Before working on that feature |
 | [contracts/](contracts/) | The component manifest schema that component authors write against | Before changing manifest fields or validation |
 | [performance/](performance/) | Benchmark methods and recorded numbers for Better Files, Better Launcher, and Better Storage | Before making or changing a performance claim |
-| [../design/](../design/) | Screen designs, each a spec with every state and its zh-TW and English copy plus HTML mockups in both appearances: the control center (`control-center-spec.md`, ticket 83) and the top bar (`top-bar-spec.md`, ticket 95, with its owner decisions at the top) | Before building or changing a screen they describe |
+| [../design/](../design/) | Screen designs, each a spec with every state and its zh-TW and English copy plus HTML mockups in both appearances: the control center (`control-center-spec.md`, ticket 83) and the top bar (`top-bar-spec.md`, ticket 95, with the owner's decisions of 2026-11-21 at the top) | Before building or changing a screen they describe |
 | [decisions/](decisions/) | One file per hard-to-reverse choice, with the options that were rejected | Before proposing to change such a choice |
 | [tickets/](tickets/) | One file per slice of work | Picking the next piece of work |
 | [handoff.md](handoff.md) | Unfinished work that has no ticket. Present only while there is some | Arriving to pick up work |

@@ -61,12 +61,19 @@ every window.
    the shell-side code only reports the click and the button's position.
    The component turns Zorin's or Ubuntu's own taskbar off while it
    runs and puts it back on removal. Ticket 95's design
-   (`design/top-bar-spec.md` section 10, proposed ADR 0036) gives the taskbar
-   the same route as the top bar: a GPUI view the shell starts and makes a
-   dock, a second row in ADR 0036's program table, and the bottom strip
-   reserved through the same `ReserveStrip`; while the top bar runs, the
-   taskbar draws no clock, system menu, or tray. Shapes (a) and (b) above are
-   decision D4 there.
+   (`design/top-bar-spec.md` section 10, ADR 0036, accepted on 2026-11-21)
+   gives the taskbar the same route as the top bar: a GPUI view the shell
+   starts and makes a dock, a second row in ADR 0036's program table added by
+   amending it, and the bottom strip reserved through the same `ReserveStrip`;
+   while the top bar runs, the taskbar draws no clock, system menu, or tray
+   (the tray, old X11 icons included, is in the top bar). The owner's answers
+   of 2026-11-21: Zorin's taskbar stays, minus its clock and system menu,
+   until this taskbar exists, and this taskbar then replaces it (D3 (a), then
+   (c)); its left end is shape (a), the Better OS button beside Show
+   Applications, until ticket 94 makes Better Launcher a complete start menu,
+   and shape (b) after that (D4), so from then on this component declares
+   the top bar as a dependency, because Zorin's menu and its power items are
+   gone.
 4. One radius everywhere: the GTK layer, Better OS windows, and the
    compositor clip all take it from the component's single setting.
 
