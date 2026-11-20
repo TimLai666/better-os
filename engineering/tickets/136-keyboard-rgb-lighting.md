@@ -111,6 +111,10 @@ Each answer either confirms the follow-up in AGENTS.md or changes the
 code: a level count read wrong, a kind the daemon refuses, a colour lost on
 resume (that would need a resume hook).
 
-Screenshots of the page states are in
-`/home/tim/Developer/better-os-evidence/136/` if taken; see the report of
-the change that built this.
+Screenshots of the page states, taken in a headless sway sandbox against
+`hardware_standin` (the real descriptor, a fake device behind it), are in
+`/home/tim/Developer/better-os-evidence/136/`: the LampArray's own lighting,
+steady colour (white, orange), `kbd_rgb_mode` not set, breathing and colour
+cycle, one colour, no system service, and not allowed, in zh-TW and English,
+light and dark. They show the stand-in's writes landing
+(`0 1 0 160 255 0` in the fixture `kbd_rgb_mode`), not the real keyboard.
