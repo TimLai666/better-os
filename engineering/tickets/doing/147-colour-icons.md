@@ -44,11 +44,17 @@ desktop's icon theme) stay as they are; the owner said those are fine.
    levels, CPU, memory, user, bell, palette, calendar, star, and the rest the
    sorting finds). The nine in the demo are a starting point, not finished
    work: Documents is too pale on the light background.
-4. **Draw the action icons** as flat filled shapes, plainer than the object
-   icons (owner, 2026-11-21: a line icon with one coloured part "looks odd",
-   and a shaded, detailed picture is too realistic for a button). The demo
-   has five: new folder, copy, rename, delete, refresh. Plain symbols stay
-   line icons.
+4. **Draw the action icons** in two layers of one colour that the window
+   gives them, as DESIGN.md's Icons section says: the body in the full
+   colour, a minor part in a lighter shade, the layers never overlapping, a
+   mark on a shape cut out of it. Alone in a toolbar an action icon is the
+   accent at 18px; beside a text label it is the secondary text colour at
+   16px; a destructive one is the critical colour in both (owner,
+   2026-11-21: a line icon with one coloured part "looks odd", a shaded
+   picture is too realistic, and a flat shape in its own bright colour is
+   "too childish"). `design/design-demos/action-icon-options.html` holds the
+   five the owner approved as drawn: new folder, copy, rename, delete,
+   refresh. Plain symbols stay line icons.
 5. **Every window moved over**: Files, Git, Monitor, Manager and the control
    center pages, Launcher, Awake, Touchpad, the app chooser, and the Fluent
    gallery, which gains a page showing every icon at 16px, 20px, and 40px in
@@ -80,19 +86,59 @@ Done in this stage, not yet in any window:
   `kind()` (`Kind::Object` or `Kind::Action`), `path()` (served as
   `better-ui/icons/<kind>/<file>.svg`) and `svg()`. `icon_set::load(path)` is
   what a window's `AssetSource` calls before the kit's assets, as
-  `fluent::glyphs::load` is. `icon_set::picture(Picture, size)` draws one
-  through `img`, and `picture_disabled` draws it at 36%. The data half
+  `fluent::glyphs::load` is. `icon_set::picture(Picture, size)` draws an
+  object through `img`, and `picture_disabled` draws it at 36%. The data half
   (`icon_set/catalog.rs`) has no GPUI in it.
-- 86 object and 39 action drawings, each its own file under
-  `crates/better-ui/assets/icons/{object,action}/`. Documents is redrawn
-  darker so it shows on `#f3f3f3`.
-- Tests in `icon_set/tests.rs` check every file against DESIGN.md's rules,
-  and `icon_set::renderer_tests` renders every file through GPUI's own
-  `SvgRenderer`. Neither yet checks which icons the windows use; that test
+- 86 object drawings under `crates/better-ui/assets/icons/object/`.
+  Documents is redrawn darker so it shows on `#f3f3f3`.
+- Tests in `icon_set/tests.rs` check every file against DESIGN.md's rules
+  (an action layer may hold only the mask colours and no gradient), and
+  `icon_set::renderer_tests` renders every file through GPUI's own
+  `SvgRenderer` and checks the action colours per placement. Neither yet checks which icons the windows use; that test
   belongs to stage 2, when the windows name pictures.
 - `design/design-demos/icon-set.html` shows every file at 16, 20 and 40px
   with a light/dark switch. The gallery has an Icons page
   (`better-fluent-gallery --page icons`).
+- Stage 1b (owner, 2026-11-21, after seeing the set): the objects were
+  approved; the flat multi-colour actions were rejected as "too childish"
+  and redrawn to the two-layer rule (item 4). How it is built:
+  - Each action is one or two mask files: `action/<file>.svg` is the body,
+    `action/<file>.2.svg` the minor part (22 of the 39 have one). They are
+    drawn in black and carry no colour; a cut-out mark is an `evenodd` hole
+    or a `<mask>`. `Picture::second_layer()` gives the second file;
+    `load` serves both.
+  - `icon_set::action(Picture, Placement, &Palette, disabled)` stacks the
+    two layers as `svg()` elements, each tinted with `text_color`.
+    `Placement::Alone` is the accent at 18px, `Placement::Labelled` the
+    quiet grey at 16px; `Picture::destructive()` (Delete, EndTask) is the
+    critical colour in both. `action_sized` takes another size. Disabled is
+    the whole icon at 36%. GPUI renders an `svg()` through resvg at the
+    element's own size and keeps only alpha, so the masks, holes and
+    `<mask>` cut-outs all come through; seen in the gallery in a headless
+    GNOME Shell, light and dark.
+  - The palette gained `icon_accent_2`, `icon_critical_2`, `icon_quiet` and
+    `icon_quiet_2`. The quiet grey is the demo's (`#77736c`, `#a9a59d`).
+    Every lighter shade comes from one rule, `fluent::second_layer`: the
+    body mixed toward the window background, 55% in light and 40% in dark.
+    On the demo's colours it gives `#a0b8f2` for `#a3bdfa` and `#72706b`
+    for `#6b6862`; the demo's dark blue shade is more saturated
+    (`#5673c4`, the rule gives `#5d72a6`). `with_accent`
+    applies it to a desktop accent, so the shade follows the accent in
+    force. Checked with the default accent and GNOME purple (`#9141ac`) in
+    both appearances in the contact sheet. A dark accent on the dark
+    appearance leaves the lighter layer dim, because the accent itself is
+    near the background there.
+  - The five approved drawings are used as drawn, except that the plus on
+    new folder and the slots on delete are cut out of the shape (holes),
+    where the demo painted them over it.
+  - Redrawn objects: Click is a mouse with its left button pressed, Disc an
+    iridescent face with a silver hub, Fixes a broad wrench crossed over a
+    screwdriver, Dashboard a card with a ring chart and two bars (Apps keeps
+    the four tiles), Scrolling a page with its scroll bar.
+  - `design/design-demos/icon-set.html` now embeds every file (data URIs,
+    actions as CSS masks), so it works opened alone, and has light/dark and
+    default/purple accent switches. It is generated by a script kept out of
+    the repository, from the files on disk.
 - Not done in stage 1: the per-window copies of line icons
   (`files-gui/src/icons.rs`, Better Git's three, `fluent::glyphs`) are still
   in place. The tables below say what replaces each one.
