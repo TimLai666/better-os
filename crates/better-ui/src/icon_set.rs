@@ -2,10 +2,8 @@
 //! object and action picture by name, drawn once here and asked for by name
 //! from every window.
 //!
-//! A picture is full colour, so it cannot go through the toolkit's `Icon`,
-//! which paints an SVG as a mask in the text colour. It is drawn with
-//! `img(path)` instead, and the window's `AssetSource` serves the path with
-//! [`load`] before falling back to the kit's assets:
+//! The window's `AssetSource` serves every file with [`load`] before falling
+//! back to the kit's assets:
 //!
 //! ```ignore
 //! if let Some(svg) = better_ui::icon_set::load(path) {
@@ -13,7 +11,11 @@
 //! }
 //! ```
 //!
-//! and a view draws one with [`picture`] (or [`picture_disabled`]).
+//! An object icon is full colour, so it cannot go through the toolkit's
+//! `Icon`, which paints an SVG as a mask in the text colour; [`picture`]
+//! draws it with `img`. An action icon is the opposite: its files are masks
+//! and the window gives the colour, so [`action`] draws each of its two
+//! layers with `svg`, tinted for where the icon sits.
 
 mod catalog;
 #[cfg(test)]
@@ -21,13 +23,24 @@ mod tests;
 
 pub use catalog::{ASSET_PREFIX, Kind, Picture, load};
 
-use gpui::{Img, ObjectFit, Styled, StyledImage, img, px};
+use gpui::{
+    Div, Img, ObjectFit, ParentElement, Rgba, Styled, StyledImage, div, img,
+    prelude::FluentBuilder, px, svg,
+};
 
-/// How opaque a disabled picture is: the same as disabled text.
+use crate::fluent::Palette;
+
+/// How opaque a disabled icon is: the same as disabled text.
 pub const DISABLED_OPACITY: f32 = 0.36;
 
-/// A picture drawn `size` pixels square. Row icons use 16 or 20.
+/// An object icon drawn `size` pixels square. Row icons use 16 or 20.
 pub fn picture(picture: Picture, size: f32) -> Img {
+    debug_assert_eq!(
+        picture.kind(),
+        Kind::Object,
+        "{} is an action",
+        picture.name()
+    );
     img(picture.path())
         .size(px(size))
         .flex_none()
@@ -40,44 +53,184 @@ pub fn picture_disabled(picture: Picture, size: f32) -> Img {
     self::picture(picture, size).opacity(DISABLED_OPACITY)
 }
 
+/// Where an action icon sits, which decides its colour and size.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Placement {
+    /// Alone, as in a toolbar button: the accent, 18px.
+    Alone,
+    /// Beside a text label, as in a menu row or a labelled button: the
+    /// secondary text colour, 16px, so the words lead.
+    Labelled,
+}
+
+impl Placement {
+    /// The size an action icon is drawn at here.
+    pub const fn size(self) -> f32 {
+        match self {
+            Placement::Alone => 18.0,
+            Placement::Labelled => 16.0,
+        }
+    }
+}
+
+/// The two colours an action icon is drawn in: its body, and its minor
+/// layer's lighter shade. A destructive action is the critical colour in
+/// either placement.
+pub fn action_colours(picture: Picture, placement: Placement, palette: &Palette) -> (Rgba, Rgba) {
+    if picture.destructive() {
+        (palette.critical, palette.icon_critical_2)
+    } else {
+        match placement {
+            Placement::Alone => (palette.accent, palette.icon_accent_2),
+            Placement::Labelled => (palette.icon_quiet, palette.icon_quiet_2),
+        }
+    }
+}
+
+/// An action icon at its placement's size.
+pub fn action(picture: Picture, placement: Placement, palette: &Palette, disabled: bool) -> Div {
+    action_sized(picture, placement, palette, disabled, placement.size())
+}
+
+/// An action icon at a size of its own: its layers stacked and tinted, the
+/// whole drawn at [`DISABLED_OPACITY`] when the control is disabled.
+pub fn action_sized(
+    picture: Picture,
+    placement: Placement,
+    palette: &Palette,
+    disabled: bool,
+    size: f32,
+) -> Div {
+    debug_assert_eq!(
+        picture.kind(),
+        Kind::Action,
+        "{} is an object",
+        picture.name()
+    );
+    let (body, minor) = action_colours(picture, placement, palette);
+    let layer = |path: &'static str, colour: Rgba| {
+        svg()
+            .path(path)
+            .absolute()
+            .top_0()
+            .left_0()
+            .size(px(size))
+            .text_color(colour)
+    };
+    div()
+        .relative()
+        .flex_none()
+        .size(px(size))
+        .children(picture.second_layer().map(|(path, _)| layer(path, minor)))
+        .child(layer(picture.path(), body))
+        .when(disabled, |icon| icon.opacity(DISABLED_OPACITY))
+}
+
 #[cfg(test)]
 mod renderer_tests {
     use std::sync::Arc;
 
     use gpui::SvgRenderer;
 
-    use super::Picture;
+    use super::{Kind, Picture, Placement, action_colours};
+    use crate::fluent::{DARK, LIGHT, second_layer, with_accent};
 
-    /// GPUI's own SVG renderer (usvg and resvg) reads every picture and
-    /// draws something: no file it would refuse, and none it would draw
-    /// empty.
+    /// Which of the 48×48 pixels GPUI's renderer covers for one file.
+    fn covered(renderer: &SvgRenderer, name: &str, svg: &str) -> Vec<bool> {
+        let image = renderer
+            .render_single_frame(svg.as_bytes(), 1.0)
+            .unwrap_or_else(|e| panic!("{name}: {e}"));
+        let size = image.size(0);
+        assert_eq!((size.width.0, size.height.0), (48, 48), "{name}");
+        image
+            .as_bytes(0)
+            .unwrap()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|p| p[3] > 128)
+            .collect()
+    }
+
+    /// GPUI's own SVG renderer (usvg and resvg) reads every file and draws
+    /// something: no file it would refuse, and none it would draw empty. The
+    /// whole icon (an action's two layers together) covers enough of the
+    /// square to be a picture, not a mark.
     #[test]
     fn gpui_draws_every_picture() {
         let renderer = SvgRenderer::new(Arc::new(()));
         let mut thin = Vec::new();
         for &picture in Picture::ALL {
-            let image = renderer
-                .render_single_frame(picture.svg().as_bytes(), 1.0)
-                .unwrap_or_else(|e| panic!("{}: {e}", picture.name()));
-            let size = image.size(0);
-            assert_eq!(
-                (size.width.0, size.height.0),
-                (48, 48),
-                "{}",
-                picture.name()
-            );
-            let pixels = image.as_bytes(0).unwrap();
-            let opaque = pixels
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .filter(|p| p[3] > 128)
-                .count();
-            // At least a sixth of the square is drawn: a picture, not a mark.
-            if opaque <= 48 * 48 / 6 {
-                thin.push((picture.name(), opaque));
+            let mut drawn = covered(&renderer, picture.name(), picture.svg());
+            assert!(drawn.contains(&true), "{} draws nothing", picture.name());
+            if let Some((path, svg)) = picture.second_layer() {
+                let second = covered(&renderer, path, svg);
+                assert!(second.contains(&true), "{path} draws nothing");
+                for (pixel, other) in drawn.iter_mut().zip(second) {
+                    *pixel |= other;
+                }
+            }
+            let count = drawn.iter().filter(|p| **p).count();
+            // An object covers a sixth of the square; an action an eighth,
+            // because the owner's approved Refresh is two arcs and covers 382
+            // of 2304 pixels.
+            let floor = match picture.kind() {
+                Kind::Object => 48 * 48 / 6,
+                Kind::Action => 48 * 48 / 8,
+            };
+            if count <= floor {
+                thin.push((picture.name(), count));
             }
         }
         assert!(thin.is_empty(), "too little drawn: {thin:?}");
+    }
+
+    /// The colours follow the placement, a destructive action is critical
+    /// everywhere, and a desktop accent brings its own lighter shade.
+    #[test]
+    fn an_action_takes_its_colours_from_where_it_sits() {
+        assert_eq!(
+            action_colours(Picture::Copy, Placement::Alone, &LIGHT),
+            (LIGHT.accent, LIGHT.icon_accent_2)
+        );
+        assert_eq!(
+            action_colours(Picture::Copy, Placement::Labelled, &DARK),
+            (DARK.icon_quiet, DARK.icon_quiet_2)
+        );
+        for placement in [Placement::Alone, Placement::Labelled] {
+            assert_eq!(
+                action_colours(Picture::Delete, placement, &LIGHT),
+                (LIGHT.critical, LIGHT.icon_critical_2)
+            );
+        }
+        assert_eq!(Placement::Alone.size(), 18.0);
+        assert_eq!(Placement::Labelled.size(), 16.0);
+        let purple = crate::fluent::hex(0x9141ac);
+        let accented = with_accent(&DARK, purple, crate::fluent::hex(0xffffff));
+        assert_eq!(accented.icon_accent_2, second_layer(purple, true));
+        assert_ne!(accented.icon_accent_2, DARK.icon_accent_2);
+    }
+
+    /// The lighter shade is solid and sits between the body and the window
+    /// background, nearer the background in light and nearer the body in
+    /// dark.
+    #[test]
+    fn the_second_layer_is_a_solid_shade_toward_the_window() {
+        for (palette, body, shade) in [
+            (&LIGHT, LIGHT.accent, LIGHT.icon_accent_2),
+            (&DARK, DARK.accent, DARK.icon_accent_2),
+            (&LIGHT, LIGHT.icon_quiet, LIGHT.icon_quiet_2),
+            (&DARK, DARK.critical, DARK.icon_critical_2),
+        ] {
+            assert_eq!(shade.a, 1.0);
+            let window = palette.window_background;
+            for (b, s, w) in [
+                (body.r, shade.r, window.r),
+                (body.g, shade.g, window.g),
+                (body.b, shade.b, window.b),
+            ] {
+                assert!(s >= b.min(w) - 1e-6 && s <= b.max(w) + 1e-6);
+            }
+        }
     }
 }

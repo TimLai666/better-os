@@ -82,6 +82,25 @@ fn elements(picture: Picture) -> Vec<Element> {
     parse(picture.svg()).unwrap_or_else(|e| panic!("{}: {e}", picture.name()))
 }
 
+/// Every file in the set: each picture's main file, and each action's
+/// second layer, as (asset path, SVG).
+fn files() -> Vec<(&'static str, &'static str)> {
+    Picture::ALL
+        .iter()
+        .flat_map(|p| std::iter::once((p.path(), p.svg())).chain(p.second_layer()))
+        .collect()
+}
+
+/// A file's name without `.svg`, with the second layer's `.2` as `-2`: what
+/// its ids start with.
+fn stem(path: &str) -> String {
+    path.rsplit('/')
+        .next()
+        .unwrap()
+        .trim_end_matches(".svg")
+        .replace('.', "-")
+}
+
 /// A colour written as a literal: not `none`, and not a gradient reference.
 fn literal(value: Option<&String>) -> Option<String> {
     let value = value?.trim().to_ascii_lowercase();
@@ -93,17 +112,15 @@ fn is_gradient(name: &str) -> bool {
 }
 
 #[test]
-fn every_picture_is_a_24px_svg_whose_tag_comes_first() {
-    for &picture in Picture::ALL {
-        let svg = picture.svg();
-        let name = picture.name();
+fn every_file_is_a_24px_svg_whose_tag_comes_first() {
+    for (name, svg) in files() {
         assert!(!svg.trim().is_empty(), "{name} is empty");
         assert!(
             svg.starts_with("<svg"),
             "{name}: something comes before <svg"
         );
         assert!(svg[..100.min(svg.len())].contains("<svg"), "{name}");
-        let parsed = elements(picture);
+        let parsed = parse(svg).unwrap_or_else(|e| panic!("{name}: {e}"));
         let root = &parsed[0];
         assert_eq!(root.name, "svg", "{name}");
         assert_eq!(
@@ -123,9 +140,8 @@ fn every_picture_is_a_24px_svg_whose_tag_comes_first() {
 /// needs a stylesheet, `currentColor` has no text colour behind an `img`,
 /// and a filter is a glow or a shadow the rules forbid anyway.
 #[test]
-fn no_picture_uses_what_the_renderer_or_the_rules_rule_out() {
-    for &picture in Picture::ALL {
-        let svg = picture.svg();
+fn no_file_uses_what_the_renderer_or_the_rules_rule_out() {
+    for (name, svg) in files() {
         for forbidden in [
             "class=",
             "currentColor",
@@ -135,34 +151,22 @@ fn no_picture_uses_what_the_renderer_or_the_rules_rule_out() {
             "<text",
             "<use",
         ] {
-            assert!(
-                !svg.contains(forbidden),
-                "{} uses {forbidden}",
-                picture.name()
-            );
+            assert!(!svg.contains(forbidden), "{name} uses {forbidden}");
         }
     }
 }
 
 #[test]
-fn every_gradient_id_is_unique_and_every_reference_resolves() {
-    for &picture in Picture::ALL {
-        let parsed = elements(picture);
+fn every_id_is_unique_and_every_reference_resolves() {
+    for (name, svg) in files() {
+        let parsed = parse(svg).unwrap_or_else(|e| panic!("{name}: {e}"));
         let mut ids = HashSet::new();
         for element in &parsed {
             if let Some(id) = element.attributes.get("id") {
-                assert!(ids.insert(id.clone()), "{}: id {id} twice", picture.name());
+                assert!(ids.insert(id.clone()), "{name}: id {id} twice");
                 assert!(
-                    id.starts_with(
-                        picture
-                            .path()
-                            .rsplit('/')
-                            .next()
-                            .unwrap()
-                            .trim_end_matches(".svg")
-                    ),
-                    "{}: id {id} is not named after its file",
-                    picture.name()
+                    id.starts_with(&stem(name)),
+                    "{name}: id {id} is not named after its file"
                 );
             }
         }
@@ -170,11 +174,7 @@ fn every_gradient_id_is_unique_and_every_reference_resolves() {
             for value in element.attributes.values() {
                 if let Some(rest) = value.strip_prefix("url(#") {
                     let id = rest.trim_end_matches(')');
-                    assert!(
-                        ids.contains(id),
-                        "{}: url(#{id}) has no target",
-                        picture.name()
-                    );
+                    assert!(ids.contains(id), "{name}: url(#{id}) has no target");
                 }
             }
         }
@@ -208,34 +208,67 @@ fn object_icons_are_filled_with_at_most_four_colours() {
     }
 }
 
-/// An action icon is flat: no gradient, and one colour in at most two
-/// shades plus white, in its fills and its strokes alike.
+/// An action icon is at most two masks: every layer is drawn in black, the
+/// window tints it, and nothing in it has a colour of its own or a
+/// gradient. White appears only inside a `<mask>`, where it means "keep".
 #[test]
-fn action_icons_are_flat_in_one_colour() {
+fn action_icons_are_masks_the_window_tints() {
     for &picture in Picture::ALL.iter().filter(|p| p.kind() == Kind::Action) {
-        let parsed = elements(picture);
-        assert!(
-            !parsed.iter().any(|e| is_gradient(&e.name)) && !picture.svg().contains("url("),
-            "{} has a gradient",
-            picture.name()
-        );
-        let colours: BTreeSet<String> = parsed
-            .iter()
-            .flat_map(|e| {
-                [
-                    literal(e.attributes.get("fill")),
-                    literal(e.attributes.get("stroke")),
-                ]
-            })
-            .flatten()
-            .filter(|c| c != "#ffffff" && c != "#fff" && c != "white")
-            .collect();
-        assert!(
-            (1..=2).contains(&colours.len()),
-            "{} has colours {colours:?}",
-            picture.name()
-        );
+        let layers = std::iter::once((picture.path(), picture.svg())).chain(picture.second_layer());
+        for (name, svg) in layers {
+            let parsed = parse(svg).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert!(
+                !parsed.iter().any(|e| is_gradient(&e.name)),
+                "{name} has a gradient"
+            );
+            let colours: BTreeSet<String> = parsed
+                .iter()
+                .flat_map(|e| {
+                    [
+                        literal(e.attributes.get("fill")),
+                        literal(e.attributes.get("stroke")),
+                    ]
+                })
+                .flatten()
+                .collect();
+            let allowed: &[&str] = if svg.contains("<mask") {
+                &["#000", "#fff"]
+            } else {
+                &["#000"]
+            };
+            assert!(
+                colours.iter().all(|c| allowed.contains(&c.as_str())),
+                "{name} has colours {colours:?}"
+            );
+            assert!(colours.contains("#000"), "{name} draws nothing");
+        }
     }
+}
+
+/// Only an action has a second layer; an object is one picture.
+#[test]
+fn only_actions_have_a_second_layer_and_it_is_served() {
+    for &picture in Picture::ALL {
+        if let Some((path, svg)) = picture.second_layer() {
+            assert_eq!(picture.kind(), Kind::Action, "{}", picture.name());
+            assert_eq!(path, picture.path().replace(".svg", ".2.svg"));
+            assert_eq!(load(path), Some(svg.as_bytes()));
+        }
+    }
+    assert!(Picture::Copy.second_layer().is_some());
+    assert!(Picture::Refresh.second_layer().is_none());
+}
+
+/// Delete and End task destroy something and are drawn in the critical
+/// colour; the rest follow where they are.
+#[test]
+fn only_destroying_actions_are_destructive() {
+    let destructive: Vec<_> = Picture::ALL
+        .iter()
+        .filter(|p| p.destructive())
+        .map(|p| p.name())
+        .collect();
+    assert_eq!(destructive, ["Delete", "EndTask"]);
 }
 
 #[test]
@@ -268,10 +301,10 @@ fn every_file_on_disk_is_in_the_set() {
             .unwrap()
             .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
-        let in_set: BTreeSet<String> = Picture::ALL
-            .iter()
-            .filter(|p| p.kind() == kind)
-            .map(|p| p.path().rsplit('/').next().unwrap().to_string())
+        let in_set: BTreeSet<String> = files()
+            .into_iter()
+            .filter(|(path, _)| path.starts_with(&format!("{ASSET_PREFIX}{}/", kind.directory())))
+            .map(|(path, _)| path.rsplit('/').next().unwrap().to_string())
             .collect();
         assert_eq!(on_disk, in_set, "{kind:?}");
     }

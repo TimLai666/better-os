@@ -11,8 +11,9 @@ pub enum Kind {
     /// A thing: a place, a device, a file kind, a category. A filled,
     /// full-colour picture.
     Object,
-    /// What a button does. A flat filled shape, one colour in at most two
-    /// shades plus white.
+    /// What a button does. Two layers of one colour that the window gives
+    /// it: the body, and a minor part in a lighter shade. Its files are
+    /// masks and carry no colour.
     Action,
 }
 
@@ -29,10 +30,28 @@ impl Kind {
 /// The prefix every picture's asset path starts with.
 pub const ASSET_PREFIX: &str = "better-ui/icons/";
 
+/// An action's second layer, for an entry marked `two`.
+macro_rules! second_layer {
+    ($file:literal) => {
+        None
+    };
+    ($file:literal two) => {
+        Some((
+            concat!("better-ui/icons/action/", $file, ".2.svg"),
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/assets/icons/action/",
+                $file,
+                ".2.svg"
+            )),
+        ))
+    };
+}
+
 macro_rules! pictures {
     (
         objects { $($object:ident $object_file:literal,)* }
-        actions { $($action:ident $action_file:literal,)* }
+        actions { $($action:ident $action_file:literal $($two:ident)?,)* }
     ) => {
         /// Every picture icon Better OS draws. Plain symbols (arrows,
         /// chevrons, close, check, window buttons) are not here: they stay
@@ -86,7 +105,17 @@ macro_rules! pictures {
                 }
             }
 
-            /// The picture served under `path`, if any.
+            /// An action icon's second layer, the minor part drawn in the
+            /// lighter shade: its asset path and its SVG. `None` for an
+            /// object, and for an action drawn in one layer.
+            pub const fn second_layer(self) -> Option<(&'static str, &'static str)> {
+                match self {
+                    $(Picture::$object => None,)*
+                    $(Picture::$action => second_layer!($action_file $($two)?),)*
+                }
+            }
+
+            /// The picture whose main file is served under `path`, if any.
             pub fn from_path(path: &str) -> Option<Picture> {
                 match path {
                     $(concat!("better-ui/icons/object/", $object_file, ".svg") => Some(Picture::$object),)*
@@ -195,50 +224,65 @@ pictures! {
     }
     actions {
         Add "add",
-        NewFolder "new-folder",
-        NewFile "new-file",
-        NewWindow "new-window",
-        Copy "copy",
-        Cut "cut",
-        Paste "paste",
-        Rename "rename",
-        Delete "delete",
+        NewFolder "new-folder" two,
+        NewFile "new-file" two,
+        NewWindow "new-window" two,
+        Copy "copy" two,
+        Cut "cut" two,
+        Paste "paste" two,
+        Rename "rename" two,
+        Delete "delete" two,
         Remove "remove",
         Restore "restore",
         Refresh "refresh",
-        OpenExternal "open-external",
-        OpenFolder "open-folder",
-        Compress "compress",
-        Extract "extract",
-        Pin "pin",
-        Unpin "unpin",
+        OpenExternal "open-external" two,
+        OpenFolder "open-folder" two,
+        Compress "compress" two,
+        Extract "extract" two,
+        Pin "pin" two,
+        Unpin "unpin" two,
         SetDefault "set-default",
-        SelectAll "select-all",
-        ShowPane "show-pane",
+        SelectAll "select-all" two,
+        ShowPane "show-pane" two,
         SplitView "split-view",
         ViewGrid "view-grid",
-        ViewList "view-list",
+        ViewList "view-list" two,
         ViewColumns "view-columns",
-        TreeView "tree-view",
+        TreeView "tree-view" two,
         Eject "eject",
         Play "play",
         Pause "pause",
         EndTask "end-task",
         Enable "enable",
         Disable "disable",
-        Search "search",
-        Verify "verify",
+        Search "search" two,
+        Verify "verify" two,
         Properties "properties",
-        Filter "filter",
-        Download "download",
+        Filter "filter" two,
+        Download "download" two,
         Push "push",
         Pull "pull",
     }
 }
 
-/// The SVG for a picture's asset path, or `None` for any other path. A
-/// window's `AssetSource` calls this before falling back to the kit's own
-/// assets.
+impl Picture {
+    /// Whether the action destroys something, and so is drawn in the
+    /// critical colour wherever it is.
+    pub const fn destructive(self) -> bool {
+        matches!(self, Picture::Delete | Picture::EndTask)
+    }
+}
+
+/// The SVG for a picture's asset path (an action's second layer included),
+/// or `None` for any other path. A window's `AssetSource` calls this before
+/// falling back to the kit's own assets.
 pub fn load(path: &str) -> Option<&'static [u8]> {
-    Picture::from_path(path).map(|picture| picture.svg().as_bytes())
+    if let Some(picture) = Picture::from_path(path) {
+        return Some(picture.svg().as_bytes());
+    }
+    Picture::ALL
+        .iter()
+        .filter_map(|picture| picture.second_layer())
+        .find(|(second, _)| *second == path)
+        .map(|(_, svg)| svg.as_bytes())
 }

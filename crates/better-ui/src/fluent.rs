@@ -191,7 +191,47 @@ pub struct Palette {
     pub caution_background: Rgba,
     /// `SystemFillColorAttentionBackground`: an informational info bar.
     pub attention_background: Rgba,
+    /// An action icon's minor layer when its body is the accent (DESIGN.md,
+    /// Icons): [`second_layer`] of the accent in force.
+    pub icon_accent_2: Rgba,
+    /// An action icon's minor layer when its body is [`Palette::critical`].
+    pub icon_critical_2: Rgba,
+    /// An action icon's body beside a text label: a solid secondary text
+    /// colour, so the words lead.
+    pub icon_quiet: Rgba,
+    /// [`Palette::icon_quiet`]'s minor layer.
+    pub icon_quiet_2: Rgba,
 }
+
+/// Mixes `a` toward `b` by `t` (0 is `a`, 1 is `b`), as an opaque colour.
+pub const fn mix(a: Rgba, b: Rgba, t: f32) -> Rgba {
+    Rgba {
+        r: a.r + (b.r - a.r) * t,
+        g: a.g + (b.g - a.g) * t,
+        b: a.b + (b.b - a.b) * t,
+        a: 1.0,
+    }
+}
+
+/// The lighter shade an action icon's minor layer is drawn in, from the
+/// colour its body is drawn in: the body mixed toward the window background,
+/// 55% in light and 40% in dark. A colour of its own, never the body made
+/// transparent, which turns muddy on a dark background (DESIGN.md, Icons).
+/// One rule for every body colour, so a desktop accent gets its own shade.
+pub const fn second_layer(body: Rgba, dark: bool) -> Rgba {
+    if dark {
+        mix(body, DARK_WINDOW, 0.4)
+    } else {
+        mix(body, LIGHT_WINDOW, 0.55)
+    }
+}
+
+const LIGHT_WINDOW: Rgba = hex(0xf3f3f3);
+const DARK_WINDOW: Rgba = hex(0x202020);
+const LIGHT_CRITICAL: Rgba = hex(0xc42b1c);
+const DARK_CRITICAL: Rgba = hex(0xff99a4);
+const LIGHT_QUIET: Rgba = hex(0x77736c);
+const DARK_QUIET: Rgba = hex(0xa9a59d);
 
 /// `0xRRGGBB` as an opaque color.
 pub const fn hex(rgb: u32) -> Rgba {
@@ -235,7 +275,7 @@ pub mod accent {
 }
 
 pub const LIGHT: Palette = Palette {
-    window_background: hex(0xf3f3f3),
+    window_background: LIGHT_WINDOW,
     card: argb(0xb3ffffff),
     card_secondary: argb(0x80f6f6f6),
     layer: argb(0x80ffffff),
@@ -283,17 +323,21 @@ pub const LIGHT: Palette = Palette {
     focus_outer: argb(0xe4000000),
     focus_inner: argb(0xb3ffffff),
     smoke: argb(0x4d000000),
-    critical: hex(0xc42b1c),
+    critical: LIGHT_CRITICAL,
     success: hex(0x0f7b0f),
     caution: hex(0x9d5d00),
     critical_background: hex(0xfde7e9),
     success_background: hex(0xdff6dd),
     caution_background: hex(0xfff4ce),
     attention_background: argb(0x80f6f6f6),
+    icon_accent_2: second_layer(accent::DARK_1, false),
+    icon_critical_2: second_layer(LIGHT_CRITICAL, false),
+    icon_quiet: LIGHT_QUIET,
+    icon_quiet_2: second_layer(LIGHT_QUIET, false),
 };
 
 pub const DARK: Palette = Palette {
-    window_background: hex(0x202020),
+    window_background: DARK_WINDOW,
     card: argb(0x0dffffff),
     card_secondary: argb(0x08ffffff),
     layer: argb(0x4c3a3a3a),
@@ -341,13 +385,17 @@ pub const DARK: Palette = Palette {
     focus_outer: hex(0xffffff),
     focus_inner: argb(0xb3000000),
     smoke: argb(0x4d000000),
-    critical: hex(0xff99a4),
+    critical: DARK_CRITICAL,
     success: hex(0x6ccb5f),
     caution: hex(0xfce100),
     critical_background: hex(0x442726),
     success_background: hex(0x393d1b),
     caution_background: hex(0x433519),
     attention_background: argb(0x08ffffff),
+    icon_accent_2: second_layer(accent::LIGHT_2, true),
+    icon_critical_2: second_layer(DARK_CRITICAL, true),
+    icon_quiet: DARK_QUIET,
+    icon_quiet_2: second_layer(DARK_QUIET, true),
 };
 
 /// The palette for one appearance.
@@ -432,6 +480,7 @@ pub fn with_accent(base: &Palette, fill: Rgba, on_fill: Rgba) -> Palette {
         accent_text: fill,
         text_on_accent: on_fill,
         text_on_accent_secondary: with_alpha(on_fill, 0.8),
+        icon_accent_2: second_layer(fill, base.is_dark()),
         ..*base
     }
 }
