@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="zh-Hant-TW" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Better Manager 輸入法（深色）</title>
+<style>
+:root{--font:system-ui,"Inter","Segoe UI","Noto Sans CJK TC","Noto Sans TC",sans-serif}
+html[data-theme=light]{--bg:#f3f3f3;--card:rgba(255,255,255,.7);--card-solid:#fbfbfb;--ctl:rgba(255,255,255,.7);--ctl-hover:rgba(249,249,249,.5);--text:rgba(0,0,0,.894);--text2:rgba(0,0,0,.62);--text3:rgba(0,0,0,.36);--accent:#005fb8;--on-accent:#fff;--subtle:rgba(0,0,0,.037);--stroke:rgba(0,0,0,.06);--cstroke:rgba(0,0,0,.0578);--strong:rgba(0,0,0,.45);--crit:#c42b1c;--ok:#0f7b0f;--warn:#9d5d00;--critbg:#fde7e9;--okbg:#dff6dd;--warnbg:#fff4ce;--infobg:rgba(246,246,246,.5);--flyout:#f9f9f9;--knob:#fff;--track:rgba(0,0,0,.45);--elev:rgba(0,0,0,.16)}
+html[data-theme=dark]{--bg:#202020;--card:rgba(255,255,255,.05);--card-solid:#2b2b2b;--ctl:rgba(255,255,255,.06);--ctl-hover:rgba(255,255,255,.08);--text:#fff;--text2:rgba(255,255,255,.77);--text3:rgba(255,255,255,.36);--accent:#60cdff;--on-accent:#000;--subtle:rgba(255,255,255,.06);--stroke:rgba(255,255,255,.07);--cstroke:rgba(0,0,0,.1);--strong:rgba(255,255,255,.55);--crit:#ff99a4;--ok:#6ccb5f;--warn:#fce100;--critbg:#442726;--okbg:#393d1b;--warnbg:#433519;--infobg:rgba(255,255,255,.03);--flyout:#2c2c2c;--knob:#000;--track:rgba(255,255,255,.55);--elev:rgba(0,0,0,.4)}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:400 14px/20px var(--font);-webkit-font-smoothing:antialiased}
+.win{min-height:100vh;display:flex;flex-direction:column}
+.tb{height:32px;display:flex;align-items:center;gap:8px;padding:0 0 0 8px;flex:none}
+.tb .back{width:40px;height:32px;display:grid;place-items:center;border-radius:4px;color:var(--text)}
+.tb .appname{font-size:12px;line-height:16px;color:var(--text)}
+.tb .caps{margin-left:auto;display:flex}
+.tb .caps span{width:46px;height:32px;display:grid;place-items:center;color:var(--text2)}
+.body{flex:1;display:flex;min-height:0}
+nav{width:320px;flex:none;padding:4px 4px 8px;display:flex;flex-direction:column;gap:4px}
+.search{margin:4px 12px 12px;height:32px;border-radius:4px;background:var(--ctl);border:1px solid var(--stroke);border-bottom-color:var(--strong);display:flex;align-items:center;padding:0 10px;gap:8px;color:var(--text2)}
+.nav-item{position:relative;height:36px;display:flex;align-items:center;gap:16px;padding:0 12px 0 16px;border-radius:4px;margin:0 4px;color:var(--text)}
+.nav-item.sel{background:var(--subtle)}
+.nav-item.sel::before{content:"";position:absolute;left:0;top:10px;width:3px;height:16px;border-radius:2px;background:var(--accent)}
+.nav-spacer{flex:1}
+main{flex:1;min-width:0;overflow:auto;padding:0 24px 40px 32px}
+.content{max-width:1000px}
+h1{font:600 28px/36px var(--font);margin:10px 0 24px}
+.group-h{font:600 14px/20px var(--font);margin:24px 0 8px}
+.cards{display:flex;flex-direction:column;gap:4px}
+.card{background:var(--card);border:1px solid var(--cstroke);border-radius:4px;min-height:68px;display:flex;align-items:center;gap:16px;padding:12px 16px}
+.card .lead{color:var(--text);flex:none;display:grid;place-items:center;width:20px}
+.card .txt{flex:1;min-width:0}
+.card .d{font-size:12px;line-height:16px;color:var(--text2)}
+.card .trail{flex:none;display:flex;align-items:center;gap:12px;color:var(--text2)}
+.exp{background:var(--card);border:1px solid var(--cstroke);border-radius:4px}
+.exp>.card{border:0;background:transparent}
+.exp .row{border-top:1px solid var(--cstroke);padding:10px 16px 10px 52px;display:flex;align-items:center;gap:12px;min-height:48px}
+.btn{height:32px;padding:0 12px;border-radius:4px;border:1px solid var(--stroke);background:var(--ctl);color:var(--text);font:400 14px/20px var(--font);display:inline-flex;align-items:center;gap:8px;white-space:nowrap}
+.btn.accent{background:var(--accent);color:var(--on-accent);border-color:transparent}
+.combo{height:32px;min-width:200px;padding:0 10px 0 11px;border-radius:4px;border:1px solid var(--stroke);background:var(--ctl);display:inline-flex;align-items:center;justify-content:space-between;gap:12px;color:var(--text)}
+.tog{display:inline-flex;align-items:center;gap:12px;color:var(--text)}
+.sw{width:40px;height:20px;border-radius:10px;border:1px solid var(--track);position:relative;background:transparent;display:inline-block}
+.sw::after{content:"";position:absolute;width:12px;height:12px;border-radius:6px;top:3px;left:3px;background:var(--text2)}
+.sw.on{background:var(--accent);border-color:var(--accent)}
+.sw.on::after{left:23px;background:var(--knob)}
+.sw.dis{opacity:.36}
+.chk{width:20px;height:20px;border-radius:4px;border:1px solid var(--strong);display:inline-grid;place-items:center;flex:none}
+.chk.on{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+.status-ic{flex:none;width:20px;height:20px;border-radius:10px;display:grid;place-items:center;font:700 12px/1 var(--font)}
+.status-ic.ok{background:var(--ok);color:var(--bg)}
+.cap{font-size:12px;line-height:16px;color:var(--text2)}
+.dis-t{color:var(--text3)}
+.kbd{font:600 12px/16px var(--font);border:1px solid var(--stroke);border-bottom-width:2px;border-radius:4px;padding:1px 6px;background:var(--ctl);color:var(--text)}
+.note{max-width:1000px;margin-top:32px;font-size:12px;line-height:16px;color:var(--text3)}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+<defs>
+<symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></symbol>
+<symbol id="i-home" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></symbol>
+<symbol id="i-sys" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M15 2v2M15 20v2M2 15h2M2 9h2M20 15h2M20 9h2M9 2v2M9 20v2"/></symbol>
+<symbol id="i-pad" viewBox="0 0 24 24"><path d="M22 6H2M22 18H2M6 2v20M18 2v20"/></symbol>
+<symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></symbol>
+<symbol id="i-apps" viewBox="0 0 24 24"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></symbol>
+<symbol id="i-star" viewBox="0 0 24 24"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01z"/></symbol>
+<symbol id="i-kbd" viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M6 8h.01M10 8h.01M14 8h.01M18 8h.01M8 12h.01M12 12h.01M16 12h.01M7 16h10"/></symbol>
+<symbol id="i-warn" viewBox="0 0 24 24"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4M12 17h.01"/></symbol>
+<symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></symbol>
+<symbol id="i-back" viewBox="0 0 24 24"><path d="M19 12H5M12 19l-7-7 7-7"/></symbol>
+<symbol id="i-min" viewBox="0 0 24 24"><path d="M5 12h14"/></symbol>
+<symbol id="i-max" viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="1"/></symbol>
+<symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+<symbol id="i-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+<symbol id="i-right" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+<symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+<symbol id="i-lang" viewBox="0 0 24 24"><path d="m5 8 6 6M4 14l6-6 2-3M2 5h12M7 2h1M22 22l-5-10-5 10M14 18h6"/></symbol>
+<symbol id="i-tone" viewBox="0 0 24 24"><path d="M2 12h3l3-8 4 16 3-8h7"/></symbol>
+<symbol id="i-ear" viewBox="0 0 24 24"><path d="M6 8.5a6.5 6.5 0 1 1 13 0c0 6-6 6-6 10a3.5 3.5 0 1 1-7 0"/><path d="M15 8.5a2.5 2.5 0 0 0-5 0v1a2 2 0 1 1 0 4"/></symbol>
+<symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 3l1.9 5.8L20 10l-6.1 1.2L12 17l-1.9-5.8L4 10l6.1-1.2z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/></symbol>
+<symbol id="i-tab" viewBox="0 0 24 24"><path d="M3 12h14M13 8l4 4-4 4M21 5v14"/></symbol>
+<symbol id="i-punct" viewBox="0 0 24 24"><circle cx="7" cy="17" r="1.5"/><path d="M15 8a3 3 0 1 1 3 3v2"/><path d="M18 17h.01"/></symbol>
+<symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18M15 3v18"/></symbol>
+<symbol id="i-num" viewBox="0 0 24 24"><path d="M4 9h16M4 15h16M10 3 8 21M16 3l-2 18"/></symbol>
+<symbol id="i-list" viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></symbol>
+<symbol id="i-space" viewBox="0 0 24 24"><path d="M4 11v4h16v-4"/></symbol>
+<symbol id="i-learn" viewBox="0 0 24 24"><path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/></symbol>
+<symbol id="i-book" viewBox="0 0 24 24"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"/></symbol>
+<symbol id="i-erase" viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></symbol>
+<symbol id="i-mic" viewBox="0 0 24 24"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v3"/></symbol>
+<symbol id="i-model" viewBox="0 0 24 24"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><path d="M3.3 7 12 12l8.7-5M12 22V12"/></symbol>
+<symbol id="i-key" viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="12" rx="2"/><path d="M9 12h6"/></symbol>
+<symbol id="i-hold" viewBox="0 0 24 24"><path d="M18 11V6a2 2 0 0 0-4 0v5M14 10V4a2 2 0 0 0-4 0v6M10 10.5V6a2 2 0 0 0-4 0v8"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/></symbol>
+<symbol id="i-timer" viewBox="0 0 24 24"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l2 2M9 2h6"/></symbol>
+<symbol id="i-chip" viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="2"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/></symbol>
+<symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></symbol>
+</defs>
+</svg>
+<div class="win">
+<div class="tb"><span class="back" title="上一頁"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-back"/></svg></span><span class="appname">Better Manager</span><span class="caps"><span><svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><use href="#i-min"/></svg></span><span><svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.75"><use href="#i-max"/></svg></span><span><svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><use href="#i-x"/></svg></span></span></div>
+<div class="body">
+<nav aria-label="導覽">
+<div class="search"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><use href="#i-search"/></svg><span>尋找設定</span></div>
+<div class="nav-item"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-home"/></svg><span>首頁</span></div>
+<div class="nav-item"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-sys"/></svg><span>系統</span></div>
+<div class="nav-item"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-pad"/></svg><span>觸控板</span></div>
+<div class="nav-item"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-sun"/></svg><span>保持清醒</span></div>
+<div class="nav-item"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-apps"/></svg><span>應用程式</span></div>
+<div class="nav-item"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-star"/></svg><span>預設應用程式</span></div>
+<div class="nav-item sel"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-kbd"/></svg><span>輸入法</span></div>
+<div class="nav-item"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-warn"/></svg><span>修正</span></div>
+<div class="nav-spacer"></div>
+<div class="nav-item"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-gear"/></svg><span>設定</span></div>
+</nav>
+<main><div class="content">
+<h1>輸入法</h1>
+
+<div class="cards">
+<div class="card"><span class="status-ic ok"><svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check"/></svg></span><div class="txt"><div>Better Input 是目前的輸入法</div><div class="d">中文和英文直接打，不用切換。</div></div></div>
+</div>
+
+<div class="group-h">打字</div>
+<div class="cards">
+<div class="card"><span class="lead"><svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-lang"/></svg></span><div class="txt"><div>中英混打</div><div class="d">直接打英文單字，Better Input 會分辨哪些是中文、哪些是英文。</div></div><div class="trail"><span class="tog">開啟<span class="sw on"></span></span></div></div>
+<div class="card"><span class="lead"><svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-key"/></svg></span><div class="txt"><div>中英切換鍵</div><div class="d">單按一下切換成全英文。</div></div><div class="trail"><span class="combo">左右 Shift<svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><use href="#i-down"/></svg></span></div></div>
+<div class="card"><span class="lead"><svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-space"/></svg></span><div class="txt"><div>中英文之間加空格</div><div class="d">送出時在中文和英文字中間補一個半形空格。</div></div><div class="trail"><span class="tog">關閉<span class="sw"></span></span></div></div>
+<div class="card"><span class="lead"><svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-tone"/></svg></span><div class="txt"><div>不打聲調</div><div class="d">聲調可打可不打。開啟後中英混打會關閉。</div></div><div class="trail"><span class="tog">關閉<span class="sw"></span></span></div></div>
+<div class="exp">
+<div class="card"><span class="lead"><svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-ear"/></svg></span><div class="txt"><div>模糊音</div><div class="d">把近音的字也列進候選。</div></div><div class="trail"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><use href="#i-down"/></svg></div></div>
+<div class="row"><span class="chk on"><svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check"/></svg></span>ㄗ 和 ㄓ</div>
+<div class="row"><span class="chk on"><svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check"/></svg></span>ㄘ 和 ㄔ</div>
+<div class="row"><span class="chk on"><svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check"/></svg></span>ㄙ 和 ㄕ</div>
+<div class="row"><span class="chk on"><svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check"/></svg></span>ㄣ 和 ㄥ</div>
+</div>
+<div class="card"><span class="lead"><svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-spark"/></svg></span><div class="txt"><div>依前文選字</div><div class="d">用這台電腦上的語言模型，看你前面打的字來選字。</div></div><div class="trail"><span class="tog">開啟<span class="sw on"></span></span></div></div>
+<div class="card"><span class="lead"><svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-tab"/></svg></span><div class="txt"><div>Tab 補完</div><div class="d">有把握時提示後面的字詞，按 Tab 接受。</div></div><div class="trail"><span class="tog">開啟<span class="sw on"></span></span></div></div>
+<div class="card"><span class="lead"><svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-punct"/></svg></span><div class="txt"><div>送出時補標點</div><div class="d">按 Enter 送出時，在中文句子裡補上，。？！，不改你打的字。</div></div><div class="trail"><span class="tog">關閉<span class="sw"></span></span></div></div>
+<div class="card"><span class="lead"><svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-kbd"/></svg></span><div class="txt"><div>鍵盤排列</div></div><div class="trail"><span class="combo">標準<svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><use href="#i-down"/></svg></span></div></div>
+<div class="card"><span class="lead"><svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-num"/></svg></span><div class="txt"><div>選字鍵</div></div><div class="trail"><span class="combo">1234567890<svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><use href="#i-down"/></svg></span></div></div>
+<div class="card"><span class="lead"><svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-list"/></svg></span><div class="txt"><div>每頁候選字數</div></div><div class="trail"><span class="combo">5<svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><use href="#i-down"/></svg></span></div></div>
+<div class="card"><span class="lead dis-t"><svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-space"/></svg></span><div class="txt"><div class="dis-t">空白鍵選字</div><div class="d">中英混打開著時，空白鍵一律是空格，選字請按 ↓。</div></div><div class="trail"><span class="tog dis-t">關閉<span class="sw dis"></span></span></div></div>
+</div>
+
+<div class="group-h">個人化</div>
+<div class="cards">
+<div class="card"><span class="lead"><svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-learn"/></svg></span><div class="txt"><div>記住我選的字詞</div><div class="d">下次同樣的情況優先出現。只存在這台電腦上。</div></div><div class="trail"><span class="tog">開啟<span class="sw on"></span></span></div></div>
+<div class="card"><span class="lead"><svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-book"/></svg></span><div class="txt"><div>我的詞彙</div><div class="d">412 個詞 · 已從新酷音匯入 398 個詞。</div></div><div class="trail"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><use href="#i-right"/></svg></div></div>
+<div class="card"><span class="lead"><svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-erase"/></svg></span><div class="txt"><div>清除學到的字詞</div><div class="d">刪掉 Better Input 學到的選字習慣，你自己加的詞會留著。</div></div><div class="trail"><span class="btn">清除學到的字詞…</span></div></div>
+</div>
+
+<div class="group-h">語音輸入</div>
+<div class="cards">
+<div class="card"><span class="lead"><svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-mic"/></svg></span><div class="txt"><div>語音輸入</div><div class="d">按語音鍵 Fn+F10 開始說話，再按一下停止。說的話會出現在組字區，可以直接用鍵盤修改。全部在這台電腦上處理。</div></div><div class="trail"><span class="tog">開啟<span class="sw on"></span></span></div></div>
+<div class="card"><span class="lead"><svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-model"/></svg></span><div class="txt"><div>語音模型</div><div class="d">Breeze ASR 25（台灣華語，聽得懂中英夾雜）· 1.1 GB · 已下載</div></div></div>
+<div class="card"><span class="lead"><svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-key"/></svg></span><div class="txt"><div>語音鍵</div><div class="d">Fn+F10（這台電腦的語音鍵）</div></div><div class="trail"><span class="btn">測試</span></div></div>
+<div class="card"><span class="lead"><svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-kbd"/></svg></span><div class="txt"><div>快速鍵</div><div class="d">在任何文字欄位開始或停止語音輸入。</div></div><div class="trail"><span class="kbd">Super</span>+<span class="kbd">Alt</span>+<span class="kbd">H</span></div></div>
+<div class="card"><span class="lead"><svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-hold"/></svg></span><div class="txt"><div>按住說話</div><div class="d">按住右 Alt 說話，放開就停止。Fn+F10 放開的時候鍵盤不會通知系統，所以按住說話要用右 Alt。</div></div><div class="trail"><span class="tog">關閉<span class="sw"></span></span></div></div>
+<div class="card"><span class="lead"><svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-punct"/></svg></span><div class="txt"><div>自動加標點</div><div class="d">依語氣補上，。？！</div></div><div class="trail"><span class="tog">開啟<span class="sw on"></span></span></div></div>
+<div class="card"><span class="lead"><svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-list"/></svg></span><div class="txt"><div>說出標點符號</div><div class="d">說「逗號」「句號」「問號」「換行」就會打出符號。</div></div><div class="trail"><span class="tog">開啟<span class="sw on"></span></span></div></div>
+<div class="card"><span class="lead"><svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-timer"/></svg></span><div class="txt"><div>安靜多久後停止</div></div><div class="trail"><span class="combo">10 秒<svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><use href="#i-down"/></svg></span></div></div>
+<div class="card"><span class="lead"><svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-mic"/></svg></span><div class="txt"><div>麥克風</div></div><div class="trail"><span class="combo">系統預設（內建麥克風）<svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><use href="#i-down"/></svg></span></div></div>
+<div class="card"><span class="lead"><svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-chip"/></svg></span><div class="txt"><div>執行位置</div><div class="d">NPU 需要另外的執行環境，目前還不能用。</div></div><div class="trail"><span class="combo">自動（處理器）<svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><use href="#i-down"/></svg></span></div></div>
+</div>
+
+<div class="group-h">關於</div>
+<div class="cards">
+<div class="exp">
+<div class="card"><span class="lead"><svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-info"/></svg></span><div class="txt"><div>關於 Better Input</div><div class="d">打字和說話都只在這台電腦上處理，不會上傳。只有下載模型時會連網。</div></div><div class="trail"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><use href="#i-down"/></svg></div></div>
+<div class="row"><span style="flex:1">版本</span><span class="cap">0.3.0</span></div>
+<div class="row"><span style="flex:1">新酷音引擎 libchewing</span><span class="cap">LGPL-2.1</span></div>
+<div class="row"><span style="flex:1">選字與標點模型 0c D512（Funmula）</span><span class="cap">MIT</span></div>
+<div class="row"><span style="flex:1">語音模型 Breeze ASR 25（MediaTek Research）</span><span class="cap">Apache-2.0</span></div>
+<div class="row"><span style="flex:1">whisper.cpp</span><span class="cap">MIT</span></div>
+<div class="row"><span style="flex:1">第三方授權</span><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><use href="#i-right"/></svg></div>
+</div>
+</div>
+
+</div>
+<p class="note">設計稿：控制項外觀依 DESIGN.md 與 better_ui::fluent，文案與行為依 design/better-input-spec.md 第 7 節。這是預設狀態：Better Input 已安裝並設為輸入法、模型已下載、語音鍵已偵測到。詞彙數量與版本號是示意資料。另一個外觀：page-light.html。</p>
+</main>
+</div>
+</div>
+</body>
+</html>
