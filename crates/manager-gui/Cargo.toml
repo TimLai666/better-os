@@ -40,6 +40,9 @@ drive-mounts.workspace = true
 files-platform.workspace = true
 storage-platform.workspace = true
 hardware-platform = { workspace = true, features = ["sensors"] }
+# The Fixes page (ticket 90): Better Patch's engine and its I/O.
+patch-core.workspace = true
+patch-platform.workspace = true
 gpui.workspace = true
 gpui-component.workspace = true
 gpui-component-assets.workspace = true

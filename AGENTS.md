@@ -556,6 +556,14 @@ GUI or dependency compiles when the relevant command was not executed.
   installed, and the catalog is read from the process's own `XDG_DATA_DIRS`, so
   a manager started without the Flatpak paths reports Flatpak applications as
   gone. The choice buttons in the window have not been looked at.
+- Better Patch, the Fixes page (ticket 90, `engineering/specs/better-patch.md`),
+  has run its two entries only against fixture machines in scratch
+  directories: no agent session may rebuild the person's font cache or write
+  their Flatpak overrides. Nobody has watched it find, fix, or undo either
+  fault on a real desktop, and the Mutter scale read has been seen only in a
+  headless GNOME Shell. Removing Better Manager leaves an applied override and
+  its record in place; whether a fix must be undone at removal is the owner's
+  decision and is not built.
 - The login screen watch (ticket 140, ADR 0033) has run against a real
   systemd, logind, and journal only in CI's container check
   (`packaging/boot-watch/run.sh`, a stand-in `gdm.service` that never opens

@@ -40,16 +40,46 @@ Spec section 9.
 
 ## Acceptance
 
-- [ ] Each entry has tests for detection (present and absent), fix, check,
+- [x] Each entry has tests for detection (present and absent), fix, check,
       and undo against fixture directories in a scratch HOME.
-- [ ] Nothing in `patch-*` spawns a shell or takes a command from data; a
+- [x] Nothing in `patch-*` spawns a shell or takes a command from data; a
       test asserts it over the crates' source, as `touchpad-gui` does.
-- [ ] Light and dark, zh-TW and English, 1600 and 960, screenshotted with a
+- [x] Light and dark, zh-TW and English, 1600 and 960, screenshotted with a
       fixture fault present and with none.
 - [ ] fmt, clippy on stable and 1.99, `cargo +1.95 check`, workspace tests,
       and the license check pass.
 
 ## Notes
+
+**Blocked:** the last gate (clippy on 1.99, `cargo +1.95 check`, the full
+`manager-gui` test run, and a re-run after the last edit) was stopped because
+the shared disk fell below 8 GB free (7.6 GB at 2026-11-21 02:55); everything
+else is built and checked.
+
+Done (spec: `engineering/specs/better-patch.md`):
+- `patch-core` (no GPUI, no I/O): the `Entry` trait, `EntryState`, the
+  record, the engine, both entries; `patch-platform`: the host, the Flatpak
+  reader/writer, Mutter's scale, the closed command runner, the record store,
+  and a fixture machine for demo windows and sandboxes.
+- The page in `manager-gui/src/pages/fixes/` with search entries, the pane
+  count, Home's item, and the debug-only placeholder removed (with it the
+  `Placeholder` page status, so ticket 91's release gate holds by
+  construction).
+- Checks run: `cargo test -p patch-core -p patch-platform` (56 + 9 + 8 + 4
+  passed), `cargo test -p manager-gui fixes` (10 passed, before the last edit
+  below), `cargo +stable clippy -p patch-core -p patch-platform -p
+  manager-gui --all-targets -D warnings` (clean, before the last edit),
+  `cargo fmt --all --check`, the license check.
+- Screenshots: `/home/tim/Developer/better-os-evidence/90/`, 31 files, taken
+  in a private headless GNOME Shell 46 with a scratch HOME and fixture
+  machines (`BETTER_OS_DEBUG_FIXES_ROOT`), plus one with the real host code
+  in that sandbox at scale 2 (read only: no Fix was pressed).
+
+Left: after disk is free, re-run `cargo test --no-fail-fast -p manager-gui`
+in full (the last edit counts an undone fault that came back on Home and the
+pane, and adds its assertion; it has not been compiled), clippy on stable and
+1.99 for `patch-core`, `patch-platform`, `manager-gui`, and `cargo +1.95
+check` for the same; then tick the last box and move this ticket to `done/`.
 
 Never run either fix against the person's real fontconfig cache or Flatpak
 overrides from an agent session; use the scratch HOME.

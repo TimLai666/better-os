@@ -1,0 +1,16 @@
+[package]
+name = "patch-platform"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+patch-core.workspace = true
+serde_json.workspace = true
+# The display scale comes from Mutter over the session bus. Blocking API on
+# the default async-io flavor, like every client here.
+zbus.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

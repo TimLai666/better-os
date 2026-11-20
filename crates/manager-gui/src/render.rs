@@ -455,22 +455,6 @@ impl ManagerApp {
         ]
     }
 
-    /// A page a later ticket builds: its title, and in a debug build the
-    /// "not built yet" card naming the ticket.
-    fn placeholder_rows(&self, route: Route, ticket: u16, cx: &mut Context<Self>) -> Vec<Row> {
-        let s = shell(self.locale);
-        let mut rows = vec![self.title_row(pages::title(route, self.locale), cx)];
-        if pages::shows_not_built_notice() {
-            rows.push(Row::new(
-                0.0,
-                SettingsCard::new("not-built", s.not_built_title)
-                    .status(Severity::Informational)
-                    .description(s.not_built_body.replace("{ticket}", &ticket.to_string())),
-            ));
-        }
-        rows
-    }
-
     fn page_rows(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Vec<Row> {
         let route = Route::of(&self.page);
         match (&self.page, pages::module(route).status) {
@@ -486,7 +470,7 @@ impl ManagerApp {
             }
             (_, _) if route == Route::Apps => self.apps_rows(cx),
             (_, _) if route == Route::DefaultApps => self.default_apps_rows(cx),
-            (_, PageStatus::Placeholder { ticket }) => self.placeholder_rows(route, ticket, cx),
+            (Page::Fixes, _) => self.fixes_rows(cx),
             _ => Vec::new(),
         }
     }
