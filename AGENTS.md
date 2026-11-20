@@ -344,7 +344,13 @@ GUI or dependency compiles when the relevant command was not executed.
   there uses `corner_scrollbar`; tooltips, menus, and panels go through
   `inside_window`. Nothing is inset along a side. `NavigationView`, dialogs,
   toasts, menus, and the staged-changes bar follow it; a new window or panel
-  that reaches a corner must too. The frame was compared pixel
+  that reaches a corner must too. Two limits follow from GPUI clipping only to
+  rectangles, at the pinned revision and on Zed's `main`: a scrolling surface
+  whose rows run its full width (Better Git's diff) gives up a band the height
+  of the corner's radius along the bottom, where its rows are not drawn while
+  they scroll past and the wheel and presses do nothing (at the end of the
+  list they are whole above it); and the gallery's samples wider than a
+  narrow window are cut at the page's padding. The frame was compared pixel
   by pixel with GNOME Text Editor in a headless GNOME Shell 46 only (ticket
   108; ticket 141 for all four corners and the outline, on ZorinBlue-Dark
   and Adwaita light and dark, at scale 1 and 2, evidence in
