@@ -328,10 +328,10 @@ impl DbusMenu {
 mod tests {
     use super::*;
     use crate::labels::Locale;
-    use crate::localtime::UtcOffset;
     use crate::menu::QuickOptions;
     use awake_core::{BackendCapabilities, SessionPolicy};
     use awake_ipc::{StatusDocument, WireBackend, WireIndicator};
+    use better_core::local_time::TimeZone;
 
     fn menu() -> Menu {
         let status = StatusDocument {
@@ -363,7 +363,7 @@ mod tests {
             &status,
             QuickOptions::default(),
             Locale::EnUs,
-            UtcOffset::UTC,
+            TimeZone::UTC,
             false,
         )
     }
@@ -498,7 +498,7 @@ mod tests {
             &status,
             QuickOptions::default(),
             Locale::EnUs,
-            UtcOffset::UTC,
+            TimeZone::UTC,
             false,
         )
     }
@@ -567,7 +567,7 @@ mod tests {
             &status,
             QuickOptions::default(),
             Locale::EnUs,
-            UtcOffset::UTC,
+            TimeZone::UTC,
             false,
         );
         let labels = drawn_labels(&menu);

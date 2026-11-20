@@ -939,15 +939,15 @@ fn the_status_shows_the_lid_row_and_the_limit_only_while_the_lid_is_held() {
     document.lid.battery_limit = awake_core::LidBatteryLimit::Minutes { minutes: 240 };
     let view = StatusView::from_status(&document);
     assert!(view.lid.held);
-    let offset = crate::localtime::UtcOffset::UTC;
+    let zone = better_core::local_time::TimeZone::UTC;
     assert_eq!(
         view.lid
-            .limit_summary(Locale::EnUs, document.now_unix_seconds, offset),
+            .limit_summary(Locale::EnUs, document.now_unix_seconds, zone),
         "Stops after 4 hours"
     );
     assert_eq!(
         view.lid
-            .limit_summary(Locale::ZhTw, document.now_unix_seconds, offset),
+            .limit_summary(Locale::ZhTw, document.now_unix_seconds, zone),
         "4 小時後停止"
     );
     let lid = view
@@ -1010,23 +1010,23 @@ fn a_running_closed_lid_clock_reads_as_a_countdown_and_otherwise_as_the_rule() {
     let mut document = status(true);
     document.effective_policy = SessionPolicy::manual_default();
     let view = StatusView::from_status(&document);
-    let offset = crate::localtime::UtcOffset::UTC;
+    let zone = better_core::local_time::TimeZone::UTC;
     assert_eq!(
         view.lid
-            .limit_summary(Locale::EnUs, document.now_unix_seconds, offset),
+            .limit_summary(Locale::EnUs, document.now_unix_seconds, zone),
         "Stops after 2 hours"
     );
     document.lid.stops_at_unix_seconds = Some(document.now_unix_seconds + 90 * 60);
     let view = StatusView::from_status(&document);
-    let at = crate::localtime::clock_time(document.now_unix_seconds + 90 * 60, offset);
+    let at = better_core::local_time::clock_time(document.now_unix_seconds + 90 * 60, zone);
     assert_eq!(
         view.lid
-            .limit_summary(Locale::EnUs, document.now_unix_seconds, offset),
+            .limit_summary(Locale::EnUs, document.now_unix_seconds, zone),
         format!("Stops at {at} (90 minutes left)")
     );
     assert_eq!(
         view.lid
-            .limit_summary(Locale::ZhTw, document.now_unix_seconds, offset),
+            .limit_summary(Locale::ZhTw, document.now_unix_seconds, zone),
         format!("{at} 停止（還有 90 分鐘）")
     );
 }

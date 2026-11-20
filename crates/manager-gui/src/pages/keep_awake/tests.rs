@@ -427,15 +427,15 @@ fn the_status_shows_the_lid_row_and_the_limit_only_while_the_lid_is_held() {
     document.lid.battery_limit = awake_core::LidBatteryLimit::Minutes { minutes: 240 };
     let view = StatusView::from_status(&document);
     assert!(view.lid.held);
-    let offset = super::localtime::UtcOffset::UTC;
+    let zone = better_core::local_time::TimeZone::UTC;
     assert_eq!(
         view.lid
-            .limit_summary(Locale::EnUs, document.now_unix_seconds, offset),
+            .limit_summary(Locale::EnUs, document.now_unix_seconds, zone),
         "Stops after 4 hours"
     );
     assert_eq!(
         view.lid
-            .limit_summary(Locale::ZhTw, document.now_unix_seconds, offset),
+            .limit_summary(Locale::ZhTw, document.now_unix_seconds, zone),
         "4 小時後停止"
     );
     let lid = view
@@ -498,23 +498,23 @@ fn a_running_closed_lid_clock_reads_as_a_countdown_and_otherwise_as_the_rule() {
     let mut document = status(true);
     document.effective_policy = SessionPolicy::manual_default();
     let view = StatusView::from_status(&document);
-    let offset = super::localtime::UtcOffset::UTC;
+    let zone = better_core::local_time::TimeZone::UTC;
     assert_eq!(
         view.lid
-            .limit_summary(Locale::EnUs, document.now_unix_seconds, offset),
+            .limit_summary(Locale::EnUs, document.now_unix_seconds, zone),
         "Stops after 2 hours"
     );
     document.lid.stops_at_unix_seconds = Some(document.now_unix_seconds + 90 * 60);
     let view = StatusView::from_status(&document);
-    let at = super::localtime::clock_time(document.now_unix_seconds + 90 * 60, offset);
+    let at = better_core::local_time::clock_time(document.now_unix_seconds + 90 * 60, zone);
     assert_eq!(
         view.lid
-            .limit_summary(Locale::EnUs, document.now_unix_seconds, offset),
+            .limit_summary(Locale::EnUs, document.now_unix_seconds, zone),
         format!("Stops at {at} (90 minutes left)")
     );
     assert_eq!(
         view.lid
-            .limit_summary(Locale::ZhTw, document.now_unix_seconds, offset),
+            .limit_summary(Locale::ZhTw, document.now_unix_seconds, zone),
         format!("{at} 停止（還有 90 分鐘）")
     );
 }
@@ -551,9 +551,9 @@ mod page {
     use crate::pages::keep_awake::decide::{
         self, Facts, Headline, Presence, ReadError, ReasonAction, Service, SubPage,
     };
-    use crate::pages::keep_awake::localtime::UtcOffset;
     use crate::pages::{self, NavBadge};
     use awake_ipc::{QuickLength, QuickSessions, RequestBody, WireSuppression};
+    use better_core::local_time::TimeZone;
     use better_ui::fluent::time_picker::Time;
 
     const NOW: u64 = 1_700_000_000; // 2023-11-14 22:13:20 UTC
@@ -565,13 +565,13 @@ mod page {
     #[test]
     fn until_a_time_ends_today_or_tomorrow_on_the_local_clock() {
         // 22:13 UTC: 23:00 is later today, 07:30 is tomorrow.
-        let later = decide::until(NOW, UtcOffset::UTC, at(23, 0));
+        let later = decide::until(NOW, TimeZone::UTC, at(23, 0));
         assert!(!later.tomorrow);
         assert_eq!(
             later.unix_seconds,
             NOW - (22 * 3600 + 13 * 60 + 20) + 23 * 3600
         );
-        let morning = decide::until(NOW, UtcOffset::UTC, at(7, 30));
+        let morning = decide::until(NOW, TimeZone::UTC, at(7, 30));
         assert!(morning.tomorrow);
         assert_eq!(
             morning.unix_seconds,
@@ -579,11 +579,11 @@ mod page {
         );
         // In Taipei (UTC+8) it is already 06:13 on the next day, so 07:30 is
         // later today there.
-        let taipei = decide::until(NOW, UtcOffset(8 * 3600), at(7, 30));
+        let taipei = decide::until(NOW, TimeZone::Fixed(8 * 3600), at(7, 30));
         assert!(!taipei.tomorrow);
         assert_eq!(taipei.unix_seconds, morning.unix_seconds - 8 * 3600);
         // The minute it is now is not "later": it means tomorrow.
-        let now = decide::until(1_700_000_040 - 40, UtcOffset::UTC, at(22, 13));
+        let now = decide::until(1_700_000_040 - 40, TimeZone::UTC, at(22, 13));
         assert!(now.tomorrow);
         let w = page_copy(Locale::EnUs);
         assert_eq!(
@@ -610,7 +610,7 @@ mod page {
             clock.clone(),
         )
         .await;
-        let until = decide::until(NOW, UtcOffset::UTC, at(23, 30));
+        let until = decide::until(NOW, TimeZone::UTC, at(23, 30));
         let body = decide::start_with_end(
             &QuickSessions::default(),
             WireEnd::UntilUnixSeconds {
@@ -633,9 +633,9 @@ mod page {
     #[test]
     fn the_dialog_opens_on_a_whole_hour_more_than_an_hour_away() {
         // 22:13 → 00:00 (23:13 rounded up to the hour).
-        assert_eq!(decide::suggested_until(NOW, UtcOffset::UTC), at(0, 0));
+        assert_eq!(decide::suggested_until(NOW, TimeZone::UTC), at(0, 0));
         assert_eq!(
-            decide::suggested_until(NOW - 13 * 60 - 20, UtcOffset::UTC),
+            decide::suggested_until(NOW - 13 * 60 - 20, TimeZone::UTC),
             at(23, 0)
         );
     }
@@ -703,7 +703,7 @@ mod page {
         let view = StatusView::from_status(&idle);
         assert_eq!(Headline::of(&idle, &view), Headline::Nothing);
         assert_eq!(
-            Headline::Nothing.words(w, c, UtcOffset::UTC).0,
+            Headline::Nothing.words(w, c, TimeZone::UTC).0,
             "Nothing is keeping this PC awake"
         );
 
@@ -727,7 +727,7 @@ mod page {
             }
         );
         assert_eq!(
-            headline.words(w, c, UtcOffset::UTC).1,
+            headline.words(w, c, TimeZone::UTC).1,
             "Started by the rule \"Video call\""
         );
 
@@ -736,7 +736,7 @@ mod page {
         });
         let paused = Headline::of(&idle, &StatusView::from_status(&idle));
         assert_eq!(
-            paused.words(w, c, UtcOffset::UTC).0,
+            paused.words(w, c, TimeZone::UTC).0,
             "Automatic rules are paused until 22:28"
         );
         idle.rules_suppression = Some(WireSuppression::Overridden);
@@ -907,7 +907,7 @@ mod page {
         };
         let RequestBody::ChangeSession {
             end, session_id, ..
-        } = decide::modify_request(&draft, &offer, "Build", NOW, UtcOffset::UTC)
+        } = decide::modify_request(&draft, &offer, "Build", NOW, TimeZone::UTC)
         else {
             panic!("a change");
         };
@@ -918,14 +918,14 @@ mod page {
             ..draft
         };
         let RequestBody::ChangeSession { end, .. } =
-            decide::modify_request(&until, &offer, "Build", NOW, UtcOffset::UTC)
+            decide::modify_request(&until, &offer, "Build", NOW, TimeZone::UTC)
         else {
             panic!("a change");
         };
         assert_eq!(
             end,
             WireEnd::UntilUnixSeconds {
-                unix_seconds: decide::until(NOW, UtcOffset::UTC, at(23, 0)).unix_seconds
+                unix_seconds: decide::until(NOW, TimeZone::UTC, at(23, 0)).unix_seconds
             }
         );
     }
@@ -1094,7 +1094,7 @@ mod page {
             battery_stop_percent_at_stop: None,
         };
         let rows = vec![super::super::model::HistoryRow::from_wire(&entry)];
-        let cells = decide::history_cells(&rows, c, UtcOffset::UTC);
+        let cells = decide::history_cells(&rows, c, TimeZone::UTC);
         assert_eq!(cells[0][0], "2023-11-14 22:13");
         assert_eq!(cells[0][1], "2023-11-14 22:23");
         assert_eq!(cells[0][3], "Build");

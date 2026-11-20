@@ -53,6 +53,7 @@ use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use better_core::local_time::{CivilTime, TimeZone};
 use thiserror::Error;
 
 use files_core::entry::{
@@ -348,7 +349,7 @@ fn parse_trash_info(contents: &str) -> Option<TrashInfo> {
                     value.trim(),
                 ))))
             }
-            "DeletionDate" => deleted_at = parse_deletion_date(value.trim()),
+            "DeletionDate" => deleted_at = parse_deletion_date(value.trim(), TimeZone::System),
             _ => {}
         }
     }
@@ -407,70 +408,18 @@ fn percent_encode(path: &Path) -> String {
     out
 }
 
-/// Parses the specification's `YYYY-MM-DDThh:mm:ss` local-time stamp.
-///
-/// The value has no timezone, so it is read as UTC and the result is used for
-/// ordering rather than presented as an exact instant. Saying so here is
-/// better than a conversion that silently shifts by the local offset.
-fn parse_deletion_date(value: &str) -> Option<FileTime> {
-    let (date, time) = value.split_once('T')?;
-    let mut date_parts = date.split('-');
-    let year: i64 = date_parts.next()?.parse().ok()?;
-    let month: i64 = date_parts.next()?.parse().ok()?;
-    let day: i64 = date_parts.next()?.parse().ok()?;
-    let mut time_parts = time.split(':');
-    let hour: i64 = time_parts.next()?.parse().ok()?;
-    let minute: i64 = time_parts.next()?.parse().ok()?;
-    let second: i64 = time_parts.next().unwrap_or("0").parse().ok()?;
-    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
-        return None;
-    }
-    let days = days_from_civil(year, month, day);
-    Some(FileTime::new(
-        days * 86_400 + hour * 3_600 + minute * 60 + second,
-        0,
-    ))
+/// Parses the specification's `YYYY-MM-DDThh:mm:ss` stamp, which is the
+/// local time of the person who trashed the item (every file manager writes it
+/// that way), into the instant it names in `zone`.
+fn parse_deletion_date(value: &str, zone: TimeZone) -> Option<FileTime> {
+    let civil = CivilTime::parse_iso(value)?;
+    Some(FileTime::new(zone.unix_at(civil)?, 0))
 }
 
-/// Formats an instant the way `.trashinfo` wants it.
-///
-/// The specification's field has no timezone. The read side already documents
-/// that it interprets the value as UTC for ordering rather than as an exact
-/// local instant, and the write side matches it, so a round trip through this
-/// module is exact.
-fn format_deletion_date(seconds: i64) -> String {
-    let days = seconds.div_euclid(86_400);
-    let rest = seconds.rem_euclid(86_400);
-    let (year, month, day) = civil_from_days(days);
-    let (hour, minute, second) = (rest / 3600, (rest % 3600) / 60, rest % 60);
-    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}")
-}
-
-/// Howard Hinnant's `civil_from_days`, the inverse of [`days_from_civil`].
-fn civil_from_days(days: i64) -> (i64, i64, i64) {
-    let days = days + 719_468;
-    let era = if days >= 0 { days } else { days - 146_096 } / 146_097;
-    let day_of_era = days - era * 146_097;
-    let year_of_era =
-        (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
-    let year = year_of_era + era * 400;
-    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
-    let month_prime = (5 * day_of_year + 2) / 153;
-    let day = day_of_year - (153 * month_prime + 2) / 5 + 1;
-    let month = month_prime + if month_prime < 10 { 3 } else { -9 };
-    (if month <= 2 { year + 1 } else { year }, month, day)
-}
-
-/// Howard Hinnant's `days_from_civil`: days since 1970-01-01 for a proleptic
-/// Gregorian date. Used rather than a date crate because this is the only date
-/// arithmetic in Better Files.
-fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
-    let year = if month <= 2 { year - 1 } else { year };
-    let era = if year >= 0 { year } else { year - 399 } / 400;
-    let year_of_era = year - era * 400;
-    let day_of_year = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day - 1;
-    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
-    era * 146_097 + day_of_era - 719_468
+/// Formats an instant the way `.trashinfo` wants it: the wall clock in
+/// `zone`, with no zone written, as the specification says.
+fn format_deletion_date(seconds: i64, zone: TimeZone) -> String {
+    zone.at(seconds).civil.iso_text()
 }
 
 // --- The write side ------------------------------------------------------
@@ -575,7 +524,7 @@ pub fn move_to_trash(trash: &TrashDirectory, source: &Path) -> Result<TrashedIte
     let record = format!(
         "[Trash Info]\nPath={}\nDeletionDate={}\n",
         percent_encode(&trash.record_path(&original)),
-        format_deletion_date(seconds)
+        format_deletion_date(seconds, TimeZone::System)
     );
 
     for attempt in 0u32..10_000 {
@@ -1210,7 +1159,12 @@ mod tests {
                     facts.original_path,
                     Path::new("/home/user/Documents/report.txt")
                 );
-                assert_eq!(facts.deleted_at, Some(FileTime::new(1_709_633_730, 0)));
+                // The stamp is the local time it was written in.
+                assert_eq!(
+                    facts.deleted_at,
+                    parse_deletion_date("2024-03-05T10:15:30", TimeZone::System)
+                );
+                assert!(facts.deleted_at.is_some());
                 assert_eq!(facts.item, "report.txt");
             }
             other => panic!("expected a trashed entry, got {other:?}"),
@@ -1449,23 +1403,37 @@ mod tests {
 
     #[test]
     fn a_deletion_date_written_here_is_read_back_as_the_same_instant() {
-        assert_eq!(format_deletion_date(0), "1970-01-01T00:00:00");
-        assert_eq!(format_deletion_date(1_709_633_730), "2024-03-05T10:15:30");
-        for seconds in [
-            0i64,
-            1,
-            86_399,
-            86_400,
-            951_782_400,
-            1_709_633_730,
-            4_102_444_800,
-        ] {
-            let text = format_deletion_date(seconds);
-            assert_eq!(
-                parse_deletion_date(&text),
-                Some(FileTime::new(seconds, 0)),
-                "round trip failed for {text}"
-            );
+        assert_eq!(
+            format_deletion_date(0, TimeZone::UTC),
+            "1970-01-01T00:00:00"
+        );
+        assert_eq!(
+            format_deletion_date(1_709_633_730, TimeZone::UTC),
+            "2024-03-05T10:15:30"
+        );
+        // The stamp is the local wall clock: 10:15:30 UTC is 18:15:30 in Taipei.
+        let taipei = TimeZone::Fixed(8 * 3_600);
+        assert_eq!(
+            format_deletion_date(1_709_633_730, taipei),
+            "2024-03-05T18:15:30"
+        );
+        for zone in [TimeZone::UTC, taipei, TimeZone::Fixed(-5 * 3_600)] {
+            for seconds in [
+                0i64,
+                1,
+                86_399,
+                86_400,
+                951_782_400,
+                1_709_633_730,
+                4_102_444_800,
+            ] {
+                let text = format_deletion_date(seconds, zone);
+                assert_eq!(
+                    parse_deletion_date(&text, zone),
+                    Some(FileTime::new(seconds, 0)),
+                    "round trip failed for {text} in {zone:?}"
+                );
+            }
         }
     }
 
@@ -1843,14 +1811,23 @@ mod tests {
     }
 
     #[test]
-    fn the_civil_date_conversion_matches_known_instants() {
-        assert_eq!(days_from_civil(1970, 1, 1), 0);
-        assert_eq!(days_from_civil(2000, 3, 1), 11_017);
+    fn a_deletion_date_is_read_as_the_instant_it_names() {
         assert_eq!(
-            parse_deletion_date("1970-01-01T00:00:00"),
+            parse_deletion_date("1970-01-01T00:00:00", TimeZone::UTC),
             Some(FileTime::EPOCH)
         );
-        assert_eq!(parse_deletion_date("not-a-date"), None);
-        assert_eq!(parse_deletion_date("2024-13-01T00:00:00"), None);
+        assert_eq!(
+            parse_deletion_date("2000-03-01T00:00:00", TimeZone::UTC),
+            Some(FileTime::new(11_017 * 86_400, 0))
+        );
+        assert_eq!(
+            parse_deletion_date("1970-01-01T08:00:00", TimeZone::Fixed(8 * 3_600)),
+            Some(FileTime::EPOCH)
+        );
+        assert_eq!(parse_deletion_date("not-a-date", TimeZone::UTC), None);
+        assert_eq!(
+            parse_deletion_date("2024-13-01T00:00:00", TimeZone::UTC),
+            None
+        );
     }
 }

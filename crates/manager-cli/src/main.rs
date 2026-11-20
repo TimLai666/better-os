@@ -322,9 +322,14 @@ fn doctor_lines(check: &DoctorCheck) -> Vec<String> {
 
 /// The login screen watch (ADR 0033, ticket 140) as `doctor` prints it: the
 /// setting, what this boot's watch found, and every kept record, newest
-/// first, with what was recorded and where the whole record is.
-fn login_watch_lines(report: &manager_core::login_watch::Report) -> Vec<String> {
-    use manager_core::login_watch::{LastBootOutcome, RestartOutcome, Setting, utc_time};
+/// first, with what was recorded and where the whole record is. Times are on
+/// `zone`'s wall clock, the way the window shows them (ticket 146).
+fn login_watch_lines(
+    report: &manager_core::login_watch::Report,
+    zone: better_core::local_time::TimeZone,
+) -> Vec<String> {
+    use better_core::local_time::calendar_time;
+    use manager_core::login_watch::{LastBootOutcome, RestartOutcome, Setting};
     let setting = match report.setting {
         Setting::OnByDefault | Setting::On => "on",
         Setting::Off => "off (turned off in Better Manager)",
@@ -367,7 +372,7 @@ fn login_watch_lines(report: &manager_core::login_watch::Report) -> Vec<String> 
         };
         lines.push(format!(
             "  last startup checked {}: {what}",
-            utc_time(last.checked_at_unix_seconds)
+            calendar_time(last.checked_at_unix_seconds, zone)
         ));
     }
     if report.events.is_empty() {
@@ -403,7 +408,7 @@ fn login_watch_lines(report: &manager_core::login_watch::Report) -> Vec<String> 
         };
         lines.push(format!(
             "  {}: the login screen didn't appear {} s after GDM started; {outcome}",
-            utc_time(event.detected_at_unix_seconds),
+            calendar_time(event.detected_at_unix_seconds, zone),
             event.waited_seconds
         ));
         if !report.evidence_readable {
@@ -1206,7 +1211,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let report = manager_core::login_watch::Report::read(
                 &manager_core::login_watch::Records::system(),
             );
-            for line in login_watch_lines(&report) {
+            for line in login_watch_lines(&report, better_core::local_time::TimeZone::System) {
                 println!("{line}");
             }
         }
@@ -1720,7 +1725,8 @@ mod tests {
             evidence_readable: true,
             current_boot: None,
         };
-        let lines = login_watch_lines(&report);
+        let utc = better_core::local_time::TimeZone::UTC;
+        let lines = login_watch_lines(&report, utc);
         assert_eq!(lines[0], "login screen watch: on");
         assert!(
             lines[1].contains("the login screen appeared 4 s after GDM started"),
@@ -1728,9 +1734,13 @@ mod tests {
         );
         assert_eq!(
             lines[2],
-            "  2026-11-16 12:43 UTC: the login screen didn't appear 30 s after GDM started; \
+            "  2026-11-16 12:43: the login screen didn't appear 30 s after GDM started; \
              Better OS restarted it, and it appeared 5 s later"
         );
+        // Local time, like the window: the same record read in Taipei.
+        let taipei =
+            login_watch_lines(&report, better_core::local_time::TimeZone::Fixed(8 * 3_600));
+        assert!(taipei[2].starts_with("  2026-11-16 20:43: "), "{taipei:?}");
         assert_eq!(
             lines[3],
             "    seat0 ready for graphics: no · display devices: card1, renderD128 · failed units: 1"
@@ -1750,7 +1760,7 @@ mod tests {
             events: vec![pending],
             ..report
         };
-        let lines = login_watch_lines(&summary);
+        let lines = login_watch_lines(&summary, utc);
         assert!(
             lines[2].ends_with("was interrupted before it could record how it ended"),
             "{lines:?}"
@@ -1766,7 +1776,7 @@ mod tests {
             current_boot: None,
         };
         assert_eq!(
-            login_watch_lines(&off),
+            login_watch_lines(&off, utc),
             [
                 "login screen watch: off (turned off in Better Manager)",
                 "  no startup without a login screen is recorded"

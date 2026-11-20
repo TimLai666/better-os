@@ -12,8 +12,8 @@ use awake_ipc::{
 use better_ui::fluent::time_picker::Time;
 
 use super::copy::{Copy, PageCopy, fill};
-use super::localtime::{UtcOffset, clock_time};
 use super::model::{ReasonRow, StatusView, remaining_label};
+use better_core::local_time::{CivilTime, TimeZone, clock_time};
 
 /// The newest protocol the page needs: the quick-session offer is version 4.
 pub(crate) const REQUIRED_PROTOCOL: u32 = awake_ipc::PROTOCOL_VERSION;
@@ -220,7 +220,7 @@ impl Headline {
         &self,
         w: &'static PageCopy,
         c: &'static Copy,
-        offset: UtcOffset,
+        zone: TimeZone,
     ) -> (String, String) {
         match self {
             Headline::Nothing => (
@@ -236,7 +236,7 @@ impl Headline {
                     (_, Some(until)) => fill(
                         w.started_by_you_until_time,
                         "time",
-                        &clock_time(*until, offset),
+                        &clock_time(*until, zone),
                     ),
                     (remaining, None) => fill(
                         w.started_by_you_left,
@@ -250,7 +250,7 @@ impl Headline {
                 fill(w.started_by_rule, "rule", rule),
             ),
             Headline::Paused { until: Some(until) } => (
-                fill(w.rules_paused_header, "time", &clock_time(*until, offset)),
+                fill(w.rules_paused_header, "time", &clock_time(*until, zone)),
                 String::new(),
             ),
             Headline::Paused { until: None } => (
@@ -306,14 +306,23 @@ pub(crate) struct Until {
     pub(crate) tomorrow: bool,
 }
 
-pub(crate) fn until(now_unix_seconds: u64, offset: UtcOffset, time: Time) -> Until {
+///
+/// Each day's time is read back through the zone on its own, so "07:30
+/// tomorrow" across a daylight-saving change is 07:30 on the wall clock and not
+/// an hour off.
+pub(crate) fn until(now_unix_seconds: u64, zone: TimeZone, time: Time) -> Until {
     let now = i64::try_from(now_unix_seconds).unwrap_or(i64::MAX / 2);
-    let local = now + offset.0;
-    let midnight = local - local.rem_euclid(86_400);
-    let mut at = midnight + i64::from(time.minutes()) * 60 - offset.0;
+    let today = CivilTime {
+        hour: (time.minutes() / 60) as u8,
+        minute: (time.minutes() % 60) as u8,
+        second: 0,
+        ..zone.at(now).civil
+    };
+    let at_on = |day: CivilTime| zone.unix_at(day).unwrap_or(now);
+    let mut at = at_on(today);
     let tomorrow = at <= now;
     if tomorrow {
-        at += 86_400;
+        at = at_on(today.add_days(1));
     }
     Until {
         unix_seconds: u64::try_from(at).unwrap_or(0),
@@ -335,9 +344,12 @@ pub(crate) fn until_caption(until: Until, time: Time, w: &'static PageCopy) -> S
 }
 
 /// The time the dialog opens on: the next whole hour after an hour from now.
-pub(crate) fn suggested_until(now_unix_seconds: u64, offset: UtcOffset) -> Time {
-    let local = i64::try_from(now_unix_seconds).unwrap_or(0) + offset.0 + 3_600;
-    let minutes = (local.rem_euclid(86_400) / 60) as u32;
+pub(crate) fn suggested_until(now_unix_seconds: u64, zone: TimeZone) -> Time {
+    let in_an_hour = i64::try_from(now_unix_seconds)
+        .unwrap_or(0)
+        .saturating_add(3_600);
+    let local = zone.at(in_an_hour);
+    let minutes = u32::from(local.minute_of_day());
     Time::from_minutes(minutes.div_ceil(60) * 60)
 }
 
@@ -579,12 +591,12 @@ pub(crate) fn modify_request(
     offer: &QuickSessions,
     reason: &str,
     now_unix_seconds: u64,
-    offset: UtcOffset,
+    zone: TimeZone,
 ) -> awake_ipc::RequestBody {
     let end = match draft.length.and_then(|index| offer.lengths.get(index)) {
         Some(length) => length.end(),
         None => WireEnd::UntilUnixSeconds {
-            unix_seconds: until(now_unix_seconds, offset, draft.until).unix_seconds,
+            unix_seconds: until(now_unix_seconds, zone, draft.until).unix_seconds,
         },
     };
     awake_ipc::RequestBody::ChangeSession {
@@ -642,13 +654,13 @@ pub(crate) const HISTORY_SORTABLE: [usize; 2] = [0, 1];
 pub(crate) fn history_cells(
     rows: &[super::model::HistoryRow],
     c: &'static Copy,
-    offset: UtcOffset,
+    zone: TimeZone,
 ) -> Vec<[String; 5]> {
     rows.iter()
         .map(|row| {
             [
-                row.started_label(offset),
-                row.ended_label(offset, c),
+                row.started_label(zone),
+                row.ended_label(zone, c),
                 row.origin_label(c).to_string(),
                 row.reasons.join("、"),
                 if row.ended_at_unix_seconds.is_some() {

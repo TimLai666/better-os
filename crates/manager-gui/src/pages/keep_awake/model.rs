@@ -18,7 +18,7 @@ use awake_ipc::{
 };
 
 use super::copy::{Copy, fill};
-use super::localtime::{UtcOffset, calendar_time, clock_time};
+use better_core::local_time::{TimeZone, calendar_time, clock_time};
 
 // ---------------------------------------------------------------------------
 // Status
@@ -260,13 +260,13 @@ impl LidView {
         &self,
         locale: crate::i18n::Locale,
         now_unix_seconds: u64,
-        offset: UtcOffset,
+        zone: TimeZone,
     ) -> String {
         match self.stops_at_unix_seconds {
             Some(stops_at) => {
                 let c = super::copy::copy(locale);
                 let minutes = stops_at.saturating_sub(now_unix_seconds).div_ceil(60);
-                let with_time = fill(c.lid_stops_at, "time", &clock_time(stops_at, offset));
+                let with_time = fill(c.lid_stops_at, "time", &clock_time(stops_at, zone));
                 fill(
                     &with_time,
                     "remaining",
@@ -729,13 +729,13 @@ impl HistoryRow {
         }
     }
 
-    pub(crate) fn started_label(&self, offset: UtcOffset) -> String {
-        calendar_time(self.started_at_unix_seconds, offset)
+    pub(crate) fn started_label(&self, zone: TimeZone) -> String {
+        calendar_time(self.started_at_unix_seconds, zone)
     }
 
-    pub(crate) fn ended_label(&self, offset: UtcOffset, c: &'static Copy) -> String {
+    pub(crate) fn ended_label(&self, zone: TimeZone, c: &'static Copy) -> String {
         match self.ended_at_unix_seconds {
-            Some(ended) => calendar_time(ended, offset),
+            Some(ended) => calendar_time(ended, zone),
             None => c.history_still_running.to_string(),
         }
     }
@@ -849,8 +849,8 @@ pub(crate) fn remaining_label(remaining: WireRemaining, c: &'static Copy) -> Str
     }
 }
 
-pub(crate) fn started_label(unix_seconds: u64, offset: UtcOffset) -> String {
-    clock_time(unix_seconds, offset)
+pub(crate) fn started_label(unix_seconds: u64, zone: TimeZone) -> String {
+    clock_time(unix_seconds, zone)
 }
 
 pub(crate) fn suppression_label(suppression: WireSuppression, c: &'static Copy) -> &'static str {

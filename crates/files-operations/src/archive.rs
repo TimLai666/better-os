@@ -35,6 +35,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 
+use better_core::local_time::{CivilTime, TimeZone};
 use files_core::location::LocalPath;
 
 use crate::error::OperationError;
@@ -647,52 +648,36 @@ impl<W: Write> Write for KeepFirstError<W> {
 ///
 /// Zip stores a local date and time with two-second resolution and no time
 /// zone, which is how every other zip tool reads it back, so the conversion
-/// goes through the C library's local time. A time outside what the format
-/// can hold, 1980 to 2107, is stored as the format's own earliest date.
+/// goes through the shared local time (`better_core::local_time`). A time
+/// outside what the format can hold, 1980 to 2107, is stored as the format's
+/// own earliest date.
 pub(crate) fn dos_time(seconds: i64) -> zip::DateTime {
-    let Some(tm) = local_time(seconds) else {
+    let civil = TimeZone::System.at(seconds).civil;
+    let Ok(year) = u16::try_from(civil.year) else {
         return zip::DateTime::default();
     };
-    let (Ok(year), Ok(month), Ok(day), Ok(hour), Ok(minute), Ok(second)) = (
-        u16::try_from(tm.tm_year + 1900),
-        u8::try_from(tm.tm_mon + 1),
-        u8::try_from(tm.tm_mday),
-        u8::try_from(tm.tm_hour),
-        u8::try_from(tm.tm_min),
-        u8::try_from(tm.tm_sec),
-    ) else {
-        return zip::DateTime::default();
-    };
-    zip::DateTime::from_date_and_time(year, month, day, hour, minute, second).unwrap_or_default()
+    zip::DateTime::from_date_and_time(
+        year,
+        civil.month,
+        civil.day,
+        civil.hour,
+        civil.minute,
+        civil.second,
+    )
+    .unwrap_or_default()
 }
 
 /// The Unix time a zip timestamp names, read as local time the way it was
 /// written. `None` for a date the C library cannot place.
 pub(crate) fn unix_time_of(time: zip::DateTime) -> Option<i64> {
-    // SAFETY: `tm` is a plain C struct for which all-zero is a valid value,
-    // and `mktime` only reads and normalises the struct it is given.
-    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    tm.tm_year = i32::from(time.year()) - 1900;
-    tm.tm_mon = i32::from(time.month()) - 1;
-    tm.tm_mday = i32::from(time.day());
-    tm.tm_hour = i32::from(time.hour());
-    tm.tm_min = i32::from(time.minute());
-    tm.tm_sec = i32::from(time.second());
-    // Let the C library decide whether daylight saving applied then.
-    tm.tm_isdst = -1;
-    // SAFETY: `tm` is a valid, initialised struct owned by this frame.
-    let seconds = unsafe { libc::mktime(&mut tm) };
-    (seconds != -1).then_some(seconds)
-}
-
-fn local_time(seconds: i64) -> Option<libc::tm> {
-    let time = libc::time_t::try_from(seconds).ok()?;
-    // SAFETY: as above; `localtime_r` writes only into the struct it is given
-    // and returns null when the time cannot be represented.
-    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    // SAFETY: both pointers are to values owned by this frame.
-    let result = unsafe { libc::localtime_r(&time, &mut tm) };
-    (!result.is_null()).then_some(tm)
+    TimeZone::System.unix_at(CivilTime {
+        year: i64::from(time.year()),
+        month: time.month(),
+        day: time.day(),
+        hour: time.hour(),
+        minute: time.minute(),
+        second: time.second(),
+    })
 }
 
 #[cfg(test)]

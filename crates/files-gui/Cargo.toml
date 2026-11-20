@@ -26,6 +26,8 @@ app-catalog-core.workspace = true
 app-catalog-platform.workspace = true
 app-chooser-core.workspace = true
 app-chooser-gui.workspace = true
+# The one local-time conversion (`better_core::local_time`, ticket 146).
+better-core.workspace = true
 better-ui.workspace = true
 files-core.workspace = true
 files-platform.workspace = true
@@ -63,7 +65,6 @@ smol = "2"
 image = { version = "0.25", default-features = false }
 
 [dev-dependencies]
-better-core.workspace = true
 # GPUI's test window, for the password fields' tests.
 gpui = { workspace = true, features = ["test-support"] }
 # The fake platform, so the in-process storage engine can be driven without a

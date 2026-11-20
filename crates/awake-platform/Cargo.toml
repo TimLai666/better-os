@@ -7,7 +7,8 @@ license.workspace = true
 
 [dependencies]
 awake-core.workspace = true
-libc.workspace = true
+# The one local-time conversion (`better_core::local_time`, ticket 146).
+better-core.workspace = true
 notify.workspace = true
 
 [features]

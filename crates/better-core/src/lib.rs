@@ -3,6 +3,7 @@
 pub mod defaults;
 pub mod desktop;
 pub mod host;
+pub mod local_time;
 pub mod manifest;
 pub mod package_health;
 pub mod self_update;

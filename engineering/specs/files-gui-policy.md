@@ -119,13 +119,16 @@ Manager's System page (Drives), which read and change the same thing.
 - A change that is refused, dismissed at the password prompt, or fails is
   said in the window with its reason; a dismissed prompt says nothing.
 
-## Times are shown in UTC
+## Times are shown in local time
 
-The modified column formats timestamps as `YYYY-MM-DD HH:MM` in UTC. There is no
-time-zone database in this workspace, and deriving one from `TZ` alone would be
-wrong for half the year in most of the world. This is the one display value that
-is not yet in the user's local time; fixing it needs a decision about a time-zone
-dependency.
+The modified and deleted columns format timestamps as `YYYY-MM-DD HH:MM` on the
+local wall clock, through `better_core::local_time`, the one conversion every
+Better OS program shares (ticket 146). It asks the C library, which reads `TZ`
+and `/etc/localtime` and their daylight-saving rules, so each timestamp gets
+the offset in force at it. On a machine with no readable zone the time is UTC
+and ends in ` UTC`, never a guessed offset. A trash entry's `DeletionDate` is
+the trashing person's local time, as the trash specification says and every
+file manager writes it, so it is read and written in local time too.
 
 ## Opening a file is a typed intent, not a launch
 

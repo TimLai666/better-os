@@ -10,7 +10,6 @@ mod client;
 mod components;
 mod i18n;
 mod layout;
-mod localtime;
 mod model;
 mod pages_records;
 mod pages_rules;
