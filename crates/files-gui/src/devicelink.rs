@@ -835,6 +835,7 @@ mod tests {
             size: 0,
             whole_disk: false,
             erasing: false,
+            system_use: storage_platform::SystemUse::Free,
         };
         assert_eq!(
             mounted_from(&[report("/a", Some("/media/a")), report("/b", None)]),

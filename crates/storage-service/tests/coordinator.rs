@@ -1078,3 +1078,155 @@ async fn an_unlocked_encrypted_volume_on_the_drive_is_unmounted_first() {
         at(format!("unmount {CLEARTEXT}")) < at(format!("write image {DISK} {}", image.display()))
     );
 }
+
+// --- The drive the running system is on (ticket 171) -----------------------
+
+const ROOT_OBJECT: &str = "/org/freedesktop/UDisks2/block_devices/sdb2";
+const ROOT_DEVICE: &str = "/dev/sdb2";
+const SYSTEM_DISK: &str = "/org/freedesktop/UDisks2/block_devices/sdb";
+
+/// The running system installed on a USB drive: UDisks2 marks none of it as
+/// the system's, so the storage service lists its data partition, its root
+/// partition, and the drive itself as external devices.
+async fn system_on_a_usb_drive(fixture: &Fixture) -> Harness {
+    let data = usb_stick(OBJECT, DEVICE, UUID);
+    let drive = data.drive.clone().unwrap().object_path;
+    let mut root = usb_stick(ROOT_OBJECT, ROOT_DEVICE, "ROOT-UUID");
+    root.drive = data.drive.clone();
+    root.block.partition_number = Some(2);
+    root.block.id_type = Some("ext4".into());
+    root.mount_point = Some("/".into());
+    root.block.mount_points = vec!["/".into()];
+    let disk = storage_platform::fake::usb_disk(SYSTEM_DISK, "/dev/sdb", &drive);
+    let control = FakeDeviceControl::new([data, root, disk]);
+    control.set_system_sources(Some(storage_platform::SystemSources::parse(
+        "/dev/sdb2 / ext4 rw 0 0\n",
+        "",
+    )));
+    let mut harness = harness(fixture, control);
+    connect_and_mount(&mut harness).await;
+    harness
+}
+
+#[tokio::test]
+async fn the_drive_the_system_runs_from_is_never_ejected_formatted_or_overwritten() {
+    let fixture = Fixture::new("systemusb");
+    let mut harness = system_on_a_usb_drive(&fixture).await;
+    // The report says so, for the window's menu.
+    for object in [OBJECT, ROOT_OBJECT, SYSTEM_DISK] {
+        assert_eq!(
+            harness
+                .coordinator
+                .report(&DeviceHandle::new(object))
+                .expect("listed")
+                .system_use,
+            storage_platform::SystemUse::RunningSystem,
+            "{object}"
+        );
+    }
+    // A request sent anyway is refused with the typed reason, and nothing
+    // reaches the platform.
+    refused_with(
+        harness.coordinator.eject(&handle()).await,
+        "storage.system.running_system",
+    );
+    let request = storage_platform::FormatRequest {
+        kind: storage_platform::FilesystemKind::Exfat,
+        label: "PHOTOS".into(),
+    };
+    refused_with(
+        harness.coordinator.format(&handle(), &request, true).await,
+        "storage.system.running_system",
+    );
+    let image = fixture.root.join("installer.iso");
+    std::fs::write(&image, b"ISO 9660 stand-in").unwrap();
+    refused_with(
+        harness
+            .coordinator
+            .write_image(&DeviceHandle::new(SYSTEM_DISK), &image, true, no_progress())
+            .await,
+        "storage.system.running_system",
+    );
+    let calls = harness.control.calls();
+    assert!(
+        !calls.iter().any(|call| call.starts_with("eject")
+            || call.starts_with("format")
+            || call.starts_with("unmount")
+            || call.starts_with("write image")),
+        "{calls:?}"
+    );
+}
+
+#[tokio::test]
+async fn home_on_a_usb_disk_is_refused_by_its_folder() {
+    let fixture = Fixture::new("homeusb");
+    let control = FakeDeviceControl::new([usb_stick(OBJECT, DEVICE, UUID)]);
+    control.set_system_sources(Some(storage_platform::SystemSources::parse(
+        "/dev/sdb1 /home ext4 rw 0 0\n",
+        "",
+    )));
+    let mut harness = harness(&fixture, control);
+    connect_and_mount(&mut harness).await;
+    refused_with(
+        harness.coordinator.eject(&handle()).await,
+        "storage.system.folder:/home",
+    );
+}
+
+#[tokio::test]
+async fn an_ordinary_stick_is_free_and_ejects() {
+    let fixture = Fixture::new("freestick");
+    let control = FakeDeviceControl::new([usb_stick(OBJECT, DEVICE, UUID)]);
+    // The system is on an internal disk the service does not list.
+    let mut internal = internal_disk(
+        "/org/freedesktop/UDisks2/block_devices/nvme0n1p2",
+        "/dev/nvme0n1p2",
+    );
+    if let Some(drive) = internal.drive.as_mut() {
+        drive.object_path = "/org/freedesktop/UDisks2/drives/NVME".into();
+    }
+    control.attach(internal);
+    control.set_system_sources(Some(storage_platform::SystemSources::parse(
+        "/dev/nvme0n1p2 / ext4 rw 0 0\n",
+        "",
+    )));
+    let mut harness = harness(&fixture, control);
+    connect_and_mount(&mut harness).await;
+    assert_eq!(
+        harness.coordinator.report(&handle()).unwrap().system_use,
+        storage_platform::SystemUse::Free
+    );
+    assert!(
+        harness
+            .coordinator
+            .eject(&handle())
+            .await
+            .unwrap()
+            .unmounted
+    );
+}
+
+#[tokio::test]
+async fn a_stick_whose_system_use_cannot_be_told_is_reported_unknown_and_refused() {
+    let fixture = Fixture::new("unknownstick");
+    let control = FakeDeviceControl::new([usb_stick(OBJECT, DEVICE, UUID)]);
+    // The mount table could not be read.
+    control.set_system_sources(None);
+    let mut harness = harness(&fixture, control);
+    connect_and_mount(&mut harness).await;
+    assert_eq!(
+        harness.coordinator.report(&handle()).unwrap().system_use,
+        storage_platform::SystemUse::Unknown
+    );
+    refused_with(
+        harness.coordinator.eject(&handle()).await,
+        "storage.system.unknown",
+    );
+    assert!(
+        !harness
+            .control
+            .calls()
+            .iter()
+            .any(|call| call.starts_with("eject"))
+    );
+}

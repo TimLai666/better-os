@@ -257,6 +257,15 @@ pub struct DeviceReport {
     /// on it is refused until that ends.
     #[serde(default)]
     pub erasing: bool,
+    /// Whether the drive holds the running system, a system folder or swap
+    /// (ticket 171). A client offers Eject and Format only for `free`; a
+    /// report from a service that predates the field reads as `unknown`.
+    #[serde(default = "unknown_system_use")]
+    pub system_use: storage_platform::SystemUse,
+}
+
+fn unknown_system_use() -> storage_platform::SystemUse {
+    storage_platform::SystemUse::Unknown
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

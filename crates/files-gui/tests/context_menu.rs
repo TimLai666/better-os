@@ -225,6 +225,7 @@ fn device(mounted: bool) -> SidebarKind {
         formattable: true,
         auto_mount: AutoMountLine::None,
         failed: false,
+        withheld: None,
     }
 }
 
@@ -250,6 +251,7 @@ fn a_drive_s_menu_turns_mounting_automatically_on_and_off() {
         formattable: false,
         auto_mount,
         failed,
+        withheld: None,
     };
     let on = sidebar_menu(
         with(
@@ -289,4 +291,161 @@ fn a_drive_s_menu_turns_mounting_automatically_on_and_off() {
     assert!(!commands(&failed).contains(&M::Mount));
     let none = sidebar_menu(with(AutoMountLine::None, false), &EN_US);
     assert!(!commands(&none).contains(&M::MountAutomatically));
+}
+
+// --- Ticket 171: nothing the running system uses is ejected or formatted ---
+
+use files_gui::context_menu::{Withheld, device_row_kind, drive_row_kind};
+use files_gui::devices::DeviceRow;
+use files_gui::drives::{Drive, DriveKind, SystemUse};
+
+/// A device the storage service lists, as the window holds it.
+fn service_row(system_use: SystemUse) -> DeviceRow {
+    DeviceRow {
+        object_path: "/org/freedesktop/UDisks2/block_devices/sdb2".into(),
+        label: "rootfs".into(),
+        identity: "uuid:root".into(),
+        identity_volatile: false,
+        mount_point: Some("/".into()),
+        policy: storage_core::RemovalPolicy::DirectRemoval,
+        state: storage_core::DeviceStateKind::Unknown,
+        blockers: Vec::new(),
+        unsafe_removal: None,
+        drive: Some("/org/freedesktop/UDisks2/drives/USB".into()),
+        drive_name: Some("SanDisk Extreme".into()),
+        size: 128_000_000_000,
+        whole_disk: false,
+        filesystem: Some("ext4".into()),
+        erasing: false,
+        system_use,
+    }
+}
+
+/// The drive listing's drive for it.
+fn listed(kind: DriveKind, system_use: SystemUse, ejectable: bool) -> Drive {
+    Drive {
+        key: "/org/freedesktop/UDisks2/block_devices/sdb2".into(),
+        label: None,
+        kind,
+        mount_point: Some("/".into()),
+        object_path: Some("/org/freedesktop/UDisks2/block_devices/sdb2".into()),
+        device_path: Some("/dev/sdb2".into()),
+        drive_object: Some("/org/freedesktop/UDisks2/drives/USB".into()),
+        backing: None,
+        locked: false,
+        uuid: Some("ROOT".into()),
+        size: 128_000_000_000,
+        ejectable,
+        system_use,
+        capacity: None,
+        auto_mount: None,
+        form: None,
+    }
+}
+
+fn notes(lines: &[MenuLine]) -> Vec<&'static str> {
+    lines
+        .iter()
+        .filter_map(|line| match line {
+            MenuLine::Note(text) => Some(*text),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn the_running_system_on_a_usb_drive_offers_neither_eject_nor_format_and_says_why() {
+    // The storage service lists it (UDisks2 does not mark a USB drive as
+    // the system's) and the sidebar pairs it with the system drive's row.
+    let drive = listed(DriveKind::System, SystemUse::RunningSystem, false);
+    for system_use in [SystemUse::RunningSystem, SystemUse::Free] {
+        // Even a service that called it free does not outvote the listing.
+        let kind = device_row_kind(&service_row(system_use), Some(&drive));
+        for (copy, line) in [
+            (
+                &EN_US,
+                "This drive holds the running system, so it can't be ejected or formatted.",
+            ),
+            (&ZH_TW, "這個磁碟上有正在執行的系統，所以不能退出或格式化。"),
+        ] {
+            let lines = sidebar_menu(kind, copy);
+            assert!(!commands(&lines).contains(&M::Eject));
+            assert!(!commands(&lines).contains(&M::Format));
+            assert_eq!(notes(&lines), [line]);
+        }
+    }
+    // The listing's own row for it says the same.
+    let lines = sidebar_menu(drive_row_kind(&drive), &EN_US);
+    assert!(!commands(&lines).contains(&M::Eject));
+    assert_eq!(notes(&lines).len(), 1);
+}
+
+#[test]
+fn a_second_partition_of_the_system_disk_is_the_system_s_too() {
+    // A data partition on the USB drive the system runs from: an ordinary
+    // removable drive to UDisks2, held because its drive holds `/`.
+    let mut data = listed(DriveKind::Removable, SystemUse::RunningSystem, false);
+    data.mount_point = Some("/media/me/DATA".into());
+    let mut row = service_row(SystemUse::RunningSystem);
+    row.mount_point = Some("/media/me/DATA".into());
+    let lines = sidebar_menu(device_row_kind(&row, Some(&data)), &EN_US);
+    assert!(!commands(&lines).contains(&M::Eject));
+    assert!(!commands(&lines).contains(&M::Format));
+    assert_eq!(
+        Withheld::of(&SystemUse::SystemFolder {
+            path: "/home".into()
+        }),
+        Some(Withheld::SystemFolder)
+    );
+}
+
+#[test]
+fn an_ordinary_usb_stick_offers_eject_and_format_with_no_note() {
+    let mut stick = listed(DriveKind::Removable, SystemUse::Free, true);
+    stick.mount_point = Some("/media/me/STICK".into());
+    let mut row = service_row(SystemUse::Free);
+    row.mount_point = Some("/media/me/STICK".into());
+    let lines = sidebar_menu(device_row_kind(&row, Some(&stick)), &EN_US);
+    assert!(enabled(&lines, M::Eject));
+    assert!(enabled(&lines, M::Format));
+    assert!(notes(&lines).is_empty());
+    // A blank stick the listing does not have: the service's answer alone.
+    let lines = sidebar_menu(device_row_kind(&row, None), &EN_US);
+    assert!(enabled(&lines, M::Format));
+    // Its own row in the listing, when the service is not there.
+    let lines = sidebar_menu(drive_row_kind(&stick), &EN_US);
+    assert!(enabled(&lines, M::Eject));
+}
+
+#[test]
+fn a_drive_whose_system_use_is_unknown_is_shown_as_unknown_and_not_offered() {
+    let mut stick = listed(DriveKind::Removable, SystemUse::Unknown, false);
+    stick.mount_point = Some("/media/me/STICK".into());
+    let mut row = service_row(SystemUse::Unknown);
+    row.mount_point = Some("/media/me/STICK".into());
+    for kind in [
+        device_row_kind(&row, Some(&stick)),
+        device_row_kind(&row, None),
+        drive_row_kind(&stick),
+    ] {
+        for (copy, line) in [
+            (
+                &EN_US,
+                "Better Files can't tell whether the running system uses this drive, so it can't be ejected or formatted.",
+            ),
+            (
+                &ZH_TW,
+                "無法確定系統是否正在使用這個磁碟，所以不能退出或格式化。",
+            ),
+        ] {
+            let lines = sidebar_menu(kind, copy);
+            assert!(!commands(&lines).contains(&M::Eject));
+            assert!(!commands(&lines).contains(&M::Format));
+            assert_eq!(notes(&lines), [line]);
+        }
+    }
+    // A free listing and an unknown service: unknown wins.
+    let free = listed(DriveKind::Removable, SystemUse::Free, true);
+    let lines = sidebar_menu(device_row_kind(&row, Some(&free)), &EN_US);
+    assert!(!commands(&lines).contains(&M::Eject));
 }

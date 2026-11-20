@@ -435,6 +435,10 @@ impl UDisks2 {
 }
 
 impl DeviceControl for UDisks2 {
+    fn system_sources(&self) -> Option<crate::system_use::SystemSources> {
+        crate::system_use::SystemSources::read(&crate::roots::Roots::system())
+    }
+
     async fn enumerate(&self) -> Result<Vec<PlatformDevice>, PlatformError> {
         let manager = self.object_manager().await?;
         let objects = manager.get_managed_objects().await.map_err(unreachable)?;

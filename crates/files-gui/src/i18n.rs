@@ -604,6 +604,12 @@ pub struct Copy {
 /// error keys say, in one language ([`crate::errors::explain`] picks the
 /// sentence). `{device}`, `{operation}` and `{detail}` are filled in.
 pub struct ErrorCopy {
+    /// Why a drive is not ejected or formatted (ticket 171): the menu's one
+    /// line, and the refusal's words when a request was sent anyway.
+    pub system_running: &'static str,
+    pub system_folder: &'static str,
+    pub system_swap: &'static str,
+    pub system_unknown: &'static str,
     pub erase_busy: &'static str,
     pub erase_not_confirmed: &'static str,
     pub image_unmount_failed: &'static str,
@@ -1134,6 +1140,10 @@ pub const EN_US: Copy = Copy {
     no_filter_matches: "Nothing in this folder matches",
     type_unknown_file: "File",
     errors: ErrorCopy {
+        system_running: "This drive holds the running system, so it can't be ejected or formatted.",
+        system_folder: "This drive holds a folder the running system uses, so it can't be ejected or formatted.",
+        system_swap: "This drive holds swap the running system uses, so it can't be ejected or formatted.",
+        system_unknown: "Better Files can't tell whether the running system uses this drive, so it can't be ejected or formatted.",
         erase_busy: "Something is still writing to this drive. Wait until it finishes, then try again.",
         erase_not_confirmed: "Nothing was erased: the erase was not confirmed.",
         image_unmount_failed: "A volume on the drive ({device}) is in use and could not be unmounted, so nothing was written. Close what is using it and try again.",
@@ -1665,6 +1675,10 @@ pub const ZH_TW: Copy = Copy {
     no_filter_matches: "這個資料夾沒有相符的項目",
     type_unknown_file: "檔案",
     errors: ErrorCopy {
+        system_running: "這個磁碟上有正在執行的系統，所以不能退出或格式化。",
+        system_folder: "這個磁碟上有系統正在使用的資料夾，所以不能退出或格式化。",
+        system_swap: "這個磁碟上有系統正在使用的置換空間，所以不能退出或格式化。",
+        system_unknown: "無法確定系統是否正在使用這個磁碟，所以不能退出或格式化。",
         erase_busy: "還有東西正在寫入這個磁碟。請等它完成後再試一次。",
         erase_not_confirmed: "沒有清除任何東西：清除動作沒有被確認。",
         image_unmount_failed: "磁碟上的一個磁區（{device}）正在使用中，無法卸載，所以沒有寫入。請關閉使用它的程式後再試一次。",

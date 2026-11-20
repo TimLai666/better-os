@@ -1493,6 +1493,9 @@ impl FilesSession {
     /// Format… from a drive's menu: opens the dialog that names the drive,
     /// offers the filesystems and says that everything on it goes.
     pub fn request_format(&mut self, object_path: &str) {
+        if self.refuse_if_system(object_path) {
+            return;
+        }
         self.dialog = Some(PendingDialog::Format {
             object_path: object_path.to_string(),
             device_label: self.device_label(object_path),
@@ -1552,7 +1555,39 @@ impl FilesSession {
                 return;
             }
         };
+        // Asked again: the drive may have become the system's while the
+        // dialog was open (ticket 171).
+        if self.refuse_if_system(request.object_path()) {
+            return;
+        }
         self.link.request_erase(request);
+    }
+
+    /// What of the running system the drive of the storage service's
+    /// device holds (ticket 171): the drive listing's answer and the
+    /// service's together, the stronger winning. A device the window does
+    /// not know is unknown.
+    pub fn device_system_use(&self, object_path: &str) -> crate::drives::SystemUse {
+        let row = self.devices.get(object_path);
+        let drive = row.and_then(|row| {
+            self.drives
+                .iter()
+                .find(|drive| crate::drives::is_device(drive, row))
+        });
+        crate::drives::system_use_of(drive, row)
+    }
+
+    /// Says why, and is true, when the device's drive holds the running
+    /// system or cannot be told apart from one: nothing is ejected or
+    /// erased then, whatever asked for it.
+    fn refuse_if_system(&mut self, object_path: &str) -> bool {
+        match self.device_system_use(object_path).refusal_detail() {
+            Some(reason) => {
+                self.notice = Some(Notice::Key(reason));
+                true
+            }
+            None => false,
+        }
     }
 
     /// Picks the filesystem in an open Format dialog.
@@ -1597,6 +1632,9 @@ impl FilesSession {
     /// stop using a device should never have to argue with the file manager
     /// about it.
     pub fn eject_device(&mut self, object_path: &str) {
+        if self.refuse_if_system(object_path) {
+            return;
+        }
         if let Some(folder) = self
             .devices
             .get(object_path)
@@ -2064,15 +2102,20 @@ impl FilesSession {
         let Some(drive) = self.drives.iter().find(|drive| drive.key == key).cloned() else {
             return;
         };
+        let Some(object_path) = drive.object_path.clone() else {
+            return;
+        };
+        let system = crate::drives::system_use_of(Some(&drive), self.devices.get(&object_path));
+        if let Some(reason) = system.refusal_detail() {
+            self.notice = Some(Notice::Key(reason));
+            return;
+        }
         if !drive.ejectable
             || drive.kind == crate::drives::DriveKind::System
             || drive.mount_point.as_deref() == Some(std::path::Path::new("/"))
         {
             return;
         }
-        let Some(object_path) = drive.object_path.clone() else {
-            return;
-        };
         if self.devices.get(&object_path).is_some() {
             self.eject_device(&object_path);
             return;

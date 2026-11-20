@@ -1050,9 +1050,11 @@ impl FilesApp {
         let attention =
             device.filter(|device| device.is_warning() || device.unsafe_removal.is_some());
         // Never on the drive the system runs from (Linux on an external SSD,
-        // a live USB), whatever the storage service says.
-        let with_action =
-            drive.kind != crate::drives::DriveKind::System && (drive.ejectable || device.is_some());
+        // a live USB, `/home` or swap on a USB disk), nor on one that cannot
+        // be told apart from it (ticket 171).
+        let with_action = drive.kind != crate::drives::DriveKind::System
+            && (drive.ejectable || device.is_some())
+            && crate::drives::system_use_of(Some(drive), device).permits_removal();
         if let Some(device) = attention {
             item = item.caption(device.state_label(c)).caption_warning(true);
         } else if let Some(caption) = drive.caption(c) {
@@ -1115,20 +1117,25 @@ impl FilesApp {
         }
         let object_path = device.object_path.clone();
         let this = self.weak.clone();
-        NavItem::new(device.label.clone(), IconName::HardDrive)
+        let item = NavItem::new(device.label.clone(), IconName::HardDrive)
             .caption(caption)
-            .caption_warning(device.is_warning() || device.unsafe_removal.is_some())
-            .action(NavAction::new(
-                IconName::ArrowUp,
-                c.device_eject,
-                move |_window, cx| {
-                    let _ = this.update(cx, |app, cx| {
-                        app.session.eject_device(&object_path);
-                        cx.notify();
-                    });
-                },
-            ))
-            .entry()
+            .caption_warning(device.is_warning() || device.unsafe_removal.is_some());
+        // Eject only on a drive that holds nothing of the running system
+        // (ticket 171).
+        if !crate::drives::system_use_of(None, Some(device)).permits_removal() {
+            return item.entry();
+        }
+        item.action(NavAction::new(
+            IconName::ArrowUp,
+            c.device_eject,
+            move |_window, cx| {
+                let _ = this.update(cx, |app, cx| {
+                    app.session.eject_device(&object_path);
+                    cx.notify();
+                });
+            },
+        ))
+        .entry()
     }
 
     /// The navigation pane around `content`.

@@ -543,6 +543,7 @@ mod tests {
             uuid: uuid.map(str::to_string),
             size: 512_000_000_000,
             ejectable: false,
+            system_use: drive_mounts::listing::SystemUse::Free,
             capacity: None,
             auto_mount: None,
             form: None,

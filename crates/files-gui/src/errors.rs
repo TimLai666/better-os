@@ -37,6 +37,10 @@ pub fn explain(text: &str, c: &'static Copy) -> String {
     let detail = detail.trim();
     let sentence = match key {
         // --- The storage service -------------------------------------
+        "storage.system.running_system" => e.system_running,
+        "storage.system.folder" => e.system_folder,
+        "storage.system.swap" => e.system_swap,
+        "storage.system.unknown" => e.system_unknown,
         "storage.erase.busy" => e.erase_busy,
         "storage.erase.not_confirmed" => e.erase_not_confirmed,
         "storage.image.unmount_failed" => {

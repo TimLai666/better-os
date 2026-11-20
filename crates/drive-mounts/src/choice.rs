@@ -98,7 +98,13 @@ pub fn names_of(drive: &Drive) -> Option<DriveNames> {
 /// A drive's choice, or `None` when it has none (a phone, a share, a drive
 /// with no UUID).
 pub fn setting(drive: &Drive, files: &SystemFiles) -> Option<AutoMount> {
-    if drive.kind == DriveKind::System {
+    // Any drive that holds the running system, a system folder or swap
+    // (ticket 171) is the system's, whatever kind of drive it is.
+    let held = !matches!(
+        drive.system_use,
+        crate::listing::SystemUse::Free | crate::listing::SystemUse::Unknown
+    );
+    if drive.kind == DriveKind::System || (held && drive.uuid.is_some()) {
         return Some(AutoMount {
             on: true,
             locked: Some(Locked::SystemDrive),
@@ -196,8 +202,12 @@ pub fn follow_up(drive: &Drive, on: bool) -> FollowUp {
     let removable = matches!(drive.kind, DriveKind::Removable | DriveKind::Optical);
     match (&drive.mount_point, on) {
         (None, true) if removable && !drive.locked => FollowUp::Mount,
+        // Nothing of the running system is unmounted, nor a drive that
+        // cannot be told apart from one (ticket 171).
         (Some(point), false)
-            if drive.kind != DriveKind::System && !point.starts_with(crate::ids::MOUNT_BASE) =>
+            if drive.kind != DriveKind::System
+                && drive.system_use.permits_removal()
+                && !point.starts_with(crate::ids::MOUNT_BASE) =>
         {
             FollowUp::Unmount
         }
@@ -224,6 +234,7 @@ mod tests {
             uuid: uuid.map(str::to_string),
             size: 1,
             ejectable: false,
+            system_use: crate::listing::SystemUse::Free,
             capacity: None,
             auto_mount: None,
             form: None,
@@ -346,6 +357,34 @@ mod tests {
         assert_eq!(follow_up(&ours, true), FollowUp::Nothing);
         let system = drive(DriveKind::System, Some("AA"), true);
         assert_eq!(follow_up(&system, false), FollowUp::Nothing);
+    }
+
+    #[test]
+    fn a_drive_holding_the_running_system_keeps_its_choice_and_its_mount() {
+        // `/home` on a USB disk, and a second partition of the system disk.
+        for held in [
+            crate::listing::SystemUse::SystemFolder {
+                path: "/home".into(),
+            },
+            crate::listing::SystemUse::RunningSystem,
+        ] {
+            let mut disk = drive(DriveKind::Removable, Some("AB12"), true);
+            disk.system_use = held;
+            let files = files("", "");
+            assert_eq!(
+                setting(&disk, &files).and_then(|auto| auto.locked),
+                Some(Locked::SystemDrive)
+            );
+            assert_eq!(follow_up(&disk, false), FollowUp::Nothing);
+        }
+        // Unknown is never unmounted either, but its choice stays its own.
+        let mut doubtful = drive(DriveKind::Removable, Some("AB12"), true);
+        doubtful.system_use = crate::listing::SystemUse::Unknown;
+        assert_eq!(follow_up(&doubtful, false), FollowUp::Nothing);
+        assert_eq!(
+            setting(&doubtful, &files("", "")).and_then(|auto| auto.locked),
+            None
+        );
     }
 
     #[test]

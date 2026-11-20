@@ -43,6 +43,10 @@ pub struct ResolvedDrive {
     /// Where it is mounted now.
     pub mount_points: Vec<PathBuf>,
     pub names: DriveNames,
+    /// What of the running system its drive holds (ticket 171): a drive
+    /// that holds `/`, a system folder or swap is the system's, and its
+    /// choice is refused like the system drive's.
+    pub system_use: drive_mounts::listing::SystemUse,
 }
 
 /// Finds the device with a UUID.
@@ -213,7 +217,9 @@ impl DriveResolver for UdisksResolver {
                 .collect();
             device_paths.extend(block.get("Symlinks").map(bytes_paths).unwrap_or_default());
             let label = Some(string(&block, "IdLabel")).filter(|l| !l.is_empty());
+            let system_use = drive_mounts::listing::system_use_now(&self.connection, path.as_str());
             return Ok(Some(ResolvedDrive {
+                system_use,
                 filesystem: string(&block, "IdType"),
                 usage: string(&block, "IdUsage"),
                 removable,
@@ -484,7 +490,15 @@ impl DriveChange<'_> {
         }
         let uuid = uuid.as_str();
         let _lock = FileLock::take(self.paths)?;
-        if drive.mount_points.iter().any(|p| p == Path::new("/")) {
+        // The running system's own drive, and any drive holding a system
+        // folder or swap (ticket 171): the same refusal Better Files' menu
+        // and the storage service give. A drive whose use could not be told
+        // is not refused here: nothing this method does takes it away.
+        let held = !matches!(
+            drive.system_use,
+            drive_mounts::listing::SystemUse::Free | drive_mounts::listing::SystemUse::Unknown
+        );
+        if held || drive.mount_points.iter().any(|p| p == Path::new("/")) {
             return Err(DaemonError::DriveRefused("system_drive".into()));
         }
         if drive.removable {
@@ -900,6 +914,11 @@ LABEL=Backup /backup ext4 defaults,noauto 0 2\n";
                     label: label.map(str::to_string),
                     ..DriveNames::default()
                 },
+                system_use: if mounted.contains(&"/") {
+                    drive_mounts::listing::SystemUse::RunningSystem
+                } else {
+                    drive_mounts::listing::SystemUse::Free
+                },
             }
         };
         let mut table = HashMap::new();
@@ -912,6 +931,20 @@ LABEL=Backup /backup ext4 defaults,noauto 0 2\n";
             ("1111-2222", drive("ext4", false, &["/"], None)),
             ("BACC-0001", drive("ext4", false, &[], Some("Backup"))),
             ("5AA5-0001", drive("swap", false, &[], None)),
+            // A data partition on the USB drive the system runs from, and
+            // `/home` on a USB disk (ticket 171).
+            ("5157-0001", {
+                let mut d = drive("ext4", true, &["/media/me/DATA"], None);
+                d.system_use = drive_mounts::listing::SystemUse::RunningSystem;
+                d
+            }),
+            ("0403-0001", {
+                let mut d = drive("ext4", true, &["/home"], None);
+                d.system_use = drive_mounts::listing::SystemUse::SystemFolder {
+                    path: "/home".into(),
+                };
+                d
+            }),
             (
                 "AB12-CD34",
                 drive("exfat", true, &["/media/me/STICK"], None),
@@ -1004,6 +1037,14 @@ LABEL=Backup /backup ext4 defaults,noauto 0 2\n";
             apply("BACC-0001", true),
             Err(DaemonError::DriveRefused("system_table".into()))
         );
+        for held in ["5157-0001", "0403-0001"] {
+            for on in [true, false] {
+                assert_eq!(
+                    apply(held, on),
+                    Err(DaemonError::DriveRefused("system_drive".into()))
+                );
+            }
+        }
         assert_eq!(
             apply("5AA5-0001", true),
             Err(DaemonError::DriveRefused("not_a_filesystem".into()))

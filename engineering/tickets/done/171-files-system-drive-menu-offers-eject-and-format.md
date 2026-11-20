@@ -29,3 +29,25 @@ Eject and Format.
   disk, an ordinary USB stick, a drive with an unknown state (shown as
   unknown, not offered).
 - Seen in a sandbox with a fixture listing whose system drive is removable.
+
+## Notes
+
+- 2026-11-21, delivered. The rule is `storage_platform::system_use`
+  (`SystemDrives`, `SystemUse`), fed by `/proc/self/mounts`, `/proc/swaps`
+  and `/sys/class/block/*/slaves`; the spec is "Nothing the running system
+  uses is ejected or formatted" in `engineering/specs/files-gui-policy.md`.
+  It decides the drive listing's `ejectable` and `system_use`
+  (`drive-mounts`), the storage service's report and its refusals
+  (`storage.system.*` for eject, format and image writes), Better Files'
+  menus (`context_menu::device_row_kind`, `drive_row_kind`), row eject
+  buttons, session refusals, Write to Drive's targets and the direct UDisks2
+  eject and unmount, and `manager-daemon`'s `SetMountAutomatically`
+  (`system_drive`).
+- Sandbox screenshots (fixture listing, wayhand headless sway) are in
+  `/home/tim/Developer/better-os-evidence/171/`: the removable system drive's
+  menu in English and zh-TW, an unknown drive's, and an ordinary stick's.
+  With no storage service in the sandbox those rows are the drive listing's
+  own; the storage-service row paired with the system drive is covered by
+  `tests/context_menu.rs` and `integration_tests.rs`, not drawn.
+- Known limits, in the spec: a system path on ZFS or bcachefs makes every
+  drive unknown; a swap file is not traced.

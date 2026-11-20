@@ -28,7 +28,7 @@ use storage_platform::traits::{
     DeviceControl, EjectOutcome, FlushBackend, FormatRequest, ImageProgress, OpenUseInspector,
     PlatformError, WritebackInspector,
 };
-use storage_platform::{DeviceAddress, PlatformDevice, PlatformEvent};
+use storage_platform::{DeviceAddress, PlatformDevice, PlatformEvent, SystemDrives, SystemUse};
 use thiserror::Error;
 use tokio::sync::broadcast;
 
@@ -172,6 +172,13 @@ pub struct StorageCoordinator<C: DeviceControl> {
     /// handle is captured where it is unambiguous. A coordinator built outside
     /// a runtime has none, and runs the same work inline.
     runtime: Option<tokio::runtime::Handle>,
+    /// Which drives hold something of the running system (ticket 171), as of
+    /// the last inventory or mount change: what each report says. Every
+    /// request that would take a drive away reads it again first.
+    system: SystemDrives,
+    /// Every block device UDisks2 listed when `system` was worked out, the
+    /// internal ones included: a volume's drive is found among them.
+    all_devices: Vec<PlatformDevice>,
 }
 
 impl<C: DeviceControl> StorageCoordinator<C> {
@@ -200,6 +207,8 @@ impl<C: DeviceControl> StorageCoordinator<C> {
             clients: BTreeMap::new(),
             erasing: Erasing::default(),
             runtime: tokio::runtime::Handle::try_current().ok(),
+            system: SystemDrives::unknown(),
+            all_devices: Vec::new(),
         })
     }
 
@@ -223,6 +232,51 @@ impl<C: DeviceControl> StorageCoordinator<C> {
     /// an image write's copy.
     pub fn control(&self) -> &C {
         &self.control
+    }
+
+    /// What the running system holds on the drive `handle` is on, read
+    /// again now from UDisks2 and the kernel's mount table. Anything that
+    /// cannot be read is Unknown, and Unknown refuses.
+    async fn system_use_now(&self, handle: &DeviceHandle) -> SystemUse {
+        let Ok(devices) = self.control.enumerate().await else {
+            return SystemUse::Unknown;
+        };
+        let sources = self.control.system_sources();
+        let system = SystemDrives::find(&devices, sources.as_ref());
+        match devices
+            .iter()
+            .find(|device| device.address.object_path == handle.as_str())
+        {
+            Some(device) => system.of_device(device, &devices),
+            None => SystemUse::Unknown,
+        }
+    }
+
+    /// Refuses ejecting, unmounting, or erasing a drive that holds the
+    /// running system, a system folder or swap, or that cannot be told
+    /// apart from one (ticket 171), with the typed reason
+    /// (`storage.system.running_system`, `storage.system.folder:/home`, …).
+    async fn refuse_if_system(&self, handle: &DeviceHandle) -> Result<(), ServiceError> {
+        match self.system_use_now(handle).await.refusal_detail() {
+            Some(reason) => Err(ServiceError::Refused(reason)),
+            None => Ok(()),
+        }
+    }
+
+    /// Works out again which drives hold the running system, for the
+    /// reports. Called when the inventory or a mount changes.
+    async fn recompute_system(&mut self) {
+        match self.control.enumerate().await {
+            Ok(devices) => {
+                let sources = self.control.system_sources();
+                self.system = SystemDrives::find(&devices, sources.as_ref());
+                self.all_devices = devices;
+            }
+            Err(_) => {
+                self.system = SystemDrives::unknown();
+                self.all_devices.clear();
+            }
+        }
     }
 
     /// Refuses anything on a device an image is being written to.
@@ -260,6 +314,9 @@ impl<C: DeviceControl> StorageCoordinator<C> {
     /// Called once at start and after a UDisks2 restart. Not on a timer.
     pub async fn refresh_inventory(&mut self) -> Result<(), ServiceError> {
         let devices = self.control.enumerate().await?;
+        let sources = self.control.system_sources();
+        self.system = SystemDrives::find(&devices, sources.as_ref());
+        self.all_devices = devices.clone();
         let mut seen: Vec<DeviceHandle> = Vec::new();
 
         for device in devices {
@@ -287,18 +344,21 @@ impl<C: DeviceControl> StorageCoordinator<C> {
     pub async fn handle_event(&mut self, event: PlatformEvent) {
         match event {
             PlatformEvent::Added(device) => {
+                self.recompute_system().await;
                 if device.classify().is_external() {
                     let handle = DeviceHandle::new(device.address.object_path.clone());
                     self.admit(handle, *device).await;
                 }
             }
             PlatformEvent::Removed { address } => {
+                self.recompute_system().await;
                 self.remove(&DeviceHandle::new(address.object_path)).await;
             }
             PlatformEvent::MountChanged {
                 address,
                 mount_point,
             } => {
+                self.recompute_system().await;
                 let handle = DeviceHandle::new(address.object_path);
                 if let Some(device) = self.known.get_mut(&handle) {
                     device.mount_point = mount_point.clone();
@@ -313,7 +373,14 @@ impl<C: DeviceControl> StorageCoordinator<C> {
                 match self.control.read(&address).await {
                     Ok(device) => {
                         let mount_point = device.mount_point.clone();
+                        let moved = self
+                            .known
+                            .get(&handle)
+                            .is_none_or(|known| known.mount_points() != device.mount_points());
                         self.known.insert(handle.clone(), device);
+                        if moved {
+                            self.recompute_system().await;
+                        }
                         self.apply_mount(&handle, mount_point).await;
                     }
                     // The object is gone. That is a disconnect, whatever the
@@ -416,6 +483,7 @@ impl<C: DeviceControl> StorageCoordinator<C> {
     /// mode: unmount, then power the drive off where the platform allows it.
     pub async fn eject(&mut self, handle: &DeviceHandle) -> Result<EjectOutcome, ServiceError> {
         self.refuse_if_erasing(handle)?;
+        self.refuse_if_system(handle).await?;
         let device = self
             .known
             .get(handle)
@@ -472,6 +540,7 @@ impl<C: DeviceControl> StorageCoordinator<C> {
         if self.is_writing(handle) || self.is_erasing(handle) {
             return Err(ServiceError::Refused("storage.erase.busy".to_string()));
         }
+        self.refuse_if_system(handle).await?;
         self.control.format(&device.address, request).await?;
         if let Some(known) = self.known.get_mut(handle) {
             known.mount_point = None;
@@ -539,6 +608,7 @@ impl<C: DeviceControl> StorageCoordinator<C> {
         {
             return Err(ServiceError::Refused("storage.erase.busy".to_string()));
         }
+        self.refuse_if_system(handle).await?;
         for member in &members {
             let Some(volume) = self.known.get(member).cloned() else {
                 continue;
@@ -957,6 +1027,7 @@ impl<C: DeviceControl> StorageCoordinator<C> {
                 size: 0,
                 whole_disk: false,
                 erasing: false,
+                system_use: SystemUse::Unknown,
             },
         };
         let _ = self.updates.send(report);
@@ -997,6 +1068,10 @@ impl<C: DeviceControl> StorageCoordinator<C> {
             size: device.map(|device| device.block.size).unwrap_or(0),
             whole_disk: device.is_some_and(|device| device.block.partition_number.is_none()),
             erasing: self.is_erasing(handle),
+            system_use: match device {
+                Some(device) => self.system.of_device(device, &self.all_devices),
+                None => SystemUse::Unknown,
+            },
         }
     }
 }

@@ -164,6 +164,12 @@ impl FormatRequest {
 pub trait DeviceControl: Send + Sync {
     fn enumerate(&self) -> impl Future<Output = Result<Vec<PlatformDevice>, PlatformError>> + Send;
 
+    /// What the running system has mounted and swapped on block devices
+    /// (ticket 171): `/proc` on a machine, whatever a test set on the fake.
+    /// `None` when it cannot be read, which makes every drive's
+    /// [`crate::system_use::SystemUse`] unknown.
+    fn system_sources(&self) -> Option<crate::system_use::SystemSources>;
+
     fn read(
         &self,
         address: &DeviceAddress,

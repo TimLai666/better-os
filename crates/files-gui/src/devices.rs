@@ -125,6 +125,9 @@ pub struct DeviceRow {
     pub filesystem: Option<String>,
     /// An image is being written to this device's drive.
     pub erasing: bool,
+    /// What of the running system its drive holds, as the storage service
+    /// worked it out (ticket 171): only `Free` is ejected or formatted.
+    pub system_use: storage_platform::SystemUse,
 }
 
 /// A drive a disk image can be written to, and what writing it erases.
@@ -139,10 +142,12 @@ pub struct ImageTarget {
 }
 
 /// The drives in an inventory an image could be written to, each with the
-/// volumes it would erase. A drive already being written to is left out.
+/// volumes it would erase. A drive already being written to is left out, and
+/// so is one that holds anything of the running system or cannot be told
+/// apart from one (ticket 171).
 pub fn image_targets(rows: &[DeviceRow]) -> Vec<ImageTarget> {
     rows.iter()
-        .filter(|row| row.whole_disk && !row.erasing)
+        .filter(|row| row.whole_disk && !row.erasing && row.system_use.permits_removal())
         .filter_map(|disk| {
             let drive = disk.drive.as_ref()?;
             let name = format!(
@@ -571,6 +576,7 @@ pub fn row_from(report: DeviceReport) -> DeviceRow {
         whole_disk: report.whole_disk,
         filesystem: report.filesystem,
         erasing: report.erasing,
+        system_use: report.system_use,
     }
 }
 

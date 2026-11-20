@@ -103,6 +103,51 @@ running system on an external SSD) is drawn as that drive, and its toasts and
 confirmations use the drive's name too. No Properties view for a drive exists
 yet; one built later takes its name from `Drive::naming`.
 
+## Nothing the running system uses is ejected or formatted
+
+Ticket 171. UDisks2 marks the drive the system runs from only when it is
+internal, so a system installed on a USB drive, a live USB, or `/home` on an
+external disk is listed by the storage service like any stick. Whether a
+drive may be ejected, unmounted, powered off, formatted, or have an image
+written to it is decided in one place, `storage_platform::system_use`, from
+the kernel's mount table (`/proc/self/mounts`), its swap list
+(`/proc/swaps`), and each device-mapper or RAID node's
+`/sys/class/block/*/slaves`, matched against UDisks2's devices.
+
+- A drive **holds the running system** when any volume on it, or under an
+  unlocked container or logical volume on it, is mounted at `/`, `/boot`,
+  `/boot/efi`, `/efi`, `/home`, `/usr`, `/var`, or a live session's medium
+  (`/cdrom`, `/run/live/medium`, `/lib/live/mount/medium`,
+  `/run/initramfs/live`, `/run/archiso/bootmnt`), or is active swap. A btrfs
+  filesystem across several drives holds all of them.
+- A drive is **free** only when the mount table was read, every one of those
+  mounts and swaps was traced to a drive, and this drive is not one of them.
+  Anything else is **unknown**, and unknown is treated as held.
+- Better Files' menu for a drive that holds the running system or is unknown
+  offers neither Eject nor Format and says why in one line, which is also
+  what a refusal says when a request was sent anyway: "This drive holds the
+  running system, so it can't be ejected or formatted." /
+  「這個磁碟上有正在執行的系統，所以不能退出或格式化。」; "This drive holds a
+  folder the running system uses, …" / 「這個磁碟上有系統正在使用的資料夾，…」;
+  "This drive holds swap the running system uses, …" /
+  「這個磁碟上有系統正在使用的置換空間，…」; and for unknown "Better Files
+  can't tell whether the running system uses this drive, so it can't be
+  ejected or formatted." / 「無法確定系統是否正在使用這個磁碟，所以不能退出或
+  格式化。」. Write to Drive does not list it.
+- The same answer refuses the request where it is carried out: Better
+  Files' session, the storage service (`storage.system.running_system`,
+  `storage.system.folder:<path>`, `storage.system.swap`,
+  `storage.system.unknown`), the direct UDisks2 eject and unmount of a drive
+  the storage service does not list, and `manager-daemon`'s
+  `SetMountAutomatically` (`system_drive`, which also locks the drive's
+  "Mount automatically" choice in both windows).
+- A storage service that predates the answer reports nothing, and its
+  devices read as unknown.
+
+Known limits: a system path on ZFS or bcachefs names no drive, so while
+one is mounted every drive is unknown; and a swap *file* on a removable
+drive is not traced (the kernel refuses that drive's unmount as busy).
+
 ## Devices without the storage service
 
 Ticket 35 connected the Devices section to the storage layer, and

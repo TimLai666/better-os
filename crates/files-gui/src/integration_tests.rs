@@ -242,6 +242,7 @@ fn report(object_path: &str, mount_point: Option<&str>, state: StateReport) -> D
         size: 0,
         whole_disk: false,
         erasing: false,
+        system_use: storage_platform::SystemUse::Free,
     }
 }
 
@@ -1040,6 +1041,50 @@ fn leaving_a_device_location_does_not_unmount_it() {
     assert!(session.device_rows()[0].is_mounted());
 }
 
+/// Ticket 171: a request for the running system's drive, or one that cannot
+/// be told apart from it, never reaches the storage layer, whatever asked
+/// for it (a menu line, the row's button, a dialog left open).
+#[test]
+fn the_drive_the_system_runs_from_is_never_ejected_or_formatted_from_the_session() {
+    let (rig, mut session) = plain();
+    let mut system = report("/dev/obj", Some("/"), ready());
+    system.system_use = storage_platform::SystemUse::RunningSystem;
+    system.whole_disk = true;
+    system.drive = Some("/drives/usb".into());
+    let mut doubtful = report("/dev/other", Some("/media/X"), ready());
+    doubtful.system_use = storage_platform::SystemUse::Unknown;
+    rig.link
+        .push(DeviceNotice::Inventory(vec![system, doubtful]));
+    session.pump();
+
+    session.eject_device("/dev/obj");
+    assert_eq!(
+        session.notice,
+        Some(Notice::Key("storage.system.running_system".into()))
+    );
+    session.request_format("/dev/obj");
+    assert_eq!(session.dialog, None, "no Format dialog opens");
+    session.eject_device("/dev/other");
+    assert_eq!(
+        session.notice,
+        Some(Notice::Key("storage.system.unknown".into()))
+    );
+    assert!(
+        session.image_targets().is_empty(),
+        "Write to Drive does not list it"
+    );
+    assert!(rig.link.calls().is_empty(), "{:?}", rig.link.calls());
+    // In both languages, the refusal is the menu's own line.
+    assert_eq!(
+        crate::errors::explain("storage.system.running_system", &crate::i18n::EN_US),
+        crate::i18n::EN_US.errors.system_running
+    );
+    assert_eq!(
+        crate::errors::explain("storage.system.folder:/home", &crate::i18n::ZH_TW),
+        crate::i18n::ZH_TW.errors.system_folder
+    );
+}
+
 #[test]
 fn eject_is_available_and_reports_what_actually_happened() {
     let (rig, mut session) = plain();
@@ -1109,6 +1154,7 @@ fn a_device_the_drive_listing_has_is_named_as_its_sidebar_row_names_it() {
             uuid: None,
             size: 1,
             ejectable: false,
+            system_use: crate::drives::SystemUse::RunningSystem,
             capacity: None,
             auto_mount: None,
             form: None,
