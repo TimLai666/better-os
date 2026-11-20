@@ -2046,7 +2046,7 @@ fn the_hardware_pages_read_the_graphics_card_battery_and_sensors() {
         i18n::battery_line(&readings, battery, Locale::ZhTw),
         "使用電池，剩下約 2 小時 10 分鐘"
     );
-    assert_eq!(readings.on_battery, Some(true));
+    assert_eq!(readings.on_battery(), Some(true));
     let hottest = readings.hottest().expect("a temperature");
     assert_eq!(
         i18n::sensor_title(hottest, Locale::EnUs),
@@ -2094,7 +2094,7 @@ fn a_machine_without_a_battery_or_card_has_no_reading_for_them() {
     assert!(readings.system_battery().is_none());
     assert!(readings.primary_gpu().is_none());
     assert!(readings.hottest().is_none());
-    assert_eq!(readings.on_battery, None);
+    assert_eq!(readings.on_battery(), None);
 }
 
 #[test]
@@ -2498,8 +2498,14 @@ fn a_battery_held_at_its_limit_says_so_with_its_own_picture() {
     use hardware_core::charge_state::{BatteryIcon, ChargeState};
     let readings = Readings::from_reports(&held_round(), 1_700_000_000.0);
     let battery = readings.system_battery().expect("a battery");
-    let look = i18n::battery_look(&readings, battery, Locale::ZhTw);
-    assert_eq!(look.state, ChargeState::HoldingAtLimit { limit: 80 });
+    let look = i18n::battery_look(&readings, Locale::ZhTw);
+    assert_eq!(
+        look.state,
+        ChargeState::Holding {
+            limit: 80,
+            percent: Some(80)
+        }
+    );
     assert_eq!(look.icon, BatteryIcon::Plugged);
     assert_eq!(
         i18n::battery_picture(&look),
@@ -2528,7 +2534,7 @@ fn an_unreadable_limit_is_unknown_not_a_battery_without_one() {
     let readings = Readings::from_reports(&round, 1_700_000_000.0);
     let battery = readings.system_battery().unwrap();
     assert_eq!(
-        readings.charge_readings(battery).limit,
+        readings.charge_readings().batteries[0].limit,
         ChargeLimit::Unreadable
     );
     assert_eq!(
@@ -2546,4 +2552,83 @@ fn every_battery_icon_the_rule_names_has_a_drawing() {
             icon.asset_path()
         );
     }
+}
+
+/// Held or full, the battery's time row is not drawn and the card's foot says
+/// the energy rather than the state its header already gives; the narrow list
+/// row uses the short words (ticket 170).
+#[test]
+fn a_held_battery_says_its_state_once_and_no_time() {
+    let mut round = held_round();
+    let bat = &mut round[0].entities[0].metrics;
+    bat.insert(
+        MetricId::new("battery.energy.now").unwrap(),
+        Observation::float(52.1),
+    );
+    bat.insert(
+        MetricId::new("battery.energy.full").unwrap(),
+        Observation::float(65.5),
+    );
+    let readings = Readings::from_reports(&round, 1_700_000_000.0);
+    let battery = readings.system_battery().unwrap();
+    let look = i18n::battery_look(&readings, Locale::ZhTw);
+    assert!(!look.state.has_time());
+    assert_eq!(i18n::battery_time(&look, battery, Locale::ZhTw), None);
+    assert_eq!(
+        i18n::battery_card_line(&readings, battery, Locale::EnUs),
+        "52.1 Wh of 65.5 Wh"
+    );
+    assert_eq!(
+        i18n::battery_card_line(&readings, battery, Locale::ZhTw),
+        "52.1 Wh，共 65.5 Wh"
+    );
+    assert_eq!(look.short, "維持在上限 80%");
+    assert_eq!(readings.on_battery(), Some(false));
+}
+
+/// A ThinkPad's two batteries: BAT1 charging while BAT0 rests at its limit is
+/// charging, and the charge is weighted by energy (ticket 170).
+#[test]
+fn two_batteries_read_as_one_state_and_one_charge() {
+    use hardware_core::charge_state::ChargeState;
+    let at = Timestamp {
+        unix_ms: 1_700_000_000_000,
+        monotonic_ns: 1,
+    };
+    let m = |pairs: &[(&str, Observation)]| -> MetricSet {
+        pairs
+            .iter()
+            .map(|(id, o)| (MetricId::new(*id).unwrap(), o.clone()))
+            .collect()
+    };
+    let mut report = CollectorReport::new(CollectorId::new("linux.battery").unwrap(), at);
+    for (name, status, charge, now) in [
+        ("BAT0", "not_charging", 0.8, 18.4),
+        ("BAT1", "charging", 0.4, 9.2),
+    ] {
+        report.entities.push(Entity::new(
+            EntityId::new(EntityKind::Battery, name),
+            m(&[
+                ("battery.charge", Observation::float(charge)),
+                ("battery.status", Observation::text(status)),
+                ("battery.charge.limit", Observation::float(0.8)),
+                ("battery.energy.now", Observation::float(now)),
+                ("battery.energy.full", Observation::float(23.0)),
+                ("battery.peripheral", Observation::boolean(false)),
+            ]),
+        ));
+    }
+    report.entities.push(Entity::new(
+        EntityId::new(EntityKind::PowerSource, "AC"),
+        m(&[
+            ("power_source.kind", Observation::text("mains")),
+            ("power_source.online", Observation::boolean(true)),
+        ]),
+    ));
+    let readings = Readings::from_reports(&[report], 1_700_000_000.0);
+    assert_eq!(
+        i18n::battery_look(&readings, Locale::EnUs).state,
+        ChargeState::Charging
+    );
+    assert_eq!(readings.battery_charge(), Some(0.6));
 }

@@ -59,11 +59,6 @@ pub struct BatteryFacts {
     pub full_design: Option<f64>,
     pub cycles: Option<u64>,
     pub model: Option<String>,
-    /// Whether a charger supplies power, from the other `power_supply`
-    /// entries' `online` (`charge_state::charger_online`).
-    pub charger_online: Option<bool>,
-    /// `charge_control_start_threshold`, when the battery has one.
-    pub charge_start: Option<u8>,
 }
 
 /// Home's "Battery is wearing out" item starts below this share of the
@@ -71,20 +66,6 @@ pub struct BatteryFacts {
 pub const WEARING_OUT_BELOW_PERCENT: u8 = 80;
 
 impl BatteryFacts {
-    /// What the battery icon reads, with the limit the System page read
-    /// beside these facts (`MachineFacts::charge_limit`).
-    pub fn charge_readings(
-        &self,
-        limit: &crate::Presence<u8>,
-    ) -> crate::charge_state::ChargeReadings {
-        crate::charge_state::ChargeReadings {
-            charger_online: self.charger_online,
-            status: Some(self.status),
-            percent: self.capacity,
-            limit: crate::charge_state::ChargeLimit::from_presence(limit, self.charge_start),
-        }
-    }
-
     /// What it holds now as a share of what it held new, rounded, at most
     /// 100. `None` when either figure is missing or the design is zero.
     pub fn health_percent(&self) -> Option<u8> {
@@ -137,8 +118,6 @@ mod tests {
             full_design: Some(4_998_000.0),
             cycles: Some(0),
             model: Some("ASUS Battery".into()),
-            charger_online: Some(false),
-            charge_start: None,
         }
     }
 

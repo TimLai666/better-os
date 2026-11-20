@@ -284,16 +284,14 @@ caution colour with a caution icon.
 | Cycles | 充電次數：{n} | Charge cycles: {n} | `cycle_count`, row hidden when it reads 0 (the machine reads 0) |
 | Model | 型號：{model} | Model: {model} | `model_name` |
 
-Status words and the card's icon are the battery state rule's
-(`engineering/specs/battery-charge-state.md`, ticket 170): 使用電池 / On
-battery, 充電中 / Charging, 已接上電源，維持在 {limit}% / Plugged in, holding at
-{limit}%, 已接上電源，已充滿 / Plugged in, fully charged, 已接上電源，沒有充電 /
-Plugged in, not charging, and 無法判讀電池狀態 / Battery state unknown. The
-charge limit card starts its description with 目前：{capacity}% · {state}。 /
-Now: {capacity}% · {state}., and on GNOME, while the limit is under 100%,
-adds 電池停在上限時，桌面本身的電池圖示看起來會跟使用電池時一樣，沒有充電符號：這是 GNOME 自己的畫法，GNOME 以外的程式改不了。 / At the limit, the desktop's
-own battery icon looks the same as on battery, with no charging mark: GNOME
-draws it that way, and nothing outside GNOME can change it.
+Status words and the cards' icons are the battery state rule's
+(`engineering/specs/battery-charge-state.md`, ticket 170), which lists every
+state's words in both languages. The charge limit card's description is the
+description above, then, on GNOME while a limit under 100% is set and GNOME's
+own icon cannot show a held battery (the shell older than 49, or UPower
+without `ChargeThresholdEnabled`), 停在上限時，GNOME 本身的電池圖示看起來跟使用電池時一樣。
+/ At the limit, GNOME's own battery icon looks the same as on battery., then
+the restore and authentication sentences.
 
 ### Group: 顯示 / Display
 

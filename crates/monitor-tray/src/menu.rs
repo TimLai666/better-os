@@ -54,36 +54,63 @@ impl Reading {
 /// online.
 fn charge_readings(
     report: &monitor_core::CollectorReport,
-    battery: &monitor_core::Entity,
 ) -> hardware_core::charge_state::ChargeReadings {
-    use hardware_core::charge_state::{ChargeLimit, ChargeReadings, charger_online};
+    use hardware_core::charge_state::{BatteryPart, ChargeLimit, ChargeReadings, charger_online};
     let percent = |ratio: f64| (ratio * 100.0).round().clamp(0.0, 100.0) as u8;
-    let m = &battery.metrics;
-    let sources = report.entities_of(EntityKind::PowerSource).map(|source| {
-        match source.metrics.get(&id("power_source.online")) {
-            Some(Observation::Value(MetricScalar::Bool(online))) => Some(*online),
-            _ => None,
-        }
-    });
+    let sources: Vec<(String, Option<bool>)> = report
+        .entities_of(EntityKind::PowerSource)
+        .map(|source| {
+            let kind = source
+                .metrics
+                .get(&id("power_source.kind"))
+                .and_then(Observation::as_text)
+                .unwrap_or("")
+                .to_string();
+            let online = match source.metrics.get(&id("power_source.online")) {
+                Some(Observation::Value(MetricScalar::Bool(online))) => Some(*online),
+                _ => None,
+            };
+            (kind, online)
+        })
+        .collect();
     ChargeReadings {
-        charger_online: charger_online(sources),
-        status: m
-            .get(&id("battery.status"))
-            .and_then(Observation::as_text)
-            .and_then(hardware_core::battery::BatteryStatus::from_key),
-        percent: number(m, "battery.charge").map(percent),
-        limit: match (
-            m.get(&id("battery.charge.limit")),
-            number(m, "battery.charge.limit"),
-        ) {
-            (_, Some(end)) => ChargeLimit::Percent {
-                end: percent(end),
-                start: number(m, "battery.charge.start").map(percent),
-            },
-            (Some(Observation::Unsupported(_)), None) => ChargeLimit::Unreadable,
-            _ => ChargeLimit::NotSupported,
-        },
+        charger_online: charger_online(sources.iter().map(|(k, o)| (k.as_str(), *o))),
+        batteries: report
+            .entities_of(EntityKind::Battery)
+            .filter(|e| !is_peripheral(e))
+            .map(|battery| {
+                let m = &battery.metrics;
+                BatteryPart {
+                    status: m
+                        .get(&id("battery.status"))
+                        .and_then(Observation::as_text)
+                        .and_then(hardware_core::battery::BatteryStatus::from_key),
+                    percent: number(m, "battery.charge").map(percent),
+                    energy_now: number(m, "battery.energy.now"),
+                    energy_full: number(m, "battery.energy.full"),
+                    limit: match (
+                        m.get(&id("battery.charge.limit")),
+                        number(m, "battery.charge.limit"),
+                    ) {
+                        (_, Some(end)) => ChargeLimit::Percent {
+                            end: percent(end),
+                            start: number(m, "battery.charge.start").map(percent),
+                        },
+                        (Some(Observation::Unsupported(_)), None) => ChargeLimit::Unreadable,
+                        _ => ChargeLimit::NotSupported,
+                    },
+                }
+            })
+            .collect(),
     }
+}
+
+/// A mouse's or a keyboard's battery rather than this machine's.
+fn is_peripheral(entity: &monitor_core::Entity) -> bool {
+    matches!(
+        entity.metrics.get(&id("battery.peripheral")),
+        Some(Observation::Value(MetricScalar::Bool(true)))
+    )
 }
 
 /// The handful of facts the item shows, read from one round.
@@ -184,15 +211,14 @@ impl TrayReadings {
             }
         }
         if let Some(battery) = find("linux.battery") {
-            let system = battery.entities_of(EntityKind::Battery).find(|e| {
-                !matches!(
-                    e.metrics.get(&id("battery.peripheral")),
-                    Some(Observation::Value(MetricScalar::Bool(true)))
-                )
-            });
+            let system = battery
+                .entities_of(EntityKind::Battery)
+                .find(|e| !is_peripheral(e));
             if let Some(entity) = system {
-                readings.battery = number(&entity.metrics, "battery.charge");
-                readings.battery_state = Some(charge_readings(battery, entity));
+                let state = charge_readings(battery);
+                // Every battery's charge together (one battery's own).
+                readings.battery = state.percent().map(|p| f64::from(p) / 100.0);
+                readings.battery_state = Some(state);
                 readings.battery_seconds_left = number(&entity.metrics, "battery.time.remaining");
                 readings.battery_seconds_to_full = number(&entity.metrics, "battery.time.to_full");
             }
@@ -399,11 +425,13 @@ pub fn reading_line(reading: Reading, r: &TrayReadings, locale: Locale) -> Optio
                 r.battery_seconds_left,
                 r.battery_seconds_to_full,
             ) {
-                (Some(ChargeState::OnBattery), Some(left), _) => Some(if locale.zh() {
-                    format!("剩下約 {}", hours_minutes(left, locale))
-                } else {
-                    format!("about {} left", hours_minutes(left, locale))
-                }),
+                (Some(state), Some(left), _) if state.on_battery() == Some(true) => {
+                    Some(if locale.zh() {
+                        format!("剩下約 {}", hours_minutes(left, locale))
+                    } else {
+                        format!("about {} left", hours_minutes(left, locale))
+                    })
+                }
                 (Some(ChargeState::Charging), _, Some(full)) => Some(if locale.zh() {
                     format!("約 {}後充滿", hours_minutes(full, locale))
                 } else {
@@ -878,12 +906,12 @@ mod tests {
             memory_used: Some(10.0 * 1024.0 * 1024.0 * 1024.0),
             memory_total: Some(30.5 * 1024.0 * 1024.0 * 1024.0),
             battery: Some(0.83),
-            battery_state: Some(hardware_core::charge_state::ChargeReadings {
-                charger_online: Some(true),
-                status: Some(hardware_core::battery::BatteryStatus::Charging),
-                percent: Some(83),
-                limit: hardware_core::charge_state::ChargeLimit::NotSupported,
-            }),
+            battery_state: Some(hardware_core::charge_state::ChargeReadings::single(
+                Some(true),
+                Some(hardware_core::battery::BatteryStatus::Charging),
+                Some(83),
+                hardware_core::charge_state::ChargeLimit::NotSupported,
+            )),
             battery_seconds_to_full: Some(14.0 * 60.0),
             hottest: Some(73.0),
             fan_rpm: Some(3450.0),
@@ -917,7 +945,10 @@ mod tests {
         ));
         report.entities.push(Entity::new(
             EntityId::new(EntityKind::PowerSource, "ACAD"),
-            set(&[("power_source.online", Observation::boolean(true))]),
+            set(&[
+                ("power_source.kind", Observation::text("mains")),
+                ("power_source.online", Observation::boolean(true)),
+            ]),
         ));
         let readings = TrayReadings::from_round(&[report]);
         for (locale, line) in [

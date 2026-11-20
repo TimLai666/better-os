@@ -29,7 +29,7 @@ pub(crate) const PAGE: PageModule = PageModule {
 };
 
 /// What the banner says about this computer.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Device {
     /// The product name, with a repeated model suffix removed.
     pub(crate) product: Option<String>,
@@ -39,7 +39,7 @@ pub(crate) struct Device {
 }
 
 /// The battery's charge and what it is doing.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Battery {
     pub(crate) percent: u8,
     /// What the battery icon rule reads (`hardware_core::charge_state`).
@@ -152,7 +152,7 @@ impl HostRoot {
         let root = hardware_platform::sysfs::SysRoot::at(&self.0);
         let charge = hardware_platform::sysfs::charge_readings(&root)?;
         Some(Battery {
-            percent: charge.percent?.min(100),
+            percent: charge.percent()?.min(100),
             charge,
         })
     }
@@ -171,7 +171,7 @@ pub(crate) fn banner_line(locale: Locale, distribution: Option<&str>, version: &
 }
 
 /// The battery's words at the banner's trailing edge: `87% · 充電中`.
-pub(crate) fn battery_line(locale: Locale, battery: Battery) -> String {
+pub(crate) fn battery_line(locale: Locale, battery: &Battery) -> String {
     format!(
         "{}% · {}",
         battery.percent,
@@ -306,15 +306,15 @@ mod tests {
     fn battery(percent: u8, status: BatteryStatus, charger: bool, limit: u8) -> Battery {
         Battery {
             percent,
-            charge: ChargeReadings {
-                charger_online: Some(charger),
-                status: Some(status),
-                percent: Some(percent),
-                limit: hardware_core::charge_state::ChargeLimit::Percent {
+            charge: ChargeReadings::single(
+                Some(charger),
+                Some(status),
+                Some(percent),
+                hardware_core::charge_state::ChargeLimit::Percent {
                     end: limit,
                     start: None,
                 },
-            },
+            ),
         }
     }
 
@@ -323,33 +323,33 @@ mod tests {
         assert_eq!(
             battery_line(
                 Locale::ZhTw,
-                battery(87, BatteryStatus::Charging, true, 100)
+                &battery(87, BatteryStatus::Charging, true, 100)
             ),
             "87% · 充電中"
         );
         assert_eq!(
             battery_line(
                 Locale::EnUs,
-                battery(87, BatteryStatus::Discharging, false, 100)
+                &battery(87, BatteryStatus::Discharging, false, 100)
             ),
             "87% · On battery"
         );
         assert_eq!(
-            battery_line(Locale::EnUs, battery(100, BatteryStatus::Full, true, 100)),
+            battery_line(Locale::EnUs, &battery(100, BatteryStatus::Full, true, 100)),
             "100% · Plugged in, fully charged"
         );
         assert_eq!(
-            battery_line(Locale::ZhTw, battery(100, BatteryStatus::Full, true, 100)),
+            battery_line(Locale::ZhTw, &battery(100, BatteryStatus::Full, true, 100)),
             "100% · 已接上電源，已充滿"
         );
         // The owner's machine on 2026-11-21 (ticket 170).
         let held = battery(80, BatteryStatus::NotCharging, true, 80);
         assert_eq!(
-            battery_line(Locale::ZhTw, held),
+            battery_line(Locale::ZhTw, &held),
             "80% · 已接上電源，維持在 80%"
         );
         assert_eq!(
-            battery_line(Locale::EnUs, held),
+            battery_line(Locale::EnUs, &held),
             "80% · Plugged in, holding at 80%"
         );
         assert_eq!(
@@ -397,7 +397,11 @@ mod tests {
         assert_eq!(device.distribution.as_deref(), Some("Zorin OS 18.1"));
         let battery = device.battery.expect("BAT1 is the system battery");
         assert_eq!(battery.percent, 100);
-        assert_eq!(battery.charge.status, Some(BatteryStatus::Full));
+        assert_eq!(battery.charge.batteries.len(), 1);
+        assert_eq!(
+            battery.charge.batteries[0].status,
+            Some(BatteryStatus::Full)
+        );
         // ACAD has no `online` here, so whether it is plugged in is unknown.
         assert_eq!(battery.charge.charger_online, None);
     }

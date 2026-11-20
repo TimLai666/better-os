@@ -488,13 +488,15 @@ impl MonitorApp {
             );
         };
         let p = palette(cx);
-        let look = i18n::battery_look(&self.readings, &battery, self.locale);
+        let look = i18n::battery_look(&self.readings, self.locale);
+        // The header says the state in short, the figure is every battery's
+        // charge together, and the foot says what the header does not.
         self.resource_card(
             "card-battery",
             c.battery,
             i18n::battery_picture(&look),
-            Some((look.words, p.text_secondary)),
-            battery.charge.map(share),
+            Some((look.short, p.text_secondary)),
+            self.readings.battery_charge().map(share),
             Some((
                 vec![ChartSeries::new(
                     self.live
@@ -503,7 +505,7 @@ impl MonitorApp {
                 )],
                 100.0,
             )),
-            i18n::battery_line(&self.readings, &battery, self.locale),
+            i18n::battery_card_line(&self.readings, &battery, self.locale),
             Resource::Battery,
             cx,
         )
@@ -954,11 +956,12 @@ impl MonitorApp {
             tiles.push((
                 Resource::Battery,
                 c.battery.to_string(),
-                match battery.charge {
+                match r.battery_charge() {
+                    // The short words: the row is narrow.
                     Some(charge) => format!(
                         "{} · {}",
                         share(charge),
-                        i18n::battery_look(r, battery, self.locale).words
+                        i18n::battery_look(r, self.locale).short
                     ),
                     None => c.not_available.to_string(),
                 },
@@ -1962,7 +1965,7 @@ impl MonitorApp {
             .span_label(self.span_label())
             .minimum_label("0"),
         );
-        let look = i18n::battery_look(&self.readings, &battery, self.locale);
+        let look = i18n::battery_look(&self.readings, self.locale);
         let charging = look.state == hardware_core::charge_state::ChargeState::Charging;
         let stats = div()
             .flex()
@@ -1981,22 +1984,26 @@ impl MonitorApp {
                 true,
                 p,
             ))
-            .child(stat_or_missing(
-                if charging {
-                    c.time_to_full
-                } else {
-                    c.time_left
-                },
-                if charging {
-                    battery.time_to_full
-                } else {
-                    battery.time_remaining
-                }
-                .map(|s| i18n::hours_minutes(s, self.locale)),
-                true,
-                c,
-                p,
-            ))
+            // A time to empty or to full only while the charge moves: held
+            // or full, "not available" would read as a fault.
+            .when(look.state.has_time(), |stats| {
+                stats.child(stat_or_missing(
+                    if charging {
+                        c.time_to_full
+                    } else {
+                        c.time_left
+                    },
+                    if charging {
+                        battery.time_to_full
+                    } else {
+                        battery.time_remaining
+                    }
+                    .map(|s| i18n::hours_minutes(s, self.locale)),
+                    true,
+                    c,
+                    p,
+                ))
+            })
             .child(stat_or_missing(
                 if charging { c.charging_at } else { c.drawing },
                 battery.power_watts.map(crate::tables::watts),
@@ -2088,7 +2095,7 @@ impl MonitorApp {
     fn battery_use_section(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let p = palette(cx);
         let c = copy(self.locale);
-        let on_battery = self.readings.on_battery == Some(true);
+        let on_battery = self.readings.on_battery() == Some(true);
         let now: AnyElement = if on_battery {
             self.top_apps_table(
                 "battery-now",

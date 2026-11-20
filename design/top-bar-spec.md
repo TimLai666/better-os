@@ -484,17 +484,21 @@ Shown only when UPower's display device is a battery. Icon and state words are
 `hardware_core::charge_state::battery_look`'s, the rule every Better OS battery
 icon follows (`engineering/specs/battery-charge-state.md`, ticket 170), so a
 battery held at its charge limit shows the plug picture and 已接上電源，維持在
-80%, never the on-battery icon. The rule reads the kernel's words; UPower's
-display device states map onto them (`charging` Charging, `discharging`
-Discharging, `fully-charged` Full, `pending-charge` Not charging, the rest
-unknown), and the limit is `charge_control_end_threshold`, read as the System
-page reads it. Icon by charge and state,
+80%, never the on-battery icon. The bar reads what the rule reads the way the
+windows do (`hardware_platform::sysfs::charge_readings`: each battery's kernel
+`status`, charge and limit, and the chargers' `online`) and uses UPower only as
+the signal that something changed. It does not map UPower's `State` onto the
+rule: UPower reports `pending-charge` both for a battery held at its limit and
+for an older kernel's `Unknown` (before Linux 5.19 a battery stopped at its
+threshold said `Unknown`), while the rule calls `Unknown` held only inside the
+limit's window and unknown anywhere else, so the two would disagree. Icon by
+charge and state,
 with the percentage after it in Body (`87%`). Flyout:
 
 | Element | zh-TW | English |
 | --- | --- | --- |
 | Line 1 | {n}% · {state} | {n}% · {state} |
-| States | 充電中 / 使用電池 / 已接上電源，維持在 {limit}% / 已接上電源，已充滿 / 已接上電源，沒有充電 / 無法判讀電池狀態 | Charging / On battery / Plugged in, holding at {limit}% / Plugged in, fully charged / Plugged in, not charging / Battery state unknown |
+| States | `battery_look`'s words: 充電中 / 使用電池 / 已接上電源，仍在耗電 / 已接上電源，維持在 {limit}% (or 維持在 {n}%（上限 {limit}%）, or 高於 {limit}% 上限，不充電) / 已接上電源，已充滿 / 已接上電源，沒有充電 / 無法判讀電池狀態 | Charging / On battery / Plugged in, still draining / Plugged in, holding at {limit}% (or holding at {n}% (limit {limit}%), or not charging above the {limit}% limit) / Plugged in, fully charged / Plugged in, not charging / Battery state unknown |
 | Time | 約 {time} 後充滿 / 約剩 {time} | About {time} until full / About {time} left |
 | Power mode | the control center's Power mode `ComboBox` (same copy, `design/control-center-spec.md` section 4), when power-profiles-daemon is present | |
 | Keep awake | the Keep awake toggle of Home's quick settings (same copy), when Better Awake is installed | |

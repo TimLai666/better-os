@@ -747,6 +747,7 @@ version = "0.2.16"
 dependencies = [
  "awake-core",
  "better-core",
+ "hardware-core",
  "notify",
  "tempfile",
 ]

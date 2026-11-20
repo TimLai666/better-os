@@ -43,8 +43,6 @@ pub(crate) struct Copy {
     /// Not the spec's "resets to 100%" line, which nobody has observed
     /// (ticket 86): a neutral one, true whether or not the firmware keeps it.
     pub(crate) charge_at_startup: &'static str,
-    /// What the battery is doing now, on the charge limit card (ticket 170).
-    pub(crate) charge_now: &'static str,
     /// What GNOME's own battery icon shows while the battery is held at a
     /// limit under 100%.
     pub(crate) charge_desktop_icon: &'static str,
@@ -137,8 +135,7 @@ static EN: Copy = Copy {
     charge_other: "Charge to {n}% (set elsewhere)",
     charge_auth_note: "You'll be asked for an administrator password.",
     charge_at_startup: "Better OS sets it again each time the PC starts.",
-    charge_now: "Now: {state}.",
-    charge_desktop_icon: "At the limit, the desktop's own battery icon looks the same as on battery, with no charging mark: GNOME draws it that way, and nothing outside GNOME can change it.",
+    charge_desktop_icon: "At the limit, GNOME's own battery icon looks the same as on battery.",
     battery: "Battery",
     battery_health: "Battery health: holds {percent}% of its original capacity",
     battery_cycles: "Charge cycles: {n}",
@@ -209,8 +206,7 @@ static ZH_TW: Copy = Copy {
     charge_other: "充到 {n}%（在其他地方設定的）",
     charge_auth_note: "變更時會要求輸入管理者密碼。",
     charge_at_startup: "每次開機時，Better OS 會重新套用這個上限。",
-    charge_now: "目前：{state}。",
-    charge_desktop_icon: "電池停在上限時，桌面本身的電池圖示看起來會跟使用電池時一樣，沒有充電符號：這是 GNOME 自己的畫法，GNOME 以外的程式改不了。",
+    charge_desktop_icon: "停在上限時，GNOME 本身的電池圖示看起來跟使用電池時一樣。",
     battery: "電池",
     battery_health: "電池健康度：目前可充到出廠容量的 {percent}%",
     battery_cycles: "充電次數：{n}",

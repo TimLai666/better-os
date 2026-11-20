@@ -159,7 +159,7 @@ impl ManagerApp {
             device.distribution.as_deref(),
             MANAGER_VERSION,
         ));
-        if let Some(battery) = device.battery {
+        if let Some(battery) = &device.battery {
             let icon = home::battery_picture(&home::battery_look(&battery.charge, self.locale));
             banner = banner.trailing(
                 div()

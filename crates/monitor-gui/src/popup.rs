@@ -562,7 +562,7 @@ impl PopupView {
                     )
                 })
                 .collect(),
-            Section::Battery if r.on_battery != Some(true) => Vec::new(),
+            Section::Battery if r.on_battery() != Some(true) => Vec::new(),
             _ => top_processes(
                 &self.facts,
                 section,
@@ -588,8 +588,8 @@ impl PopupView {
         // The battery's picture follows its state, as every battery icon does
         // (ticket 170); the other sections keep their own.
         let icon = match (section, self.readings.system_battery()) {
-            (Section::Battery, Some(battery)) => {
-                i18n::battery_picture(&i18n::battery_look(&self.readings, battery, self.locale))
+            (Section::Battery, Some(_)) => {
+                i18n::battery_picture(&i18n::battery_look(&self.readings, self.locale))
             }
             _ => section.icon(),
         };

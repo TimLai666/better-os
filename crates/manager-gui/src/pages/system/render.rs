@@ -228,16 +228,12 @@ impl ManagerApp {
                     .collect();
                 let lines = decide::charge_limit_lines(
                     power.charge.as_ref(),
-                    better_core::CurrentDesktop::from_env().includes("GNOME"),
+                    self.system.desktop_icon_note,
                     c,
-                    self.locale,
                 );
-                let mut parts: Vec<&str> = lines.iter().map(String::as_str).collect();
-                parts.extend([
-                    c.charge_limit_description,
-                    c.charge_at_startup,
-                    c.charge_auth_note,
-                ]);
+                let mut parts: Vec<&str> = vec![c.charge_limit_description];
+                parts.extend(lines.iter().map(String::as_str));
+                parts.extend([c.charge_at_startup, c.charge_auth_note]);
                 let description = decide::sentences(self.locale, &parts);
                 rows.push(Row::card(
                     gap,

@@ -1142,18 +1142,18 @@ fn a_session_the_closed_lid_ended_is_named_in_history() {
 /// 2026-11-21, and only the service's word when the window has no reading.
 #[test]
 fn the_power_row_uses_the_battery_state_rule() {
-    use crate::pages_status::power_words;
+    use crate::pages_status::power_state_words as power_words;
     use hardware_core::battery::BatteryStatus;
     use hardware_core::charge_state::{ChargeLimit, ChargeReadings};
-    let held = ChargeReadings {
-        charger_online: Some(true),
-        status: Some(BatteryStatus::NotCharging),
-        percent: Some(80),
-        limit: ChargeLimit::Percent {
+    let held = ChargeReadings::single(
+        Some(true),
+        Some(BatteryStatus::NotCharging),
+        Some(80),
+        ChargeLimit::Percent {
             end: 80,
             start: None,
         },
-    };
+    );
     assert_eq!(
         power_words(Some(&held), Some(true), Locale::ZhTw),
         "已接上電源，維持在 80%"
@@ -1162,9 +1162,16 @@ fn the_power_row_uses_the_battery_state_rule() {
         power_words(Some(&held), Some(true), Locale::EnUs),
         "Plugged in, holding at 80%"
     );
-    assert_eq!(power_words(None, Some(true), Locale::EnUs), "On AC power");
+    // Without a reading of its own the rule still decides: only the charger
+    // is known, so a plugged-in machine's battery state is unknown and an
+    // unplugged one is on battery.
+    assert_eq!(
+        power_words(None, Some(true), Locale::EnUs),
+        "Battery state unknown"
+    );
+    assert_eq!(power_words(None, Some(false), Locale::ZhTw), "使用電池");
     assert_eq!(
         power_words(None, None, Locale::EnUs),
-        copy(Locale::EnUs).unknown
+        "Battery state unknown"
     );
 }

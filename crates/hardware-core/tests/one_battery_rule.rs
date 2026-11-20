@@ -55,11 +55,61 @@ const FORBIDDEN: &[(&str, &str)] = &[
         "=> Picture::BatteryFullPlugged",
         "a battery picture chosen per window",
     ),
+    (
+        "=> Picture::BatteryPluggedCaution",
+        "a battery picture chosen per window",
+    ),
+    (r#"== Some("charging")"#, "a comparison with battery.status"),
+    (
+        r#"== Some("discharging")"#,
+        "a comparison with battery.status",
+    ),
+    (r#"== Some("full")"#, "a comparison with battery.status"),
+    (
+        r#"== Some("not_charging")"#,
+        "a comparison with battery.status",
+    ),
+    (
+        "=> c.on_battery_power",
+        "a charger's state turned into words per window",
+    ),
+    (
+        "=> c.on_ac_power",
+        "a charger's state turned into words per window",
+    ),
+    (
+        "fn power_words(",
+        "a charger's state turned into words per window",
+    ),
+    (
+        r#", "power.on_battery")"#,
+        "on battery read beside the battery state rule",
+    ),
+    (
+        ".on_battery ==",
+        "on battery read beside the battery state rule",
+    ),
+    (
+        ".on_battery !=",
+        "on battery read beside the battery state rule",
+    ),
     ("battery_charging:", "a window's own battery words"),
     ("battery_discharging:", "a window's own battery words"),
     ("battery_not_charging:", "a window's own battery words"),
     ("fn battery_status(", "a window's own battery words"),
     ("fn battery_words(", "a window's own battery words"),
+];
+
+/// Forms that need two parts on one line: a `matches!` on the kernel's
+/// status, and a power supply's type compared by hand.
+const FORBIDDEN_TOGETHER: &[(&str, &str, &str)] = &[
+    (
+        "matches!(",
+        "BatteryStatus::",
+        "a match on the kernel's status",
+    ),
+    (r#""Mains""#, "=>", "a charger decided by type per crate"),
+    (r#""USB_PD""#, "=>", "a charger decided by type per crate"),
 ];
 
 /// The crates that own the rule or read the kernel: the rule itself, and
@@ -102,15 +152,23 @@ fn no_window_keeps_a_battery_mapping_of_its_own() {
             let text = std::fs::read_to_string(&file).unwrap_or_default();
             checked += 1;
             for (number, line) in text.lines().enumerate() {
-                for (pattern, what) in FORBIDDEN {
-                    if line.contains(pattern) {
-                        found.push(format!(
-                            "{}:{}: {what}: {}",
-                            file.strip_prefix(&crates).unwrap_or(&file).display(),
-                            number + 1,
-                            line.trim()
-                        ));
-                    }
+                let hit = FORBIDDEN
+                    .iter()
+                    .find(|(pattern, _)| line.contains(pattern))
+                    .map(|(_, what)| *what)
+                    .or_else(|| {
+                        FORBIDDEN_TOGETHER
+                            .iter()
+                            .find(|(a, b, _)| line.contains(a) && line.contains(b))
+                            .map(|(_, _, what)| *what)
+                    });
+                if let Some(what) = hit {
+                    found.push(format!(
+                        "{}:{}: {what}: {}",
+                        file.strip_prefix(&crates).unwrap_or(&file).display(),
+                        number + 1,
+                        line.trim()
+                    ));
                 }
             }
         }
@@ -132,10 +190,26 @@ fn the_patterns_catch_the_old_mappings() {
         r#"        Some("not_charging") => c.battery_not_charging,"#,
         "                            Some(p) if p >= 90 => Picture::BatteryFull,",
         "    battery_not_charging: \"已接上電源，未充電\",",
+        r#"        let charging = battery.status.as_deref() == Some("charging");"#,
+        "                        Some(false) => c.on_battery_power,",
+        "        let on_battery = self.readings.on_battery == Some(true);",
+        r#"            readings.on_battery = boolean(&battery.metrics, "power.on_battery");"#,
     ];
     for line in old {
         assert!(
             FORBIDDEN.iter().any(|(pattern, _)| line.contains(pattern)),
+            "{line}"
+        );
+    }
+    let together = [
+        "        let charging = matches!(status, BatteryStatus::Charging);",
+        r#"                "Mains" | "USB" | "USB_PD" | "USB_PD_DRP" => {"#,
+    ];
+    for line in together {
+        assert!(
+            FORBIDDEN_TOGETHER
+                .iter()
+                .any(|(a, b, _)| line.contains(a) && line.contains(b)),
             "{line}"
         );
     }

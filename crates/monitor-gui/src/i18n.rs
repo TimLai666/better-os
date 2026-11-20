@@ -3010,20 +3010,22 @@ fn group_thousands(value: u64) -> String {
 }
 
 /// What the battery icon shows: its state, picture and words, from the one
-/// rule every Better OS battery icon follows (`hardware_core::charge_state`).
+/// rule every Better OS battery icon follows (`hardware_core::charge_state`),
+/// over every battery this machine has.
 pub(crate) fn battery_look(
     readings: &Readings,
-    battery: &crate::charts::BatteryReadings,
     locale: Locale,
 ) -> hardware_core::charge_state::BatteryLook {
-    hardware_core::charge_state::battery_look(
-        &readings.charge_readings(battery),
-        if zh(locale) {
-            hardware_core::charge_state::Language::TraditionalChinese
-        } else {
-            hardware_core::charge_state::Language::English
-        },
-    )
+    hardware_core::charge_state::battery_look(&readings.charge_readings(), language(locale))
+}
+
+/// The battery state's language for this choice.
+pub(crate) fn language(locale: Locale) -> hardware_core::charge_state::Language {
+    if zh(locale) {
+        hardware_core::charge_state::Language::TraditionalChinese
+    } else {
+        hardware_core::charge_state::Language::English
+    }
 }
 
 /// The picture for a look, from `better-ui`'s icon set. Every battery icon
@@ -3048,34 +3050,69 @@ pub(crate) fn hours_minutes(seconds: f64, locale: Locale) -> String {
     }
 }
 
-/// The one line under a battery's figure: its state, and how long is left.
+/// The one line under a battery's figure: its state, and how long is left
+/// while the charge moves.
 pub(crate) fn battery_line(
     readings: &Readings,
     battery: &crate::charts::BatteryReadings,
     locale: Locale,
 ) -> String {
+    let look = battery_look(readings, locale);
+    match battery_time(&look, battery, locale) {
+        Some(time) if zh(locale) => format!("{}，{time}", look.words),
+        Some(time) => format!("{}, {time}", look.words),
+        None => look.words,
+    }
+}
+
+/// How long until empty or full, said only while the charge moves
+/// (`ChargeState::has_time`): "about 2 h 10 min left", "full in about 14
+/// min".
+pub(crate) fn battery_time(
+    look: &hardware_core::charge_state::BatteryLook,
+    battery: &crate::charts::BatteryReadings,
+    locale: Locale,
+) -> Option<String> {
     use hardware_core::charge_state::ChargeState;
-    let look = battery_look(readings, battery, locale);
-    let status = look.words;
+    if !look.state.has_time() {
+        return None;
+    }
     let z = zh(locale);
-    match (look.state, battery.time_remaining, battery.time_to_full) {
-        (ChargeState::OnBattery, Some(left), _) => {
-            let left = hours_minutes(left, locale);
-            if z {
-                format!("{status}，剩下約 {left}")
-            } else {
-                format!("{status}, about {left} left")
-            }
+    if look.state == ChargeState::Charging {
+        let full = hours_minutes(battery.time_to_full?, locale);
+        Some(if z {
+            format!("約 {full}後充滿")
+        } else {
+            format!("full in about {full}")
+        })
+    } else {
+        let left = hours_minutes(battery.time_remaining?, locale);
+        Some(if z {
+            format!("剩下約 {left}")
+        } else {
+            format!("about {left} left")
+        })
+    }
+}
+
+/// The line at the foot of the battery's card: how long is left while the
+/// charge moves, otherwise how much energy it holds, so the state the card's
+/// header already gives is not said twice.
+pub(crate) fn battery_card_line(
+    readings: &Readings,
+    battery: &crate::charts::BatteryReadings,
+    locale: Locale,
+) -> String {
+    let look = battery_look(readings, locale);
+    if let Some(time) = battery_time(&look, battery, locale) {
+        return time;
+    }
+    match (battery.energy_now, battery.energy_full) {
+        (Some(now), Some(full)) if zh(locale) => {
+            format!("{}，共 {}", watt_hours(now), watt_hours(full))
         }
-        (ChargeState::Charging, _, Some(full)) => {
-            let full = hours_minutes(full, locale);
-            if z {
-                format!("{status}，約 {full}後充滿")
-            } else {
-                format!("{status}, full in about {full}")
-            }
-        }
-        _ => status,
+        (Some(now), Some(full)) => format!("{} of {}", watt_hours(now), watt_hours(full)),
+        _ => String::new(),
     }
 }
 

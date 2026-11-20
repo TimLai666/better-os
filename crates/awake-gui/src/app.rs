@@ -154,7 +154,34 @@ impl AwakeApp {
             ),
         };
         app.refresh(cx);
+        app.follow(cx);
         app
+    }
+
+    /// Reads again whenever the service signals or a charger or the battery
+    /// changes, so the Battery section's power row is current without
+    /// polling (ticket 170).
+    fn follow(&mut self, cx: &mut Context<Self>) {
+        let (sender, receiver) = std::sync::mpsc::channel::<()>();
+        std::thread::spawn(move || crate::client::follow(move || sender.send(()).is_ok()));
+        let receiver = std::sync::Arc::new(std::sync::Mutex::new(receiver));
+        cx.spawn(async move |this, cx| {
+            loop {
+                let receiver = receiver.clone();
+                let got = cx
+                    .background_spawn(async move {
+                        receiver
+                            .lock()
+                            .map(|receiver| receiver.recv().is_ok())
+                            .unwrap_or(false)
+                    })
+                    .await;
+                if !got || this.update(cx, |this, cx| this.refresh(cx)).is_err() {
+                    return;
+                }
+            }
+        })
+        .detach();
     }
 
     // ---- Navigation ----------------------------------------------------
@@ -198,7 +225,7 @@ impl AwakeApp {
                     .map(ProviderRow::from_wire)
                     .collect();
                 self.status = Some(StatusView::from_status(&status));
-                self.charge = read_charge();
+                self.charge = snapshot.charge;
                 self.connection_error = None;
             }
             Err(error) => {
@@ -850,13 +877,4 @@ impl better_ui::restart::Restartable for AwakeApp {
     fn restart_state(&self, _window: &Window, _cx: &App) -> crate::restart::AwakeView {
         crate::restart::AwakeView::of(self.section, self.pane)
     }
-}
-
-/// The battery's readings for the power row: none in a test build, which
-/// never reads the machine's sysfs.
-fn read_charge() -> Option<hardware_core::charge_state::ChargeReadings> {
-    if cfg!(test) {
-        return None;
-    }
-    hardware_platform::sysfs::charge_readings(&hardware_platform::sysfs::SysRoot::for_window())
 }

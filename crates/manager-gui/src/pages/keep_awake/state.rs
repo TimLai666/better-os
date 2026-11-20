@@ -252,6 +252,19 @@ impl ManagerApp {
     /// as soon as the service does, without polling.
     fn follow_keep_awake(&mut self, cx: &mut Context<Self>) {
         let (sender, receiver) = smol::channel::unbounded::<()>();
+        // The charger and the battery as well, so the charge card follows a
+        // plug or an unplug: the service's status says nothing about it
+        // (ticket 170).
+        let power = sender.clone();
+        std::thread::spawn(move || {
+            if let Ok(system) = zbus::blocking::Connection::system() {
+                hardware_platform::bus::follow(
+                    &system,
+                    &hardware_platform::bus::POWER_SUPPLY_CHANGES,
+                    || power.send_blocking(()).is_ok(),
+                );
+            }
+        });
         std::thread::spawn(move || {
             if let Ok(target) = Target::session() {
                 bus::follow(target, move || sender.send_blocking(()).is_ok());

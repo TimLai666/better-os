@@ -566,27 +566,17 @@ impl ManagerApp {
         } = battery
         {
             // The battery's state in the words and picture every battery
-            // icon in Better OS uses (ticket 170); without a reading of its
-            // own, only what the service saw.
-            let look = self
-                .keep_awake
-                .charge
-                .as_ref()
-                .map(|charge| crate::home::battery_look(charge, locale));
-            let source: String = match &look {
-                Some(look) => look.words.clone(),
-                None => match on_ac_power {
-                    Some(true) => c.on_ac_power,
-                    Some(false) => c.on_battery_power,
-                    None => c.unknown,
-                }
-                .to_string(),
-            };
-            let source = source.as_str();
-            let charge_icon = look
-                .as_ref()
-                .map(crate::home::battery_picture)
-                .unwrap_or(Picture::Battery);
+            // icon in Better OS uses (ticket 170). Without a battery reading
+            // of its own the rule gets only the charger the service saw.
+            let readings = self.keep_awake.charge.clone().unwrap_or(
+                hardware_core::charge_state::ChargeReadings {
+                    charger_online: on_ac_power,
+                    batteries: Vec::new(),
+                },
+            );
+            let look = crate::home::battery_look(&readings, locale);
+            let source = look.words.as_str();
+            let charge_icon = crate::home::battery_picture(&look);
             let charge = percent
                 .map(|percent| {
                     fill(
