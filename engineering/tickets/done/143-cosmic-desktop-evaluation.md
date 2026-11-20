@@ -40,3 +40,26 @@ own views. Either way the switch keeps what is on `~/Desktop` in place.
 
 Installing and switching is one action in Better Manager: no terminal, no
 extra settings, and removal puts the previous desktop back.
+
+## Notes
+
+Delivered on 2026-11-21 as
+[ADR 0038](/engineering/decisions/0038-cosmic-as-the-desktop.md) (proposed):
+the research with its sources, every GNOME-specific part with what COSMIC
+offers and the size of the work, installing on Zorin OS 18 and Ubuntu, the
+three options with their work and their effect on the tickets, the
+desktop-icons recommendation ticket 144 waits on, and the owner's decisions
+C1 to C7 at the top.
+
+The VM part ran in a disposable QEMU VM booted from Pop!_OS 24.04 build 29
+(COSMIC Epoch 1.11.0): Better Files, Git, Monitor, Manager, and Launcher from
+the published 0.2.16 packages at 100 %, 150 %, and 200 %, the trays, the
+portal file chooser, Zhuyin through Fcitx 5, COSMIC Files' desktop mode, and
+`wayland-info`. Screenshots are in `/home/tim/Developer/better-os-evidence/143/`.
+The windows were not built from this branch: the host's disk could not hold
+the build and the ISO together, and 0.2.16 already has the system frame.
+
+What the evaluation could not run, and the ADR leaves to option B's own
+check: COSMIC installed onto Zorin OS 18 or Ubuntu 24.04 with the pin, GDM
+starting the COSMIC session, switching back, removal, real hardware, and a
+touchpad. The owner's choice among the options is not part of this ticket.
