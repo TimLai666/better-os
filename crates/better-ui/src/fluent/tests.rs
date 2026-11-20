@@ -1446,7 +1446,7 @@ fn a_pane_floats_when_opened_narrow_and_pushes_when_wide() {
         px(48.0)
     );
     // Opening it narrow says nothing about the wide window's pane.
-    assert_eq!(choice.layout(false).compact, false);
+    assert!(!choice.layout(false).compact);
     choice.toggle(true, false);
     assert!(choice.layout(false).compact);
     assert!(!choice.layout(true).compact);
