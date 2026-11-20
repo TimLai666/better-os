@@ -201,6 +201,137 @@ pub struct Palette {
     pub icon_quiet: Rgba,
     /// [`Palette::icon_quiet`]'s minor layer.
     pub icon_quiet_2: Rgba,
+    /// An action icon's body when it stands alone: the accent in force when
+    /// it reads on every surface an icon is drawn on, otherwise the accent
+    /// moved toward the primary text colour until it does (see
+    /// [`icon_accent_for`]). Fills, the selection, and focus keep
+    /// [`Palette::accent`].
+    pub icon_accent: Rgba,
+    /// An action icon's body on an accent fill: the text on accent when it
+    /// reads on that fill, otherwise moved toward black or white until it
+    /// does (see [`icon_on_accent_for`]).
+    pub icon_on_accent: Rgba,
+    /// [`Palette::icon_on_accent`]'s minor layer, toward the fill.
+    pub icon_on_accent_2: Rgba,
+}
+
+/// The contrast an icon's main layer keeps against what it is drawn on:
+/// WCAG 2.1's 3:1 for the graphics a control is understood by (1.4.11).
+pub const ICON_CONTRAST: f32 = 3.0;
+
+/// The contrast an icon's second layer keeps from its main layer and from
+/// what it is drawn on. The main layer carries the shape at
+/// [`ICON_CONTRAST`]; the second layer only has to read as a tone of its
+/// own, so it needs less, but more than a divider's barely-there 1.1 to 1.2:
+/// 1.5:1 is the smallest step that still reads as a separate tone at 16px,
+/// and the shipped quiet grey and critical colours already keep 1.76:1 and
+/// more.
+pub const LAYER_CONTRAST: f32 = 1.5;
+
+/// How far one step moves a colour that does not read yet: small, so the
+/// result is the nearest tone that reads rather than the text colour.
+const CONTRAST_STEP: f32 = 0.05;
+
+/// WCAG 2.1's relative luminance of an opaque colour.
+pub fn relative_luminance(color: Rgba) -> f32 {
+    let channel = |v: f32| {
+        if v <= 0.04045 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * channel(color.r) + 0.7152 * channel(color.g) + 0.0722 * channel(color.b)
+}
+
+/// WCAG 2.1's contrast ratio between two opaque colours, from 1 to 21.
+pub fn contrast(a: Rgba, b: Rgba) -> f32 {
+    let (a, b) = (relative_luminance(a), relative_luminance(b));
+    (a.max(b) + 0.05) / (a.min(b) + 0.05)
+}
+
+/// `top` painted over the opaque `under`, as an opaque colour.
+pub fn over(top: Rgba, under: Rgba) -> Rgba {
+    if top.a >= 1.0 {
+        return top;
+    }
+    mix(under, top, top.a)
+}
+
+/// The opaque surfaces an action icon is drawn on in this appearance: the
+/// window background, a card, a menu, and a dialog, each as it shows over
+/// the window.
+pub fn icon_surfaces(palette: &Palette) -> [Rgba; 4] {
+    let window = palette.window_background;
+    [
+        window,
+        over(palette.card, window),
+        over(palette.flyout, window),
+        over(palette.dialog, window),
+    ]
+}
+
+/// Whether an icon in `main` with its second layer in `second` reads on
+/// every one of `surfaces`.
+pub fn icon_reads(main: Rgba, second: Rgba, surfaces: &[Rgba]) -> bool {
+    contrast(main, second) >= LAYER_CONTRAST
+        && surfaces.iter().all(|surface| {
+            contrast(main, *surface) >= ICON_CONTRAST
+                && contrast(second, *surface) >= LAYER_CONTRAST
+        })
+}
+
+/// `start` moved toward `toward` in [`CONTRAST_STEP`]s until `reads`
+/// accepts it, or all the way when nothing short of `toward` does.
+fn step_until(start: Rgba, toward: Rgba, reads: impl Fn(Rgba) -> bool) -> Rgba {
+    let start = Rgba { a: 1.0, ..start };
+    let mut step = 0;
+    loop {
+        let t = (step as f32 * CONTRAST_STEP).min(1.0);
+        let candidate = mix(start, toward, t);
+        if t >= 1.0 || reads(candidate) {
+            return candidate;
+        }
+        step += 1;
+    }
+}
+
+/// The colour an action icon alone is drawn in for `accent` in `base`'s
+/// appearance: the accent itself when it and its [`second_layer`] read on
+/// every [`icon_surfaces`], otherwise the accent mixed toward the primary
+/// text colour, in small steps that keep its hue as far as a mix does, until
+/// they read.
+pub fn icon_accent_for(base: &Palette, accent: Rgba) -> Rgba {
+    let dark = base.is_dark();
+    let surfaces = icon_surfaces(base);
+    let text = over(base.text_primary, base.window_background);
+    step_until(accent, text, |c| {
+        icon_reads(c, second_layer(c, dark), &surfaces)
+    })
+}
+
+/// The colour an action icon on an accent `fill` is drawn in: the theme's
+/// own text on accent when it and its minor layer read on that fill,
+/// otherwise moved toward black or white, whichever the fill is further
+/// from, until they do. A pale fill so gets a dark icon.
+pub fn icon_on_accent_for(fill: Rgba, on_fill: Rgba, window: Rgba) -> Rgba {
+    let fill = over(fill, window);
+    let black = hex(0x000000);
+    let white = hex(0xffffff);
+    let toward = if contrast(black, fill) >= contrast(white, fill) {
+        black
+    } else {
+        white
+    };
+    step_until(over(on_fill, fill), toward, |c| {
+        icon_reads(c, on_accent_second_layer(c, fill), &[fill])
+    })
+}
+
+/// An action icon's minor layer on an accent fill: its body mixed toward
+/// the fill.
+pub fn on_accent_second_layer(body: Rgba, fill: Rgba) -> Rgba {
+    mix(body, fill, 0.45)
 }
 
 /// Mixes `a` toward `b` by `t` (0 is `a`, 1 is `b`), as an opaque colour.
@@ -334,6 +465,11 @@ pub const LIGHT: Palette = Palette {
     icon_critical_2: second_layer(LIGHT_CRITICAL, false),
     icon_quiet: LIGHT_QUIET,
     icon_quiet_2: second_layer(LIGHT_QUIET, false),
+    // Windows 11's blue and white read here as they are: a test runs
+    // icon_accent_for and icon_on_accent_for on them.
+    icon_accent: accent::DARK_1,
+    icon_on_accent: hex(0xffffff),
+    icon_on_accent_2: mix(hex(0xffffff), accent::DARK_1, 0.45),
 };
 
 pub const DARK: Palette = Palette {
@@ -396,6 +532,9 @@ pub const DARK: Palette = Palette {
     icon_critical_2: second_layer(DARK_CRITICAL, true),
     icon_quiet: DARK_QUIET,
     icon_quiet_2: second_layer(DARK_QUIET, true),
+    icon_accent: accent::LIGHT_2,
+    icon_on_accent: hex(0x000000),
+    icon_on_accent_2: mix(hex(0x000000), accent::LIGHT_2, 0.45),
 };
 
 /// The palette for one appearance.
@@ -471,16 +610,25 @@ pub fn palette_with_system_accent(dark: bool) -> &'static Palette {
     palette
 }
 
-/// `base` with its accent roles taken from a desktop accent.
+/// `base` with its accent roles taken from a desktop accent. The fills keep
+/// the accent as it is; the icon roles are the nearest colours that read.
 pub fn with_accent(base: &Palette, fill: Rgba, on_fill: Rgba) -> Palette {
+    let icon_accent = icon_accent_for(base, fill);
+    let icon_on_accent = icon_on_accent_for(fill, on_fill, base.window_background);
     Palette {
+        icon_accent,
+        icon_accent_2: second_layer(icon_accent, base.is_dark()),
+        icon_on_accent,
+        icon_on_accent_2: on_accent_second_layer(
+            icon_on_accent,
+            over(fill, base.window_background),
+        ),
         accent: fill,
         accent_secondary: with_alpha(fill, 0.9),
         accent_tertiary: with_alpha(fill, 0.8),
         accent_text: fill,
         text_on_accent: on_fill,
         text_on_accent_secondary: with_alpha(on_fill, 0.8),
-        icon_accent_2: second_layer(fill, base.is_dark()),
         ..*base
     }
 }

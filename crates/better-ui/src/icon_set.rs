@@ -184,8 +184,10 @@ impl Placement {
 
 /// The two colours an action icon is drawn in: its body, and its minor
 /// layer's lighter shade. A destructive action is the critical colour in
-/// either placement. On a disabled accent button the icon takes the
-/// button's own disabled text colour, as its label does.
+/// either placement. Alone and on an accent fill the icon takes the
+/// palette's icon roles, which always read on what they are drawn on,
+/// never the accent itself (DESIGN.md, Icons). On a disabled accent button
+/// the icon takes the button's own disabled text colour, as its label does.
 pub fn action_colours(
     picture: Picture,
     placement: Placement,
@@ -201,12 +203,9 @@ pub fn action_colours(
                 0.45,
             ),
         ),
-        Placement::OnAccent => (
-            palette.text_on_accent,
-            crate::fluent::mix(palette.text_on_accent, palette.accent, 0.45),
-        ),
+        Placement::OnAccent => (palette.icon_on_accent, palette.icon_on_accent_2),
         _ if picture.destructive() => (palette.critical, palette.icon_critical_2),
-        Placement::Alone => (palette.accent, palette.icon_accent_2),
+        Placement::Alone => (palette.icon_accent, palette.icon_accent_2),
         Placement::Labelled => (palette.icon_quiet, palette.icon_quiet_2),
     }
 }
@@ -260,6 +259,7 @@ mod renderer_tests {
 
     use super::{Kind, Picture, Placement, action_colours};
     use crate::fluent::{DARK, LIGHT, second_layer, with_accent};
+    use gpui::Rgba;
 
     /// Which of the 48×48 pixels GPUI's renderer covers for one file.
     fn covered(renderer: &SvgRenderer, name: &str, svg: &str) -> Vec<bool> {
@@ -363,7 +363,7 @@ mod renderer_tests {
     fn an_action_takes_its_colours_from_where_it_sits() {
         assert_eq!(
             action_colours(Picture::Copy, Placement::Alone, &LIGHT, false),
-            (LIGHT.accent, LIGHT.icon_accent_2)
+            (LIGHT.icon_accent, LIGHT.icon_accent_2)
         );
         assert_eq!(
             action_colours(Picture::Copy, Placement::Labelled, &DARK, false),
@@ -379,7 +379,7 @@ mod renderer_tests {
         // never sits accent on accent.
         for picture in [Picture::Copy, Picture::Delete] {
             let (body, minor) = action_colours(picture, Placement::OnAccent, &LIGHT, false);
-            assert_eq!(body, LIGHT.text_on_accent);
+            assert_eq!(body, LIGHT.icon_on_accent);
             assert_ne!(minor, LIGHT.accent);
             assert_ne!(minor, body);
         }
@@ -392,8 +392,111 @@ mod renderer_tests {
         assert_eq!(Placement::Labelled.size(), 16.0);
         let purple = crate::fluent::hex(0x9141ac);
         let accented = with_accent(&DARK, purple, crate::fluent::hex(0xffffff));
-        assert_eq!(accented.icon_accent_2, second_layer(purple, true));
+        assert_eq!(
+            accented.icon_accent_2,
+            second_layer(accented.icon_accent, true)
+        );
         assert_ne!(accented.icon_accent_2, DARK.icon_accent_2);
+    }
+
+    /// Whatever accent the desktop gives, every placement's icon reads on
+    /// every surface it is drawn on: its main layer at 3:1 and its second
+    /// layer a tone of its own, 1.5:1 from the main layer and from the
+    /// surface. Each accent comes with the text colour its theme puts on it,
+    /// and two with one that does not read there (white on a pale or a
+    /// near-white fill), so the on-accent check is a check and not an
+    /// assumption. Disabled icons are exempt, as WCAG exempts them.
+    #[test]
+    fn every_icon_reads_on_what_it_is_drawn_on_whatever_the_accent() {
+        use crate::fluent::{ICON_CONTRAST, LAYER_CONTRAST, contrast, hex, icon_surfaces, over};
+        let accents: [(&str, Option<(u32, u32)>); 9] = [
+            ("Windows 11 default", None),
+            ("Zorin blue", Some((0x15a6f0, 0xffffff))),
+            ("Zorin blue's dark variant", Some((0xbde6fb, 0x161c1f))),
+            ("pale with white on it", Some((0xbde6fb, 0xffffff))),
+            ("GNOME purple", Some((0x9141ac, 0xffffff))),
+            ("near-black", Some((0x0a0a0a, 0xffffff))),
+            ("near-white", Some((0xf5f5f5, 0x161c1f))),
+            ("near-white with white on it", Some((0xf5f5f5, 0xffffff))),
+            ("Windows 11 blues swapped", Some((0x60cdff, 0x000000))),
+        ];
+        let mut faults = Vec::new();
+        for (name, accent) in accents {
+            for base in [&LIGHT, &DARK] {
+                let palette = match accent {
+                    None => *base,
+                    Some((fill, on)) => with_accent(base, hex(fill), hex(on)),
+                };
+                let appearance = if base.is_dark() { "dark" } else { "light" };
+                let fill = over(palette.accent, palette.window_background);
+                let surfaces = icon_surfaces(&palette);
+                for picture in [Picture::Copy, Picture::Delete] {
+                    for placement in [Placement::Alone, Placement::Labelled, Placement::OnAccent] {
+                        let (main, second) = action_colours(picture, placement, &palette, false);
+                        let under: &[Rgba] = match placement {
+                            Placement::OnAccent => &[fill],
+                            _ => &surfaces,
+                        };
+                        let what =
+                            format!("{name} in {appearance}, {} {placement:?}", picture.name());
+                        if contrast(main, second) < LAYER_CONTRAST {
+                            faults.push(format!("{what}: layers {:.2}:1", contrast(main, second)));
+                        }
+                        for surface in under {
+                            if contrast(main, *surface) < ICON_CONTRAST {
+                                faults.push(format!(
+                                    "{what}: main layer {:.2}:1 on {surface:?}",
+                                    contrast(main, *surface)
+                                ));
+                            }
+                            if contrast(second, *surface) < LAYER_CONTRAST {
+                                faults.push(format!(
+                                    "{what}: second layer {:.2}:1 on {surface:?}",
+                                    contrast(second, *surface)
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(faults.is_empty(), "{}", faults.join("\n"));
+    }
+
+    /// The icon roles change only what icons are drawn with: the accent
+    /// fill stays the desktop's own, and a pale accent's icon alone keeps
+    /// its hue's direction, a darker blue rather than a grey or black.
+    #[test]
+    fn the_icon_roles_leave_the_accent_fill_alone() {
+        use crate::fluent::hex;
+        let pale = hex(0xbde6fb);
+        let accented = with_accent(&LIGHT, pale, hex(0x161c1f));
+        assert_eq!(accented.accent, pale);
+        assert_ne!(accented.icon_accent, pale);
+        assert!(accented.icon_accent.b > accented.icon_accent.r);
+        // A pale fill keeps its theme's dark text for icons on it.
+        assert_eq!(accented.icon_on_accent, hex(0x161c1f));
+        // White on that fill does not read, so an icon on it goes dark.
+        let white_on_pale = with_accent(&LIGHT, pale, hex(0xffffff));
+        let luminance = crate::fluent::relative_luminance;
+        assert!(luminance(white_on_pale.icon_on_accent) < luminance(pale));
+        assert!(
+            crate::fluent::contrast(white_on_pale.icon_on_accent, pale)
+                >= crate::fluent::ICON_CONTRAST
+        );
+    }
+
+    /// The default palettes' icon roles are what the rule gives Windows 11's
+    /// own accents: written out because a `const` cannot compute contrast.
+    #[test]
+    fn the_default_icon_roles_are_what_the_rule_gives() {
+        for base in [&LIGHT, &DARK] {
+            let rebuilt = with_accent(base, base.accent, base.text_on_accent);
+            assert_eq!(rebuilt.icon_accent, base.icon_accent);
+            assert_eq!(rebuilt.icon_accent_2, base.icon_accent_2);
+            assert_eq!(rebuilt.icon_on_accent, base.icon_on_accent);
+            assert_eq!(rebuilt.icon_on_accent_2, base.icon_on_accent_2);
+        }
     }
 
     /// A checked toggle and an accent button are accent-filled, so their
@@ -451,8 +554,8 @@ mod renderer_tests {
     #[test]
     fn the_second_layer_is_a_solid_shade_toward_the_window() {
         for (palette, body, shade) in [
-            (&LIGHT, LIGHT.accent, LIGHT.icon_accent_2),
-            (&DARK, DARK.accent, DARK.icon_accent_2),
+            (&LIGHT, LIGHT.icon_accent, LIGHT.icon_accent_2),
+            (&DARK, DARK.icon_accent, DARK.icon_accent_2),
             (&LIGHT, LIGHT.icon_quiet, LIGHT.icon_quiet_2),
             (&DARK, DARK.critical, DARK.icon_critical_2),
         ] {
