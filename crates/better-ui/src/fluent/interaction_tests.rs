@@ -291,3 +291,399 @@ fn a_press_in_a_nested_flyout_past_the_outer_edge_reaches_its_content(cx: &mut T
     press(cx, point(px(600.0), px(500.0)));
     view.read_with(cx, |h, _| assert!(!h.flyout && !h.nested));
 }
+
+/// A toolbar cell 52px tall, as Better Git's sync cell is: a primary part
+/// and, last, a [`MenuSegment`], drawn exactly as Better Git draws it (the
+/// segment owns its divider, its height, and its menu). Below it, a
+/// [`SplitButton`].
+struct SplitHarness {
+    menu: Entity<MenuOpen>,
+    primary: usize,
+}
+
+fn plain_entries() -> Vec<MenuEntry> {
+    vec![MenuItem::new("A").entry(), MenuItem::new("B").entry()]
+}
+
+impl Render for SplitHarness {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let view = cx.entity().downgrade();
+        div()
+            .size_full()
+            .child(
+                div()
+                    .id("cell")
+                    .debug_selector(|| "cell".into())
+                    .absolute()
+                    .left(px(20.0))
+                    .top(px(20.0))
+                    .h(px(52.0))
+                    .flex()
+                    .items_center()
+                    .child(
+                        div()
+                            .id("cell-primary")
+                            .debug_selector(|| "cell-primary".into())
+                            .w(px(160.0))
+                            .h_full()
+                            .on_click(cx.listener(|h, _, _, cx| {
+                                h.primary += 1;
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        super::button::MenuSegment::new("segment", self.menu.clone())
+                            .entries(plain_entries())
+                            .tooltip("More"),
+                    ),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .left(px(20.0))
+                    .top(px(160.0))
+                    .debug_selector(|| "split".into())
+                    .child(
+                        super::button::SplitButton::new("split", "Save")
+                            .entries(plain_entries())
+                            .on_click(move |_, cx| {
+                                let _ = view.update(cx, |h, cx| {
+                                    h.primary += 1;
+                                    cx.notify();
+                                });
+                            }),
+                    ),
+            )
+    }
+}
+
+fn split_harness(cx: &mut TestAppContext) -> (Entity<SplitHarness>, &mut VisualTestContext) {
+    cx.update(gpui_component::init);
+    cx.add_window_view(|_, cx| SplitHarness {
+        menu: super::menu::new_state(cx),
+        primary: 0,
+    })
+}
+
+/// The owner's "only the arrow glyph opens the menu" (ticket 130): a press
+/// in a corner of the arrow segment, far from its glyph, opens the menu, a
+/// second press there closes it, and the primary part is never invoked.
+#[gpui::test]
+fn a_press_in_the_corner_of_a_toolbar_arrow_segment_opens_its_menu(cx: &mut TestAppContext) {
+    let (view, cx) = split_harness(cx);
+    let segment = bounds(cx, "menu-segment-segment");
+    let cell = bounds(cx, "cell");
+    let primary = bounds(cx, "cell-primary");
+    assert_eq!(
+        segment.top(),
+        cell.top(),
+        "the segment is the cell's height"
+    );
+    assert_eq!(segment.bottom(), cell.bottom());
+    assert_eq!(
+        segment.right(),
+        cell.right(),
+        "and reaches its trailing edge"
+    );
+    assert!(
+        segment.left() - primary.right() <= px(1.0),
+        "and starts at the divider"
+    );
+    assert!(segment.size.width >= px(35.0));
+    let corners = [
+        point(segment.left() + px(2.0), segment.top() + px(1.0)),
+        point(segment.right() - px(1.0), segment.bottom() - px(1.0)),
+    ];
+    for corner in corners {
+        press(cx, corner);
+        view.read_with(cx, |h, cx| {
+            assert!(
+                h.menu.read(cx).is_open(),
+                "a press at {corner:?} opens the menu"
+            );
+            assert_eq!(h.primary, 0);
+        });
+        assert!(
+            cx.debug_bounds("menu-item-0").is_some(),
+            "its items are drawn"
+        );
+        press(cx, corner);
+        view.read_with(cx, |h, cx| {
+            assert!(!h.menu.read(cx).is_open(), "a second press closes it")
+        });
+    }
+}
+
+/// The same rule for the kit's split button: the corner of its chevron
+/// part, not only the chevron, opens the menu.
+#[gpui::test]
+fn a_press_in_the_corner_of_a_split_buttons_chevron_opens_its_menu(cx: &mut TestAppContext) {
+    let (view, cx) = split_harness(cx);
+    let split = bounds(cx, "split");
+    assert!(cx.debug_bounds("menu-item-0").is_none());
+    press(cx, point(split.right() - px(2.0), split.bottom() - px(2.0)));
+    assert!(
+        cx.debug_bounds("menu-item-0").is_some(),
+        "a press in the chevron part's corner opens the menu"
+    );
+    view.read_with(cx, |h, _| assert_eq!(h.primary, 0));
+}
+
+/// A details table whose first row is a group that opens to two children,
+/// as Better Monitor's Processes page draws an application (ticket 145).
+struct TableHarness {
+    open: bool,
+    selected: Option<usize>,
+    invoked: Vec<usize>,
+    expanded: Vec<(usize, bool)>,
+    /// Says which row is each row's parent, for Left and Right to move.
+    parents: bool,
+}
+
+impl Render for TableHarness {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        use super::list::{Column, DetailsTable, TableCell};
+        let mut rows = vec![vec![TableCell::new("Files (2)").expander(self.open)]];
+        if self.open {
+            rows.push(vec![TableCell::new("files").indent(2)]);
+            rows.push(vec![TableCell::new("files-helper").indent(2)]);
+        }
+        rows.push(vec![TableCell::new("Terminal").indent(1)]);
+        let view = cx.entity().downgrade();
+        let (select, invoke, expand) = (view.clone(), view.clone(), view);
+        let parents: Vec<Option<usize>> = (0..rows.len())
+            .map(|row| (self.open && (row == 1 || row == 2)).then_some(0))
+            .collect();
+        let table = DetailsTable::new("tree", vec![Column::new("Name")], rows);
+        let table = if self.parents {
+            table.parents(parents)
+        } else {
+            table
+        };
+        div().size_full().p(px(20.0)).child(
+            table
+                .presorted()
+                .selected(self.selected)
+                .on_select(move |index, _, cx| {
+                    let _ = select.update(cx, |h, cx| {
+                        h.selected = Some(index);
+                        cx.notify();
+                    });
+                })
+                .on_invoke(move |index, _, cx| {
+                    let _ = invoke.update(cx, |h, cx| {
+                        h.invoked.push(index);
+                        cx.notify();
+                    });
+                })
+                .on_expand(move |index, open, _, cx| {
+                    let _ = expand.update(cx, |h, cx| {
+                        h.expanded.push((index, open));
+                        if index == 0 {
+                            h.open = open;
+                        }
+                        cx.notify();
+                    });
+                }),
+        )
+    }
+}
+
+fn table_harness(cx: &mut TestAppContext) -> (Entity<TableHarness>, &mut VisualTestContext) {
+    cx.update(gpui_component::init);
+    cx.add_window_view(|_, _| TableHarness {
+        open: false,
+        selected: None,
+        invoked: Vec::new(),
+        expanded: Vec::new(),
+        parents: false,
+    })
+}
+
+fn double_press(cx: &mut VisualTestContext, at: Point<Pixels>) {
+    use gpui::{MouseButton, MouseDownEvent, MouseUpEvent};
+    cx.simulate_mouse_move(at, None, Modifiers::default());
+    for click_count in [1, 2] {
+        cx.simulate_event(MouseDownEvent {
+            position: at,
+            modifiers: Modifiers::default(),
+            button: MouseButton::Left,
+            click_count,
+            first_mouse: false,
+        });
+        cx.simulate_event(MouseUpEvent {
+            position: at,
+            modifiers: Modifiers::default(),
+            button: MouseButton::Left,
+            click_count,
+        });
+    }
+    cx.run_until_parked();
+}
+
+/// The owner's "its disclosure arrow does nothing when clicked": one press
+/// in the corner of the arrow's hit area, away from the glyph, opens the
+/// row, and another closes it, without selecting or invoking it.
+#[gpui::test]
+fn one_press_on_a_tree_rows_arrow_opens_and_closes_it(cx: &mut TestAppContext) {
+    let (view, cx) = table_harness(cx);
+    let arrow = bounds(cx, "table-expander-0");
+    let row = bounds(cx, "table-row-0");
+    assert_eq!(arrow.size.height, row.size.height, "the full row height");
+    assert!(arrow.size.width >= px(24.0), "wider than the 12px glyph");
+    let corner = point(arrow.left() + px(1.0), arrow.top() + px(1.0));
+    press(cx, corner);
+    view.read_with(cx, |h, _| {
+        assert!(h.open);
+        assert_eq!(h.expanded, [(0, true)]);
+        assert_eq!(h.selected, None, "the arrow does not select the row");
+        assert!(h.invoked.is_empty());
+    });
+    assert!(
+        cx.debug_bounds("table-row-1").is_some(),
+        "its children are drawn"
+    );
+    let corner = point(arrow.right() - px(1.0), arrow.bottom() - px(1.0));
+    press(cx, corner);
+    view.read_with(cx, |h, _| {
+        assert!(!h.open);
+        assert_eq!(h.expanded, [(0, true), (0, false)]);
+        assert!(h.invoked.is_empty());
+    });
+}
+
+/// A double click on the row, away from its arrow, still invokes it, and
+/// the table leaves the opening to the window, as before.
+#[gpui::test]
+fn a_double_click_on_a_tree_row_still_invokes_it(cx: &mut TestAppContext) {
+    let (view, cx) = table_harness(cx);
+    let row = bounds(cx, "table-row-0");
+    double_press(cx, point(row.right() - px(20.0), row.center().y));
+    view.read_with(cx, |h, _| {
+        assert_eq!(h.invoked, [0]);
+        assert_eq!(h.selected, Some(0));
+        assert!(h.expanded.is_empty(), "the arrow was not pressed");
+    });
+}
+
+/// Right opens the selected row and Left closes it; on a row with no
+/// children neither does anything.
+#[gpui::test]
+fn right_and_left_open_and_close_the_selected_tree_row(cx: &mut TestAppContext) {
+    let (view, cx) = table_harness(cx);
+    let row = bounds(cx, "table-row-0");
+    press(cx, point(row.right() - px(20.0), row.center().y));
+    view.read_with(cx, |h, _| assert_eq!(h.selected, Some(0)));
+    cx.simulate_keystrokes("right");
+    view.read_with(cx, |h, _| assert!(h.open));
+    cx.simulate_keystrokes("right");
+    view.read_with(cx, |h, _| {
+        assert_eq!(h.expanded, [(0, true)], "already open")
+    });
+    cx.simulate_keystrokes("left");
+    view.read_with(cx, |h, _| assert!(!h.open));
+    cx.simulate_keystrokes("down");
+    view.read_with(cx, |h, _| assert_eq!(h.selected, Some(1)));
+    cx.simulate_keystrokes("right left");
+    view.read_with(cx, |h, _| {
+        assert_eq!(
+            h.expanded,
+            [(0, true), (0, false)],
+            "a leaf has nothing to open"
+        )
+    });
+}
+
+/// Tab, as a person presses it: focus moves to the window's first tab
+/// stop, which is the segment.
+fn tab_to_first_stop(cx: &mut VisualTestContext) {
+    cx.update(|window, cx| window.focus_next(cx));
+    cx.run_until_parked();
+}
+
+fn segment_key_opens(keys: &'static str, cx: &mut TestAppContext) {
+    let (view, cx) = split_harness(cx);
+    tab_to_first_stop(cx);
+    cx.simulate_keystrokes(keys);
+    view.read_with(cx, |h, cx| {
+        let menu = h.menu.read(cx);
+        assert!(menu.is_open(), "{keys} opens the menu");
+        assert_eq!(menu.highlight, Some(0), "on its first item");
+        assert_eq!(h.primary, 0, "{keys} never invokes the primary part");
+    });
+    assert!(cx.debug_bounds("menu-item-0").is_some());
+}
+
+#[gpui::test]
+fn enter_opens_a_toolbar_arrow_segments_menu_on_its_first_item(cx: &mut TestAppContext) {
+    segment_key_opens("enter", cx);
+}
+
+#[gpui::test]
+fn space_opens_a_toolbar_arrow_segments_menu_on_its_first_item(cx: &mut TestAppContext) {
+    segment_key_opens("space", cx);
+}
+
+#[gpui::test]
+fn alt_down_opens_a_toolbar_arrow_segments_menu_on_its_first_item(cx: &mut TestAppContext) {
+    segment_key_opens("alt-down", cx);
+}
+
+#[gpui::test]
+fn f4_opens_a_toolbar_arrow_segments_menu_on_its_first_item(cx: &mut TestAppContext) {
+    segment_key_opens("f4", cx);
+}
+
+/// Escape closes the menu and gives focus back to the segment, so the next
+/// key reaches it: Enter opens the menu again (review of ticket 130).
+#[gpui::test]
+fn escape_gives_focus_back_to_a_toolbar_arrow_segment(cx: &mut TestAppContext) {
+    let (view, cx) = split_harness(cx);
+    tab_to_first_stop(cx);
+    cx.simulate_keystrokes("enter");
+    view.read_with(cx, |h, cx| assert!(h.menu.read(cx).is_open()));
+    cx.simulate_keystrokes("escape");
+    view.read_with(cx, |h, cx| assert!(!h.menu.read(cx).is_open()));
+    cx.simulate_keystrokes("enter");
+    view.read_with(cx, |h, cx| {
+        assert!(h.menu.read(cx).is_open(), "the segment had focus again");
+        assert_eq!(h.primary, 0);
+    });
+}
+
+/// With each row's parent given, Right on an open row moves to its first
+/// child and Left on a child moves back to its parent, as `TreeView` does.
+#[gpui::test]
+fn right_and_left_move_between_a_tree_row_and_its_children(cx: &mut TestAppContext) {
+    let (view, cx) = table_harness(cx);
+    view.update(cx, |h, cx| {
+        h.parents = true;
+        cx.notify();
+    });
+    let row = bounds(cx, "table-row-0");
+    press(cx, point(row.right() - px(20.0), row.center().y));
+    cx.simulate_keystrokes("right");
+    view.read_with(cx, |h, _| {
+        assert!(h.open);
+        assert_eq!(h.selected, Some(0), "opening does not move");
+    });
+    cx.simulate_keystrokes("right");
+    view.read_with(cx, |h, _| {
+        assert_eq!(h.selected, Some(1), "to the first child")
+    });
+    cx.simulate_keystrokes("down left");
+    view.read_with(cx, |h, _| {
+        assert_eq!(h.selected, Some(0), "from the second child to its parent");
+        assert!(h.open, "moving to the parent does not close it");
+    });
+    cx.simulate_keystrokes("left");
+    view.read_with(cx, |h, _| {
+        assert!(!h.open, "Left on the open parent closes it")
+    });
+    // Terminal has no parent: Left does nothing.
+    cx.simulate_keystrokes("down left");
+    view.read_with(cx, |h, _| {
+        assert_eq!(h.selected, Some(1));
+        assert_eq!(h.expanded, [(0, true), (0, false)]);
+    });
+}

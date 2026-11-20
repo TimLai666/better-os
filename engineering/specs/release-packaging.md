@@ -77,7 +77,8 @@ Better Manager 自己安裝。
   是先下載成檔案再執行，README 的一行指令也是這個形式，不是
   `curl | sudo bash`。
 
-Distribution 判斷讀 `/etc/os-release`，但不 source 它。衍生發行版一律以
+Distribution 判斷讀 `/etc/os-release`（不存在時才讀 `/usr/lib/os-release`，與
+`better_core::host::read_os_release_under` 同一個順序），但不 source 它。衍生發行版一律以
 `UBUNTU_CODENAME` 決定 base：Zorin OS 18 回報的是 `VERSION_ID="18"` 與
 `UBUNTU_CODENAME=noble`，也就是 Ubuntu 24.04；Zorin OS 17 是 `jammy`，也就是
 22.04。只有 `ID=ubuntu` 且沒有 codename 時才退回讀 `VERSION_ID`。不在支援矩陣

@@ -4,7 +4,6 @@
 //! states the release and architecture it was built for; the daemon compares
 //! that against what it finds here and refuses a mismatch.
 
-use std::fs;
 use std::process::Command;
 
 use crate::DaemonError;
@@ -24,7 +23,10 @@ pub struct SystemHostProbe;
 
 impl HostProbe for SystemHostProbe {
     fn facts(&self) -> Result<HostFacts, DaemonError> {
-        let os_release = fs::read_to_string("/etc/os-release")
+        // The client's reader too (`manager_platform::host`), so the two read
+        // the same file on every machine: /etc/os-release, else
+        // /usr/lib/os-release.
+        let os_release = better_core::host::read_os_release()
             .map_err(|error| DaemonError::HostUnreadable(error.to_string()))?;
         let release = parse_ubuntu_release(&os_release).ok_or_else(|| {
             DaemonError::HostUnreadable(

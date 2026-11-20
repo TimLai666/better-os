@@ -39,7 +39,7 @@ use crate::sidebar::{
     Availability, FixedProbe, NoDeviceStates, SidebarInputs, SidebarSection, build_rows,
 };
 use crate::toolbar::{
-    FixedValidator, PathRejection, breadcrumb, display_path, resolve_path_input, toolbar_state,
+    FixedValidator, PathRejection, display_path, resolve_path_input, toolbar_state,
 };
 
 fn at(path: &str) -> Location {
@@ -145,10 +145,18 @@ fn the_path_field_states_why_it_refused_rather_than_doing_nothing() {
 
 #[test]
 fn the_breadcrumb_is_built_from_the_path_not_from_the_history() {
-    let crumbs = breadcrumb(&at("/home/tim/notes"));
-    let names: Vec<&str> = crumbs.iter().map(|(name, _)| name.as_str()).collect();
-    assert_eq!(names, ["/", "home", "tim", "notes"]);
-    assert_eq!(crumbs.last().unwrap().1, at("/home/tim/notes"));
+    // The path bar's one crumb rule (`pathbar`), outside any home folder.
+    let crumbs = crate::pathbar::crumbs_named(
+        &at("/home/tim/notes"),
+        None,
+        &EN_US,
+        &files_platform::UserDirectories::default(),
+        Some("Zorin OS"),
+    );
+    let names: Vec<&str> = crumbs.iter().map(|crumb| crumb.label.as_str()).collect();
+    assert_eq!(names, ["Zorin OS", "home", "tim", "notes"]);
+    assert_eq!(crumbs.last().unwrap().location, at("/home/tim/notes"));
+    assert_eq!(crumbs[1].location, at("/home"));
 }
 
 // --- Keyboard -----------------------------------------------------------
@@ -706,6 +714,81 @@ fn a_bookmark_of_a_place_is_not_listed_again_under_favorites() {
     assert_eq!(favorites[0].label, "Developer");
     assert_eq!(favorites[0].bookmark_index, Some(1));
     assert_eq!(bookmarks.len(), 3, "nothing was deleted");
+}
+
+#[test]
+fn the_drives_sit_above_the_tailnet_and_every_other_group_keeps_its_place() {
+    use crate::sidebar::{NAV_ORDER, NavGroup};
+    // Ticket 132: Devices moved up one place, above the tailnet's machines,
+    // and nothing else moved.
+    assert_eq!(
+        NAV_ORDER,
+        [
+            NavGroup::Places,
+            NavGroup::Favorites,
+            NavGroup::Applications,
+            NavGroup::Dropbox,
+            NavGroup::Plugins,
+            NavGroup::Devices,
+            NavGroup::Tailnet,
+        ]
+    );
+    // What the pane draws: `nav_targets` is one `in_nav_order` call, which
+    // asks each group for its lines and lays them out. Every group answers
+    // with a header and two lines here, as a window with drives and tailnet
+    // machines does; an empty group (no Dropbox) draws nothing.
+    let mut asked = Vec::new();
+    let lines = crate::sidebar::in_nav_order(|group| {
+        asked.push(group);
+        if group == NavGroup::Dropbox {
+            return Vec::new();
+        }
+        vec![
+            format!("{group:?} header"),
+            format!("{group:?} 1"),
+            format!("{group:?} 2"),
+        ]
+    });
+    assert_eq!(asked, NAV_ORDER, "each group is built once, in order");
+    let first = |name: &str| {
+        lines
+            .iter()
+            .position(|line| line.starts_with(name))
+            .unwrap()
+    };
+    let last = |name: &str| {
+        lines
+            .iter()
+            .rposition(|line| line.starts_with(name))
+            .unwrap()
+    };
+    assert!(
+        last("Devices") < first("Tailnet"),
+        "every drive line comes before every tailnet line: {lines:?}"
+    );
+    assert_eq!(
+        lines,
+        [
+            "Places header",
+            "Places 1",
+            "Places 2",
+            "Favorites header",
+            "Favorites 1",
+            "Favorites 2",
+            "Applications header",
+            "Applications 1",
+            "Applications 2",
+            "Plugins header",
+            "Plugins 1",
+            "Plugins 2",
+            "Devices header",
+            "Devices 1",
+            "Devices 2",
+            "Tailnet header",
+            "Tailnet 1",
+            "Tailnet 2",
+        ]
+    );
 }
 
 #[test]
