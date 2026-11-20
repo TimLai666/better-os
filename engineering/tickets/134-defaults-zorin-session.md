@@ -2,6 +2,8 @@
 
 **Blocked by:** none
 
+**Blocked:** the owner looking at the Default apps page after the next release is installed.
+
 ## Why
 
 The owner's Default apps page (0.2.16) shows Better Files and all three of
@@ -69,3 +71,22 @@ integration as `defaults.not_supported_on_this_system`.
   `defaults_core::adapters::desktop_session()`
   (`crates/manager-gui/src/pages/default_apps/jobs.rs`); the window itself was
   not opened on this machine, because that needs the build installed.
+- Seen in a sandbox (2026-11-21): the worktree's `manager-gui --page
+  default-apps`, real execution, in a private headless GNOME Shell 46 under
+  `XDG_CURRENT_DESKTOP=zorin:GNOME`, `DESKTOP_SESSION=zorin`, with its own
+  HOME, session bus, and `XDG_CONFIG_HOME` holding copies of the owner's
+  `mimeapps.list` and dconf database, a copy of the owner's state file, no
+  system bus for the window, and `BETTER_OS_TEST_SYSTEMCTL_GUARD` set. Better
+  Files reads "Partially default" (部分為預設), and its three rows read Default
+  application "Not default" (opens with nothing set), System tool entry "Not
+  used on this desktop" (this desktop has no such setting), and Launcher entry
+  "Default". Screenshots in English and zh-TW, closed and expanded:
+  `/home/tim/Developer/better-os-evidence/134/default-apps-{en,zh-TW}{,-expanded}.png`.
+- What is left, for the owner: install the next release, open Better Manager
+  › Default apps (預設應用程式) on the Zorin 18 machine, and see Better Files
+  with a state other than 無法使用, and each row with a real value where 0.2.16
+  showed 無法使用 / 無法讀取 for all three: Default application showing what
+  opens folders now (Not default / 不是預設 while that is Nautilus or unset),
+  Launcher entry showing Default / 目前為預設, and System tool entry showing
+  "Not used on this desktop" / 這個桌面不使用, which is GNOME 46 having no such
+  setting rather than this defect.
