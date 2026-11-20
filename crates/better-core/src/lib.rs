@@ -7,6 +7,7 @@ pub mod host;
 pub mod local_time;
 pub mod manifest;
 pub mod package_health;
+pub mod private_dir;
 pub mod self_update;
 
 pub use defaults::{

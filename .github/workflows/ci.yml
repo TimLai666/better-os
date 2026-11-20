@@ -192,6 +192,12 @@ jobs:
           shellcheck --shell=sh packaging/maintainer/autostart-overrides.sh
           shellcheck packaging/tests/autostart-overrides.test.sh
           bash packaging/tests/autostart-overrides.test.sh
+          sh -n packaging/maintainer/accounts.sh packaging/maintainer/account-step.sh packaging/maintainer/before-removal-accounts.sh
+          shellcheck --shell=sh packaging/maintainer/accounts.sh packaging/maintainer/account-step.sh packaging/maintainer/before-removal-accounts.sh
+          shellcheck packaging/tests/before-removal-accounts.test.sh
+          bash packaging/tests/before-removal-accounts.test.sh
+          shellcheck packaging/tests/account-scripts.test.sh
+          bash packaging/tests/account-scripts.test.sh
           bash -n packaging/boot-watch/run.sh packaging/boot-watch/check.sh
           shellcheck packaging/boot-watch/run.sh packaging/boot-watch/check.sh
           bash -n packaging/hardware-unit/run.sh packaging/hardware-unit/check.sh

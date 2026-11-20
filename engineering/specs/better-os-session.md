@@ -130,7 +130,10 @@ until the session meets the bar in "Ready to become the default".
   machine-wide `activation_policy` and no urgent state (ADR 0038); the page
   says so. Reconsidered when upstream offers a per-application hook.
 - **Moving COSMIC Settings' pages into Better Manager now** (C9). Ticket 229
-  designs it.
+  designed it: `design/system-settings-spec.md`, tickets 231 to 252, and the
+  owner's decisions M1 to M9 at its top. Its M2 proposes an eighth item for
+  "Ready to become the default" (the wave 1 pages); the list below changes
+  only if the owner accepts it.
 - **Title bars drawn in Better OS's style by a compositor built with
   `cosmic_comp::run(Hooks)`.** The hooks are "an _unstable_ interface" and draw
   in libcosmic, not GPUI. C5 takes the compositor's own title bar.
@@ -211,7 +214,7 @@ checks it by logging out of one and into the other in the VM).
 | Blanking, idle, suspend on idle; `org.freedesktop.ScreenSaver` | `cosmic-idle` | COSMIC | honours only `org.freedesktop.ScreenSaver.Inhibit` (ADR 0038) |
 | Wallpaper, also on the lock screen | `cosmic-bg` | COSMIC | — |
 | Display configuration | `cosmic-randr`, COSMIC Settings' Displays page (C9) | COSMIC | — |
-| System settings: display, network, Bluetooth, sound, users, region | COSMIC Settings (C9) | COSMIC | Better OS's links to "… Settings" open its pages (ticket 160) |
+| System settings: display, network, Bluetooth, sound, users, region | COSMIC Settings (C9) | COSMIC | Better OS's links to "… Settings" open its pages (ticket 160) until each Better Manager page of `design/system-settings-spec.md` lands; COSMIC Settings has no night light, printers, notifications, privacy, or hotspot, and GNOME Settings refuses to run outside GNOME (that file's F1, F2) |
 | Input method | Fcitx 5 with `fcitx5-chewing` over `zwp_input_method_v2` and text-input-v3; XIM for X11 clients | Ubuntu (C4) | Zhuyin seen typed into Better Launcher in Pop; the four upstream faults: **unverified**, ticket 201 |
 | Network secrets, Bluetooth pairing | Better OS's top bar: a NetworkManager secret agent and a BlueZ agent | Better OS, new (ticket 217) | COSMIC keeps these in its panel applets and Settings (ADR 0038, read, not run) |
 | Notifications (`org.freedesktop.Notifications`) | Better OS's notification service, island and center | Better OS, new (tickets 215, 216) | `cosmic-notifications` is not installed |

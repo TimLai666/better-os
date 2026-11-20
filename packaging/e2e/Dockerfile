@@ -19,6 +19,9 @@ ARG UBUNTU_RELEASE=24.04
 # into an image that had none until this line — but better-monitor does, and it
 # is the component the test installs and removes. udisks2 is better-storage's
 # Depends, installed here so its install-and-remove check needs no network.
+# libsecret-tools is better-manager's Depends, and util-linux carries the
+# setpriv and setsid its removal runs the before-removal program with (ticket
+# 90); util-linux is Essential and listed so the check does not lean on that.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         apt \
@@ -33,6 +36,8 @@ RUN apt-get update \
         libxcb1 \
         libxkbcommon0 \
         libxkbcommon-x11-0 \
+        libsecret-tools \
+        util-linux \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt/better-os
