@@ -143,6 +143,69 @@ Done in this stage, not yet in any window:
   (`files-gui/src/icons.rs`, Better Git's three, `fluent::glyphs`) are still
   in place. The tables below say what replaces each one.
 
+### Stage 2 (2026-11-21): every window moved over
+
+Done, one commit per crate after its checks passed:
+
+- The kit takes pictures. `better_ui::icon_set::Glyph` is a toolkit
+  symbol, a window's own SVG path, a built toolkit `Icon`, or a `Picture`,
+  and `Glyph::element` draws it as the control places it. These now take
+  `impl Into<Glyph>` where they took `IconName` or `Icon`, so every older
+  caller compiles unchanged: `Command::new`, `MenuItem::icon`,
+  `MenuEntry::Submenu.icon`, `Button::icon` and `Button::icon_button`,
+  `DropDownButton::icon`, `NavItem::new` and `NavItem::emblem`,
+  `NavAction::new`, `SettingsCard::icon`, `SettingsExpander::icon`,
+  `DeviceBanner::new`, `ListItem::icon`, `ListRow::glyph`, `Tab::icon`,
+  `SelectorItem::icon`, `Chip::icon`. The public `icon_path` fields of
+  `Command`, `MenuItem`, `NavItem` and `Tab` are gone; their `icon_path`
+  setters set a `Glyph::Path`. A `Button` places an action alone without a
+  label, beside its label with one, and in the new `Placement::OnAccent`
+  (text on accent and a shade of it) on an accent fill.
+- Files, Git, Monitor, Manager with the control center pages, Launcher,
+  Awake, Touchpad, the app chooser, the gallery, and the info bar's copy
+  button draw the sorted pictures. Files' place and device line glyphs,
+  Git's branch, worktree and tag glyphs, and `fluent::glyphs::REFRESH` are
+  gone; `fluent::glyphs` keeps only `WRAP`, which Git still draws. Files
+  keeps the developer folder's two content-area glyphs (`CODE_MARK`,
+  `CODE_FOLDER_SMALL`), as the content area keeps the desktop theme's
+  pictures.
+- Every window that draws a picture serves `icon_set::load` from its own
+  asset source. Manager, Launcher, Touchpad and the app chooser had none
+  (they handed GPUI the toolkit's assets), so each got one.
+- `crates/better-ui/tests/window_icons.rs` holds the two tests "Done when"
+  asks for. Both read the window crates' source each run (every `*-gui`
+  crate, the gallery and `better-ui`): the first collects every
+  `Picture::Name` and checks it is drawn and served with both layers, and
+  that each window naming a picture serves `icon_set::load`; the second
+  fails on any `IconName` outside DESIGN.md's plain symbols, the status
+  marks and the marks kept on purpose (GitHub's mark, a text box's reveal
+  and find marks, the hyperlink's mark, Git's expand, Undo and Redo). Both
+  were seen to fail on a planted fault.
+
+Not moved, and why:
+
+- Better Awake's eight and Better Touchpad's seven sidebar pages keep
+  toolkit icons. Both windows use gpui-component's `SidebarMenuItem`,
+  which takes only a single-colour `Icon`; a picture there needs the
+  window's navigation moved to the kit's `NavigationView`, a change to the
+  window's layout this ticket did not make. The second test names the two
+  functions that feed it. Their buttons, headers and title bars are moved.
+
+Seen on screen: a headless GNOME Shell on a private bus with a throwaway
+home, under the 4G scope and the no-op `ibus-daemon`, screens in
+`/tmp/claude-1000/t147-screens/`. Files, Git, Monitor, Launcher and
+Touchpad were seen light and dark; Manager and Awake only dark (Manager did
+not take the throwaway state file's theme, and Awake follows only the
+desktop, which a headless shell does not set). Not seen: the app chooser
+(its binary was not built and the disk was below the 8 GB floor), the
+gallery after its own move (its binary predates that commit, same reason),
+and every window's deeper pages and menus.
+
+Still to do for "Done when": DESIGN.md's Icons section points to
+`design/design-demos/icon-directions.html`; once it points to the gallery's
+Icons page and `design/design-demos/action-icon-options.html` instead,
+`icon-directions.html` can go. The owner's go-ahead on the screens is owed.
+
 ### Stage 2 work list: every icon the windows name
 
 How completeness was checked: `rg -o 'IconName::[A-Za-z0-9_]+' crates`
