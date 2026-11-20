@@ -34,8 +34,11 @@ ADR 0017.
 - **Docs:** `AGENTS.md` (no more `awake-gui` or touchpad window; the control
   center), `engineering/architecture.md`, the touchpad and
   awake release notes in their manifests.
-- **Release gate:** a test fails if any page is still the debug-only
-  placeholder from ticket 84.
+- **Release gate:** delivered by ticket 90. The debug-only placeholder from
+  ticket 84 is gone, `render::page_rows` matches every pane item with no
+  catch-all (a page with no content does not compile), and
+  `pages::tests::every_page_in_the_pane_has_real_content` checks each page's
+  title and search entries. Nothing is left to do here.
 - **Upgrade test in a container (Chefer AppCipe), never on the host:**
   install the v0.2.9 packages, add a rule, a quick-session length, and a
   touchpad setting, upgrade to this build, and show: the tray's Open runs the

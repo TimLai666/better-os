@@ -111,12 +111,20 @@ impl Environment {
         if demo {
             // A demo writes nothing outside its own scratch directory, which
             // is what a demo promises.
+            // Never a shared place such as /tmp, where another account
+            // could lay links for the demo's writes to follow
+            // (`better_core::private_dir`). Without a private runtime
+            // directory the store is a path that does not exist, and the
+            // demo writes nothing.
+            let store_directory =
+                better_core::private_dir::private_session_dir(&["better-os", "touchpad-demo"])
+                    .unwrap_or_else(|why| {
+                        eprintln!("better-manager: the demo touchpad store is off: {why}");
+                        PathBuf::from("/nonexistent/better-os-touchpad-demo")
+                    });
             return Self {
                 roots: Roots::system(),
-                store_directory: std::env::temp_dir().join(format!(
-                    "better-manager-demo-touchpad-{}",
-                    std::process::id()
-                )),
+                store_directory,
                 in_memory: true,
             };
         }

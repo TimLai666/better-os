@@ -1,0 +1,3 @@
+# Better Manager (ticket 90): /run/better-os exists from boot, so a running
+# window can watch it for the stamp a removal of the package leaves there.
+d /run/better-os 0755 root root -
