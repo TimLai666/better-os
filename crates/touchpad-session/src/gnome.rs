@@ -50,6 +50,11 @@ pub const INTERFACE_NAME: &str = "org.betteros.TouchpadAdapter1";
 /// has an owner to tell "the service is listening" from "it is not running".
 pub const SERVICE_BUS_NAME: &str = "org.betteros.TouchpadGestures1";
 
+/// The program the owner of [`SERVICE_BUS_NAME`] must be for the extension to
+/// accept it (ADR 0035). Owning the name is not enough: any program in the
+/// session could take it first.
+pub const SERVICE_EXECUTABLE: &str = "/usr/bin/better-touchpad-gestured";
+
 /// Every method the extension serves, and every signal it emits. The names are
 /// here once so that the client, the tests, and the interface XML can be
 /// checked against each other rather than against memory.
@@ -279,6 +284,10 @@ pub enum SessionEvent {
     /// The adapter's bus name lost its owner.
     AdapterVanished,
     Gesture(ShellGestureEvent),
+    /// Something wrote the gesture configuration or the safe mode marker: a
+    /// window, an import, a person with an editor. The service reads them
+    /// again at once.
+    ConfigurationChanged,
     /// The service was asked to stop (SIGTERM, SIGINT).
     Stop,
     /// The session bus connection is gone.
@@ -429,6 +438,10 @@ impl SessionAdapter for GnomeShellAdapter {
             Ok(()) => InvocationOutcome::Invoked,
             Err(error) => InvocationOutcome::failed("session.shell_call_failed", error.to_string()),
         }
+    }
+
+    fn reported_built_in_suppression(&self) -> Option<bool> {
+        Some(self.reported.built_in_gestures_suppressed)
     }
 
     fn suppress_built_in_gestures(&mut self, suppress: bool) -> SuppressionOutcome {

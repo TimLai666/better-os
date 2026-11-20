@@ -51,8 +51,11 @@
 //! extensions, so the adapter is very often not on the bus yet. [`serve`]
 //! waits for it, starts when it appears, and when it goes away (a shell
 //! restart, the extension turned off) gives GNOME its gestures back and waits
-//! again. It ends only when it is asked to, when the session bus goes, or when
-//! the integration turned itself off.
+//! again. It ends only when it is asked to or when the session bus goes. With
+//! nothing configured, in safe mode, or after the integration turned itself
+//! off, it stays resident and idle, owning its bus name and watching the
+//! configuration, so a change made in a window takes effect at once and
+//! turning gestures back on is one action.
 //!
 //! ## Which pad
 //!
@@ -74,7 +77,7 @@ use touchpad_gestures::{
     AdapterFailures, CompositorGesture, CompositorGestureKind, CompositorPhase, EventRecognizer,
     GNOME_46_GESTURES, GestureConfig, GestureEvent, GestureEventKind, GestureProfiles,
     GestureStore, RunState, SuppressionEvent, SuppressionState, VerificationRecord,
-    conflict::annotate, detect_conflicts, plan::bind_all,
+    detect_conflicts, plan::bind_all,
 };
 use touchpad_session::{
     GnomeShellAdapter, InputDeviceNode, InvocationOutcome, ServiceBus, SessionAdapter,
@@ -277,16 +280,23 @@ impl GesturePipeline {
 
     /// Builds the pipeline around every stored profile.
     ///
-    /// The recognizers are built from the gestures that are enabled *now*. A
-    /// configuration change reaches them by restarting the service, which is
-    /// what the window's Apply already asks a user to accept, and is why there
-    /// is no file watch here inventing a third way for the two to disagree.
+    /// The recognizers are built from the gestures that are enabled now; a
+    /// configuration written later reaches them through
+    /// [`Self::replace_profiles`], which [`serve`] calls whenever the file
+    /// changes (ticket 131).
+    ///
+    /// The adapter's own report of whether GNOME's gestures are off is
+    /// adopted, so a suppression an older service left behind is lifted by the
+    /// first transition that wants none.
     pub fn with_profiles(
-        profiles: GestureProfiles,
+        mut profiles: GestureProfiles,
         store: GestureStore,
         adapter: Box<dyn SessionAdapter>,
         identities: Box<dyn DeviceIdentities>,
     ) -> Self {
+        profiles.annotate_conflicts();
+        let mut suppression = SuppressionState::new();
+        suppression.adopt_reported(adapter.reported_built_in_suppression());
         let mut pipeline = Self {
             profiles,
             store,
@@ -294,7 +304,7 @@ impl GesturePipeline {
             identities,
             recognizers: BTreeMap::new(),
             live: None,
-            suppression: SuppressionState::new(),
+            suppression,
             failures: AdapterFailures::default(),
             performed: Vec::new(),
             problem: None,
@@ -302,8 +312,39 @@ impl GesturePipeline {
             told_waiting_for_evidence: false,
             journal: Vec::new(),
         };
+        if pipeline.suppression.is_suppressed() {
+            pipeline.note(
+                "the adapter reports GNOME's gestures off from before this service started"
+                    .to_string(),
+            );
+        }
         pipeline.build_recognizers();
         pipeline
+    }
+
+    /// Takes a configuration read again from the file (ticket 131).
+    ///
+    /// Returns `false`, and changes nothing, when it is the configuration this
+    /// pipeline already holds, which is what its own writes read back as.
+    /// Otherwise the gesture under way ends, the recognizers are rebuilt,
+    /// everything is verified again, and GNOME's gestures are taken or given
+    /// back for what now collides.
+    pub fn replace_profiles(&mut self, mut profiles: GestureProfiles) -> bool {
+        profiles.annotate_conflicts();
+        if profiles == self.profiles {
+            return false;
+        }
+        self.profiles = profiles;
+        self.live = None;
+        // Turning gestures back on after the automatic disable starts the
+        // count again rather than one failure away from the next disable.
+        self.failures = AdapterFailures::default();
+        self.problem = None;
+        self.build_recognizers();
+        self.note("the gesture configuration changed; reading it again".to_string());
+        self.verify();
+        self.suppress_built_in_gestures();
+        true
     }
 
     fn build_recognizers(&mut self) {
@@ -369,11 +410,10 @@ impl GesturePipeline {
             };
             let (mut verified, report) = bind_all(&profile, self.adapter.as_mut());
             // What collides is worked out again against the model as it
-            // stands, so a file annotated by a build with a wrong model (all
-            // of 0.2.16's, which said GNOME took four fingers) is corrected
-            // here and on the window's next read (ticket 131).
-            let conflicts = detect_conflicts(&verified, GNOME_46_GESTURES);
-            annotate(&mut verified, &conflicts);
+            // stands, by the one function the window uses too, so a file
+            // annotated by a build with a wrong model (all of 0.2.16's, which
+            // said GNOME took four fingers) is corrected (ticket 131).
+            touchpad_gestures::conflict::annotate_against_gnome_46(&mut verified);
             if let Some(slot) = self.profile_mut(&key) {
                 *slot = verified;
             }
@@ -684,7 +724,14 @@ impl GesturePipeline {
             "gestures.adapter_disabled_after_failures:{}",
             self.failures.consecutive()
         ));
-        self.save();
+        // The switch and nothing else, on the file as it is now: whatever the
+        // window saved since this service read it stays (ticket 131).
+        self.update_stored(|stored| {
+            stored.global.enabled = false;
+            for profile in stored.devices.values_mut() {
+                profile.enabled = false;
+            }
+        });
         // The profiles only say gestures are off. The marker says why, so
         // Better Manager's Home can tell the person after the fact.
         if let Err(error) = self.store.record_turned_off(self.failures.consecutive()) {
@@ -697,19 +744,41 @@ impl GesturePipeline {
         self.restore_built_in_gestures(SuppressionEvent::Disabled);
     }
 
-    /// Writes the profiles this pipeline holds back into the stored document.
+    /// Writes what this pipeline found back into the stored document.
     ///
-    /// Only what this pipeline owns is replaced: the global profile and the
-    /// device profiles the document still has. A device profile the window
-    /// dropped since this service started stays dropped, and the window's
-    /// selected pad is left alone.
+    /// Only the fields the service owns are written, on the document as it is
+    /// now (ticket 131): each gesture's verification result and conflict
+    /// annotation, matched by profile and gesture id. Everything the person
+    /// chose (which gestures exist, their shapes and actions, the switches,
+    /// the selected pad) is left as the file has it, so a window that saved
+    /// since this service read the file is never overwritten.
     fn save(&mut self) {
-        let mut stored = self.store.load_profiles().unwrap_or_default();
-        stored.global = self.profiles.global.clone();
-        for (identity, profile) in &self.profiles.devices {
-            if let Some(slot) = stored.devices.get_mut(identity) {
-                *slot = profile.clone();
+        let global = self.profiles.global.clone();
+        let devices = self.profiles.devices.clone();
+        self.update_stored(move |stored| {
+            copy_findings(&global, &mut stored.global);
+            for (identity, ours) in &devices {
+                if let Some(slot) = stored.devices.get_mut(identity) {
+                    copy_findings(ours, slot);
+                }
             }
+        });
+    }
+
+    /// Reads the stored document, changes it, and writes it back. A document
+    /// that cannot be read is never written over: it is the only copy.
+    fn update_stored(&mut self, change: impl FnOnce(&mut GestureProfiles)) {
+        let mut stored = match self.store.load_profiles() {
+            Ok(stored) => stored,
+            Err(error) => {
+                self.problem = Some(error.to_string());
+                return;
+            }
+        };
+        let before = stored.clone();
+        change(&mut stored);
+        if stored == before {
+            return;
         }
         if let Err(error) = self.store.save_profiles(&stored) {
             self.problem = Some(error.to_string());
@@ -725,6 +794,17 @@ impl GesturePipeline {
             }
         }
         StopReason::StreamEnded
+    }
+}
+
+/// Copies the service's findings for each gesture of `ours` onto the gesture
+/// with the same id in `stored`.
+fn copy_findings(ours: &GestureConfig, stored: &mut GestureConfig) {
+    for found in &ours.gestures {
+        if let Some(slot) = stored.get_mut(&found.id) {
+            slot.last_verification = found.last_verification.clone();
+            slot.conflict = found.conflict.clone();
+        }
     }
 }
 
@@ -780,37 +860,92 @@ impl ServiceSession for ServiceBus {
 /// never taken. The extension also gives them back by itself once the
 /// service's bus name has no owner, so a `false` here is a restore that will
 /// still happen, said in the journal.
+///
+/// There is no "finished on purpose": the service stays resident with nothing
+/// configured, in safe mode, and after the integration turned itself off,
+/// watching the configuration, so turning gestures back on is one action
+/// (ticket 131).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ServiceExit {
     /// SIGTERM or SIGINT.
     Stopped { restored: bool },
-    /// The integration turned itself off after a failing adapter. Nothing is
-    /// configured to listen for now, which is the one reason the service ends
-    /// on purpose.
-    TurnedOff { restored: bool },
     /// The session bus is gone.
     Closed { restored: bool },
-    /// The adapter appeared and did not answer, or the configuration could
-    /// not be read when it did.
+    /// The adapter appeared and did not answer.
     Failed(String),
+}
+
+/// What the stored configuration says, read again on every change.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Configuration {
+    Profiles(GestureProfiles),
+    /// Safe mode is on: nothing is recognized and GNOME keeps its gestures.
+    SafeMode,
+    /// The file will not parse. Nothing is recognized: starting from
+    /// defaults would recognize gestures the person never configured, and the
+    /// file is left exactly as it is for the window to explain.
+    Unreadable(String),
+}
+
+impl Configuration {
+    /// The profiles the pipeline runs on: the stored ones, or none at all.
+    fn effective(&self) -> GestureProfiles {
+        match self {
+            Self::Profiles(profiles) => profiles.clone(),
+            Self::SafeMode | Self::Unreadable(_) => {
+                let mut nothing = GestureProfiles::default();
+                nothing.global.enabled = false;
+                nothing
+            }
+        }
+    }
+
+    /// One journal line for the state this configuration puts the service in.
+    pub fn words(&self) -> String {
+        match self {
+            Self::SafeMode => "safe mode is on: nothing is recognized and GNOME keeps its own \
+                               gestures; waiting for it to be turned off"
+                .to_string(),
+            Self::Unreadable(error) => format!(
+                "the gesture configuration could not be read ({error}); nothing is \
+                 recognized until it can be"
+            ),
+            Self::Profiles(profiles) => {
+                let listening = std::iter::once(&profiles.global)
+                    .chain(profiles.devices.values())
+                    .any(|profile| !profile.active().is_empty());
+                if listening {
+                    "gestures are configured".to_string()
+                } else {
+                    "no gesture is switched on; waiting for one to be configured".to_string()
+                }
+            }
+        }
+    }
 }
 
 /// Runs the service until it is asked to stop (ticket 131).
 ///
-/// It waits for the adapter rather than exiting without it, starts a pipeline
-/// built by `pipeline_for` each time the adapter appears (so a configuration
-/// changed meanwhile is read again), and drops that pipeline when the adapter
-/// goes. Every journal line goes to `log`.
+/// It waits for the adapter rather than exiting without it, and builds a
+/// pipeline with `pipeline_for` each time the adapter appears, dropping it
+/// when the adapter goes. `configuration` is read at the start and again on
+/// every [`SessionEvent::ConfigurationChanged`], and a running pipeline takes
+/// the new profiles at once: gestures turned off stop being recognized, new
+/// ones are recognized, and GNOME's gestures are taken or given back for what
+/// now collides. Every journal line goes to `log`.
 pub fn serve(
     session: &mut dyn ServiceSession,
-    pipeline_for: &mut dyn FnMut(Box<dyn SessionAdapter>) -> Result<GesturePipeline, String>,
+    configuration: &mut dyn FnMut() -> Configuration,
+    pipeline_for: &mut dyn FnMut(Box<dyn SessionAdapter>, GestureProfiles) -> GesturePipeline,
     log: &mut dyn FnMut(String),
 ) -> ServiceExit {
+    let mut current = configuration();
+    log(current.words());
     let mut pipeline: Option<GesturePipeline> = None;
     let mut waiting_since = None;
 
     if session.adapter_present() {
-        match attach(session, pipeline_for, log, None) {
+        match attach(session, &current, pipeline_for, log, None) {
             Ok(started) => pipeline = Some(started),
             Err(error) => return ServiceExit::Failed(error),
         }
@@ -828,7 +963,7 @@ pub fn serve(
                 if pipeline.take().is_some() {
                     log("the adapter was replaced; starting again with the new one".to_string());
                 }
-                match attach(session, pipeline_for, log, waiting_since.take()) {
+                match attach(session, &current, pipeline_for, log, waiting_since.take()) {
                     Ok(started) => pipeline = Some(started),
                     Err(error) => return ServiceExit::Failed(error),
                 }
@@ -850,20 +985,36 @@ pub fn serve(
                     waiting_since = Some(std::time::Instant::now());
                 }
             }
+            SessionEvent::ConfigurationChanged => {
+                let read = configuration();
+                if read.words() != current.words() {
+                    log(read.words());
+                }
+                current = read;
+                if let Some(running) = pipeline.as_mut() {
+                    running.replace_profiles(current.effective());
+                    for line in running.take_journal() {
+                        log(line);
+                    }
+                }
+            }
             SessionEvent::Gesture(event) => {
                 let Some(running) = pipeline.as_mut() else {
                     continue;
                 };
+                let was_enabled = running.is_enabled();
                 running.observe(&event);
                 for line in running.take_journal() {
                     log(line);
                 }
-                if !running.is_enabled() {
-                    let restored = !running.suppression().is_suppressed();
+                if was_enabled && !running.is_enabled() {
                     if let Some(problem) = running.problem() {
                         log(problem.to_string());
                     }
-                    return ServiceExit::TurnedOff { restored };
+                    log(
+                        "waiting for gestures to be turned back on; the service stays running"
+                            .to_string(),
+                    );
                 }
             }
             SessionEvent::Stop => {
@@ -883,7 +1034,8 @@ pub fn serve(
 /// Starts a pipeline on an adapter that just appeared.
 fn attach(
     session: &mut dyn ServiceSession,
-    pipeline_for: &mut dyn FnMut(Box<dyn SessionAdapter>) -> Result<GesturePipeline, String>,
+    current: &Configuration,
+    pipeline_for: &mut dyn FnMut(Box<dyn SessionAdapter>, GestureProfiles) -> GesturePipeline,
     log: &mut dyn FnMut(String),
     waiting_since: Option<std::time::Instant>,
 ) -> Result<GesturePipeline, String> {
@@ -897,8 +1049,10 @@ fn attach(
     let adapter = session
         .connect_adapter()
         .map_err(|error| format!("the GNOME Shell adapter did not answer: {error}"))?;
-    let mut pipeline = pipeline_for(adapter)?;
+    let mut pipeline = pipeline_for(adapter, current.effective());
     pipeline.verify();
+    // Whatever an older service left behind is settled here too: the
+    // pipeline adopted the adapter's report, so wanting nothing restores.
     pipeline.suppress_built_in_gestures();
     for line in pipeline.take_journal() {
         log(line);
@@ -916,6 +1070,75 @@ fn give_back(pipeline: Option<&mut GesturePipeline>, log: &mut dyn FnMut(String)
         log(line);
     }
     matches!(outcome, SuppressionOutcome::Restored)
+}
+
+/// Reads what the stored configuration says now.
+pub fn read_configuration(settings: &TouchpadStore, gestures: &GestureStore) -> Configuration {
+    if settings.safe_mode_enabled() {
+        return Configuration::SafeMode;
+    }
+    match gestures.load_profiles() {
+        Ok(profiles) => Configuration::Profiles(profiles),
+        Err(error) => Configuration::Unreadable(error.to_string()),
+    }
+}
+
+/// Keeps a watch on the gesture configuration and the safe mode marker.
+///
+/// A file watch rather than a "reload" call from the window over the
+/// service's bus name, because the file is the one place every writer meets:
+/// Better Touchpad's window, Better Manager's Touchpad page, an import, the
+/// safe mode entry from a text console (`better-touchpad --safe-mode`), and a
+/// person with an editor. A call would have to be added to each and could be
+/// forgotten by the next; a watch cannot be (ticket 131). The writes are
+/// atomic renames, so the directory is watched and events for other names are
+/// dropped.
+pub struct ConfigurationWatch {
+    _watcher: notify::RecommendedWatcher,
+}
+
+impl ConfigurationWatch {
+    /// Sends [`SessionEvent::ConfigurationChanged`] on every event that
+    /// touches one of `files`, all of which must be in one directory.
+    pub fn start(
+        files: &[PathBuf],
+        events: std::sync::mpsc::Sender<SessionEvent>,
+    ) -> Result<Self, notify::Error> {
+        use notify::{RecursiveMode, Watcher as _};
+        let directory = files
+            .first()
+            .and_then(|file| file.parent())
+            .map(std::path::Path::to_path_buf)
+            .ok_or_else(|| notify::Error::generic("nothing to watch"))?;
+        std::fs::create_dir_all(&directory).map_err(notify::Error::io)?;
+        let names: Vec<std::ffi::OsString> = files
+            .iter()
+            .filter_map(|file| file.file_name().map(|name| name.to_os_string()))
+            .collect();
+        let mut watcher =
+            notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+                let touches = match &event {
+                    // An error from the watcher is a reason to read again.
+                    Err(_) => true,
+                    Ok(event) => {
+                        event.need_rescan()
+                            || event.paths.iter().any(|path| {
+                                path.file_name()
+                                    .is_some_and(|name| names.iter().any(|known| known == name))
+                            })
+                    }
+                };
+                let changed = match &event {
+                    Ok(event) => !event.kind.is_access(),
+                    Err(_) => true,
+                };
+                if touches && changed {
+                    let _ = events.send(SessionEvent::ConfigurationChanged);
+                }
+            })?;
+        watcher.watch(&directory, RecursiveMode::NonRecursive)?;
+        Ok(Self { _watcher: watcher })
+    }
 }
 
 /// Whether safe mode is on for this store directory.

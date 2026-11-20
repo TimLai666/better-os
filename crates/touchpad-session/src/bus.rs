@@ -434,10 +434,23 @@ impl ServiceBus {
                 .await
                 .map_err(service_bus)?;
 
+            // The adapter's unique name now. A gesture signal counts only when
+            // it comes from it (ticket 131): a signal from anyone else would
+            // make the service perform actions and would open the "a gesture
+            // arrived" gate that suppression waits for.
+            let owner = Arc::new(std::sync::Mutex::new(
+                owner_of(&connection, &adapter_name).await,
+            ));
             let to_owners = sender.clone();
-            tokio::spawn(forward_owners(owners, to_owners));
+            tokio::spawn(forward_owners(owners, to_owners, owner.clone()));
             let to_gestures = sender.clone();
-            tokio::spawn(forward_gestures(gestures, to_gestures));
+            tokio::spawn(forward_gestures(
+                gestures,
+                to_gestures,
+                owner,
+                connection.clone(),
+                adapter_name.clone(),
+            ));
 
             let reply = match connection
                 .request_name_with_flags(service, zbus::fdo::RequestNameFlags::DoNotQueue.into())
@@ -513,9 +526,36 @@ impl ServiceBus {
     }
 }
 
+/// The unique name that owns `name` now, or `None`.
+async fn owner_of(connection: &Connection, name: &str) -> Option<String> {
+    let proxy = zbus::fdo::DBusProxy::new(connection).await.ok()?;
+    let name: zbus::names::BusName<'_> = name.try_into().ok()?;
+    proxy
+        .get_name_owner(name)
+        .await
+        .ok()
+        .map(|owner| owner.to_string())
+}
+
+type Owner = Arc<std::sync::Mutex<Option<String>>>;
+
+fn set_owner(owner: &Owner, value: Option<String>) {
+    if let Ok(mut slot) = owner.lock() {
+        *slot = value;
+    }
+}
+
+fn is_owner(owner: &Owner, sender: &str) -> bool {
+    owner
+        .lock()
+        .map(|slot| slot.as_deref() == Some(sender))
+        .unwrap_or(false)
+}
+
 async fn forward_owners(
     mut owners: zbus::MessageStream,
     sender: std::sync::mpsc::Sender<SessionEvent>,
+    owner: Owner,
 ) {
     while let Some(message) = owners.next().await {
         let Ok(message) = message else { break };
@@ -530,6 +570,7 @@ async fn forward_owners(
         if !from_bus {
             continue;
         }
+        set_owner(&owner, (!new.is_empty()).then(|| new.clone()));
         if !old.is_empty() && sender.send(SessionEvent::AdapterVanished).is_err() {
             return;
         }
@@ -543,9 +584,26 @@ async fn forward_owners(
 async fn forward_gestures(
     mut gestures: zbus::MessageStream,
     sender: std::sync::mpsc::Sender<SessionEvent>,
+    owner: Owner,
+    connection: Connection,
+    adapter: String,
 ) {
     while let Some(message) = gestures.next().await {
         let Ok(message) = message else { break };
+        let Some(from) = message.header().sender().map(|from| from.to_string()) else {
+            continue;
+        };
+        if !is_owner(&owner, &from) {
+            // An owner change and a signal from the new owner travel on
+            // different streams, so a sender that is not the owner on record
+            // is checked against the bus once before it is dropped.
+            let now = owner_of(&connection, &adapter).await;
+            let trusted = now.as_deref() == Some(from.as_str());
+            set_owner(&owner, now);
+            if !trusted {
+                continue;
+            }
+        }
         if let Some(event) = gesture_from(&message)
             && sender.send(SessionEvent::Gesture(event)).is_err()
         {

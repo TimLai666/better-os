@@ -18,6 +18,9 @@ better-actions.workspace = true
 # sigwait for SIGTERM and SIGINT, so GNOME's gestures are given back before
 # the service goes (ticket 131).
 libc.workspace = true
+# Watches gestures.json and the safe mode marker, so a change made in any
+# window reaches the running service at once (ticket 131).
+notify.workspace = true
 touchpad-core.workspace = true
 touchpad-gestures.workspace = true
 # Only for the clone's phys prefix (ADR 0030): a gesture on the scroll

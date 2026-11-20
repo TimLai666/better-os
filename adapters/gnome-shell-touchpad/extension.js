@@ -22,13 +22,19 @@
  * and copied unchanged. Nothing else about a device is read, nothing is
  * computed from the node, and nothing about any device is kept.
  *
- * Turning GNOME's own swipe trackers off follows the rule ADR 0018 set for the
- * shared adapter: it holds only while the Rust counterpart, the gesture
- * service, owns org.betteros.TouchpadGestures1. Only that name's current owner
- * may ask for it, and the moment the name loses its owner (the service
- * stopped, crashed, or the session is ending) GNOME's trackers are put back.
- * Nothing here judges whether to suppress; the watch only makes sure a request
- * never outlives the process that made it (ticket 131).
+ * Turning GNOME's own swipe trackers off follows the relay rule ADR 0018 set
+ * for the shared adapter, extended here by ADR 0035 (proposed): it holds only
+ * while the Rust counterpart, the gesture service, owns
+ * org.betteros.TouchpadGestures1, and only that name's current owner may ask
+ * for it, accepted only when its process runs the packaged
+ * /usr/bin/better-touchpad-gestured. The moment the name loses its owner (the
+ * service stopped, crashed, or the session is ending) GNOME's trackers are put
+ * back. Nothing here judges whether to suppress; the watch only makes sure a
+ * request never outlives the process that made it (ticket 131).
+ *
+ * GNOME's own code turns the workspace tracker back on after every animated
+ * workspace switch and when the overview hides, so a suppression does not
+ * hold for long; ADR 0035 records that limit. This file does not fight it.
  *
  * If this file grows a decision, the exception has been abused. The right
  * answer is to move the decision back into Rust, not to widen the exception.
@@ -55,6 +61,11 @@ const OBJECT_PATH = '/org/betteros/TouchpadAdapter1';
 const INTERFACE_FILE = 'org.betteros.TouchpadAdapter1.xml';
 /** The gesture service: the one caller whose request to suppress is kept. */
 const COUNTERPART = 'org.betteros.TouchpadGestures1';
+/**
+ * The program the counterpart must be. Owning the bus name is not enough: any
+ * program in the session could take it first.
+ */
+const COUNTERPART_EXECUTABLE = '/usr/bin/better-touchpad-gestured';
 const ACCESS_DENIED = 'org.freedesktop.DBus.Error.AccessDenied';
 
 /** The wire values for a gesture phase. The Rust side has the same four. */
@@ -93,7 +104,6 @@ function deviceNode(event) {
 export default class TouchpadAdapterExtension extends Extension {
     enable() {
         this._suppressed = false;
-        this._trackerState = [];
         this._counterpart = null;
 
         const xml = this._interfaceXml();
@@ -110,8 +120,9 @@ export default class TouchpadAdapterExtension extends Extension {
             Gio.BusType.SESSION,
             COUNTERPART,
             Gio.BusNameWatcherFlags.NONE,
-            (_connection, _name, owner) => {
-                this._counterpart = owner;
+            (connection, _name, owner) => {
+                this._counterpart = null;
+                this._acceptIfPackaged(connection, owner);
             },
             () => {
                 // The gesture service is gone, whatever the reason: GNOME
@@ -146,6 +157,36 @@ export default class TouchpadAdapterExtension extends Extension {
             this._exported.unexport();
             this._exported = null;
         }
+    }
+
+    /**
+     * Accepts the name's owner as the counterpart only when the bus says its
+     * process runs the packaged service (ADR 0035, in ADR 0018's form).
+     * Anything else that took the name is never answered. A unique name is
+     * never reused, so an answer that arrives after the owner left names
+     * nobody who can call.
+     */
+    _acceptIfPackaged(connection, owner) {
+        connection.call(
+            'org.freedesktop.DBus',
+            '/org/freedesktop/DBus',
+            'org.freedesktop.DBus',
+            'GetConnectionCredentials',
+            new GLib.Variant('(s)', [owner]),
+            new GLib.VariantType('(a{sv})'),
+            Gio.DBusCallFlags.NONE,
+            -1,
+            null,
+            (source, result) => {
+                try {
+                    const [credentials] = source.call_finish(result).deepUnpack();
+                    const pid = credentials.ProcessID.deepUnpack();
+                    if (GLib.file_read_link(`/proc/${pid}/exe`) === COUNTERPART_EXECUTABLE)
+                        this._counterpart = owner;
+                } catch {
+                    // No credentials, or no such process: not the service.
+                }
+            });
     }
 
     /** The contract, read from the file that ships beside this one. */
@@ -263,18 +304,23 @@ export default class TouchpadAdapterExtension extends Extension {
     _suppressBuiltInGestures() {
         if (this._suppressed)
             return;
-        this._trackerState = this._swipeTrackers().map(tracker => {
-            const was = tracker.enabled;
+        for (const tracker of this._swipeTrackers())
             tracker.enabled = false;
-            return [tracker, was];
-        });
         this._suppressed = true;
     }
 
+    /**
+     * Puts the trackers back the way GNOME keeps them when nothing is under
+     * way: enabled. A value captured when suppressing could be GNOME's own
+     * `false` from the middle of a workspace animation (workspaceAnimation.js
+     * turns its tracker off for the animation and on again after it), and
+     * writing that back would leave the gesture off for good.
+     */
     _restoreBuiltInGestures() {
-        for (const [tracker, was] of this._trackerState)
-            tracker.enabled = was;
-        this._trackerState = [];
+        if (!this._suppressed)
+            return;
+        for (const tracker of this._swipeTrackers())
+            tracker.enabled = true;
         this._suppressed = false;
     }
 

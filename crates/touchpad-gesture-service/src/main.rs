@@ -3,28 +3,30 @@
 //! It connects to the session bus, takes `org.betteros.TouchpadGestures1`,
 //! waits for the GNOME Shell adapter extension, and then reads gestures until
 //! the session ends. There is no window, no polling loop, and no privilege: it
-//! blocks on one stream of bus events and does nothing at all between them.
+//! blocks on one stream of bus and file events and does nothing at all between
+//! them.
 //!
-//! It ends on purpose in two cases only, both with status 0: safe mode is on,
-//! or no gesture is configured (which includes the integration having turned
-//! itself off). Better Manager's health rule reads exactly that as finished
-//! on purpose. A missing adapter is waited for, never a reason to exit (ticket
-//! 131: the adapter appears a moment after a login starts this service, and
-//! exiting then left gestures dead for the whole session). Asked to stop by
-//! SIGTERM or SIGINT, it gives GNOME its gestures back first and then ends by
-//! that same signal, so systemd records a stop and not a finish.
+//! It never ends on purpose (ticket 131). With safe mode on, nothing
+//! configured, or the integration turned off by itself, it stays resident and
+//! idle, owning its bus name and watching `gestures.json` and the safe mode
+//! marker, so a change made in a window takes effect at once and turning
+//! gestures back on needs nothing else. A missing adapter is waited for.
+//! Asked to stop by SIGTERM or SIGINT, it gives GNOME its gestures back first
+//! and then ends by that same signal, so systemd records a stop and Better
+//! Manager starts it again.
 
 use std::process::ExitCode;
 use std::sync::mpsc;
 
 use touchpad_core::TouchpadStore;
 use touchpad_gesture_service::{
-    GesturePipeline, ServiceExit, SysfsDeviceIdentities, safe_mode_enabled, serve,
+    ConfigurationWatch, GesturePipeline, ServiceExit, SysfsDeviceIdentities, read_configuration,
+    serve,
 };
-use touchpad_gestures::GestureStore;
+use touchpad_gestures::{GestureProfiles, GestureStore};
 use touchpad_session::{
-    GnomeShellAdapter, LauncherActivationAdapter, RoutingAdapter, ServiceBus, ServiceBusError,
-    SessionAdapter, SessionBusShell, SessionEvent,
+    LauncherActivationAdapter, RoutingAdapter, ServiceBus, ServiceBusError, SessionAdapter,
+    SessionEvent,
 };
 
 fn main() -> ExitCode {
@@ -45,57 +47,21 @@ fn main() -> ExitCode {
     let settings = TouchpadStore::new(&store_directory);
     let gestures = GestureStore::at(&store_directory);
 
-    if safe_mode_enabled(&settings) {
-        // Safe mode is the path a user reaches from a text console when the
-        // desktop has become hard to use. Nothing is recognized, and the
-        // desktop's own gestures are given back before anything else runs.
-        match restore_only() {
-            Ok(()) => {
-                eprintln!("safe mode is on: no gesture is recognized and GNOME keeps its own");
-            }
-            Err(reason) => {
-                eprintln!(
-                    "safe mode is on: no gesture is recognized; the adapter could not be \
-                     reached to restore GNOME's gestures ({reason}), and it restores them \
-                     itself when it starts without this service"
-                );
-            }
-        }
-        eprintln!("exit: safe mode, nothing to listen for");
-        return ExitCode::SUCCESS;
-    }
-
     // Installing is enough for gestures to work (owner, 2026-11-13): the first
     // run puts the shipped preset in force. A file that already exists, or
-    // will not parse, is left exactly as it is.
-    match gestures.apply_first_run_default() {
-        Ok(true) => eprintln!("first run: the Mac-style gestures are now in force"),
-        Ok(false) => {}
-        Err(error) => eprintln!("the first-run gestures could not be written: {error}"),
-    }
-
-    match gestures.load_profiles() {
-        Ok(profiles) => {
-            let listening = std::iter::once(&profiles.global)
-                .chain(profiles.devices.values())
-                .any(|profile| !profile.active().is_empty());
-            if !listening {
-                eprintln!("exit: no gesture is configured, so there is nothing to listen for");
-                return ExitCode::SUCCESS;
-            }
-        }
-        // A configuration that will not parse is not a first run, and starting
-        // from defaults would recognize gestures the user never configured.
-        Err(error) => {
-            eprintln!("the gesture configuration could not be read: {error}");
-            return ExitCode::FAILURE;
+    // will not parse, is left exactly as it is. Safe mode writes nothing.
+    if !settings.safe_mode_enabled() {
+        match gestures.apply_first_run_default() {
+            Ok(true) => eprintln!("first run: the Mac-style gestures are now in force"),
+            Ok(false) => {}
+            Err(error) => eprintln!("the first-run gestures could not be written: {error}"),
         }
     }
 
     let mut bus = match ServiceBus::connect() {
         Ok(bus) => bus,
         Err(ServiceBusError::AlreadyRunning) => {
-            eprintln!("another better-touchpad-gestured already owns its bus name");
+            eprintln!("another process already owns org.betteros.TouchpadGestures1");
             return ExitCode::FAILURE;
         }
         Err(error) => {
@@ -110,29 +76,48 @@ fn main() -> ExitCode {
             let _ = to_bus.send(SessionEvent::Stop);
         }
     });
-
-    let mut pipeline_for = |adapter: Box<dyn SessionAdapter>| -> Result<GesturePipeline, String> {
-        let profiles = gestures
-            .load_profiles()
-            .map_err(|error| format!("the gesture configuration could not be read: {error}"))?;
-        let mut routes: Vec<Box<dyn SessionAdapter>> = Vec::new();
-        match launcher_platform::bus::SessionBusRegistry::connect_forward_only() {
-            Ok(registry) => {
-                routes.push(Box::new(LauncherActivationAdapter::new(Box::new(registry))))
-            }
-            // The desktop's own gestures still work without it; the launcher
-            // gesture then verifies as unsupported and says why.
-            Err(error) => eprintln!("Better Launcher's activation route is unavailable: {error}"),
+    let _watch = match ConfigurationWatch::start(
+        &[gestures.config_path(), settings.safe_mode_path()],
+        bus.stop_sender(),
+    ) {
+        Ok(watch) => watch,
+        Err(error) => {
+            // Without the watch a change would wait for the next restart,
+            // which is the defect this service exists to avoid; failing lets
+            // systemd try again and Better Manager say so.
+            eprintln!("the gesture configuration cannot be watched: {error}");
+            return ExitCode::FAILURE;
         }
-        routes.push(adapter);
-        Ok(GesturePipeline::with_profiles(
-            profiles,
-            GestureStore::at(&store_directory),
-            Box::new(RoutingAdapter::new(routes)),
-            Box::new(SysfsDeviceIdentities::system()),
-        ))
     };
-    let exit = serve(&mut bus, &mut pipeline_for, &mut |line| eprintln!("{line}"));
+
+    let mut configuration = || read_configuration(&settings, &gestures);
+    let mut pipeline_for =
+        |adapter: Box<dyn SessionAdapter>, profiles: GestureProfiles| -> GesturePipeline {
+            let mut routes: Vec<Box<dyn SessionAdapter>> = Vec::new();
+            match launcher_platform::bus::SessionBusRegistry::connect_forward_only() {
+                Ok(registry) => {
+                    routes.push(Box::new(LauncherActivationAdapter::new(Box::new(registry))))
+                }
+                // The desktop's own gestures still work without it; the
+                // launcher gesture then verifies as unsupported and says why.
+                Err(error) => {
+                    eprintln!("Better Launcher's activation route is unavailable: {error}")
+                }
+            }
+            routes.push(adapter);
+            GesturePipeline::with_profiles(
+                profiles,
+                GestureStore::at(&store_directory),
+                Box::new(RoutingAdapter::new(routes)),
+                Box::new(SysfsDeviceIdentities::system()),
+            )
+        };
+    let exit = serve(
+        &mut bus,
+        &mut configuration,
+        &mut pipeline_for,
+        &mut |line| eprintln!("{line}"),
+    );
     drop(bus);
 
     let restored_words = |restored: bool| {
@@ -151,13 +136,6 @@ fn main() -> ExitCode {
                 restored_words(restored)
             );
             end_by_signal(signal);
-            ExitCode::SUCCESS
-        }
-        ServiceExit::TurnedOff { restored } => {
-            eprintln!(
-                "exit: gestures turned themselves off, so there is nothing to listen for; {}",
-                restored_words(restored)
-            );
             ExitCode::SUCCESS
         }
         ServiceExit::Closed { restored } => {
@@ -211,8 +189,8 @@ fn stop_on_signals() -> std::io::Result<Stops> {
 }
 
 /// Ends the process by the signal that asked it to stop, now that GNOME's
-/// gestures are back, so systemd records a stop (`ExecMainCode=killed`) and
-/// Better Manager never reads it as a service that finished on purpose.
+/// gestures are back, so systemd records a stop (`ExecMainCode=killed`), which
+/// Better Manager's startup pass and Check again start again.
 fn end_by_signal(signal: i32) {
     // SAFETY: restoring the default action and unblocking one signal in this
     // thread, then raising it; nothing else runs in between.
@@ -224,16 +202,4 @@ fn end_by_signal(signal: i32) {
         libc::pthread_sigmask(libc::SIG_UNBLOCK, &set, std::ptr::null_mut());
         libc::raise(signal);
     }
-}
-
-/// Reaches the extension only to put GNOME's gestures back.
-fn restore_only() -> Result<(), String> {
-    let shell = SessionBusShell::connect().map_err(|error| error.to_string())?;
-    if !shell.is_reachable() {
-        return Err("the adapter extension is not on the session bus".to_string());
-    }
-    let mut adapter =
-        GnomeShellAdapter::connect(Box::new(shell)).map_err(|error| error.to_string())?;
-    adapter.suppress_built_in_gestures(false);
-    Ok(())
 }

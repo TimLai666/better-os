@@ -58,6 +58,18 @@ impl BuiltInGesture {
 /// Mac-style preset, which swipes with four, collides with nothing. An earlier
 /// model said "three and four" and made the service take GNOME's three-finger
 /// gestures away for a preset that never used three fingers.
+///
+/// **Taking one of these away is not reliable on GNOME 46.** The extension
+/// turns the two trackers off through their `enabled` property, and GNOME's
+/// own code writes that property too: `workspaceAnimation.js` sets the
+/// workspace tracker back to `true` when the overview hides and at the end of
+/// every animated workspace switch, so after the first switch GNOME's
+/// three-finger switch answers again beside ours. Two more three-finger
+/// trackers, the overview's workspace strip (`workspacesView.js`) and the
+/// application grid's pages (`appDisplay.js`), work only inside the overview
+/// and are never turned off. A colliding three-finger gesture can therefore
+/// do GNOME's thing and ours at once; the Touchpad page says so, and ADR
+/// 0035 records it.
 pub const GNOME_46_GESTURES: &[BuiltInGesture] = &[
     BuiltInGesture {
         id: "gnome.overview.swipe",
@@ -162,6 +174,14 @@ pub fn annotate(config: &mut GestureConfig, conflicts: &[Conflict]) {
             None => ConflictState::Clear,
         };
     }
+}
+
+/// Detects and annotates against [`GNOME_46_GESTURES`]: what every reader of
+/// a stored profile runs, through
+/// [`GestureProfiles::annotate_conflicts`](crate::GestureProfiles::annotate_conflicts).
+pub fn annotate_against_gnome_46(config: &mut GestureConfig) {
+    let conflicts = detect(config, GNOME_46_GESTURES);
+    annotate(config, &conflicts);
 }
 
 #[cfg(test)]

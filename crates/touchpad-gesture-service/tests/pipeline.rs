@@ -649,6 +649,51 @@ fn the_service_bus_follows_the_adapter_and_calls_as_the_owner_of_its_own_name() 
     assert_eq!(next(&service), SessionEvent::Stop);
 }
 
+/// Ticket 131: a gesture signal counts only when it comes from the adapter's
+/// current owner. Anyone else on the session bus could otherwise make the
+/// service perform actions, and open the "a gesture arrived" gate that
+/// suppression waits for, with one forged signal.
+#[test]
+fn a_forged_gesture_signal_from_another_connection_is_ignored() {
+    let bus = bus_or_skip!();
+    let service = ServiceBus::connect_to(&bus.address, TEST_NAME, SERVICE_TEST_NAME)
+        .expect("the service took its name");
+    let extension = Extension::serve(&bus, false);
+    assert_eq!(next(&service), SessionEvent::AdapterAppeared);
+
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let forger = runtime.block_on(async {
+        let address: zbus::Address = bus.address.parse().unwrap();
+        zbus::connection::Builder::address(address)
+            .unwrap()
+            .build()
+            .await
+            .unwrap()
+    });
+    runtime
+        .block_on(forger.emit_signal(
+            None::<&str>,
+            OBJECT_PATH,
+            "org.betteros.TouchpadAdapter1",
+            "SwipeGesture",
+            &(0u32, 3u32, 0.0f64, 0.0f64, 1u64, ""),
+        ))
+        .expect("the forged signal was sent");
+    assert_eq!(
+        service.next_event_within(std::time::Duration::from_millis(750)),
+        None,
+        "a forged signal reached the service"
+    );
+
+    // The adapter's own still does.
+    extension.swipe(0, 4, 0.0, 0.0, 2);
+    assert!(matches!(
+        next(&service),
+        SessionEvent::Gesture(ShellGestureEvent::Swipe { fingers: 4, .. })
+    ));
+    runtime.block_on(async move { drop(forger) });
+}
+
 #[test]
 fn a_pinch_carries_its_device_like_a_swipe() {
     let bus = bus_or_skip!();
@@ -798,6 +843,9 @@ fn verification_results_are_written_where_the_window_reads_them() {
     let mut setup = adapter(&bus);
     let config = fixture.applied_preset(&mut setup);
     let store = fixture.store();
+    // The service only ever runs on what the file holds, and writes its
+    // findings onto that file rather than a copy of its own (ticket 131).
+    store.save_config(&config).unwrap();
     let mut pipeline = GesturePipeline::new(config, fixture.store(), Box::new(adapter(&bus)));
 
     // Overview is verified against the real bus; the windows of the current

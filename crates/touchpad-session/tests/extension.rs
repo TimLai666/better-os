@@ -213,7 +213,6 @@ fn the_extension_reports_the_device_node_and_nothing_else_about_the_device() {
             "_exported",
             "_nameId",
             "_suppressed",
-            "_trackerState",
             "_watchId"
         ]
     );
@@ -300,9 +299,11 @@ fn gnome_gets_its_gestures_back_when_the_gesture_service_leaves_the_bus() {
     assert!(extension.contains(
         "() => {\n                this._counterpart = null;\n                this._restoreBuiltInGestures();\n            });"
     ));
-    // The appeared callback only records who the counterpart is.
+    // The appeared callback forgets the previous owner and accepts the new
+    // one only through the check that its process runs the packaged service
+    // (ADR 0035, in ADR 0018's form).
     assert!(extension.contains(
-        "(_connection, _name, owner) => {\n                this._counterpart = owner;\n            },"
+        "(connection, _name, owner) => {\n                this._counterpart = null;\n                this._acceptIfPackaged(connection, owner);"
     ));
     assert_eq!(extension.matches("this._counterpart = owner").count(), 1);
     // And disable stops watching as well as restoring.
@@ -383,4 +384,57 @@ fn the_extension_is_valid_javascript() {
         reported.is_empty() || reported.contains("resource:///org/gnome/shell"),
         "gjs reported something other than the expected missing shell import:\n{reported}"
     );
+}
+
+/// The body of one method of the extension's class, up to its closing brace.
+fn method_body(extension: &str, name: &str) -> String {
+    let start = extension
+        .find(&format!("\n    {name}("))
+        .unwrap_or_else(|| panic!("{name} is not defined"));
+    let end = extension[start..]
+        .find("\n    }\n")
+        .unwrap_or_else(|| panic!("{name} is not closed"))
+        + start;
+    extension[start..end].to_string()
+}
+
+/// ADR 0035: the name's owner becomes the counterpart only when the kernel
+/// says its process runs the packaged service, the same check ADR 0018 and the
+/// shared extension make. Without it any program of the person's could take
+/// the name first and be obeyed.
+#[test]
+fn the_counterpart_is_accepted_only_when_it_runs_the_packaged_service() {
+    let extension = code("extension.js");
+    assert!(extension.contains(&format!(
+        "const COUNTERPART_EXECUTABLE = '{}';",
+        touchpad_session::gnome::SERVICE_EXECUTABLE
+    )));
+    let accept = method_body(&extension, "_acceptIfPackaged");
+    assert!(accept.contains("'GetConnectionCredentials'"), "{accept}");
+    assert!(accept.contains("credentials.ProcessID"), "{accept}");
+    assert!(accept.contains(
+        "if (GLib.file_read_link(`/proc/${pid}/exe`) === COUNTERPART_EXECUTABLE)\n                        this._counterpart = owner;"
+    ));
+    // The one assignment of an owner is inside that check.
+    assert_eq!(extension.matches("this._counterpart = owner").count(), 1);
+    // And `/proc` is read for that link alone.
+    assert_eq!(extension.matches("/proc/").count(), 1);
+}
+
+/// Ticket 131: a restore writes what GNOME keeps when nothing is under way,
+/// `true`, never a value captured at suppression time, which could be GNOME's
+/// own `false` from the middle of a workspace animation.
+#[test]
+fn a_restore_writes_enabled_rather_than_a_captured_value() {
+    let extension = code("extension.js");
+    let restore = method_body(&extension, "_restoreBuiltInGestures");
+    assert!(
+        restore.contains(
+            "for (const tracker of this._swipeTrackers())\n            tracker.enabled = true;"
+        ),
+        "{restore}"
+    );
+    assert!(!extension.contains("const was = tracker.enabled"));
+    let suppress = method_body(&extension, "_suppressBuiltInGestures");
+    assert!(suppress.contains("tracker.enabled = false;"), "{suppress}");
 }

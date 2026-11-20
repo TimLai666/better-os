@@ -8194,6 +8194,7 @@ dependencies = [
  "better-actions",
  "launcher-platform",
  "libc",
+ "notify",
  "tempfile",
  "tokio",
  "touchpad-core",
