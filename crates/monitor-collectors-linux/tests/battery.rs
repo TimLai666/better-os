@@ -209,3 +209,61 @@ fn an_absent_battery_slot_is_skipped() {
     let report = sample(&root);
     assert!(report.entities_of(EntityKind::Battery).next().is_none());
 }
+
+/// The start threshold is reported beside the limit, so every battery icon
+/// can use the firmware's own hold window (ticket 170).
+#[test]
+fn the_start_threshold_is_reported_with_the_limit() {
+    let root = tree(&[
+        CHARGING,
+        &[
+            ("BAT1/charge_control_end_threshold", "80"),
+            ("BAT1/charge_control_start_threshold", "75"),
+        ],
+    ]);
+    let report = sample(&root);
+    close(battery(&report, "battery.charge.limit"), 0.8);
+    close(battery(&report, "battery.charge.start"), 0.75);
+    // Without the file there is no start metric at all.
+    let plain = sample(&tree(&[CHARGING]));
+    assert_eq!(
+        entity(&plain, EntityKind::Battery, "BAT1", "battery.charge.start"),
+        None
+    );
+}
+
+/// A limit file that is there and cannot be read is reported as not
+/// reported, which a battery icon calls unknown; a battery without the file
+/// has no limit metric, which it calls "no limit" (ticket 170).
+#[test]
+fn an_unreadable_limit_is_unsupported_and_a_missing_one_is_absent() {
+    let unreadable = sample(&tree(&[
+        CHARGING,
+        &[("BAT1/charge_control_end_threshold", "garbage")],
+    ]));
+    assert!(matches!(
+        entity(
+            &unreadable,
+            EntityKind::Battery,
+            "BAT1",
+            "battery.charge.limit"
+        ),
+        Some(Observation::Unsupported(_))
+    ));
+    let root = tree(&[CHARGING]);
+    std::fs::remove_file(
+        root.path()
+            .join("sys/class/power_supply/BAT1/charge_control_end_threshold"),
+    )
+    .unwrap();
+    let missing = sample(&root);
+    assert_eq!(
+        entity(
+            &missing,
+            EntityKind::Battery,
+            "BAT1",
+            "battery.charge.limit"
+        ),
+        None
+    );
+}

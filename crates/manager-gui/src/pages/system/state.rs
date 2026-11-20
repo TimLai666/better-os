@@ -47,6 +47,9 @@ pub(crate) struct SystemState {
     /// `None` until the first read lands.
     pub(crate) facts: Option<MachineFacts>,
     pub(crate) about: AboutFacts,
+    /// Whether the charge limit card says what GNOME's own battery icon
+    /// shows at the limit (`decide::desktop_icon_note`, ticket 170).
+    pub(crate) desktop_icon_note: bool,
     pub(crate) follow: Option<Result<ChargerFollow, String>>,
     /// The last write's outcome that needs a bar, and over which group.
     pub(crate) bar: Option<(Group, WriteOutcome)>,
@@ -104,12 +107,7 @@ pub(crate) fn root() -> SysRoot {
     if cfg!(test) {
         return SysRoot::at("/nonexistent/better-os-test-root");
     }
-    if cfg!(debug_assertions)
-        && let Some(root) = std::env::var_os("BETTER_OS_DEBUG_SYS_ROOT")
-    {
-        return SysRoot::at(root);
-    }
-    SysRoot::system()
+    SysRoot::for_window()
 }
 
 /// The system and session buses, opened once. A test build opens neither, so
@@ -204,11 +202,21 @@ impl ManagerApp {
                 let facts =
                     hardware_platform::read_machine(&root(), system.as_ref(), session.as_ref());
                 let follow = follow_path().map(|path| follow_store::load(&path));
-                (facts, follow, read_about(profile_line, architecture))
+                let note = super::decide::desktop_icon_note(
+                    better_core::CurrentDesktop::from_env().includes("GNOME"),
+                    session
+                        .as_ref()
+                        .and_then(bus::shell_major_version)
+                        .and_then(|major| major.parse().ok()),
+                    system
+                        .as_ref()
+                        .and_then(bus::upower_reports_charge_threshold),
+                );
+                (facts, follow, read_about(profile_line, architecture), note)
             });
             ring.await;
             let _ = this.update(cx, |_, cx| cx.notify());
-            let (facts, follow, about) = work.await;
+            let (facts, follow, about, note) = work.await;
             let _ = this.update(cx, |app, cx| {
                 app.system.task = None;
                 app.system.reading_since = None;
@@ -219,6 +227,7 @@ impl ManagerApp {
                 app.system.facts = Some(facts);
                 app.system.follow = follow;
                 app.system.about = about;
+                app.system.desktop_icon_note = note;
                 app.ensure_lighting(cx);
                 if std::mem::take(&mut app.system.again) {
                     app.refresh_system(cx);
@@ -236,7 +245,13 @@ impl ManagerApp {
         let (sender, receiver) = smol::channel::unbounded::<()>();
         if let Some(system) = system {
             let sender = sender.clone();
-            let endpoints: Vec<Endpoint> = bus::POWER_PROFILES.to_vec();
+            // The charger and the battery too, so the charge limit and
+            // battery cards follow a plug or an unplug (ticket 170).
+            let endpoints: Vec<Endpoint> = bus::POWER_PROFILES
+                .iter()
+                .chain(bus::POWER_SUPPLY_CHANGES.iter())
+                .copied()
+                .collect();
             std::thread::spawn(move || {
                 bus::follow(&system, &endpoints, || sender.send_blocking(()).is_ok())
             });

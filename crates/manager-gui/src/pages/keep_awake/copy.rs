@@ -121,8 +121,6 @@ pub(crate) struct Copy {
 
     // ---- Battery and safety --------------------------------------------
     pub(crate) current_charge: &'static str,
-    pub(crate) on_ac_power: &'static str,
-    pub(crate) on_battery_power: &'static str,
     pub(crate) on_battery_rule: &'static str,
     pub(crate) on_battery_rule_detail: &'static str,
     pub(crate) quit_warning: &'static str,
@@ -326,8 +324,6 @@ static EN_US: Copy = Copy {
     reduced_security_warning: "Keeping the display on or stopping automatic locking leaves the screen readable to anyone nearby.",
 
     current_charge: "Current charge",
-    on_ac_power: "On AC power",
-    on_battery_power: "On battery",
     on_battery_rule: "Stop sessions on battery by default",
     on_battery_rule_detail: "A new session takes the default battery stop unless the preset or rule that started it says otherwise.",
     quit_warning: "Quitting the service ends every running session",
@@ -482,8 +478,6 @@ static ZH_TW: Copy = Copy {
     reduced_security_warning: "讓螢幕一直亮著或不自動鎖定，等於讓旁邊的人都看得到畫面內容。",
 
     current_charge: "目前電量",
-    on_ac_power: "使用外接電源",
-    on_battery_power: "使用電池",
     on_battery_rule: "使用電池時預設會停止工作階段",
     on_battery_rule_detail: "新的工作階段會採用預設電量門檻，除非開始它的預設項目或規則另有指定。",
     quit_warning: "關閉服務會結束所有執行中的工作階段",

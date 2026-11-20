@@ -17,6 +17,10 @@ awake-ipc.workspace = true
 # The one local-time conversion (`better_core::local_time`, ticket 146).
 better-core.workspace = true
 better-ui.workspace = true
+# The battery's state and words every battery icon shares, and the one
+# reader of `power_supply` it comes from (ticket 170).
+hardware-core.workspace = true
+hardware-platform.workspace = true
 gpui.workspace = true
 gpui-component.workspace = true
 gpui-component-assets.workspace = true

@@ -25,6 +25,7 @@ use super::copy::copy;
 use super::decide::{self, outcome_state};
 use super::state::{Group, Writing};
 use crate::app::ManagerApp;
+use crate::home;
 use crate::i18n::shell;
 use crate::pages::states::{PageState, describe};
 use crate::render::{CARD_GAP, FIRST_CARD_GAP, Row};
@@ -198,6 +199,13 @@ impl ManagerApp {
             }
         }
 
+        // The battery's picture follows its state on both battery cards, as
+        // every battery icon does (ticket 170).
+        let charge_icon = power
+            .charge
+            .as_ref()
+            .map(|charge| home::battery_picture(&home::battery_look(charge, self.locale)))
+            .unwrap_or(Picture::Battery);
         match &power.charge_limit {
             Card::Hidden => {}
             Card::Disabled { .. } => {
@@ -205,7 +213,7 @@ impl ManagerApp {
                     gap,
                     card::CHARGE_LIMIT,
                     SettingsCard::new(card::CHARGE_LIMIT, c.charge_limit)
-                        .icon(Picture::BatteryMedium)
+                        .icon(charge_icon)
                         .description(self.unreadable())
                         .disabled(true),
                 ));
@@ -221,19 +229,20 @@ impl ManagerApp {
                             .disabled(matches!(choice, ChargeChoice::SetElsewhere(_)))
                     })
                     .collect();
-                let description = decide::sentences(
-                    self.locale,
-                    &[
-                        c.charge_limit_description,
-                        c.charge_at_startup,
-                        c.charge_auth_note,
-                    ],
+                let lines = decide::charge_limit_lines(
+                    power.charge.as_ref(),
+                    self.system.desktop_icon_note,
+                    c,
                 );
+                let mut parts: Vec<&str> = vec![c.charge_limit_description];
+                parts.extend(lines.iter().map(String::as_str));
+                parts.extend([c.charge_at_startup, c.charge_auth_note]);
+                let description = decide::sentences(self.locale, &parts);
                 rows.push(Row::card(
                     gap,
                     card::CHARGE_LIMIT,
                     SettingsCard::new(card::CHARGE_LIMIT, c.charge_limit)
-                        .icon(Picture::BatteryMedium)
+                        .icon(charge_icon)
                         .description(description)
                         .content(
                             ComboBox::new("system-charge-limit-box", items, Some(view.selected))
@@ -265,13 +274,14 @@ impl ManagerApp {
             Card::Live(battery) => {
                 let mut expander =
                     SettingsExpander::new(card::BATTERY, c.battery, self.system.battery_open)
-                        .icon(match battery.capacity {
-                            Some(p) if p >= 90 => Picture::BatteryFull,
-                            Some(p) if p >= 40 => Picture::BatteryMedium,
-                            Some(_) => Picture::BatteryLow,
-                            None => Picture::Battery,
-                        })
-                        .description(decide::battery_description(battery, self.locale))
+                        .icon(charge_icon)
+                        .description(
+                            power
+                                .charge
+                                .as_ref()
+                                .map(|charge| decide::battery_description(charge, self.locale))
+                                .unwrap_or_default(),
+                        )
                         .on_toggle(Self::act_with(cx, |this, open: bool, _, cx| {
                             this.system.battery_open = open;
                             cx.notify();
