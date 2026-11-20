@@ -328,9 +328,33 @@ GUI or dependency compiles when the relevant command was not executed.
   has it draw the frame, shadow, header, and window buttons from the current
   theme, as Chromium does; without GTK the kit draws Adwaita's frame. Do not
   paint a background on a view's root (the frame paints it with the desktop's
-  corners), and do not draw frames or window buttons in an app. The frame was
-  compared pixel by pixel with GNOME Text Editor in a headless GNOME Shell 46
-  only, not on the owner's desktop. Better Launcher is the one deliberate exception, recorded
+  corners), and do not draw frames or window buttons in an app. Since ticket
+  141 all four corners are rounded with the theme's radius, measured from
+  GTK's drawing top and bottom (ZorinBlue 15px, Adwaita 12px), and square
+  maximized, fullscreen, or tiled on any edge; the input region follows the
+  curve grown by GTK's 12px handle, and the theme's `outline` (libadwaita's
+  1px inner line) is drawn over the content as GTK draws it. GPUI clips only
+  to rectangles (`ContentMask` at `ae394f3` and on Zed's `main` of 2026-11-20),
+  so content keeps inside the curve by one kit rule (`system_frame::corners`):
+  a surface that reaches a corner paints its fill into it with
+  `window_chrome::corner_fill`; a list that scrolls past a bottom corner is
+  painted with `corner_clip(inset)`, which raises only its bottom by the
+  curve's depth at the rows' side inset, and ends its scroll extent with
+  `corner_depth` so the last row scrolls fully above the curve; a scrollbar
+  there uses `corner_scrollbar`; tooltips, menus, and panels go through
+  `inside_window`. Nothing is inset along a side. `NavigationView`, dialogs,
+  toasts, menus, and the staged-changes bar follow it; a new window or panel
+  that reaches a corner must too. Two limits follow from GPUI clipping only to
+  rectangles, at the pinned revision and on Zed's `main`: a scrolling surface
+  whose rows run its full width (Better Git's diff) gives up a band the height
+  of the corner's radius along the bottom, where its rows are not drawn while
+  they scroll past and the wheel and presses do nothing (at the end of the
+  list they are whole above it); and the gallery's samples wider than a
+  narrow window are cut at the page's padding. The frame was compared pixel
+  by pixel with GNOME Text Editor in a headless GNOME Shell 46 only (ticket
+  108; ticket 141 for all four corners and the outline, on ZorinBlue-Dark
+  and Adwaita light and dark, at scale 1 and 2, evidence in
+  `better-os-evidence/141`), not on the owner's desktop. Better Launcher is the one deliberate exception, recorded
   in code: a Start-menu panel (ticket 82) dismissed by Escape gets no titlebar, but
   it still sets `app_id` like every other window, which is what lets a dock or
   an application grid match a window to its desktop entry. Escape on Better

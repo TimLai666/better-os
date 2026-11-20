@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+better-core.workspace = true
 monitor-core.workspace = true
 
 [dev-dependencies]

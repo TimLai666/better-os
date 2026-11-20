@@ -7,8 +7,8 @@
 //! impossible to miss — there is no second path that skips the read.
 
 use better_core::defaults::{
-    AdapterId, DefaultIntegration, DefaultsValue, IntegrationExclusivity, KeyObservation,
-    ObservedValue, RequiredPrivilege, RestorePolicy, SessionEffect,
+    AdapterId, DconfDatabase, DefaultIntegration, DefaultsValue, IntegrationExclusivity,
+    KeyObservation, ObservedValue, RequiredPrivilege, RestorePolicy, SessionEffect,
 };
 use better_core::manifest::{ComponentCatalog, ComponentId, ComponentManifest};
 use defaults_platform::{
@@ -173,7 +173,12 @@ impl<'a> DefaultsEngine<'a> {
             return status;
         };
 
-        let request = AdapterRequest::new(component, integration);
+        // A record names the dconf database it was captured from and
+        // written to; its status is read there, whichever database this
+        // session would write now.
+        let recorded = record.map(SnapshotEntry::recorded_dconf_database);
+        let request =
+            AdapterRequest::new(component, integration).in_dconf_database(recorded.as_ref());
         let current = adapter.read(&request);
         // An adapter that says this desktop has no such setting at all (GNOME
         // 46 defines no file-manager key, for one) makes the integration
@@ -492,18 +497,37 @@ impl<'a> DefaultsEngine<'a> {
                     .latest_entry(&entry.component, &entry.integration)
                     .is_none()
             })
-            .map(|entry| SnapshotEntry {
-                component_id: entry.component.clone(),
-                integration_id: entry.integration.clone(),
-                previous_value: entry.current.clone(),
-                better_value: entry.desired.clone(),
-                applied_value: None,
-                last_verified_value: None,
-                restore_state: if entry.current.is_determinate() {
-                    RestoreState::Available
-                } else {
-                    RestoreState::NotCaptured
-                },
+            .map(|entry| {
+                // The adapter that will write says what a capture records
+                // and which dconf database it is about.
+                let integration = self.catalog.get(&entry.component).and_then(|manifest| {
+                    manifest
+                        .default_integrations
+                        .iter()
+                        .find(|integration| integration.id == entry.integration)
+                });
+                let adapter =
+                    integration.and_then(|integration| adapters.get(integration.apply_adapter));
+                let previous = match (integration, adapter) {
+                    (Some(integration), Some(adapter)) => adapter
+                        .capture(&AdapterRequest::new(&entry.component, integration))
+                        .unwrap_or_else(|| entry.current.clone()),
+                    _ => entry.current.clone(),
+                };
+                SnapshotEntry {
+                    component_id: entry.component.clone(),
+                    integration_id: entry.integration.clone(),
+                    restore_state: if previous.is_determinate() {
+                        RestoreState::Available
+                    } else {
+                        RestoreState::NotCaptured
+                    },
+                    previous_value: previous,
+                    better_value: entry.desired.clone(),
+                    applied_value: None,
+                    last_verified_value: None,
+                    dconf_database: adapter.and_then(|adapter| adapter.dconf_database()),
+                }
             })
             .collect();
         let mut latest = history.latest().cloned();
@@ -597,6 +621,14 @@ impl<'a> DefaultsEngine<'a> {
         let previous = latest
             .and_then(|snapshot| snapshot.entry(&entry.component, &entry.integration))
             .cloned();
+        // Every write and its verifying read go to the database the record
+        // names (GNOME's for a record 0.2.16 wrote).
+        let recorded = previous
+            .as_ref()
+            .map(SnapshotEntry::recorded_dconf_database);
+        let writes_to = adapters
+            .get(integration.apply_adapter)
+            .and_then(|adapter| adapter.dconf_database());
 
         // A group captured key by key goes back key by key: each key to its own
         // previous value, each verified by its own read.
@@ -607,6 +639,7 @@ impl<'a> DefaultsEngine<'a> {
                 .iter()
                 .map(|captured| {
                     let outcome = match AdapterRequest::new(&entry.component, integration)
+                        .in_dconf_database(recorded.as_ref())
                         .narrowed_to(&captured.key)
                     {
                         Some(request) => self.change_and_verify(
@@ -637,11 +670,12 @@ impl<'a> DefaultsEngine<'a> {
                 })
                 .collect();
             let outcome = EntryOutcome::PerKey { keys };
-            let update = self.snapshot_update(entry, integration, &outcome, previous);
+            let update = self.snapshot_update(entry, integration, &outcome, previous, writes_to);
             return (outcome, update);
         }
 
-        let request = AdapterRequest::new(&entry.component, integration);
+        let request =
+            AdapterRequest::new(&entry.component, integration).in_dconf_database(recorded.as_ref());
         let outcome = self.change_and_verify(
             &entry.action,
             entry.captured_previous.as_ref(),
@@ -649,7 +683,7 @@ impl<'a> DefaultsEngine<'a> {
             &request,
             adapters,
         );
-        let update = self.snapshot_update(entry, integration, &outcome, previous);
+        let update = self.snapshot_update(entry, integration, &outcome, previous, writes_to);
         (outcome, update)
     }
 
@@ -765,6 +799,7 @@ impl<'a> DefaultsEngine<'a> {
         integration: &DefaultIntegration,
         outcome: &EntryOutcome,
         previous: Option<SnapshotEntry>,
+        writes_to: Option<DconfDatabase>,
     ) -> Option<SnapshotEntry> {
         let mut record = previous.unwrap_or(SnapshotEntry {
             component_id: entry.component.clone(),
@@ -778,6 +813,7 @@ impl<'a> DefaultsEngine<'a> {
             } else {
                 RestoreState::NotCaptured
             },
+            dconf_database: writes_to,
         });
         match outcome {
             EntryOutcome::Applied { value } | EntryOutcome::AppliedNeedsSignOut { value } => {

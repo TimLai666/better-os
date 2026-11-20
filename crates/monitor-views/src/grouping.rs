@@ -24,14 +24,16 @@
 //! ## Source
 //!
 //! cgroup path shapes are read from systemd's `systemd.special(7)` slice
-//! layout and from `Desktop Entry` launch behaviour: an application launched
-//! by a desktop shell lands in `app-<launcher>-<AppID>-<random>.scope` under
-//! `app.slice`, Flatpak in `app-flatpak-<AppID>-<pid>.scope`, and Snap in
-//! `snap.<snap>.<app>.<uuid>.scope`. Nothing here executes systemd or reads a
+//! layout and from systemd's application unit naming scheme, which
+//! [`better_core::app_unit`] parses and cites: an application a desktop
+//! starts lands in `app[-<launcher>]-<AppID>-<random>.scope` or
+//! `app[-<launcher>]-<AppID>[@<random>].service` under `app.slice`, Flatpak
+//! with `flatpak` as the launcher, and Snap in `snap.<snap>.<app>.<uuid>.scope`. Nothing here executes systemd or reads a
 //! D-Bus interface; it interprets the `/proc/[pid]/cgroup` string ticket 22
 //! already collects.
 
 use crate::facts::ProcessFacts;
+use better_core::app_unit::{parse_application_unit, unescape_unit_name};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// How much a piece of evidence is worth trusting.
@@ -256,42 +258,6 @@ pub struct CgroupIdentity {
     pub in_system_slice: bool,
 }
 
-/// systemd escapes characters that a unit name cannot carry. `\x2d` for `-`
-/// is the one that appears in practice, in application ids that contain a
-/// hyphen.
-fn unescape_unit(raw: &str) -> String {
-    let mut out = String::with_capacity(raw.len());
-    let bytes = raw.as_bytes();
-    let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index] == b'\\'
-            && index + 3 < bytes.len()
-            && bytes[index + 1] == b'x'
-            && let Ok(code) = u8::from_str_radix(&raw[index + 2..index + 4], 16)
-        {
-            out.push(code as char);
-            index += 4;
-            continue;
-        }
-        out.push(bytes[index] as char);
-        index += 1;
-    }
-    out
-}
-
-/// Drop the trailing `-<digits>` a desktop launcher appends to make the scope
-/// name unique. Without this every launch of one application would be a
-/// different app id.
-fn strip_launch_suffix(raw: &str) -> &str {
-    match raw.rsplit_once('-') {
-        Some((head, tail)) if !head.is_empty() && tail.chars().all(|c| c.is_ascii_digit()) => head,
-        _ => raw,
-    }
-}
-
-/// Launchers systemd names between `app-` and the application id.
-const LAUNCHERS: [&str; 6] = ["gnome", "kde", "xfce", "mate", "cinnamon", "budgie"];
-
 /// Read the identity out of a `/proc/[pid]/cgroup` path.
 ///
 /// Returns `None` for a path with no unit, such as the root cgroup a kernel
@@ -306,7 +272,8 @@ pub fn parse_cgroup_identity(path: &str) -> Option<CgroupIdentity> {
     if !unit.ends_with(".scope") && !unit.ends_with(".service") && !unit.ends_with(".slice") {
         return None;
     }
-    let unit = unescape_unit(unit);
+    let application = parse_application_unit(unit);
+    let unit = unescape_unit_name(unit);
     let mut identity = CgroupIdentity {
         unit: unit.clone(),
         path: trimmed.to_string(),
@@ -332,19 +299,11 @@ pub fn parse_cgroup_identity(path: &str) -> Option<CgroupIdentity> {
                 .filter(|app| !app.is_empty());
             identity.snap = Some((snap.to_string(), app));
         }
-    } else if let Some(rest) = stem.strip_prefix("app-flatpak-") {
-        let app_id = strip_launch_suffix(rest);
-        if !app_id.is_empty() {
-            identity.flatpak_app_id = Some(app_id.to_string());
-        }
-    } else if let Some(rest) = stem.strip_prefix("app-") {
-        let rest = LAUNCHERS
-            .iter()
-            .find_map(|launcher| rest.strip_prefix(&format!("{launcher}-")))
-            .unwrap_or(rest);
-        let app_id = strip_launch_suffix(rest);
-        if !app_id.is_empty() {
-            identity.desktop_app_id = Some(app_id.to_string());
+    } else if let Some(application) = application {
+        if application.launcher.as_deref() == Some("flatpak") {
+            identity.flatpak_app_id = Some(application.application_id);
+        } else {
+            identity.desktop_app_id = Some(application.application_id);
         }
     }
 
@@ -714,6 +673,100 @@ mod tests {
             identity.desktop_app_id.as_deref(),
             Some("com.example.my-app")
         );
+    }
+
+    // Ticket 174: a desktop that starts applications as templated services
+    // (COSMIC) names the unit `app-<id>@<random>.service`, and the instance is
+    // launch identity, not part of the application id.
+    #[test]
+    fn a_templated_application_service_yields_the_id_without_its_instance() {
+        let identity = parse_cgroup_identity(
+            "/user.slice/user-1000.slice/user@1000.service/app.slice/app-com.example.Term@3f2a91.service",
+        )
+        .unwrap();
+        assert_eq!(identity.desktop_app_id.as_deref(), Some("com.example.Term"));
+        assert!(identity.in_app_slice);
+
+        let launched = parse_cgroup_identity(
+            "/user.slice/user-1000.slice/user@1000.service/app.slice/app-cosmic-com.example.my\\x2dedit@77.service",
+        )
+        .unwrap();
+        assert_eq!(
+            launched.desktop_app_id.as_deref(),
+            Some("com.example.my-edit")
+        );
+
+        let flatpak = parse_cgroup_identity(
+            "/user.slice/user-1000.slice/user@1000.service/app.slice/app-flatpak-org.example.Chat@12345.service",
+        )
+        .unwrap();
+        assert_eq!(flatpak.flatpak_app_id.as_deref(), Some("org.example.Chat"));
+        assert_eq!(flatpak.desktop_app_id, None);
+    }
+
+    #[test]
+    fn a_templated_application_is_named_and_grouped_by_its_id() {
+        const TERM_A: &str = "/user.slice/user-1000.slice/user@1000.service/app.slice/app-com.example.Term@aaaa.service";
+        const TERM_B: &str = "/user.slice/user-1000.slice/user@1000.service/app.slice/app-com.example.Term@bbbb.service";
+        let processes = vec![
+            process(100, "term", 1, Some(TERM_A)),
+            process(200, "term", 1, Some(TERM_B)),
+        ];
+
+        // By default the unit defines the group, and the id names it.
+        let grouping = group_processes(&processes, &GroupingPrecedence::default());
+        assert_eq!(grouping.group_of(100).unwrap().display_name, "Term");
+        assert_eq!(grouping.group_of(200).unwrap().display_name, "Term");
+
+        // With the desktop application first, both launches are one group.
+        let by_application = GroupingPrecedence::new(vec![EvidenceKind::DesktopApplication]);
+        let grouping = group_processes(&processes, &by_application);
+        assert_eq!(grouping.len(), 1);
+        assert!(grouping.group_of(100).unwrap().contains(200));
+    }
+
+    // The shapes GNOME 46 produces on the owner's machine, with the names
+    // replaced: a scope with no launcher, and an id with several escapes.
+    #[test]
+    fn the_scope_shapes_gnome_produces_are_read() {
+        let bare = parse_cgroup_identity(
+            "/user.slice/user-1000.slice/user@1000.service/app.slice/app-com.example.Browser-117362.scope",
+        )
+        .unwrap();
+        assert_eq!(bare.desktop_app_id.as_deref(), Some("com.example.Browser"));
+
+        let escaped = parse_cgroup_identity(
+            "/user.slice/user-1000.slice/user@1000.service/app.slice/app-gnome-org.example.Mail\\x2dalarm\\x2dnotify-2901.scope",
+        )
+        .unwrap();
+        assert_eq!(
+            escaped.desktop_app_id.as_deref(),
+            Some("org.example.Mail-alarm-notify")
+        );
+    }
+
+    // An escaped dash followed by digits is part of the id, not a launch
+    // suffix: the old parser unescaped first and cut `-123` off.
+    #[test]
+    fn an_escaped_dash_before_digits_stays_in_the_id() {
+        let identity = parse_cgroup_identity(
+            "/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.example.tool\\x2d123.service",
+        )
+        .unwrap();
+        assert_eq!(
+            identity.desktop_app_id.as_deref(),
+            Some("org.example.tool-123")
+        );
+    }
+
+    #[test]
+    fn a_slice_carries_no_application_id() {
+        let identity = parse_cgroup_identity(
+            "/user.slice/user-1000.slice/user@1000.service/app.slice/app-gnome\\x2dsession\\x2dmanager.slice",
+        )
+        .unwrap();
+        assert_eq!(identity.desktop_app_id, None);
+        assert_eq!(identity.unit, "app-gnome-session-manager.slice");
     }
 
     #[test]

@@ -20,7 +20,8 @@
 //! bindings, and the shell's own. An application's own accelerators are not in
 //! dconf at all and are outside what any of this can promise.
 
-use std::path::Path;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 
 use defaults_platform::gvdb::{GVariantValue, GvdbDatabase};
 
@@ -85,6 +86,29 @@ pub fn read(database: &Path) -> KeybindingReading {
             detail: error.to_string(),
         },
     }
+}
+
+/// Every recorded keybinding the session sees, from its own database and the
+/// ones beneath it in its dconf profile (`databases`, in profile order): a key
+/// an earlier database holds hides the same key further down, exactly as
+/// dconf reads them. Any database that cannot be read makes the whole reading
+/// unknown, because a collision held there would otherwise be missed.
+pub fn read_stacked(databases: &[PathBuf]) -> KeybindingReading {
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut bindings = Vec::new();
+    for path in databases {
+        let here = match read(path) {
+            KeybindingReading::Recorded(here) => here,
+            unknown => return unknown,
+        };
+        let keys: HashSet<String> = here.iter().map(|binding| binding.key.clone()).collect();
+        bindings.extend(
+            here.into_iter()
+                .filter(|binding| !seen.contains(&binding.key)),
+        );
+        seen.extend(keys);
+    }
+    KeybindingReading::Recorded(bindings)
 }
 
 /// Every shortcut spelling under the keybinding prefixes, in key order.

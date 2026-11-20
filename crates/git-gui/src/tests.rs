@@ -1768,3 +1768,26 @@ fn the_arrow_keys_walk_a_dropdown_and_stop_at_its_ends() {
     // A search that left fewer rows: from the last one.
     assert_eq!(step(Some(7), 3, false), Some(1));
 }
+
+/// Ticket 141: the diff's lines run its whole width, so the detail pane is
+/// clipped at inset 0 and the diff list ends with the corner's depth as
+/// padding (the arrangement `better_ui`'s corner tests drive through GPUI);
+/// the drop bar over the lists' foot and the graph's tooltip go through the
+/// kit, so they keep inside the window's rounded corner.
+#[test]
+fn the_diff_drop_bar_and_graph_tooltip_keep_inside_the_rounded_corner() {
+    let render = include_str!("render.rs");
+    let graph = include_str!("graph_pane.rs");
+    assert!(render.contains(
+        "window_chrome::corner_clip(\n                px(0.0),\n                self.detail_pane("
+    ));
+    assert!(render.contains(".pb(window_chrome::corner_depth(px(0.0), window, cx))"));
+    assert!(render.contains("window_chrome::corner_fill(p.flyout)"));
+    assert!(render.contains("drop_branches.map(|strip| crate::render::drop_bar(strip, p))"));
+    assert!(graph.contains("drop_branches.map(|strip| crate::render::drop_bar(strip, p))"));
+    assert!(graph.contains("better_ui::window_chrome::float_at("));
+    // No bar paints a square fill of its own at the lists' foot.
+    for source in [render, graph] {
+        assert!(!source.contains(".bottom_0()\n                    .left_0()\n                    .right_0()\n                    .bg(p.flyout)"));
+    }
+}

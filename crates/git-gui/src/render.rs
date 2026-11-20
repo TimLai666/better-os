@@ -44,6 +44,7 @@ use crate::remote::SyncAction;
 use crate::session::{DiffContent, DiffKey, Page, Problem, Repo, Tab};
 use crate::{Appearance, publish};
 use better_ui::pane_edge::PANE_EDGE_HIT_WIDTH;
+use better_ui::window_chrome;
 
 const TOOLBAR_HEIGHT: Pixels = px(56.0);
 const ROW_HEIGHT: Pixels = px(36.0);
@@ -359,6 +360,28 @@ impl Render for GitApp {
             .children(context)
             .children(self.update_restart.toast_layer(self.words(), cx))
     }
+}
+
+/// The bar of branches a dragged commit can be dropped on, over the foot
+/// of the History and Graph lists. It reaches the window's bottom leading
+/// corner, so its fill and top edge follow the corner (ticket 141); the
+/// branches in it keep 8px from its sides, clear of the curve.
+pub(crate) fn drop_bar(strip: impl IntoElement, p: &'static Palette) -> Div {
+    div()
+        .absolute()
+        .bottom_0()
+        .left_0()
+        .right_0()
+        .border_t_1()
+        .border_color(gpui::transparent_black())
+        .child(window_chrome::corner_fill(p.flyout).border(
+            gpui::Edges {
+                top: px(1.0),
+                ..gpui::Edges::default()
+            },
+            p.flyout_stroke,
+        ))
+        .child(strip)
 }
 
 fn v_stack() -> Div {
@@ -1632,9 +1655,26 @@ impl GitApp {
             .flex_none()
             .w(px(width))
             .h_full()
+            .relative()
+            // The pane reaches the window's bottom leading corner: its fill
+            // and edge follow the corner (ticket 141); what sits at its
+            // bottom (the commit box, the history's hint) is padded clear of
+            // the curve. The edge's width stays in the layout.
             .border_r_1()
-            .border_color(p.divider)
-            .bg(p.layer)
+            .border_color(gpui::transparent_black())
+            .child(window_chrome::corner_fill(p.layer).border(
+                gpui::Edges {
+                    right: px(1.0),
+                    ..gpui::Edges::default()
+                },
+                p.divider,
+            ));
+        let pane_contents = div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h_0()
+            .w_full()
             .child(
                 div().p(spacing::SM).child(
                     SelectorBar::new(
@@ -1672,6 +1712,7 @@ impl GitApp {
                 (Tab::History, _) => self.history_pane(repo, p, c, cx).into_any_element(),
                 (Tab::Graph, _) => self.graph_pane(repo, p, c, window, cx).into_any_element(),
             });
+        let pane = pane.child(pane_contents);
         let follow = cx.listener(move |this, event: &DragMoveEvent<EdgeDrag>, window, cx| {
             if this.edge_cancelled {
                 return;
@@ -1713,7 +1754,14 @@ impl GitApp {
             .w_full()
             .child(probe)
             .child(pane)
-            .child(self.detail_pane(repo, p, c, window, cx))
+            // A diff's lines run its whole width, so while they scroll past
+            // the window's bottom trailing corner they stop the corner's
+            // radius above its edge; the list ends with as much padding, so
+            // its last line scrolls fully into view (ticket 141).
+            .child(window_chrome::corner_clip(
+                px(0.0),
+                self.detail_pane(repo, p, c, window, cx),
+            ))
             .on_drag_move(follow)
             .on_mouse_up(
                 MouseButton::Left,
@@ -2563,17 +2611,7 @@ impl GitApp {
             })
             // Over the list's foot, so the rows under the pointer do not move
             // when a drag starts.
-            .children(drop_branches.map(|strip| {
-                div()
-                    .absolute()
-                    .bottom_0()
-                    .left_0()
-                    .right_0()
-                    .bg(p.flyout)
-                    .border_t_1()
-                    .border_color(p.flyout_stroke)
-                    .child(strip)
-            }))
+            .children(drop_branches.map(|strip| crate::render::drop_bar(strip, p)))
     }
 
     // --- the right side ---------------------------------------------------------
@@ -3132,6 +3170,9 @@ impl GitApp {
                 .collect()
         })
         .track_scroll(&self.diff_scroll)
+        // The last line scrolls fully above the window's bottom trailing
+        // corner (ticket 141).
+        .pb(window_chrome::corner_depth(px(0.0), window, cx))
         .size_full();
         // Measures the diff's width as it is laid out; a change (a drag of
         // the pane edge, a resized window) lays the rows out again.

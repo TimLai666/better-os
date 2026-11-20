@@ -22,6 +22,7 @@ fn entry(component: &str, integration: &str, previous: ObservedValue) -> Snapsho
         applied_value: None,
         last_verified_value: None,
         restore_state: RestoreState::Available,
+        dconf_database: None,
     }
 }
 
@@ -347,4 +348,99 @@ fn a_group_captured_type_by_type_keeps_every_type_through_the_store() {
 
     assert_eq!(history.snapshots(), std::slice::from_ref(&snapshot));
     assert_eq!(history.snapshots()[0].entries[0].previous_value, per_type);
+}
+
+/// A record exactly as Better Manager 0.2.16 wrote it: no `dconf_database`.
+const RECORD_0_2_16: &str = r#"{
+  "schema_version": 2,
+  "snapshot_id": "00000000001700000000-4242-000000000",
+  "created_at": 1700000000,
+  "system_identity": { "distribution": "zorin", "desktop_session": "zorin:gnome" },
+  "entries": [
+    {
+      "component_id": "better-launcher",
+      "integration_id": "launcher-shortcut",
+      "previous_value": { "state": "unset" },
+      "better_value": { "type": "text_list", "value": ["<Super>space"] },
+      "applied_value": { "type": "text_list", "value": ["<Super>space"] },
+      "last_verified_value": { "type": "text_list", "value": ["<Super>space"] },
+      "restore_state": "available"
+    }
+  ]
+}
+"#;
+
+// Ticket 207 review: a record names the dconf database it is about, and one
+// 0.2.16 wrote is about GNOME's, which is the only one 0.2.16 ever wrote.
+#[test]
+fn a_record_from_0_2_16_reads_as_gnome_s_database() {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::write(
+        directory
+            .path()
+            .join("00000000001700000000-4242-000000000.json"),
+        RECORD_0_2_16,
+    )
+    .unwrap();
+    let history = SnapshotStore::at_path(directory.path()).history().unwrap();
+    assert!(history.damaged().is_empty(), "{:?}", history.damaged());
+    let record = &history.snapshots()[0].entries[0];
+    assert_eq!(record.dconf_database, None);
+    assert_eq!(
+        record.recorded_dconf_database(),
+        better_core::DconfDatabase::gnome_user()
+    );
+}
+
+#[test]
+fn a_record_naming_its_database_keeps_it_and_stays_readable_by_0_2_16() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = SnapshotStore::at_path(directory.path());
+    let session = better_core::DconfDatabase {
+        name: "betteros".to_string(),
+        writer_path: "/ca/desrt/dconf/Writer/betteros".to_string(),
+    };
+    let snapshot = Snapshot::new(
+        identity(),
+        vec![SnapshotEntry {
+            dconf_database: Some(session.clone()),
+            ..entry("better-launcher", "launcher-shortcut", ObservedValue::Unset)
+        }],
+    );
+    let path = store.write(&snapshot).unwrap();
+    let history = store.history().unwrap();
+    assert_eq!(
+        history.snapshots()[0].entries[0].recorded_dconf_database(),
+        session
+    );
+
+    // 0.2.16's own types, copied from `v0.2.16:crates/defaults-store/src/lib.rs`:
+    // the same schema version, and no rule against a field they do not know.
+    #[derive(serde::Deserialize)]
+    #[allow(dead_code)]
+    struct Entry0216 {
+        component_id: String,
+        integration_id: String,
+        previous_value: ObservedValue,
+        better_value: DefaultsValue,
+        applied_value: Option<DefaultsValue>,
+        last_verified_value: Option<DefaultsValue>,
+        restore_state: RestoreState,
+    }
+    #[derive(serde::Deserialize)]
+    #[allow(dead_code)]
+    struct Snapshot0216 {
+        schema_version: u32,
+        snapshot_id: String,
+        created_at: u64,
+        system_identity: SystemIdentity,
+        entries: Vec<Entry0216>,
+    }
+    let old: Snapshot0216 = serde_json::from_slice(&std::fs::read(path).unwrap())
+        .expect("0.2.16 must still read a record that names its database");
+    assert_eq!(
+        old.schema_version, 2,
+        "a raised version would make 0.2.16 refuse it"
+    );
+    assert_eq!(old.entries.len(), 1);
 }

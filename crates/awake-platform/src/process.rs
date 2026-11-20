@@ -40,45 +40,23 @@ pub struct ProcessScan {
 
 /// Extracts a desktop identifier from a systemd cgroup path.
 ///
-/// Recognizes the `app-<launcher>-<id>-<pid>.scope` and `app-<id>-<pid>.scope`
-/// forms that GNOME, KDE, and Flatpak produce. Anything else yields nothing,
-/// which is the correct answer for a system service or a shell job.
+/// Reads the unit names by systemd's application unit scheme through
+/// [`better_core::app_unit`], the one parser of it: the scope a GNOME, KDE, or
+/// Flatpak launch produces and the templated service COSMIC starts
+/// (`app-<id>@<random>.service`) both yield the unescaped application id, so
+/// `org.gnome.Text\x2dEditor` matches a rule written as
+/// `org.gnome.Text-Editor`. Anything else yields nothing, which is the
+/// correct answer for a system service or a shell job.
 pub fn desktop_id_from_cgroup(cgroup: &str) -> Option<String> {
     for line in cgroup.lines() {
         // Both cgroup v1 (`12:name=systemd:/path`) and v2 (`0::/path`) put the
         // path last, so the last colon-separated field is the one to read.
         let path = line.rsplit(':').next()?;
-        for segment in path.split('/') {
-            let Some(unit) = segment.strip_suffix(".scope") else {
-                continue;
-            };
-            let Some(unit) = unit.strip_prefix("app-") else {
-                continue;
-            };
-            // systemd escapes characters it cannot put in a unit name. A hyphen
-            // in a desktop identifier arrives as `\x2d`, and leaving it escaped
-            // would make `org.gnome.Text\x2dEditor` fail to match a rule the
-            // user wrote as `org.gnome.Text-Editor`.
-            let unit = unit.replace("\\x2d", "-");
-            // Drop the trailing `-<pid>`, which is instance identity and not
-            // part of the application's name.
-            let unit = match unit.rsplit_once('-') {
-                Some((head, tail))
-                    if !tail.is_empty() && tail.chars().all(|c| c.is_ascii_digit()) =>
-                {
-                    head
-                }
-                _ => unit.as_str(),
-            };
-            // Drop the launcher prefix, if one is there.
-            let identifier = ["gnome-", "flatpak-", "snap-", "kde-"]
-                .iter()
-                .find_map(|prefix| unit.strip_prefix(prefix))
-                .unwrap_or(unit);
-            if identifier.is_empty() {
-                continue;
-            }
-            return Some(identifier.to_string());
+        if let Some(unit) = path
+            .split('/')
+            .find_map(better_core::app_unit::parse_application_unit)
+        {
+            return Some(unit.application_id);
         }
     }
     None
@@ -287,6 +265,18 @@ mod tests {
             None
         );
         assert_eq!(desktop_id_from_cgroup(""), None);
+    }
+
+    // Ticket 174: COSMIC starts an application as a templated service, which
+    // this function used to skip because it read scopes only.
+    #[test]
+    fn a_templated_application_service_yields_the_application_identifier() {
+        assert_eq!(
+            desktop_id_from_cgroup(
+                "0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-com.example.my\\x2dterm@4c1d.service"
+            ),
+            Some("com.example.my-term".to_string())
+        );
     }
 
     #[test]

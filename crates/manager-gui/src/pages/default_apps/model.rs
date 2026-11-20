@@ -266,14 +266,26 @@ pub(crate) fn value_label(locale: Locale, value: &DefaultsValue) -> String {
     }
 }
 
+/// The person's sentence for a dconf reason key (which database the session
+/// reads could not be decided, or one it reads is damaged), in `locale`.
+pub(crate) fn dconf_reason(locale: Locale, reason: &str) -> Option<&'static str> {
+    defaults_core::dconf_sentence(reason).map(|(en, zh_tw)| match locale.resolved() {
+        Locale::ZhTw => zh_tw,
+        _ => en,
+    })
+}
+
 /// What the system said, in words. The machine keys an adapter returns are
-/// diagnostics, not user-facing text, so none of them reach the screen.
+/// diagnostics, not user-facing text, so none of them reach the screen; a
+/// dconf refusal is shown as its sentence.
 pub(crate) fn observed_label(locale: Locale, observed: &ObservedValue) -> String {
     let c = copy(locale);
     match observed {
         ObservedValue::Set { value } => value_label(locale, value),
         ObservedValue::Unset => c.value_none.to_string(),
-        ObservedValue::Unknown { .. } => c.value_unknown.to_string(),
+        ObservedValue::Unknown { reason } => dconf_reason(locale, reason)
+            .unwrap_or(c.value_unknown)
+            .to_string(),
         ObservedValue::Unsupported { reason } if reason == defaults_core::NO_SUCH_SETTING => {
             c.value_no_such_setting.to_string()
         }
@@ -354,7 +366,9 @@ pub(crate) fn skip_reason_label(locale: Locale, reason: &SkipReason) -> &'static
         SkipReason::NoProductionAdapter { .. } => c.skip_no_adapter,
         SkipReason::NothingCaptured => c.skip_nothing_captured,
         SkipReason::LeftInPlace => c.skip_left_in_place,
-        SkipReason::EffectiveValueUnknown { .. } => c.skip_value_unknown,
+        SkipReason::EffectiveValueUnknown { reason } => {
+            dconf_reason(locale, reason).unwrap_or(c.skip_value_unknown)
+        }
         SkipReason::ChangedExternallyWithoutConfirmation { .. } => c.skip_changed_externally,
         SkipReason::Conflict { .. } => c.skip_conflict,
         SkipReason::PreviousApplicationMissing { .. } => c.previous_application_missing,
@@ -1037,9 +1051,16 @@ fn outcome_parts(
             ResultTone::Neutral,
             Some(skip_reason_label(locale, reason).to_string()),
         ),
-        EntryOutcome::ManualActionRequired { .. } => {
-            (c.manual_action_required, ResultTone::Warning, None)
-        }
+        // A refusal to write a database the session would not read is not a
+        // job for the person's hands: it says why, and what they can do.
+        EntryOutcome::ManualActionRequired { reason, .. } => match dconf_reason(locale, reason) {
+            Some(sentence) => (
+                c.result_not_changed,
+                ResultTone::Warning,
+                Some(sentence.to_string()),
+            ),
+            None => (c.manual_action_required, ResultTone::Warning, None),
+        },
         EntryOutcome::Failed { .. } => (c.result_failed, ResultTone::Failure, None),
         EntryOutcome::PerKey { keys } => {
             let any_restored = keys.iter().any(|key| key.outcome.is_success());

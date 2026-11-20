@@ -429,18 +429,24 @@ pub fn toast_layer(host: &Entity<ToastHost>, locale: Locale, cx: &App) -> Option
             card.into_any_element()
         })
         .collect();
+    // The cards' shadows reach toward the window's bottom right corner; the
+    // layer covers the root so they are kept inside the window's curve
+    // (ticket 141).
     Some(
-        deferred(
-            div()
-                .absolute()
-                .right(px(TOAST_MARGIN))
-                .bottom(px(TOAST_MARGIN))
-                .flex()
-                .flex_col()
-                .items_end()
-                .gap(spacing::SM)
-                .children(cards),
-        )
+        deferred(super::window_frame::corner_clip(
+            px(TOAST_MARGIN),
+            div().absolute().top_0().left_0().size_full().child(
+                div()
+                    .absolute()
+                    .right(px(TOAST_MARGIN))
+                    .bottom(px(TOAST_MARGIN))
+                    .flex()
+                    .flex_col()
+                    .items_end()
+                    .gap(spacing::SM)
+                    .children(cards),
+            ),
+        ))
         .with_priority(TOAST_LAYER_PRIORITY)
         .into_any_element(),
     )

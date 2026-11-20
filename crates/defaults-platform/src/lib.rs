@@ -20,18 +20,21 @@
 
 pub mod applications;
 pub mod dconf;
+pub mod dconf_profile;
 #[cfg(feature = "dconf-write")]
 pub mod dconf_writer;
 pub mod gsettings;
 pub mod gvariant;
 pub mod gvdb;
 pub mod mock;
+#[cfg(feature = "test-support")]
+pub mod test_support;
 pub mod xdg;
 
 use std::collections::BTreeMap;
 
 use better_core::defaults::{
-    AdapterId, DefaultIntegration, DefaultsValue, KeyObservation, ObservedValue,
+    AdapterId, DconfDatabase, DefaultIntegration, DefaultsValue, KeyObservation, ObservedValue,
 };
 use better_core::manifest::ComponentId;
 use serde::{Deserialize, Serialize};
@@ -54,6 +57,10 @@ pub struct AdapterRequest<'a> {
     pub integration: &'a DefaultIntegration,
     /// Set when the request is about one declared key rather than all of them.
     only: Option<usize>,
+    /// The dconf database a defaults record says this integration was read
+    /// from and written to. An adapter that keeps values in dconf works in
+    /// that database, not in whichever one the running session writes now.
+    dconf_database: Option<&'a DconfDatabase>,
 }
 
 impl<'a> AdapterRequest<'a> {
@@ -62,7 +69,21 @@ impl<'a> AdapterRequest<'a> {
             component,
             integration,
             only: None,
+            dconf_database: None,
         }
+    }
+
+    /// The same request, about the dconf database a record names.
+    pub fn in_dconf_database(self, database: Option<&'a DconfDatabase>) -> Self {
+        Self {
+            dconf_database: database,
+            ..self
+        }
+    }
+
+    /// The dconf database a record names for this integration, if any.
+    pub fn dconf_database(&self) -> Option<&'a DconfDatabase> {
+        self.dconf_database
     }
 
     /// The same request about one of its declared keys. Reading and writing a
@@ -184,6 +205,23 @@ pub enum VerifyOutcome {
 /// Reads and changes one class of desktop setting.
 pub trait DefaultsAdapter {
     fn id(&self) -> AdapterId;
+
+    /// The dconf database a change made through this adapter now lands in,
+    /// for an adapter that keeps values in dconf. The engine records it with
+    /// the capture, and every later read and write of that record names it
+    /// ([`AdapterRequest::in_dconf_database`]).
+    fn dconf_database(&self) -> Option<DconfDatabase> {
+        None
+    }
+
+    /// What a capture before the first change records, when that differs
+    /// from [`Self::read`]: a value the session shows from a database beneath
+    /// its own is captured as unset, so a restore resets the key rather than
+    /// copying that value into the session's database. `None` means the read.
+    fn capture(&self, request: &AdapterRequest<'_>) -> Option<ObservedValue> {
+        let _ = request;
+        None
+    }
 
     /// The effective value the system reports for this integration.
     fn read(&self, request: &AdapterRequest<'_>) -> ObservedValue;

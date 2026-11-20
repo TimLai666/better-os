@@ -250,11 +250,33 @@ impl SettingValue {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "reading", rename_all = "snake_case")]
 pub enum Reading {
-    Value { value: SettingValue },
-    SessionDefault { reason: String },
-    Unsupported { reason: String },
-    Unknown { reason: String },
-    PermissionDenied { reason: String },
+    Value {
+        value: SettingValue,
+    },
+    /// The session's own database holds nothing for this setting and a
+    /// database beneath it in the session's profile does, so the session
+    /// shows `value` (`from` names that database). It is shown as the value;
+    /// it is not the session's own, so a capture records it as the session
+    /// default ([`Reading::for_capture`]) and a restore resets the key rather
+    /// than copying the value into the session's database. Never stored: a
+    /// capture on disk holds only the variants a released Better Touchpad
+    /// reads.
+    Inherited {
+        value: SettingValue,
+        from: String,
+    },
+    SessionDefault {
+        reason: String,
+    },
+    Unsupported {
+        reason: String,
+    },
+    Unknown {
+        reason: String,
+    },
+    PermissionDenied {
+        reason: String,
+    },
 }
 
 impl Reading {
@@ -284,12 +306,26 @@ impl Reading {
     /// to. `SessionDefault` is definite: "nothing was set" is a state that can
     /// be reproduced exactly.
     pub fn is_determinate(&self) -> bool {
-        matches!(self, Self::Value { .. } | Self::SessionDefault { .. })
+        matches!(
+            self,
+            Self::Value { .. } | Self::Inherited { .. } | Self::SessionDefault { .. }
+        )
+    }
+
+    /// What a capture keeps of this reading: a value inherited from beneath
+    /// the session's own database is the session default.
+    pub fn for_capture(self) -> Self {
+        match self {
+            Self::Inherited { from, .. } => Self::SessionDefault {
+                reason: format!("touchpad.inherited_from:{from}"),
+            },
+            other => other,
+        }
     }
 
     pub fn as_value(&self) -> Option<SettingValue> {
         match self {
-            Self::Value { value } => Some(*value),
+            Self::Value { value } | Self::Inherited { value, .. } => Some(*value),
             _ => None,
         }
     }
@@ -297,7 +333,7 @@ impl Reading {
     /// The machine key behind a reading that is not a value.
     pub fn reason(&self) -> Option<&str> {
         match self {
-            Self::Value { .. } => None,
+            Self::Value { .. } | Self::Inherited { .. } => None,
             Self::SessionDefault { reason }
             | Self::Unsupported { reason }
             | Self::Unknown { reason }
