@@ -20,7 +20,9 @@ use std::time::{Duration, Instant};
 
 use better_core::ComponentManifest;
 use common::*;
-use defaults_core::removal::{PutBack, RemovalState, put_back, session_context, take_again};
+use defaults_core::removal::{
+    PutBack, RemovalState, Standing, finish_one, put_back, session_context, take_again,
+};
 use defaults_core::{
     ComponentReadiness, Confirmations, DefaultsEngine, IntegrationState, Selection, SystemContext,
 };
@@ -496,6 +498,136 @@ fn a_put_back_with_no_session_is_deferred_not_reported_done() {
 /// No record to restore from (the snapshots were lost, or another account
 /// applied it): the activation file is removed only when it is byte for
 /// byte Better OS's.
+/// Second review, finding 1: Better Files turned off with no session (SSH,
+/// a TTY, `better-manager-cli disable`) leaves a pending put-back, and
+/// Better Manager's next start, seeing the record say "installed, off",
+/// finishes it rather than throwing it away. Turned on again first, the
+/// pending put-back is overtaken and dropped.
+#[test]
+fn turned_off_with_no_session_is_put_back_at_the_next_start() {
+    let bus = bus_or_skip!();
+    let snapshots = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+    let state = RemovalState::at(state_dir.path(), "better-files");
+    let mut run = Run::new(&bus, snapshots.path());
+    run.apply();
+    let manifest = || ComponentManifest::parse_yaml(MANIFEST).unwrap();
+    assert_eq!(
+        put_back(
+            manifest(),
+            None,
+            &mut run.adapters,
+            &run.store,
+            &state,
+            Vec::new
+        ),
+        PutBack::Deferred
+    );
+    assert!(bus.user_services().join(format!("{NAME}.service")).exists());
+
+    // The start: installed, off.
+    let off = Standing {
+        installed: true,
+        enabled: false,
+    };
+    assert!(finish_one(
+        manifest(),
+        off,
+        session(),
+        &mut run.adapters,
+        &run.store,
+        &state,
+        Vec::new
+    ));
+    assert!(!state.is_pending());
+    assert!(!bus.user_services().join(format!("{NAME}.service")).exists());
+    assert_eq!(
+        bus.show_item("file:///tmp/a.txt"),
+        "nautilus file:///tmp/a.txt"
+    );
+    bus.quit_owner();
+
+    // On again before a start: the pending put-back is dropped, nothing put
+    // back.
+    let on = Standing {
+        installed: true,
+        enabled: true,
+    };
+    run.apply();
+    assert_eq!(
+        put_back(
+            manifest(),
+            None,
+            &mut run.adapters,
+            &run.store,
+            &state,
+            Vec::new
+        ),
+        PutBack::Deferred
+    );
+    finish_one(
+        manifest(),
+        on,
+        session(),
+        &mut run.adapters,
+        &run.store,
+        &state,
+        Vec::new,
+    );
+    assert!(!state.is_pending());
+    assert!(bus.user_services().join(format!("{NAME}.service")).exists());
+}
+
+/// Second review, finding 2: turned on with no session, what was given back
+/// is remembered (and marked pending) until applying it again succeeds.
+#[test]
+fn turned_on_with_no_session_keeps_what_to_take_again() {
+    let bus = bus_or_skip!();
+    let snapshots = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+    let state = RemovalState::at(state_dir.path(), "better-files");
+    let mut run = Run::new(&bus, snapshots.path());
+    run.apply();
+    let manifest = || ComponentManifest::parse_yaml(MANIFEST).unwrap();
+    assert_eq!(
+        put_back(
+            manifest(),
+            session(),
+            &mut run.adapters,
+            &run.store,
+            &state,
+            Vec::new
+        ),
+        PutBack::Done
+    );
+    assert_eq!(
+        take_again(manifest(), None, &mut run.adapters, &run.store, &state),
+        PutBack::Deferred
+    );
+    assert!(state.is_pending());
+    assert!(!bus.user_services().join(format!("{NAME}.service")).exists());
+    // The next start in the session, the record saying on: taken again.
+    let on = Standing {
+        installed: true,
+        enabled: true,
+    };
+    assert!(finish_one(
+        manifest(),
+        on,
+        session(),
+        &mut run.adapters,
+        &run.store,
+        &state,
+        Vec::new
+    ));
+    assert!(!state.is_pending());
+    assert_eq!(
+        bus.show_item("file:///tmp/b.txt"),
+        "better-files file:///tmp/b.txt"
+    );
+    bus.quit_owner();
+}
+
 #[test]
 fn with_no_record_only_better_os_s_own_file_is_taken_away() {
     let bus = bus_or_skip!();

@@ -468,7 +468,18 @@ GUI or dependency compiles when the relevant command was not executed.
   the package, and with `--undo` if the daemon then refuses. It never blocks a
   removal: exit 3 is a warning in Activity, exit 4 means no session and a
   pending restore Better Manager finishes at its next start. Better Touchpad's
-  puts its captured touchpad settings back. The gesture service's first run puts the Mac-style preset in
+  puts its captured touchpad settings back. A package may also ship
+  `/usr/lib/better-os/on-disable/<package>` (ticket 129), under the same
+  rules (only a regular, root-owned file nobody else can write, found in
+  dpkg's file list, run as the person, never blocking, exit 3 a warning, exit
+  4 pending and finished at Better Manager's next start): manager-core runs
+  it when the component is turned off, after its units and extensions, and
+  with `--undo` when it is turned on again, so what it took over in the
+  person's session is given back while it is off. Better Manager's start
+  finishes every component's pending put-back or take-back by the record
+  (installed, on or off), not only by whether it is installed. Better Files
+  is the one package that ships it; ticket 176 folds it into one mechanism
+  for every component. The gesture service's first run puts the Mac-style preset in
   force when no gesture file exists yet. Without both processes the Gestures
   screen and the `touchpad.gesture_bridge` health check say which is missing:
   the service owns `org.betteros.TouchpadGestures1` while it runs, and an

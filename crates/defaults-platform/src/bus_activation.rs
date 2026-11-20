@@ -178,6 +178,12 @@ pub fn remove_own_files(
             && std::fs::read_to_string(&path)
                 .is_ok_and(|content| content == service_file(name, &activation.exec));
         if ours && std::fs::remove_file(&path).is_ok() {
+            // The person's own file Better OS's stood in front of comes back
+            // into use, as it was.
+            let aside = kept_aside(&path);
+            if std::fs::symlink_metadata(&aside).is_ok_and(|metadata| metadata.is_file()) {
+                let _ = std::fs::rename(&aside, &path);
+            }
             remove_empty_parents(services);
             removed.push(name.to_string());
         }
@@ -674,5 +680,40 @@ mod tests {
         );
         assert!(!file.exists());
         assert_eq!(*bus.reloads.lock().unwrap(), 1);
+    }
+
+    /// Ticket 129, second review: the person had their own file, Better OS
+    /// kept it aside, and the component goes with no record to restore from
+    /// (`apt remove`, then Better Manager's start): the person's file comes
+    /// back into use, as it was.
+    #[test]
+    fn removal_without_a_record_puts_the_person_s_own_file_back() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let directory = tempfile::tempdir().unwrap();
+        let services = directory.path().join("dbus-1/services");
+        std::fs::create_dir_all(&services).unwrap();
+        let file = services.join("org.freedesktop.FileManager1.service");
+        let theirs = "[D-BUS Service]\nName=org.freedesktop.FileManager1\nExec=/opt/x\n";
+        std::fs::write(&file, theirs).unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let bus = FakeBus::default();
+        let mut adapter = BusActivationAdapter::new(
+            services.clone(),
+            Box::new(bus.clone()),
+            production_activation,
+        );
+        let component = ComponentId::new("better-files").unwrap();
+        let declaration = integration();
+        let request = AdapterRequest::new(&component, &declaration);
+        adapter.apply(&request);
+        assert_ne!(std::fs::read_to_string(&file).unwrap(), theirs);
+        assert_eq!(
+            remove_own_files(&services, "better-files", production_activation, &bus),
+            ["org.freedesktop.FileManager1"]
+        );
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), theirs);
+        let mode = std::fs::metadata(&file).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        assert_eq!(std::fs::read_dir(&services).unwrap().count(), 1);
     }
 }

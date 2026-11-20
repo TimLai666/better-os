@@ -274,3 +274,46 @@ fn a_call_is_answered_only_once_its_window_opened() {
     );
     let _ = connection.release_name(BUS_NAME);
 }
+
+/// Second review: a service process leaving gives the name back first, and a
+/// call it had already received and was opening a window for still gets its
+/// answer: the connection stays until the process ends.
+#[test]
+fn a_call_received_before_the_name_is_given_back_is_still_answered() {
+    let Some(bus) = ActivatingBus::start() else {
+        eprintln!("skipping: dbus-daemon is not available in this environment");
+        return;
+    };
+    let (sender, requests) = std::sync::mpsc::channel();
+    let (connection, reply) = serve_on(bus.builder(), sender).expect("served on the bus");
+    assert!(reply.is_ok());
+    let hold = files_gui::filemanager1::NameHold::of(connection);
+    let caller = bus.builder().build().expect("a client connection");
+    let (answer, answers) = std::sync::mpsc::channel();
+    {
+        let caller = caller.clone();
+        std::thread::spawn(move || {
+            let reply = caller.call_method(
+                Some(BUS_NAME),
+                OBJECT_PATH,
+                Some("org.freedesktop.FileManager1"),
+                "ShowItems",
+                &(vec!["file:///tmp/a.txt".to_string()], ""),
+            );
+            let _ = answer.send(reply.map(|_| ()).map_err(|error| error.to_string()));
+        });
+    }
+    let request: files_gui::filemanager1::ShowRequest = requests
+        .recv_timeout(ANSWER_TIMEOUT)
+        .expect("the request arrived");
+    hold.release();
+    let dbus = zbus::blocking::fdo::DBusProxy::new(&caller).unwrap();
+    assert!(
+        !dbus
+            .name_has_owner(zbus::names::BusName::try_from(BUS_NAME).unwrap())
+            .unwrap(),
+        "the name was given back"
+    );
+    request.opened();
+    assert_eq!(answers.recv_timeout(ANSWER_TIMEOUT).unwrap(), Ok(()));
+}

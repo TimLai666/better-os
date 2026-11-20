@@ -157,8 +157,14 @@ What was read on this machine (Zorin OS 18, GNOME 46), read-only:
   `default-dbus-session-bus` and depends on `dbus-daemon | dbus-broker`, and
   `dbus-broker` is in `universe`, not installed by default (read from this
   machine's package lists, `apt-cache show dbus-user-session` and
-  `apt-cache policy dbus-broker`). Ubuntu 22.04's default was not read here:
-  this machine has no 22.04 package lists.
+  `apt-cache policy dbus-broker`).
+- Ubuntu 22.04's session bus is the reference `dbus-daemon` 1.12:
+  packages.ubuntu.com/jammy/dbus-user-session lists 1.12.20-2ubuntu4.1 in
+  `main`, depending on `dbus`, with no `dbus-broker` alternative (read
+  2026-11-21). Its search order and `ReloadConfig` are the same as 1.14's
+  per its manual; that 1.12 watches a user services directory created after
+  the bus started has not been run, which is why the adapter always calls
+  `ReloadConfig` and does not rely on the watch.
 - Not verified: `dbus-broker`. A person who installs it gets a broker whose
   launcher reads the same service directories; that it searches
   `$XDG_DATA_HOME/dbus-1/services` first and honours `ReloadConfig` the same

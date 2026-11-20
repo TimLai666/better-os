@@ -162,7 +162,12 @@ fn a_dconf_refusal_reads_as_its_sentence_not_as_manual_work() {
     };
     for locale in [Locale::EnUs, Locale::ZhTw] {
         let c = copy(locale);
-        let row = &result_rows(locale, &refused, &|component| component.to_string())[0];
+        let row = &result_rows(
+            locale,
+            &refused,
+            &|component| component.to_string(),
+            &|_, _| None,
+        )[0];
         assert_eq!(row.label, c.result_not_changed);
         assert_eq!(row.tone, ResultTone::Warning);
         let detail = row.detail.clone().unwrap_or_default();

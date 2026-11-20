@@ -157,10 +157,17 @@ pub fn serve_on(
 pub struct NameHold(std::sync::Arc<std::sync::Mutex<Option<zbus::blocking::Connection>>>);
 
 impl NameHold {
+    /// A hold on a connection already serving the name.
+    pub fn of(connection: zbus::blocking::Connection) -> Self {
+        Self(std::sync::Arc::new(std::sync::Mutex::new(Some(connection))))
+    }
+
     /// Gives the name back to the bus, so the next call starts a new Better
-    /// Files rather than reaching this one as it leaves.
+    /// Files rather than reaching this one as it leaves. The connection
+    /// itself stays until the process ends: a call already received and
+    /// waiting for its window still gets its answer on it.
     pub fn release(&self) {
-        let connection = self.0.lock().ok().and_then(|mut held| held.take());
+        let connection = self.0.lock().ok().and_then(|held| held.clone());
         if let Some(connection) = connection {
             let _ = connection.release_name(BUS_NAME);
         }

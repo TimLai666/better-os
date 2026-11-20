@@ -787,16 +787,26 @@ impl ManagerApp {
                     ) {
                         crate::pages::touchpad::finish_pending_restore(installed_again);
                     }
-                    // The same for Better Files' defaults (ticket 129): a
-                    // session-less removal's put-back, and an activation file
-                    // of Better OS's that `apt remove` left pointing at a
-                    // program that is gone.
-                    if let Some(installed) =
-                        snapshot.installed_by_record_or_dpkg("better-files", &DpkgProbe)
-                        && std::env::var_os(manager_platform::user_units::SYSTEMCTL_GUARD_VARIABLE)
-                            .is_none()
+                    // Every component's defaults (ticket 129): what a
+                    // removal, turn-off or turn-on with no session left to
+                    // finish, by the record (installed, and on or off), and
+                    // a Better OS activation file `apt remove` left pointing
+                    // at a program that is gone. A component dpkg cannot be
+                    // read for waits for next time.
+                    if std::env::var_os(manager_platform::user_units::SYSTEMCTL_GUARD_VARIABLE)
+                        .is_none()
                     {
-                        let _ = defaults_core::removal::finish_better_files_in_session(installed);
+                        let manifests: Vec<_> = manager.manifests().cloned().collect();
+                        let _ = defaults_core::removal::finish_in_session(manifests, |id| {
+                            let installed = snapshot.installed_by_record_or_dpkg(id, &DpkgProbe)?;
+                            // Installed outside Better Manager: on, as the
+                            // record would adopt it.
+                            let enabled = snapshot
+                                .components
+                                .get(&better_core::ComponentId::new(id).ok()?)
+                                .is_none_or(|record| record.enabled);
+                            Some(defaults_core::removal::Standing { installed, enabled })
+                        });
                     }
                     manager
                         .run_user_unit_healing(&snapshot, &DpkgProbe, &units)
