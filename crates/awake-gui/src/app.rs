@@ -59,7 +59,9 @@ pub(crate) struct AwakeApp {
     pub(crate) section: Section,
     /// The navigation pane's own button opened or closed it; until then it
     /// follows the window's width.
-    pub(crate) nav_compact: Option<bool>,
+    /// The person's own choice about the navigation pane, kept apart for a
+    /// wide and a narrow window, and carried across an update restart.
+    pub(crate) pane: better_ui::fluent::navigation::PaneChoice,
     pub(crate) locale: Locale,
     pub(crate) preferences: Preferences,
     pub(crate) store: PreferencesStore,
@@ -108,13 +110,12 @@ impl AwakeApp {
         let locale = preferences.locale();
         apply_theme(preferences.theme, window, cx);
 
-        let section = handoff
+        let view = handoff
             .and_then(|h| h.state::<crate::restart::AwakeView>())
-            .map(|view| view.section())
-            .unwrap_or(Section::Status);
+            .unwrap_or_default();
         let mut app = Self {
-            section,
-            nav_compact: None,
+            section: view.section(),
+            pane: view.pane(),
             locale,
             preferences,
             store,
@@ -152,6 +153,7 @@ impl AwakeApp {
     // ---- Navigation ----------------------------------------------------
 
     pub(crate) fn navigate(&mut self, section: Section, cx: &mut Context<Self>) {
+        self.pane.page_chosen();
         if self.section != section {
             self.section = section;
             // A test result belongs to the screen it was asked for on.
@@ -838,6 +840,6 @@ impl better_ui::restart::Restartable for AwakeApp {
     }
 
     fn restart_state(&self, _window: &Window, _cx: &App) -> crate::restart::AwakeView {
-        crate::restart::AwakeView::of(self.section)
+        crate::restart::AwakeView::of(self.section, self.pane)
     }
 }

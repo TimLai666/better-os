@@ -79,14 +79,16 @@ pub(crate) fn section_at(index: usize) -> Option<Section> {
 impl AwakeApp {
     /// The kit's navigation pane, as Better Manager draws the same Keep
     /// awake pages: the sections, Settings in the footer, and `content`
-    /// beside them. It follows the window's width until the person opens or
-    /// closes it with its own button.
+    /// beside them. In a `narrow` window it is compact until opened, and an
+    /// open pane floats over the content as Better Manager's does; in a wide
+    /// one it is open until closed (`PaneChoice::layout`).
     pub(crate) fn navigation(
         &self,
         content: AnyElement,
-        compact: bool,
+        narrow: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let layout = self.pane.layout(narrow);
         let c = copy(self.locale);
         let item = |section: Section| NavItem::new(section.title(c), section_picture(section));
         let entries = Section::ALL
@@ -101,7 +103,8 @@ impl AwakeApp {
         let toggle = select.clone();
         NavigationView::new("awake-nav", entries, selected)
             .footer(vec![item(Section::Settings)])
-            .compact(self.nav_compact.unwrap_or(compact))
+            .compact(layout.compact)
+            .overlay(layout.overlay)
             .title(c.application_name)
             .locale(self.kit_locale())
             .on_select(move |index, _, cx| {
@@ -111,7 +114,7 @@ impl AwakeApp {
             })
             .on_toggle(move |compact, _, cx| {
                 let _ = toggle.update(cx, |app, cx| {
-                    app.nav_compact = Some(compact);
+                    app.pane.toggle(compact, narrow);
                     cx.notify();
                 });
             })

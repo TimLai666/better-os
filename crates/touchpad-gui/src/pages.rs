@@ -45,9 +45,12 @@ pub(crate) fn page_picture(page: Page) -> Picture {
 
 impl TouchpadApp {
     /// The kit's navigation pane, as Better Manager draws the same Touchpad
-    /// pages: every page, and `content` beside them. It follows the window's
-    /// width until the person opens or closes it with its own button.
-    fn navigation(&self, content: AnyElement, compact: bool, cx: &mut Context<Self>) -> AnyElement {
+    /// pages: every page, and `content` beside them. In a `narrow` window it
+    /// is compact until opened, and an open pane floats over the content as
+    /// Better Manager's does; in a wide one it is open until closed
+    /// (`PaneChoice::layout`).
+    fn navigation(&self, content: AnyElement, narrow: bool, cx: &mut Context<Self>) -> AnyElement {
+        let layout = self.pane.layout(narrow);
         let c = copy(self.model.locale());
         let entries = Page::ALL
             .iter()
@@ -57,7 +60,8 @@ impl TouchpadApp {
         let select = cx.entity().downgrade();
         let toggle = select.clone();
         NavigationView::new("touchpad-nav", entries, selected)
-            .compact(self.nav_compact.unwrap_or(compact))
+            .compact(layout.compact)
+            .overlay(layout.overlay)
             .title(c.application)
             .locale(self.kit_locale())
             .on_select(move |index, _, cx| {
@@ -67,7 +71,7 @@ impl TouchpadApp {
             })
             .on_toggle(move |compact, _, cx| {
                 let _ = toggle.update(cx, |app, cx| {
-                    app.nav_compact = Some(compact);
+                    app.pane.toggle(compact, narrow);
                     cx.notify();
                 });
             })
@@ -919,7 +923,7 @@ impl TouchpadApp {
 impl Render for TouchpadApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let c = copy(self.model.locale());
-        let compact = window.viewport_size().width < px(COMPACT_VIEWPORT_WIDTH);
+        let narrow = window.viewport_size().width < px(COMPACT_VIEWPORT_WIDTH);
         let banner = self.model.result_banner();
         let page = self.render_page(cx);
 
@@ -981,7 +985,7 @@ impl Render for TouchpadApp {
                         ),
                     )
                     .into_any_element();
-                self.navigation(content, compact, cx)
+                self.navigation(content, narrow, cx)
             }))
             .children(self.update_restart.toast_layer(self.kit_locale(), cx))
     }

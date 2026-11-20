@@ -25,7 +25,7 @@ impl AwakeApp {
 
 impl Render for AwakeApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let compact = window.viewport_size().width < px(COMPACT_VIEWPORT_WIDTH);
+        let narrow = window.viewport_size().width < px(COMPACT_VIEWPORT_WIDTH);
         let section = self.render_section(window, cx);
 
         div()
@@ -85,7 +85,7 @@ impl Render for AwakeApp {
                         ),
                     )
                     .into_any_element();
-                self.navigation(page, compact, cx)
+                self.navigation(page, narrow, cx)
             }))
             .children(self.update_restart.toast_layer(self.kit_locale(), cx))
     }
