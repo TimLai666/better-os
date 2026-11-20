@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fmt;
 
+use crate::desktop::CurrentDesktop;
 use crate::manifest::ManifestError;
 
 /// The longest integration id a declaration may use.
@@ -353,15 +354,14 @@ pub struct DefaultIntegration {
 }
 
 impl DefaultIntegration {
-    /// Whether this declaration applies to the running system.
-    pub fn applies_to(&self, distribution: &str, session: &str) -> bool {
+    /// Whether this declaration applies to the running system: its
+    /// distribution, and any of the session's desktops (the rule lives in
+    /// [`CurrentDesktop::matches_any`]).
+    pub fn applies_to(&self, distribution: &str, session: &CurrentDesktop) -> bool {
         self.platforms
             .iter()
             .any(|platform| platform.eq_ignore_ascii_case(distribution))
-            && self
-                .sessions
-                .iter()
-                .any(|declared| declared.eq_ignore_ascii_case(session))
+            && session.matches_any(&self.sessions)
     }
 
     pub fn validate(&self) -> Result<(), ManifestError> {

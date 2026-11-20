@@ -4,6 +4,7 @@
 //! results by a fixed, documented precedence, and every individual result stays
 //! available underneath it.
 
+use better_core::CurrentDesktop;
 use better_core::defaults::{
     DefaultsValue, HealthPrerequisite, IntegrationId, IntegrationKind, ObservedValue, SessionEffect,
 };
@@ -46,6 +47,8 @@ impl ComponentReadiness {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SystemContext {
     pub distribution: String,
+    /// The session's desktops in [`CurrentDesktop::identity`] form
+    /// (`zorin:gnome`, or `unknown`), which is also what a snapshot records.
     pub desktop_session: String,
 }
 
@@ -55,6 +58,11 @@ impl SystemContext {
             distribution: distribution.into(),
             desktop_session: desktop_session.into(),
         }
+    }
+
+    /// The session's desktops, for matching a declaration's `sessions`.
+    pub fn desktop(&self) -> CurrentDesktop {
+        CurrentDesktop::from_identity(&self.desktop_session)
     }
 }
 

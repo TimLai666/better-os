@@ -25,6 +25,19 @@ decides layout and copy.
 Nothing below is built until these are answered. Each has a recommendation and
 what each answer costs.
 
+**Answered by the owner on 2026-11-21:** D1 is (A), the Better OS window made
+a dock. D2: ADR 0036 is accepted. D3 is (a) now and (c) once ticket 142's
+taskbar exists. D4 is (a) until ticket 94 makes Better Launcher a complete
+start menu, then (b). D7 is (a), the Better OS flyout. D5 (answered the same day): the bar
+carries no application menus at all. A window keeps its own menu row and the
+bar offers other things: the Better OS menu, the focused application's name
+with the actions every window has, and the status area. The sections and
+tickets below that describe handing menus to the bar (the AppMenu registrar,
+`com.canonical.dbusmenu` export from `better-ui`, tickets 153 to 155) are
+being revised to match and are not to be built as written. D6 (answered the same day): accepted; old
+X11 (XEmbed) tray icons are not shown while the bar is on, and the bar's
+settings card says so.
+
 | # | Decision | Recommendation | What each choice costs |
 | --- | --- | --- | --- |
 | D1 | **Which shape the bar is.** (A) A Better OS window drawn by Rust and GPUI, which GNOME Shell makes a *dock* and places at the top (section 9.3). (B) GNOME's own top panel, put back at the top of the screen, with a Better OS menu and an application menu that the extension draws in JavaScript (section 9.5). | **A.** | **A:** everything is Fluent and every decision is Rust with tests; the right side (tray host, network, sound, battery, input method, clock, notifications) is rebuilt in Rust, which is most of tickets 156–158. The extension grows a fourth kind of power: it starts one fixed program. **B:** the right side is GNOME's and works on the first day (about three tickets instead of ten), but the bar looks like Zorin's panel, not Fluent; the extension would hold the menu tree and draw labels it was sent, which breaks the "keeps nothing, takes no free text" bounds far more widely than A, and the mockups in `design/top-bar/` would not describe it. |

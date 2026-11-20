@@ -2,7 +2,8 @@
 
 ## Status
 
-Proposed on 2026-11-21 for ticket 95, for the owner to accept or refuse. It
+Accepted by the owner on 2026-11-21, the day it was proposed for ticket 95,
+together with shape A of `design/top-bar-spec.md`'s decision D1. It
 widens the GJS bounds of [ADR 0012](0012-touchpad-gesture-backend.md) and
 [ADR 0018](0018-shared-shell-adapter-extension.md) for one new relay of the
 shared extension, which is why it is an ADR and not a commit. Nothing it

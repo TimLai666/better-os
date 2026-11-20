@@ -11,6 +11,9 @@ app-catalog-core.workspace = true
 # parses the freedesktop MIME database's globs and subclass relations, and a
 # second glob table here would be a second answer to "what type is this file".
 app-chooser-core.workspace = true
+# The one local-time conversion (`better_core::local_time`, ticket 146): a
+# `.trashinfo` stamp is local time.
+better-core.workspace = true
 files-core.workspace = true
 notify.workspace = true
 storage-core.workspace = true

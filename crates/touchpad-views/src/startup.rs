@@ -20,6 +20,7 @@ use touchpad_session::{
 };
 
 use crate::gestures_model::GestureScreen;
+use crate::health_words::GestureBridge;
 use crate::i18n::Locale;
 use crate::model::{Page, TouchpadModel};
 
@@ -106,9 +107,18 @@ impl Startup {
             Err(error) => (GestureProfiles::default(), Some(error.to_string())),
         };
         let captured = gesture_store.load_capture().ok().flatten();
-        let (adapter, bridge) = build_session_adapter(&options);
-        if let Some((reachable, detail)) = bridge {
-            model.set_gesture_bridge(reachable, detail);
+        let (adapter, bridge, service_running, watch_problem) = build_session_adapter(&options);
+        if let Some(fact) = bridge {
+            let anything_configured = std::iter::once(&gesture_profiles.global)
+                .chain(gesture_profiles.devices.values())
+                .any(|profile| !profile.active().is_empty());
+            model.set_gesture_bridge(gesture_connection(
+                fact,
+                service_running,
+                watch_problem,
+                store.safe_mode_enabled(),
+                anything_configured,
+            ));
         }
         // The gesture profile follows the device the rest of the window is
         // about, so switching the selected touchpad switches the gestures with
@@ -118,6 +128,7 @@ impl Startup {
             .map(|device| device.identity.clone());
         let mut gestures =
             GestureScreen::with_profiles(gesture_profiles, device, captured, adapter);
+        gestures.set_service_running(service_running);
         gestures.set_known_shortcuts(known_shortcuts(&options));
         gestures.verify_all(Some(&gesture_store));
         gestures.set_problem(gesture_problem);
@@ -148,54 +159,114 @@ impl Startup {
 /// route — the launcher through the interface Better Launcher already serves,
 /// and the desktop through the GNOME Shell adapter. A session without it falls
 /// back to the recording adapter, which changes nothing and says so.
-/// Why the adapter is not on the bus, as far as the shell can say: GNOME's
-/// switch that turns off every extension wins over the extension list.
-fn unreachable_adapter_reason(user_extensions_enabled: Option<bool>) -> String {
-    match user_extensions_enabled {
-        Some(false) => "GNOME's switch that turns off all extensions is on, so the GNOME Shell \
-                        adapter extension cannot run"
-            .to_string(),
-        _ => "the GNOME Shell adapter extension is not enabled on this session".to_string(),
+///
+/// What looking for the adapter found.
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum AdapterFact {
+    Answered {
+        shell_version: String,
+    },
+    /// Not on the bus. GNOME's switch that turns off every extension wins over
+    /// the extension list, and is named when it is the reason.
+    Missing {
+        all_extensions_off: bool,
+    },
+    Failed(String),
+}
+
+/// What the gesture connection check says (ticket 131).
+///
+/// The adapter being on the bus is half of it. The other half is the gesture
+/// service, the process that actually recognizes gestures: with the adapter
+/// there and the service dead, the window can still reach the desktop, and
+/// nothing a hand does on the touchpad is recognized. That is not connected,
+/// and the check says which half is missing. A service that runs with safe
+/// mode on, or with nothing switched on, is there and idle, and the check says
+/// that instead.
+fn gesture_connection(
+    adapter: AdapterFact,
+    service_running: Option<bool>,
+    watch_problem: Option<String>,
+    safe_mode: bool,
+    anything_configured: bool,
+) -> GestureBridge {
+    match (adapter, service_running) {
+        (AdapterFact::Answered { .. }, Some(true)) if watch_problem.is_some() => {
+            GestureBridge::NotWatching {
+                problem: watch_problem.unwrap_or_default(),
+            }
+        }
+        (AdapterFact::Missing { all_extensions_off }, _) => {
+            GestureBridge::AdapterMissing { all_extensions_off }
+        }
+        (AdapterFact::Failed(detail), _) => GestureBridge::Unreachable { detail },
+        (AdapterFact::Answered { .. }, Some(false)) => GestureBridge::ServiceStopped,
+        (AdapterFact::Answered { .. }, _) if safe_mode => GestureBridge::SafeMode,
+        (AdapterFact::Answered { .. }, _) if !anything_configured => {
+            GestureBridge::NothingConfigured
+        }
+        (AdapterFact::Answered { shell_version }, _) => GestureBridge::Listening { shell_version },
     }
 }
 
-fn build_session_adapter(
-    options: &StartupOptions,
-) -> (Box<dyn SessionAdapter>, Option<(bool, String)>) {
+/// The route, the bridge fact, whether the gesture service owns its name
+/// (`None` when nobody looked), and why it cannot watch its configuration,
+/// when it says it cannot.
+type SessionRoute = (
+    Box<dyn SessionAdapter>,
+    Option<AdapterFact>,
+    Option<bool>,
+    Option<String>,
+);
+
+fn build_session_adapter(options: &StartupOptions) -> SessionRoute {
     if options.offline || options.in_memory {
-        return (Box::new(MockSessionAdapter::new()), None);
+        return (Box::new(MockSessionAdapter::new()), None, None, None);
     }
     let shell = match SessionBusShell::connect() {
         Ok(shell) if shell.is_reachable() => shell,
         Ok(shell) => {
             return (
                 Box::new(MockSessionAdapter::new()),
-                Some((
-                    false,
-                    unreachable_adapter_reason(shell.user_extensions_enabled()),
-                )),
+                Some(AdapterFact::Missing {
+                    all_extensions_off: shell.user_extensions_enabled() == Some(false),
+                }),
+                // The missing adapter is the reason to show; the service
+                // waits for it either way.
+                None,
+                None,
             );
         }
         Err(error) => {
             return (
                 Box::new(MockSessionAdapter::new()),
-                Some((false, error.to_string())),
+                Some(AdapterFact::Failed(error.to_string())),
+                None,
+                None,
             );
         }
     };
+    let service_running = Some(shell.gesture_service_running());
+    let watch_problem = shell
+        .gesture_service_status()
+        .filter(|status| !status.watching)
+        .map(|status| status.problem);
+    // The window never takes GNOME's gestures itself: the service does, once
+    // gestures arrive, and the extension refuses anyone else (ticket 131).
     let adapter = match GnomeShellAdapter::connect(Box::new(shell)) {
-        Ok(adapter) => adapter,
+        Ok(adapter) => adapter.leaving_suppression_to_the_service(),
         Err(error) => {
             return (
                 Box::new(MockSessionAdapter::new()),
-                Some((false, error.to_string())),
+                Some(AdapterFact::Failed(error.to_string())),
+                service_running,
+                watch_problem,
             );
         }
     };
-    let detail = format!(
-        "the GNOME Shell adapter answered, on shell {}",
-        adapter.reported().shell_version
-    );
+    let fact = AdapterFact::Answered {
+        shell_version: adapter.reported().shell_version.clone(),
+    };
     let mut routes: Vec<Box<dyn SessionAdapter>> = Vec::new();
     // The launcher route is separate and may be absent on its own: a session
     // with the extension and no Better Launcher still has working desktop
@@ -204,7 +275,12 @@ fn build_session_adapter(
         routes.push(Box::new(LauncherActivationAdapter::new(Box::new(registry))));
     }
     routes.push(Box::new(adapter));
-    (Box::new(RoutingAdapter::new(routes)), Some((true, detail)))
+    (
+        Box::new(RoutingAdapter::new(routes)),
+        Some(fact),
+        service_running,
+        watch_problem,
+    )
 }
 
 fn describe(error: StoreError) -> String {
@@ -261,13 +337,94 @@ pub fn now() -> u64 {
 }
 
 #[cfg(test)]
-mod adapter_reason_tests {
-    use super::unreachable_adapter_reason;
+mod gesture_connection_tests {
+    use super::{AdapterFact, gesture_connection};
+    use crate::health_words::GestureBridge;
+    use crate::i18n::Locale;
+
+    fn answered() -> AdapterFact {
+        AdapterFact::Answered {
+            shell_version: "46.0".to_string(),
+        }
+    }
 
     #[test]
-    fn the_all_extensions_off_switch_is_named() {
-        assert!(unreachable_adapter_reason(Some(false)).contains("turns off all extensions"));
-        assert!(unreachable_adapter_reason(Some(true)).contains("not enabled"));
-        assert!(unreachable_adapter_reason(None).contains("not enabled"));
+    fn a_dead_gesture_service_is_not_connected_even_with_the_adapter_there() {
+        let bridge = gesture_connection(answered(), Some(false), None, false, true);
+        assert_eq!(bridge, GestureBridge::ServiceStopped);
+        assert!(!bridge.connected());
+        let english = bridge.words(Locale::EnUs);
+        assert!(english.contains("not running"), "{english}");
+        assert!(english.contains("Check again"), "{english}");
+        assert!(bridge.words(Locale::ZhTw).contains("重新檢查"));
+    }
+
+    #[test]
+    fn both_halves_there_is_connected() {
+        let bridge = gesture_connection(answered(), Some(true), None, false, true);
+        assert!(bridge.connected());
+        assert!(bridge.words(Locale::EnUs).contains("listening"));
+    }
+
+    /// Safe mode and nothing switched on leave the service running and idle,
+    /// and the check says so rather than "listening" or "not running".
+    #[test]
+    fn a_resident_idle_service_is_said_to_be_idle() {
+        let safe = gesture_connection(answered(), Some(true), None, true, true);
+        assert_eq!(safe, GestureBridge::SafeMode);
+        assert!(safe.connected());
+        assert!(safe.words(Locale::EnUs).contains("safe mode"));
+        assert!(safe.words(Locale::ZhTw).contains("安全模式"));
+
+        let idle = gesture_connection(answered(), Some(true), None, false, false);
+        assert_eq!(idle, GestureBridge::NothingConfigured);
+        assert!(idle.words(Locale::EnUs).contains("waits for a gesture"));
+    }
+
+    /// Review of ticket 131: a watch that cannot be made costs no gesture,
+    /// and the check says why changes are slow to arrive, in both languages.
+    #[test]
+    fn a_service_that_cannot_watch_is_degraded_and_says_why() {
+        let bridge = gesture_connection(
+            answered(),
+            Some(true),
+            Some("inotify instances used up".to_string()),
+            false,
+            true,
+        );
+        assert!(!bridge.connected());
+        assert!(
+            bridge
+                .words(Locale::EnUs)
+                .contains("inotify instances used up")
+        );
+        assert!(bridge.words(Locale::EnUs).contains("every minute"));
+        assert!(bridge.words(Locale::ZhTw).contains("無法追蹤設定檔"));
+    }
+
+    #[test]
+    fn a_missing_adapter_names_the_all_extensions_off_switch() {
+        let off = gesture_connection(
+            AdapterFact::Missing {
+                all_extensions_off: true,
+            },
+            None,
+            None,
+            false,
+            true,
+        );
+        assert!(!off.connected());
+        assert!(off.words(Locale::EnUs).contains("turns off all extensions"));
+        let missing = gesture_connection(
+            AdapterFact::Missing {
+                all_extensions_off: false,
+            },
+            None,
+            None,
+            false,
+            true,
+        );
+        assert!(missing.words(Locale::EnUs).contains("not enabled"));
+        assert!(missing.words(Locale::ZhTw).contains("沒有啟用"));
     }
 }

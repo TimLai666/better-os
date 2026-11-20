@@ -136,9 +136,11 @@ impl Manager {
                 .filter(|state| state.masked)
                 .map(|state| state.unit.clone())
                 .collect::<Vec<_>>();
-            // A unit that exited successfully on its own is working as
-            // designed, and one that is still activating is not ours to
-            // interrupt.
+            // A unit that exited, even with success, is not running and is
+            // started: the Awake and Monitor trays' Quit and a second
+            // window-attention instance exit 0, and only disabling the
+            // component or removing it may keep a unit off (ticket 131). One
+            // that is still activating is not ours to interrupt.
             let needing = states
                 .into_iter()
                 .filter(|state| {
@@ -270,7 +272,14 @@ impl Manager {
             let Ok(files) = packages.installed_files(manifest.id.as_str()) else {
                 continue;
             };
-            let uuids = shell_extensions(&files);
+            let mut uuids = shell_extensions(&files);
+            let companions: Vec<String> = manifest
+                .artifacts
+                .iter()
+                .flat_map(|artifact| artifact.companions.iter())
+                .map(|companion| companion.package.to_string())
+                .collect();
+            add_companion_extensions(&mut uuids, packages, &companions);
             if uuids.is_empty() {
                 continue;
             }
@@ -321,6 +330,32 @@ impl Manager {
     ) -> Result<Vec<UserUnitHealing>, ManagerError> {
         let report = self.run_user_unit_healing(state, packages, units)?;
         Ok(self.record_user_unit_healing(state, &report))
+    }
+}
+
+/// Adds the GNOME Shell extensions the companion packages installed to a
+/// component's own (ticket 131).
+///
+/// A companion travels with its component and belongs to it (ADR 0018):
+/// `better-shell-adapter` ships the shared `shell-adapter@betteros.org` and
+/// nothing else, and it is a companion of `better-manager`. Reading only the
+/// component's own file list left that extension installed and never turned on.
+/// A companion that is not installed has no file list and adds nothing. Which
+/// extensions a package owns still comes from dpkg's list, never from a name.
+pub(crate) fn add_companion_extensions(
+    uuids: &mut Vec<String>,
+    packages: &dyn PackageStateProbe,
+    companions: &[String],
+) {
+    for companion in companions {
+        let Ok(files) = packages.installed_files(companion) else {
+            continue;
+        };
+        for uuid in shell_extensions(&files) {
+            if !uuids.contains(&uuid) {
+                uuids.push(uuid);
+            }
+        }
     }
 }
 

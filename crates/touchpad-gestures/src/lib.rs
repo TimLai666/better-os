@@ -32,6 +32,7 @@ pub mod config;
 pub mod conflict;
 pub mod definition;
 pub mod ingest;
+pub mod merge;
 pub mod plan;
 pub mod preset;
 pub mod profiles;
@@ -39,6 +40,7 @@ pub mod recognizer;
 pub mod shortcut;
 pub mod store;
 pub mod suppression;
+pub mod watch;
 
 pub use config::{ConfigError, GESTURE_SCHEMA_VERSION, GestureConfig, PresetId};
 pub use conflict::{
@@ -51,6 +53,7 @@ pub use definition::{
 pub use ingest::{
     CompositorGesture, CompositorGestureKind, CompositorPhase, EventRecognizer, EventScale,
 };
+pub use merge::merge as merge_profiles;
 pub use plan::{
     AdapterFailures, ApplyReport, ApprovedGesturePlan, BindingOutcome, BuiltInOutcome, ChangeKind,
     PlanError, PlannedChange, PresetPlan, RestorePlan, RunState,
@@ -66,3 +69,4 @@ pub use recognizer::{
 pub use shortcut::{KnownShortcuts, ShortcutCheck};
 pub use store::{GestureStore, GestureStoreError};
 pub use suppression::{SuppressionEvent, SuppressionState};
+pub use watch::{ConfigurationWatch, WatchState};

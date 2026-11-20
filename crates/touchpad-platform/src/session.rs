@@ -10,6 +10,8 @@
 
 use std::collections::BTreeMap;
 
+use better_core::CurrentDesktop;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SessionKind {
     Wayland,
@@ -33,8 +35,9 @@ impl SessionKind {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Session {
     pub kind: SessionKind,
-    /// The desktop names `XDG_CURRENT_DESKTOP` lists, lowercased.
-    pub desktops: Vec<String>,
+    /// The desktops the session declares, by the one rule in
+    /// `better_core::desktop`.
+    pub desktop: CurrentDesktop,
     /// Whether a session bus address was in the environment at all. Without
     /// one, the GNOME backend cannot write.
     pub has_session_bus: bool,
@@ -61,19 +64,11 @@ impl Session {
             _ => SessionKind::Unknown,
         };
 
-        let desktops = non_empty("XDG_CURRENT_DESKTOP")
-            .map(|value| {
-                value
-                    .split(':')
-                    .map(|name| name.trim().to_ascii_lowercase())
-                    .filter(|name| !name.is_empty())
-                    .collect()
-            })
-            .unwrap_or_default();
+        let desktop = CurrentDesktop::from_lookup(&lookup);
 
         Self {
             kind,
-            desktops,
+            desktop,
             has_session_bus: non_empty("DBUS_SESSION_BUS_ADDRESS").is_some(),
         }
     }
@@ -81,17 +76,20 @@ impl Session {
     /// Whether this is a session the GNOME backend applies to. Zorin's own
     /// session lists `zorin:GNOME`, so a plain equality check would miss it.
     pub fn is_gnome(&self) -> bool {
-        self.desktops
-            .iter()
-            .any(|desktop| desktop == "gnome" || desktop.starts_with("gnome-"))
+        self.desktop.is_gnome()
     }
 
     /// A one-line description for the Overview and Diagnostics screens.
     pub fn describe(&self) -> String {
-        let desktop = if self.desktops.is_empty() {
-            "unknown desktop".to_string()
+        let desktop = if self.desktop.is_known() {
+            self.desktop
+                .names()
+                .iter()
+                .map(|name| name.to_ascii_lowercase())
+                .collect::<Vec<_>>()
+                .join(", ")
         } else {
-            self.desktops.join(", ")
+            "unknown desktop".to_string()
         };
         format!("{} / {desktop}", self.kind.key())
     }
@@ -158,7 +156,7 @@ mod tests {
             ("XDG_CURRENT_DESKTOP", ""),
         ]));
         assert_eq!(session.kind, SessionKind::Unknown);
-        assert!(session.desktops.is_empty());
+        assert!(!session.desktop.is_known());
         assert!(!session.is_gnome());
         assert_eq!(session.describe(), "unknown / unknown desktop");
     }
@@ -166,6 +164,17 @@ mod tests {
     #[test]
     fn a_desktop_that_is_not_gnome_is_not_treated_as_one() {
         let session = Session::from_lookup(lookup_from(&[("XDG_CURRENT_DESKTOP", "KDE")]));
+        assert!(!session.is_gnome());
+    }
+
+    #[test]
+    fn desktop_session_answers_only_when_the_desktop_list_is_silent() {
+        let session = Session::from_lookup(lookup_from(&[("DESKTOP_SESSION", "gnome")]));
+        assert!(session.is_gnome());
+        let session = Session::from_lookup(lookup_from(&[
+            ("XDG_CURRENT_DESKTOP", "KDE"),
+            ("DESKTOP_SESSION", "gnome"),
+        ]));
         assert!(!session.is_gnome());
     }
 

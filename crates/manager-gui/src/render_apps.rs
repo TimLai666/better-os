@@ -1207,9 +1207,7 @@ impl ManagerApp {
                     self.locale,
                     event,
                     report.interrupted(event),
-                    crate::pages::keep_awake::localtime::UtcOffset::for_system(
-                        event.detected_at_unix_seconds,
-                    ),
+                    better_core::local_time::TimeZone::System,
                 ),
                 None => w.about.to_string(),
             })
@@ -1246,9 +1244,7 @@ impl ManagerApp {
             expander = expander.row(SettingsRow::new(w.nothing_recorded));
         }
         for event in &report.events {
-            let offset = crate::pages::keep_awake::localtime::UtcOffset::for_system(
-                event.detected_at_unix_seconds,
-            );
+            let zone = better_core::local_time::TimeZone::System;
             let outcome =
                 login_watch::outcome(self.locale, &event.restart, report.interrupted(event));
             // Someone outside adm sees what happened, not the journal.
@@ -1261,7 +1257,7 @@ impl ManagerApp {
                 outcome
             };
             expander = expander.row(
-                SettingsRow::new(login_watch::header(self.locale, event, offset))
+                SettingsRow::new(login_watch::header(self.locale, event, zone))
                     .description(description),
             );
         }

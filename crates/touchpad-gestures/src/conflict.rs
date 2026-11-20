@@ -50,23 +50,38 @@ impl BuiltInGesture {
 
 /// GNOME 46's shipped touchpad gestures.
 ///
-/// Both of the shell's swipe trackers accept three *and* four contacts, which
-/// is the detail that matters here: a preset built on four-finger swipes
-/// collides with both of them, and a model that recorded only three fingers
-/// would report no conflict and be wrong in the way that costs a user their
-/// overview.
+/// Both of the shell's swipe trackers take three contacts and only three:
+/// `js/ui/swipeTracker.js` in GNOME Shell 46.0 has `const
+/// GESTURE_FINGER_COUNT = 3;` and its touchpad gesture returns early for any
+/// other count (read from the shell's own gresource, 2026-11-21, ticket 131).
+/// A four-finger swipe therefore reaches no GNOME gesture at all, and the
+/// Mac-style preset, which swipes with four, collides with nothing. An earlier
+/// model said "three and four" and made the service take GNOME's three-finger
+/// gestures away for a preset that never used three fingers.
+///
+/// **Taking one of these away is not reliable on GNOME 46.** The extension
+/// turns the two trackers off through their `enabled` property, and GNOME's
+/// own code writes that property too: `workspaceAnimation.js` sets the
+/// workspace tracker back to `true` when the overview hides and at the end of
+/// every animated workspace switch, so after the first switch GNOME's
+/// three-finger switch answers again beside ours. Two more three-finger
+/// trackers, the overview's workspace strip (`workspacesView.js`) and the
+/// application grid's pages (`appDisplay.js`), work only inside the overview
+/// and are never turned off. A colliding three-finger gesture can therefore
+/// do GNOME's thing and ours at once; the Touchpad page says so, and ADR
+/// 0035 records it.
 pub const GNOME_46_GESTURES: &[BuiltInGesture] = &[
     BuiltInGesture {
         id: "gnome.overview.swipe",
         shape: GestureShape::Swipe,
-        contacts: &[3, 4],
+        contacts: &[3],
         directions: &[Direction::Up, Direction::Down],
         does: "gnome.overview_and_application_grid",
     },
     BuiltInGesture {
         id: "gnome.workspace.switch",
         shape: GestureShape::Swipe,
-        contacts: &[3, 4],
+        contacts: &[3],
         directions: &[Direction::Left, Direction::Right],
         does: "gnome.switch_workspace",
     },
@@ -161,6 +176,14 @@ pub fn annotate(config: &mut GestureConfig, conflicts: &[Conflict]) {
     }
 }
 
+/// Detects and annotates against [`GNOME_46_GESTURES`]: what every reader of
+/// a stored profile runs, through
+/// [`GestureProfiles::annotate_conflicts`](crate::GestureProfiles::annotate_conflicts).
+pub fn annotate_against_gnome_46(config: &mut GestureConfig) {
+    let conflicts = detect(config, GNOME_46_GESTURES);
+    annotate(config, &conflicts);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -174,20 +197,60 @@ mod tests {
             .collect()
     }
 
+    /// The preset's real collisions on GNOME 46: none. Every swipe in it
+    /// uses four fingers, and GNOME's trackers answer three alone.
     #[test]
-    fn the_mac_style_preset_collides_with_exactly_the_four_gnome_swipes() {
-        let conflicts = detect(&mac_style(), GNOME_46_GESTURES);
-        assert_eq!(
-            conflicting_ids(&conflicts),
-            vec![
-                "overview",
-                "current-app-windows",
-                "workspace-next",
-                "workspace-previous"
-            ]
-        );
-        assert_eq!(conflicts[0].built_in, "gnome.overview.swipe");
-        assert_eq!(conflicts[2].built_in, "gnome.workspace.switch");
+    fn the_mac_style_preset_collides_with_nothing_gnome_46_does() {
+        assert!(detect(&mac_style(), GNOME_46_GESTURES).is_empty());
+    }
+
+    #[test]
+    fn gnome_46_answers_three_fingers_and_only_three() {
+        for built_in in GNOME_46_GESTURES {
+            assert_eq!(built_in.contacts, &[3], "{}", built_in.id);
+        }
+    }
+
+    fn swipe_with(contacts: u8, direction: Direction) -> GestureConfig {
+        let gesture = GestureDefinition::new(
+            "swipe",
+            GestureShape::Swipe,
+            contacts,
+            false,
+            Some(direction),
+            DesktopAction::ShowOverview,
+        )
+        .unwrap();
+        GestureConfig::with_gestures(vec![gesture], crate::config::PresetId::Custom)
+    }
+
+    #[test]
+    fn a_four_finger_swipe_in_any_direction_is_out_of_gnomes_reach() {
+        for direction in [
+            Direction::Up,
+            Direction::Down,
+            Direction::Left,
+            Direction::Right,
+        ] {
+            assert!(
+                detect(&swipe_with(4, direction), GNOME_46_GESTURES).is_empty(),
+                "{direction:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_three_finger_swipe_collides_with_the_tracker_for_its_direction() {
+        for (direction, built_in) in [
+            (Direction::Up, "gnome.overview.swipe"),
+            (Direction::Down, "gnome.overview.swipe"),
+            (Direction::Left, "gnome.workspace.switch"),
+            (Direction::Right, "gnome.workspace.switch"),
+        ] {
+            let conflicts = detect(&swipe_with(3, direction), GNOME_46_GESTURES);
+            assert_eq!(conflicts.len(), 1, "{direction:?}");
+            assert_eq!(conflicts[0].built_in, built_in, "{direction:?}");
+        }
     }
 
     #[test]
@@ -209,24 +272,6 @@ mod tests {
     }
 
     #[test]
-    fn a_three_finger_swipe_collides_because_gnome_accepts_three_as_well_as_four() {
-        let three = GestureDefinition::new(
-            "three-up",
-            GestureShape::Swipe,
-            3,
-            false,
-            Some(Direction::Up),
-            DesktopAction::ShowOverview,
-        )
-        .unwrap();
-        let config = GestureConfig::with_gestures(vec![three], crate::config::PresetId::Custom);
-        assert_eq!(
-            conflicting_ids(&detect(&config, GNOME_46_GESTURES)),
-            vec!["three-up"]
-        );
-    }
-
-    #[test]
     fn a_five_finger_swipe_is_out_of_gnomes_reach() {
         let five = GestureDefinition::new(
             "five-up",
@@ -243,16 +288,26 @@ mod tests {
 
     #[test]
     fn a_disabled_gesture_is_still_reported_because_the_preview_is_about_what_would_happen() {
-        let mut config = mac_style();
+        let mut config = swipe_with(3, Direction::Up);
         for gesture in &mut config.gestures {
             gesture.enabled = false;
         }
-        assert_eq!(detect(&config, GNOME_46_GESTURES).len(), 4);
+        assert_eq!(detect(&config, GNOME_46_GESTURES).len(), 1);
     }
 
     #[test]
     fn annotation_tells_checked_and_clear_apart_from_never_checked() {
         let mut config = mac_style();
+        let three = GestureDefinition::new(
+            "three-up",
+            GestureShape::Swipe,
+            3,
+            false,
+            Some(Direction::Up),
+            DesktopAction::ShowOverview,
+        )
+        .unwrap();
+        config.gestures.push(three);
         assert!(
             config
                 .gestures
@@ -262,8 +317,8 @@ mod tests {
         let conflicts = detect(&config, GNOME_46_GESTURES);
         annotate(&mut config, &conflicts);
 
-        let launcher = config.get(&conflicts[0].gesture).unwrap();
-        assert!(launcher.conflict.conflicts());
+        let colliding = config.get(&conflicts[0].gesture).unwrap();
+        assert!(colliding.conflict.conflicts());
         assert_eq!(
             config
                 .gestures
@@ -277,7 +332,9 @@ mod tests {
 
     #[test]
     fn the_suggestion_is_the_one_that_leaves_the_desktop_alone() {
-        for conflict in detect(&mac_style(), GNOME_46_GESTURES) {
+        let conflicts = detect(&swipe_with(3, Direction::Left), GNOME_46_GESTURES);
+        assert!(!conflicts.is_empty());
+        for conflict in conflicts {
             assert_eq!(conflict.suggested, ConflictResolution::KeepBuiltIn);
         }
     }

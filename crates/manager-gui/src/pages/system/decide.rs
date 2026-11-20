@@ -3,6 +3,7 @@
 //! outcome draws. `hardware-core` decides what is drawn; this decides the
 //! words.
 
+use better_core::CurrentDesktop;
 use better_ui::fluent::words;
 use hardware_core::battery::BatteryFacts;
 use hardware_core::charge::ChargeChoice;
@@ -204,18 +205,20 @@ pub(crate) struct AboutFacts {
     pub(crate) desktop: Option<String>,
 }
 
-/// `GNOME 46 · Wayland` from `XDG_CURRENT_DESKTOP` (`zorin:GNOME`), the
-/// shell's own major version, and `XDG_SESSION_TYPE`. Whatever is missing is
+/// `GNOME 46 · Wayland` from the session's desktops (`zorin:GNOME`, read by
+/// `better_core::desktop`), the shell's own major version, and
+/// `XDG_SESSION_TYPE`. The line names the desktop itself, which a distribution
+/// lists after its own name, so it is the last entry. Whatever is missing is
 /// left out; nothing missing is filled in.
 pub(crate) fn desktop_line(
-    current_desktop: Option<&str>,
+    current_desktop: &CurrentDesktop,
     shell_major: Option<&str>,
     session_type: Option<&str>,
 ) -> Option<String> {
     let desktop = current_desktop
-        .and_then(|d| d.split(':').rfind(|part| !part.trim().is_empty()))
-        .map(str::trim)
-        .map(|d| match (d, shell_major) {
+        .names()
+        .last()
+        .map(|d| match (d.as_str(), shell_major) {
             ("GNOME", Some(major)) => format!("GNOME {major}"),
             (other, _) => other.to_string(),
         });

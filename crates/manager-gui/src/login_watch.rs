@@ -11,7 +11,7 @@ use crate::attention::{AttentionAction, AttentionItem, Severity, Snapshot, row};
 use crate::i18n::Locale;
 use crate::model::Page;
 use crate::navigation::Route;
-use crate::pages::keep_awake::localtime::{UtcOffset, calendar_time};
+use better_core::local_time::{TimeZone, calendar_time};
 
 /// The id of Health's card, for a search result and a restored view.
 pub(crate) const CARD: &str = "login-watch";
@@ -187,28 +187,23 @@ const EN_US: Copy = Copy {
 };
 
 /// "The login screen didn't appear at startup on {date}".
-pub(crate) fn header(locale: Locale, event: &Event, offset: UtcOffset) -> String {
+pub(crate) fn header(locale: Locale, event: &Event, zone: TimeZone) -> String {
     copy(locale).late_header.replace(
         "{date}",
-        &calendar_time(event.detected_at_unix_seconds, offset),
+        &calendar_time(event.detected_at_unix_seconds, zone),
     )
 }
 
 /// The newest record in one line, for the card's description: what
 /// happened, then what Better OS did.
-pub(crate) fn summary(
-    locale: Locale,
-    event: &Event,
-    interrupted: bool,
-    offset: UtcOffset,
-) -> String {
+pub(crate) fn summary(locale: Locale, event: &Event, interrupted: bool, zone: TimeZone) -> String {
     let separator = match locale.resolved() {
         Locale::ZhTw => "。",
         Locale::EnUs | Locale::System => ". ",
     };
     format!(
         "{}{separator}{}",
-        header(locale, event, offset),
+        header(locale, event, zone),
         outcome(locale, &event.restart, interrupted)
     )
 }
@@ -312,7 +307,7 @@ pub(crate) fn attention(snapshot: &Snapshot) -> Vec<AttentionItem> {
     let Some((event, interrupted)) = &snapshot.login_screen_late else {
         return Vec::new();
     };
-    let offset = UtcOffset::for_system(event.detected_at_unix_seconds);
+    let zone = TimeZone::System;
     vec![AttentionItem {
         source: Route::Apps,
         severity: match Report::severity(event) {
@@ -320,7 +315,7 @@ pub(crate) fn attention(snapshot: &Snapshot) -> Vec<AttentionItem> {
             WatchSeverity::Error => Severity::Error,
         },
         row: row::APPS_LOGIN_SCREEN,
-        header: header(snapshot.locale, event, offset),
+        header: header(snapshot.locale, event, zone),
         description: outcome(snapshot.locale, &event.restart, *interrupted),
         action_label: copy(snapshot.locale).view,
         action: AttentionAction::Open(Page::Health),
@@ -334,7 +329,7 @@ mod tests {
 
     /// 2026-11-16 20:43 in Taipei.
     const STUCK: u64 = 1_794_832_980;
-    const TAIPEI: UtcOffset = UtcOffset(8 * 3_600);
+    const TAIPEI: TimeZone = TimeZone::Fixed(8 * 3_600);
 
     fn event(restart: RestartOutcome) -> Event {
         Event {

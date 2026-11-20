@@ -15,6 +15,7 @@
 pub mod gestures_model;
 #[cfg(test)]
 mod gestures_tests;
+pub mod health_words;
 pub mod i18n;
 pub mod model;
 pub mod startup;

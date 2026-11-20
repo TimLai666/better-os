@@ -21,6 +21,7 @@
 //! unknown fields, and a size limit applied to the raw bytes before parsing.
 
 pub mod notification;
+pub mod reasons;
 
 use awake_core::{
     ActiveReason, BackendCapabilities, EndCondition, EndConditionError, IndicatorState,
