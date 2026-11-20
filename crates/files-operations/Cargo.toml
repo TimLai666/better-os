@@ -6,6 +6,8 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+# The one local-time conversion (`better_core::local_time`, ticket 146).
+better-core.workspace = true
 files-core.workspace = true
 # The trash write side lives with the trash read side rather than beside it, so
 # the workspace holds one implementation of the freedesktop layout.

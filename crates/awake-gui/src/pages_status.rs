@@ -102,7 +102,7 @@ impl AwakeApp {
                             status.lid.limit_summary(
                                 self.locale,
                                 status.now_unix_seconds,
-                                self.offset,
+                                self.zone,
                             ),
                             cx,
                         ))
@@ -246,11 +246,7 @@ impl AwakeApp {
                     )),
             )
             .when_some(reason.started_at_unix_seconds, |view, started| {
-                view.child(self.key_value(
-                    c.session_started,
-                    started_label(started, self.offset),
-                    cx,
-                ))
+                view.child(self.key_value(c.session_started, started_label(started, self.zone), cx))
             })
             .when_some(reason.remaining, |view, remaining| {
                 view.child(self.key_value(c.remaining, remaining_label(remaining, c), cx))

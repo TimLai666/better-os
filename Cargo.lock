@@ -715,6 +715,7 @@ version = "0.2.16"
 dependencies = [
  "awake-core",
  "awake-ipc",
+ "better-core",
  "better-ui",
  "gpui",
  "gpui-component",
@@ -743,7 +744,7 @@ name = "awake-platform"
 version = "0.2.16"
 dependencies = [
  "awake-core",
- "libc",
+ "better-core",
  "notify",
  "tempfile",
 ]
@@ -785,6 +786,7 @@ dependencies = [
  "awake-ipc",
  "awake-service",
  "awake-store",
+ "better-core",
  "serde",
  "serde_json",
  "tempfile",
@@ -2225,6 +2227,7 @@ dependencies = [
 name = "files-operations"
 version = "0.2.16"
 dependencies = [
+ "better-core",
  "files-core",
  "files-platform",
  "flate2",
@@ -2244,6 +2247,7 @@ version = "0.2.16"
 dependencies = [
  "app-catalog-core",
  "app-chooser-core",
+ "better-core",
  "files-core",
  "notify",
  "storage-core",
@@ -2732,6 +2736,7 @@ dependencies = [
 name = "git-platform"
 version = "0.2.16"
 dependencies = [
+ "better-core",
  "git-core",
  "libc",
  "tempfile",
@@ -8195,6 +8200,7 @@ version = "0.2.16"
 dependencies = [
  "better-actions",
  "launcher-platform",
+ "libc",
  "tempfile",
  "tokio",
  "touchpad-core",
@@ -8209,6 +8215,7 @@ name = "touchpad-gestures"
 version = "0.2.16"
 dependencies = [
  "better-actions",
+ "notify",
  "serde",
  "serde_json",
  "tempfile",
@@ -8230,6 +8237,7 @@ dependencies = [
  "launcher-platform",
  "serde",
  "serde_json",
+ "smol",
  "tempfile",
  "touchpad-core",
  "touchpad-gestures",

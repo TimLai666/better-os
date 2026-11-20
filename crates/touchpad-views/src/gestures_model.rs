@@ -431,6 +431,15 @@ pub struct GestureScreen {
     /// Whether GNOME has been asked to give up the gestures this configuration
     /// took from it, and whether it did.
     suppression: SuppressionState,
+    /// Whether the gesture service owns its bus name, or `None` when nobody
+    /// looked (offline, or no adapter to look past). The window can reach the
+    /// desktop while the service is dead, and then no gesture is recognized
+    /// at all, which the screen has to say (ticket 131).
+    service_running: Option<bool>,
+    /// The document as this screen last read or wrote it: what its own
+    /// changes are measured against when it saves, so it never writes a stale
+    /// copy over another writer (ticket 131).
+    base: GestureProfiles,
 }
 
 impl GestureScreen {
@@ -449,12 +458,18 @@ impl GestureScreen {
     }
 
     pub fn with_profiles(
-        profiles: GestureProfiles,
+        mut profiles: GestureProfiles,
         device: Option<String>,
         captured: Option<GestureConfig>,
         adapter: Box<dyn SessionAdapter>,
     ) -> Self {
+        // The same correction the gesture service makes, through the same
+        // function, so a stale "conflict" from an older model is neither shown
+        // nor written back (ticket 131).
+        let base = profiles.clone();
+        profiles.annotate_conflicts();
         Self {
+            base,
             profiles,
             device,
             known_shortcuts: KnownShortcuts::default(),
@@ -473,6 +488,7 @@ impl GestureScreen {
             problem: None,
             failures: AdapterFailures::default(),
             suppression: SuppressionState::new(),
+            service_running: None,
         }
     }
 
@@ -618,6 +634,32 @@ impl GestureScreen {
         document
     }
 
+    pub fn set_service_running(&mut self, running: Option<bool>) {
+        self.service_running = running;
+    }
+
+    /// Whether the gesture service is running, as far as anyone looked.
+    pub fn service_running(&self) -> Option<bool> {
+        self.service_running
+    }
+
+    /// Why no gesture is recognized right now, when the reason is the gesture
+    /// service rather than the adapter: `true` when the adapter is reachable
+    /// and the service is not running.
+    pub fn service_stopped(&self) -> bool {
+        self.service_running == Some(false)
+    }
+
+    /// Whether a gesture switched on collides with one of GNOME's own, which
+    /// GNOME 46 does not reliably let go of (ticket 131, ADR 0035).
+    pub fn collides_with_gnome(&self) -> bool {
+        std::iter::once(&self.profiles.global)
+            .chain(self.profiles.devices.values())
+            .filter(|profile| profile.enabled)
+            .flat_map(|profile| profile.gestures.iter())
+            .any(|gesture| gesture.enabled && gesture.conflict.conflicts())
+    }
+
     pub fn set_known_shortcuts(&mut self, known: KnownShortcuts) {
         self.known_shortcuts = known;
     }
@@ -733,9 +775,16 @@ impl GestureScreen {
     /// preview clears the previous confirmation, so confirming one plan can
     /// never apply a different one.
     pub fn preview_preset(&mut self) {
+        self.preview_preset_as(&mac_style());
+    }
+
+    /// The same preview for another preset. The shipped one collides with
+    /// nothing GNOME 46 does (ticket 131), so the tests of the conflict
+    /// decisions preview one that does.
+    pub(crate) fn preview_preset_as(&mut self, preset: &GestureConfig) {
         let plan = PresetPlan::build(
             self.config(),
-            &mac_style(),
+            preset,
             touchpad_gestures::GNOME_46_GESTURES,
             self.adapter.as_ref(),
         );
@@ -997,12 +1046,54 @@ impl GestureScreen {
         state
     }
 
+    /// Writes what the person changed here onto the file as it is now, with
+    /// the merge and the lock the gesture service uses too
+    /// ([`GestureStore::save_changes`]), and then shows the file as it is
+    /// (ticket 131). A switch the service turned off after this screen read
+    /// the file stays off when the person edits something else.
+    ///
+    /// Conflict annotations are worked out again first, through the one
+    /// function the service uses, so an edit that moves a gesture onto or off
+    /// GNOME's three fingers says so at once.
     fn save(&mut self, store: Option<&GestureStore>) {
-        if let Some(store) = store
-            && let Err(error) = store.save_profiles(&self.document())
-        {
-            self.problem = Some(error.to_string());
+        self.profiles.annotate_conflicts();
+        let Some(store) = store else {
+            return;
+        };
+        match store.save_changes(&self.base, &self.document()) {
+            Ok(written) => self.adopt(written),
+            Err(error) => self.problem = Some(error.to_string()),
         }
+    }
+
+    /// Follows the file after another process wrote it: the gesture service's
+    /// verification or automatic disable, the other window, an import
+    /// (ticket 131). An edit open in the editor stays open, and anything this
+    /// screen changed and has not saved yet is kept on top of what the file
+    /// now holds. Returns whether what the screen shows changed.
+    pub fn reload(&mut self, store: &GestureStore) -> bool {
+        let theirs = match store.load_profiles() {
+            Ok(theirs) => theirs,
+            Err(error) => {
+                self.problem = Some(error.to_string());
+                return false;
+            }
+        };
+        let mut shown = touchpad_gestures::merge_profiles(&self.base, &self.document(), &theirs);
+        shown.annotate_conflicts();
+        self.base = theirs;
+        if shown == self.profiles {
+            return false;
+        }
+        self.profiles = shown;
+        true
+    }
+
+    fn adopt(&mut self, written: GestureProfiles) {
+        let mut shown = written.clone();
+        shown.annotate_conflicts();
+        self.base = written;
+        self.profiles = shown;
     }
 
     pub fn edit(&mut self, id: &GestureId) {

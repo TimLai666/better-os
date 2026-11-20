@@ -90,7 +90,7 @@ impl AwakeApp {
                                 .min_w_0()
                                 .text_sm()
                                 .font_semibold()
-                                .child(entry.started_label(self.offset)),
+                                .child(entry.started_label(self.zone)),
                         )
                         .child(self.pill(
                             StatusPill::new(entry.cause_label(c), StatusTone::Neutral),
@@ -98,7 +98,7 @@ impl AwakeApp {
                         )),
                 )
                 .child(self.key_value(c.history_origin, entry.origin_label(c), cx))
-                .child(self.key_value(c.history_ended, entry.ended_label(self.offset, c), cx))
+                .child(self.key_value(c.history_ended, entry.ended_label(self.zone, c), cx))
                 .child(self.key_value(c.history_reasons, reasons, cx))
                 .child(self.key_value(c.history_policy, policy_sentence(policy, c), cx))
                 .child(self.key_value(c.history_stop_cause, entry.cause_label(c), cx))
@@ -235,9 +235,7 @@ impl AwakeApp {
                                             .text_sm()
                                             .text_color(cx.theme().muted_foreground)
                                             .child(
-                                                provider
-                                                    .explanation
-                                                    .clone()
+                                                c.reason(provider.explanation.as_deref())
                                                     .unwrap_or_else(|| c.none.to_string()),
                                             ),
                                     )

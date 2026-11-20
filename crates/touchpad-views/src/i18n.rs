@@ -242,6 +242,11 @@ pub struct Copy {
     pub disable_gestures: &'static str,
     pub no_gestures: &'static str,
     pub gesture_backend_none: &'static str,
+    /// The adapter is there and the gesture service is not (ticket 131).
+    pub gesture_service_stopped: &'static str,
+    /// A gesture switched on that collides with one of GNOME's three-finger
+    /// swipes: GNOME 46 does not let it go reliably (ticket 131, ADR 0035).
+    pub gesture_collision_unreliable: &'static str,
     /// What the compositor cannot see. Shown wherever a thumb-and-three gesture
     /// is, because the gesture works and the reason it works is not what the
     /// row appears to say.
@@ -485,6 +490,8 @@ pub const EN_US: Copy = Copy {
     disable_gestures: "Turn gestures off",
     no_gestures: "No gesture is configured yet.",
     gesture_backend_none: "The GNOME Shell adapter is not enabled on this session, so no gesture reaches the desktop yet.",
+    gesture_service_stopped: "The gesture service isn't running, so no gesture is recognized and GNOME keeps its own gestures. Choose Check again on Better Touchpad in Better Manager's Apps to start it.",
+    gesture_collision_unreliable: "A gesture you switched on uses three fingers in a direction GNOME uses too. GNOME turns its own back on after every animated workspace switch and keeps its overview gestures, so both can happen at once. Four or five fingers avoid it.",
     gesture_thumb_best_effort: "The desktop reports how many fingers a gesture has and not which one is the thumb, so a thumb and three fingers is matched as four contacts.",
     gesture_launcher: "Open the launcher",
     gesture_show_desktop: "Show the desktop",
@@ -725,6 +732,8 @@ pub const ZH_TW: Copy = Copy {
     disable_gestures: "關閉手勢",
     no_gestures: "還沒有設定任何手勢。",
     gesture_backend_none: "這個工作階段沒有啟用 GNOME Shell 轉接器，所以手勢還無法真的影響桌面。",
+    gesture_service_stopped: "手勢服務沒有在執行，所以不會辨識任何手勢，GNOME 會保留自己的手勢。在 Better Manager 的「應用程式」對 Better Touchpad 按「重新檢查」就會啟動它。",
+    gesture_collision_unreliable: "你開啟的手勢用了三指，方向和 GNOME 自己的手勢一樣。GNOME 每次以動畫切換工作區後會把自己的手勢再打開，概覽裡的手勢也不會讓出來，所以兩邊可能同時動作。改用四指或五指就不會撞到。",
     gesture_thumb_best_effort: "桌面只會回報手勢用了幾根手指，不會說哪一根是拇指，所以拇指加三指會以四點接觸來判斷。",
     gesture_launcher: "開啟啟動器",
     gesture_show_desktop: "顯示桌面",
@@ -1179,6 +1188,8 @@ mod tests {
             copy.disable_gestures,
             copy.no_gestures,
             copy.gesture_backend_none,
+            copy.gesture_service_stopped,
+            copy.gesture_collision_unreliable,
             copy.gesture_thumb_best_effort,
             copy.gesture_launcher,
             copy.gesture_show_desktop,

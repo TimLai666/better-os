@@ -766,15 +766,20 @@ impl TouchpadApp {
                         .child(
                             div()
                                 .text_xs()
-                                .child(self.model.backend_status().detail.clone()),
+                                .child(self.model.backend_words(self.model.locale())),
                         )
+                        // The same words Better Manager's Touchpad page uses,
+                        // from one place in `touchpad-views` (ticket 131).
                         .children(health.checks.iter().map(|check| {
+                            let locale = self.model.locale();
                             div()
                                 .text_xs()
                                 .text_color(cx.theme().muted_foreground)
                                 .child(format!(
-                                    "{} · {:?} · {}",
-                                    check.id, check.state, check.detail
+                                    "{} · {} · {}",
+                                    touchpad_views::health_words::check_name(&check.id, locale),
+                                    touchpad_views::i18n::health_words(check.state, locale),
+                                    self.model.check_detail(check, locale)
                                 ))
                         })),
                     cx,

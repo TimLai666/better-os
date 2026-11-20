@@ -5,13 +5,12 @@
 //! overflow tests compare the same string in each — a translated thousands
 //! separator would make those tests compare two different things.
 //!
-//! Times are formatted in UTC. There is no time-zone database in this
-//! workspace and inventing one from `TZ` would be wrong for half the year in
-//! most of the world; `engineering/specs/files-gui-policy.md` records this as the one
-//! display value that is not in the user's local time yet.
+//! Times are on the local wall clock, through `better_core::local_time`
+//! (`engineering/specs/files-gui-policy.md`, "Times are shown in local time").
 
 use std::time::Duration;
 
+use better_core::local_time::TimeZone;
 use files_core::{EntryKind, EntrySize, FileTime};
 
 /// A byte count, in the units a file manager uses.
@@ -66,40 +65,18 @@ pub fn entry_size(size: EntrySize) -> String {
     }
 }
 
-/// A timestamp as `YYYY-MM-DD HH:MM` in UTC.
+/// A timestamp as `YYYY-MM-DD HH:MM` on the local wall clock, through the
+/// one conversion every Better OS window shares (`better_core::local_time`).
 pub fn file_time(time: Option<FileTime>) -> String {
-    let Some(time) = time else {
-        return "—".to_string();
-    };
-    let seconds = time.seconds;
-    let days = seconds.div_euclid(86_400);
-    let seconds_of_day = seconds.rem_euclid(86_400);
-    let (year, month, day) = civil_from_days(days);
-    format!(
-        "{year:04}-{month:02}-{day:02} {:02}:{:02}",
-        seconds_of_day / 3600,
-        (seconds_of_day % 3600) / 60
-    )
+    file_time_in(time, TimeZone::System)
 }
 
-/// Days since the Unix epoch to a civil date. Howard Hinnant's `civil_from_days`,
-/// which is exact for every day this program can be handed and needs no table.
-fn civil_from_days(days: i64) -> (i64, u32, u32) {
-    let z = days + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let day_of_era = (z - era * 146_097) as u64;
-    let year_of_era =
-        (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
-    let year = year_of_era as i64 + era * 400;
-    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
-    let shifted_month = (5 * day_of_year + 2) / 153;
-    let day = (day_of_year - (153 * shifted_month + 2) / 5 + 1) as u32;
-    let month = if shifted_month < 10 {
-        shifted_month + 3
-    } else {
-        shifted_month - 9
-    } as u32;
-    (if month <= 2 { year + 1 } else { year }, month, day)
+/// [`file_time`] in a given zone. A missing time is a dash, never a date.
+pub fn file_time_in(time: Option<FileTime>, zone: TimeZone) -> String {
+    match time {
+        Some(time) => zone.at(time.seconds).calendar(),
+        None => "—".to_string(),
+    }
 }
 
 /// The type column: the MIME type when the platform detected one, and the kind

@@ -265,3 +265,18 @@ four choices, a per-application override and its removal, the extension
 disabled and re-enabled, and the service stopped were each observed through
 the shell's state, the taskbar's own state, and a screenshot; ticket 106
 records the results.
+
+## Note, 2026-11-21
+
+Added by ticket 131's review; the decision above is unchanged. The section
+"What the owner check does and does not stop" says more than the check gives.
+`/proc/<pid>/exe` proves which file the owner runs, not what it does: hostile
+code running as the same user passes it (`LD_PRELOAD`, the genuine binary with
+another `XDG_CONFIG_HOME`, a mount namespace with another file bound at that
+path, or stopping the real service and taking the name). The check stops
+accidental and unrelated owners. And it runs once, when the name gets a new
+owner, so a service already accepted stays accepted after its file is
+replaced; only a new owner or the extension being enabled again re-checks.
+[ADR 0035](/engineering/decisions/0035-touchpad-adapter-relay-rule.md) words
+both points as they are, and its wording is the one to rely on for this ADR
+too.

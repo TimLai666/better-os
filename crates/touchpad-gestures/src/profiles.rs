@@ -78,6 +78,20 @@ impl Default for GestureProfiles {
 }
 
 impl GestureProfiles {
+    /// Marks every gesture in every profile with what collides with GNOME 46
+    /// as the model now stands (ticket 131).
+    ///
+    /// The one place a stored annotation is corrected. The window does it on
+    /// the profiles it opens with and the gesture service on the ones it
+    /// reads, so a file written by a build with a wrong model is shown and
+    /// written back right by both.
+    pub fn annotate_conflicts(&mut self) {
+        crate::conflict::annotate_against_gnome_46(&mut self.global);
+        for profile in self.devices.values_mut() {
+            crate::conflict::annotate_against_gnome_46(profile);
+        }
+    }
+
     /// A document holding one profile as the global one, which is what a
     /// version 1 file was and what a single-profile export is.
     pub fn global_only(config: GestureConfig) -> Self {

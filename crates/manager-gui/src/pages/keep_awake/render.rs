@@ -237,7 +237,7 @@ impl ManagerApp {
             return Vec::new();
         };
         let view = StatusView::from_status(&status);
-        let offset = self.keep_awake.offset();
+        let zone = better_core::local_time::TimeZone::System;
         let offer_document = self.keep_awake.offer().cloned();
         let offer = offer_document
             .as_ref()
@@ -248,7 +248,7 @@ impl ManagerApp {
 
         // The top card: the state, and the one control it calls for.
         let headline = decide::Headline::of(&status, &view);
-        let (header, description) = headline.words(w, c, offset);
+        let (header, description) = headline.words(w, c, zone);
         let mut top = SettingsCard::new(card::STATE, header).icon(Picture::KeepAwake);
         if !description.is_empty() {
             top = top.description(description);
@@ -287,7 +287,7 @@ impl ManagerApp {
                     .unwrap_or_default();
                 let started = reason
                     .started_at_unix_seconds
-                    .map(|at| started_label(at, offset))
+                    .map(|at| started_label(at, zone))
                     .unwrap_or_default();
                 let mut line = format!(
                     "{} · {}",
@@ -393,7 +393,7 @@ impl ManagerApp {
                 CARD_GAP,
                 SettingsCard::new("awake-lid-countdown", c.lid_limit_heading).content(label(
                     view.lid
-                        .limit_summary(locale, status.now_unix_seconds, offset),
+                        .limit_summary(locale, status.now_unix_seconds, zone),
                     BODY,
                     p.text_secondary,
                 )),
@@ -1676,9 +1676,9 @@ impl ManagerApp {
         let c = copy(locale);
         let w = page_copy(locale);
         let p = palette(cx);
-        let offset = self.keep_awake.offset();
+        let zone = better_core::local_time::TimeZone::System;
         let history = self.keep_awake.history();
-        let cells = decide::history_cells(&history, c, offset);
+        let cells = decide::history_cells(&history, c, zone);
         let columns = vec![
             Column::new(w.column_started)
                 .width(px(150.0))
@@ -1794,7 +1794,7 @@ impl ManagerApp {
                     TableCell::from(provider_label(row.kind, c)),
                     TableCell::from(row.availability_label(c)),
                     TableCell::from(row.cadence_label(c)),
-                    TableCell::from(row.explanation.clone().unwrap_or_default()),
+                    TableCell::from(c.reason(row.explanation.as_deref()).unwrap_or_default()),
                 ]
             })
             .collect();
@@ -1868,7 +1868,7 @@ impl ManagerApp {
             .status()
             .map(|status| status.now_unix_seconds)
             .unwrap_or_else(manager_core::catalog::now_unix_seconds);
-        let offset = super::localtime::UtcOffset::for_system(now);
+        let zone = better_core::local_time::TimeZone::System;
         let buttons = |primary: &'static str| DialogButtons {
             primary: Some(primary.into()),
             secondary: None,
@@ -1877,7 +1877,7 @@ impl ManagerApp {
         };
         Some(match dialog {
             Dialog::Until(time) => {
-                let until = decide::until(now, offset, time);
+                let until = decide::until(now, zone, time);
                 ContentDialog::new("awake-until-dialog", w.until_title)
                     .buttons(buttons(w.start))
                     .on_result(Self::act_with(
@@ -1932,7 +1932,7 @@ impl ManagerApp {
                         })),
                 );
                 if draft.length.is_none() {
-                    let until = decide::until(now, offset, draft.until);
+                    let until = decide::until(now, zone, draft.until);
                     content = content
                         .child(
                             TimePicker::new("awake-modify-until", draft.until).on_change(
@@ -2073,7 +2073,8 @@ fn test_summary(test: &RuleTestView, c: &'static Copy) -> String {
         parts.push(format!(
             "{}: {}",
             provider_label(provider.kind, c),
-            provider.explanation.clone().unwrap_or_default()
+            c.reason(provider.explanation.as_deref())
+                .unwrap_or_else(|| c.unknown.to_string())
         ));
     }
     parts.join(" · ")

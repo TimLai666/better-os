@@ -1987,13 +1987,29 @@ fn sizes_and_times_read_the_way_a_file_manager_shows_them() {
     assert_eq!(crate::format::bytes(15 * 1_048_576), "15.0 MB");
     assert_eq!(crate::format::bytes(150 * 1_048_576), "150 MB");
 
+    let utc = better_core::local_time::TimeZone::UTC;
     assert_eq!(
-        crate::format::file_time(Some(files_core::FileTime::new(0, 0))),
+        crate::format::file_time_in(Some(files_core::FileTime::new(0, 0)), utc),
         "1970-01-01 00:00"
     );
     assert_eq!(
-        crate::format::file_time(Some(files_core::FileTime::new(1_700_000_000, 0))),
+        crate::format::file_time_in(Some(files_core::FileTime::new(1_700_000_000, 0)), utc),
         "2023-11-14 22:13"
+    );
+    // Ticket 146: the column is local time, not UTC.
+    assert_eq!(
+        crate::format::file_time_in(
+            Some(files_core::FileTime::new(1_700_000_000, 0)),
+            better_core::local_time::TimeZone::Fixed(8 * 3_600)
+        ),
+        "2023-11-15 06:13"
+    );
+    assert_eq!(
+        crate::format::file_time(Some(files_core::FileTime::new(1_700_000_000, 0))),
+        better_core::local_time::calendar_time(
+            1_700_000_000,
+            better_core::local_time::TimeZone::System
+        )
     );
     assert_eq!(crate::format::file_time(None), "—");
 

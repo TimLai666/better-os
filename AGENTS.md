@@ -3,6 +3,11 @@
 Better OS is a modular performance-improvement layer for Zorin OS and Ubuntu.
 It is not a Linux distribution fork. First-party components are installed,
 updated, verified, and rolled back through shared manager operations.
+On 2026-11-21 the owner chose a Better OS desktop session on COSMIC's
+compositor beside GNOME, which stays installed and the default until that
+session meets its bar
+([ADR 0038](/engineering/decisions/0038-cosmic-as-the-desktop.md),
+`engineering/specs/better-os-session.md`).
 
 ## Required artifacts
 
@@ -79,8 +84,14 @@ contract.
   `manager_platform::user_units::UserUnitController`. Units come from dpkg's
   own file list under `/usr/lib/systemd/user`, never from a table by component
   id, and the health check requires an enabled component's units to be enabled
-  and either active or finished successfully (a service that exits 0 on
-  purpose, such as the touchpad gestures with nothing configured). Update and
+  and active. An exited unit, even one that exited 0, is not running, and the
+  startup pass and Check again start it like a stopped one (ticket 131). Units
+  that still exit 0 are the Awake tray's and the Monitor tray's Quit and
+  `better-window-attention` finding another instance on its name; the trays
+  therefore come back the next time Better Manager starts or on Check again,
+  which is this rule (only disabling or removing keeps a unit off). The
+  touchpad gesture service, which used to exit 0 with nothing configured,
+  stays resident and idle. Update and
   Restore restart a unit that is already running so the new binary runs; Verify
   starts a stopped unit before checking. Tests set
   `BETTER_OS_TEST_SYSTEMCTL_GUARD` so the real runner can never reach the
@@ -155,9 +166,11 @@ contract.
   Shell already exposes. It may hold no threshold, no cooldown, no cancellation
   rule, no conflict decision, no configuration, no per-application rule, and no
   decision of any kind, it may store nothing, it may execute nothing, and no
-  method it serves may take free text. Each relay of the shared extension acts
-  only while its Rust counterpart owns its bus name and otherwise leaves GNOME's
-  own behaviour in place. `crates/touchpad-session/tests/extension.rs` and
+  method it serves may take free text. Each relay of the shared extension, and
+  the touchpad adapter's suppression of GNOME's swipe trackers (ADR 0035,
+  proposed), acts only while its Rust counterpart owns its bus name, answers
+  only that owner, accepts the owner only when its process runs the packaged
+  service, and otherwise leaves GNOME's own behaviour in place. `crates/touchpad-session/tests/extension.rs` and
   `crates/window-attention-service/tests/extension.rs` assert those bounds
   against the files. Widening them needs a new ADR, not a commit.
 - Use GPUI with `gpui-component` for first-party desktop GUIs. `better-ui` owns
@@ -165,7 +178,13 @@ contract.
 - Treat manifests as untrusted input: validate schema, targets, artifacts,
   dependencies, conflicts, and lifecycle metadata before planning.
 - Do not add a public APT repository, signing implementation, or automatic
-  optimizer without an explicit decision. The project license (ADR 0003) and
+  optimizer without an explicit decision. The one decision so far (owner,
+  2026-11-21, ADR 0038 C2): `manager-daemon` may add System76's
+  `apt.pop-os.org` source with its one signing key and a pin that takes only
+  the Better OS session's package closure from it, all compiled into the
+  daemon, and removes them with the session. Any other third-party source,
+  and an APT repository or signing implementation of Better OS's own, still
+  needs its own decision. The project license (ADR 0003) and
   the privileged daemon IPC protocol (ADR 0007) are decided; changing either
   needs a new ADR.
 - Every behavior change needs tests. Run formatting, linting, workspace checks,
@@ -427,7 +446,38 @@ GUI or dependency compiles when the relevant command was not executed.
   pending restore Better Manager finishes at its next start. Better Touchpad's
   puts its captured touchpad settings back. The gesture service's first run puts the Mac-style preset in
   force when no gesture file exists yet. Without both processes the Gestures
-  screen and the `touchpad.gesture_bridge` health check say which is missing.
+  screen and the `touchpad.gesture_bridge` health check say which is missing:
+  the service owns `org.betteros.TouchpadGestures1` while it runs, and an
+  adapter on the bus with that name unowned is "not running", never
+  "connected" (ticket 131). The service waits for the adapter instead of
+  exiting without it (a login starts it a moment before GNOME Shell enables
+  extensions), never exits on purpose (with safe mode on, nothing configured,
+  or the integration turned off by itself it stays resident and idle), and
+  ends a SIGTERM by that signal after giving GNOME its gestures back. It
+  watches `gestures.json` and the safe mode marker and takes every change at
+  once, and a watch that cannot be made costs no gesture (it says so and is
+  retried every minute). The service and both windows follow the file and
+  write only their own changes onto it as it is now, through one merge under
+  one lock (`GestureStore::save_changes`). Its match rule names the adapter as
+  the signals' sender, and on attach it adopts what the adapter reports, so a
+  suppression an older extension and service left behind is lifted. GNOME's
+  own swipe trackers are suppressed only by the service, only for a gesture
+  that collides, is on, and verified, and only once a gesture has arrived from
+  the adapter; the extension takes that request only from the service name's
+  owner running `/usr/bin/better-touchpad-gestured` (ADR 0035, proposed) and
+  restores the moment the name loses its owner. A companion package's
+  extension (`shell-adapter@betteros.org` from `better-shell-adapter`, a
+  companion of `better-manager`) is turned on with the component it travels
+  with, read from the companion's own dpkg list. GNOME's switch that turns off
+  all extensions is a warning, never a failed check, for every component.
+- Suppressing GNOME's three-finger swipes is not reliable on GNOME 46 and must
+  not be described as if it were (ADR 0035). `workspaceAnimation.js` turns its
+  tracker back on after every animated workspace switch and when the overview
+  hides, and the overview's workspace strip and application grid have
+  three-finger trackers the adapter never touches, so a Better OS gesture on
+  three fingers can fire beside GNOME's. The Touchpad page says so when such a
+  gesture is on; the Mac-style preset uses four fingers and collides with
+  nothing.
 - Three rows of the Mac-style preset do not work on GNOME 46 and must not be
   described as if they do. Four fingers down maps to the current application's
   windows and there is no shell facility for it. The two-finger application
@@ -441,6 +491,10 @@ GUI or dependency compiles when the relevant command was not executed.
   shell, because a nested shell with no touchpad produces no gesture events, so
   the swipe and pinch stream is tested only against a Rust fake of the same
   interface. Do not claim the event shape has been observed against a hand.
+  The extension's watch on `org.betteros.TouchpadGestures1` and its refusal
+  of a suppression from anyone else (ticket 131) have not run in a shell
+  either; they are asserted against the file, and the service side against a
+  private bus.
 - `ingest::EventScale::swipe_pad_pixels` is 1000, and it is a recorded starting
   value in the same sense as the thresholds: a compositor reports swipe motion
   in pixels and never says how big the pad is. Nobody has tuned it.
@@ -450,8 +504,13 @@ GUI or dependency compiles when the relevant command was not executed.
   that risk needs an owner and a document, not a paragraph in a pull request.
 - `touchpad_gestures::conflict::GNOME_46_GESTURES` is a static model of GNOME
   46's own swipe trackers, not a probe — the shell compiles them in and exposes
-  nothing to read. Both trackers accept three *and* four contacts, which is why
-  the Mac-style preset collides with four of them. Re-check the model before
+  nothing to read. Both trackers take three contacts and only three
+  (`swipeTracker.js`: `GESTURE_FINGER_COUNT = 3`, read from GNOME Shell 46.0's
+  gresource on 2026-11-21, ticket 131), so the Mac-style preset, which swipes
+  with four, collides with none of them. The model used to say three *and*
+  four, and 0.2.16 took GNOME's three-finger gestures away for nothing; the
+  service now re-detects collisions on every start rather than trusting the
+  annotation a file carries. Re-check the model before
   claiming support for a newer GNOME, and produce the hardware and release
   matrix ADR 0008 asked for; nothing here has been tested against GNOME 47, 48,
   or 49.

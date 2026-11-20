@@ -17,9 +17,9 @@ use gpui_component::{Theme, ThemeMode};
 
 use crate::client::{ClientError, ServiceClient, Snapshot};
 use crate::i18n::{Locale, copy};
-use crate::localtime::UtcOffset;
 use crate::model::{HistoryRow, ProviderRow, RuleTestView, RuleView, Section, StatusView};
 use crate::settings::{Preferences, PreferencesStore, PresetLength, StoredTheme};
+use better_core::local_time::TimeZone;
 
 /// How many recorded sessions the History section asks for. The protocol caps a
 /// page at [`MAX_HISTORY_PAGE`]; asking for the cap means the retention note is
@@ -87,7 +87,7 @@ pub(crate) struct AwakeApp {
     pub(crate) action_error: Option<String>,
     pub(crate) test: Option<RuleTestView>,
     pub(crate) draft: Option<RuleDraft>,
-    pub(crate) offset: UtcOffset,
+    pub(crate) zone: TimeZone,
     pub(crate) busy: bool,
     _work: Option<Task<()>>,
     /// Watches for an update and restarts into it (ticket 105).
@@ -132,7 +132,7 @@ impl AwakeApp {
             action_error: None,
             test: None,
             draft: None,
-            offset: UtcOffset::UTC,
+            zone: TimeZone::System,
             busy: true,
             _work: None,
             update_restart: better_ui::restart::UpdateRestart::new(
@@ -183,7 +183,6 @@ impl AwakeApp {
         self.protocol_version = snapshot.protocol_version;
         match snapshot.status {
             Ok(status) => {
-                self.offset = UtcOffset::for_system(status.now_unix_seconds);
                 self.providers = status
                     .providers
                     .iter()

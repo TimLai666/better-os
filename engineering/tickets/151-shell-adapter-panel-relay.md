@@ -1,7 +1,14 @@
 # Ticket 151 — The shell adapter's panel relay
 
-**Blocked by:** the owner accepting ADR 0036 and choosing shape A (decisions
-D1 and D2 in `design/top-bar-spec.md` section 0)
+**Blocked by:** none (the owner accepted ADR 0036 and chose shape A on
+2026-11-21, decisions D1 and D2 in `design/top-bar-spec.md` section 0)
+
+**Blocked:** waits, by ADR 0038 (owner, 2026-11-21: option D). The owner
+chose a Better OS session on `cosmic-comp` beside GNOME; ADR 0038's table
+"Which of tickets 150 to 161 should wait" puts this relay on **wait**: it is
+GNOME-only JavaScript the session never uses. It is built if the session does
+not reach the bar of `engineering/specs/better-os-session.md` ("Ready to become
+the default"), or if the owner, at ticket 228, keeps building GNOME surfaces.
 
 ## Why
 
@@ -37,7 +44,10 @@ tests that hold it there.
   `ActivateInputProperty`, and the notification actions perform the shell's
   own actions, resolving each index against the shell's current list at call
   time. Everything GNOME's is put back when the counterpart's name goes and on
-  `disable()`.
+  `disable()`. `FocusChanged` carries no X11 window id and no GTK menu paths:
+  they existed only for application menus, which decision D5 removed (ADR
+  0036's amendment of 2026-11-21), and the allow-list test asserts the relay
+  reads neither `get_gtk_menubar_object_path` nor `get_xwindow`.
 - **A Rust contract module** (`top-bar-core::shell`, GPUI-free) naming every
   member, its signature, and the wire values (window actions 0–5, edges 0–1,
   flag bits), as `window_attention_core::bus` does for the attention relay.
@@ -58,10 +68,23 @@ tests that hold it there.
       path inside the sandbox's own root, or the check made injectable for the
       test only) starts a test view, gets `ViewStarted`, places it, reserves a
       strip that a maximized test window respects, hides and restores GNOME's
-      panel, and gets `FocusChanged` for a GTK test window with its GTK menubar
-      path. Screenshots in `/home/tim/Developer/better-os-evidence/151/`.
+      panel, and gets `FocusChanged` for a GTK test window with its
+      application id, name, PID, and flags. Screenshots in
+      `/home/tim/Developer/better-os-evidence/151/`.
 - [ ] Removing the counterpart's name restores GNOME's panel, the keyboard
       indicator, and the work area, and the view exits.
 - [ ] The extension tests above pass; the window attention relay's tests pass
       unchanged.
 - [ ] fmt, clippy on stable, and the crates' tests pass.
+
+## Notes
+
+- 2026-11-21: from ticket 152's change for option D, this ticket also holds the
+  top bar's GNOME backend when it is built: the dock surface (`StartView`,
+  `ReserveStrip`, hiding GNOME's panel and keyboard indicator), the GNOME
+  sources of the focused window and its actions, the Better OS menu's calls to
+  GNOME's session manager and `org.gnome.ScreenSaver`, the GNOME key bindings
+  through Better Defaults (`toggle-message-tray` to `--notifications`, Ctrl+F2
+  to `--focus`), and ticket 152's headless GNOME Shell check of the bar. Ticket
+  152 builds the bar's service and view on layer-shell with those parts behind
+  traits.

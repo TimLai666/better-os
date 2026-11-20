@@ -8,6 +8,7 @@
 //! the environment the session already published.
 
 use app_catalog_core::DesktopEnvironments;
+use better_core::CurrentDesktop;
 
 use crate::activation::ActivationPath;
 
@@ -92,29 +93,37 @@ impl SessionCapabilities {
         Self::from_values(
             std::env::var("XDG_SESSION_TYPE").ok().as_deref(),
             std::env::var("XDG_CURRENT_DESKTOP").ok().as_deref(),
+            std::env::var("DESKTOP_SESSION").ok().as_deref(),
         )
     }
 
     /// The same detection over supplied values, so every branch is testable
     /// without touching the process environment.
-    pub fn from_values(session_type: Option<&str>, current_desktop: Option<&str>) -> Self {
+    ///
+    /// Which shell this is follows the one session rule in
+    /// `better_core::desktop` (any listed desktop, `DESKTOP_SESSION` only as a
+    /// fallback). `desktops` stays the raw `XDG_CURRENT_DESKTOP` list, because
+    /// it answers the desktop-entry `OnlyShowIn` question, which the
+    /// specification puts to that variable alone.
+    pub fn from_values(
+        session_type: Option<&str>,
+        current_desktop: Option<&str>,
+        desktop_session: Option<&str>,
+    ) -> Self {
         let session_type = match session_type.unwrap_or_default().trim().to_ascii_lowercase() {
             value if value == "wayland" => SessionType::Wayland,
             value if value == "x11" => SessionType::X11,
             _ => SessionType::Unknown,
         };
-        let raw_desktop = current_desktop.unwrap_or_default();
-        let desktops = DesktopEnvironments::parse(raw_desktop);
-        let shell = match desktops
-            .names()
-            .iter()
-            .find(|name| name.as_str() == "GNOME")
-        {
-            Some(_) => ShellKind::GnomeShell,
-            None => match desktops.names().first() {
-                Some(name) => ShellKind::Other(name.clone()),
+        let desktops = DesktopEnvironments::parse(current_desktop.unwrap_or_default());
+        let session = CurrentDesktop::from_values(current_desktop, desktop_session);
+        let shell = if session.is_gnome() {
+            ShellKind::GnomeShell
+        } else {
+            match session.names().first() {
+                Some(name) => ShellKind::Other(name.to_ascii_uppercase()),
                 None => ShellKind::Unknown,
-            },
+            }
         };
         let shortcut = match shell {
             ShellKind::GnomeShell => ShortcutAvailability::GnomeCustomKeybinding,
@@ -156,7 +165,8 @@ mod tests {
 
     #[test]
     fn a_gnome_wayland_session_offers_a_shortcut_route_and_no_gesture() {
-        let capabilities = SessionCapabilities::from_values(Some("wayland"), Some("ubuntu:GNOME"));
+        let capabilities =
+            SessionCapabilities::from_values(Some("wayland"), Some("ubuntu:GNOME"), None);
         assert_eq!(capabilities.session_type, SessionType::Wayland);
         assert_eq!(capabilities.shell, ShellKind::GnomeShell);
         assert_eq!(
@@ -176,7 +186,7 @@ mod tests {
 
     #[test]
     fn an_unknown_desktop_still_has_two_ways_in_and_reports_no_error() {
-        let capabilities = SessionCapabilities::from_values(None, None);
+        let capabilities = SessionCapabilities::from_values(None, None, None);
         assert_eq!(capabilities.session_type, SessionType::Unknown);
         assert_eq!(capabilities.shell, ShellKind::Unknown);
         assert_eq!(
@@ -196,14 +206,26 @@ mod tests {
 
     #[test]
     fn a_non_gnome_desktop_is_named_rather_than_reported_as_unknown() {
-        let capabilities = SessionCapabilities::from_values(Some("x11"), Some("KDE"));
+        let capabilities = SessionCapabilities::from_values(Some("x11"), Some("KDE"), None);
         assert_eq!(capabilities.session_type, SessionType::X11);
         assert_eq!(capabilities.shell, ShellKind::Other("KDE".to_string()));
     }
 
     #[test]
+    fn zorin_is_gnome_shell_and_desktop_session_is_only_a_fallback() {
+        let zorin = SessionCapabilities::from_values(Some("wayland"), Some("zorin:GNOME"), None);
+        assert_eq!(zorin.shell, ShellKind::GnomeShell);
+        let fallback = SessionCapabilities::from_values(Some("wayland"), None, Some("gnome"));
+        assert_eq!(fallback.shell, ShellKind::GnomeShell);
+        assert!(fallback.desktops.names().is_empty());
+        let listed = SessionCapabilities::from_values(Some("x11"), Some("KDE"), Some("gnome"));
+        assert_eq!(listed.shell, ShellKind::Other("KDE".to_string()));
+    }
+
+    #[test]
     fn an_attached_adapter_adds_the_gesture_path_ahead_of_the_others() {
-        let mut capabilities = SessionCapabilities::from_values(Some("wayland"), Some("GNOME"));
+        let mut capabilities =
+            SessionCapabilities::from_values(Some("wayland"), Some("GNOME"), None);
         capabilities.gesture = GestureAvailability::Adapter("mock".to_string());
         assert_eq!(
             capabilities.activation_paths().first(),

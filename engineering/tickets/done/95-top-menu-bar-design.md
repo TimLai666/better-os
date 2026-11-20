@@ -106,3 +106,22 @@ Not done or not verified:
 In `/home/tim/Developer/better-os-evidence/95/`: every mockup rendered by
 headless Chrome at 1490 × 1000 (1010 × 1000 for the 960 view), one PNG per
 HTML file.
+
+## Notes
+
+Revised on 2026-11-21 after the owner's answers to the seven decisions. D1
+(A), D2, D3 ((a), then (c)), D4 ((a) until ticket 94, then (b)), and D7 (a)
+went as recommended. D5 and D6 went the other way. D5: the bar carries no
+application menus at all and every window keeps its own menu row, so the
+spec's application-menu sections, the AppMenu registrar, the `better-ui`
+menu export, and tickets 153, 154, and 155 are gone; what survived of them is
+the menu drawing rules, now for tray menus, in ticket 156, and the global-menu
+research, kept as a short record of what D5 gives up (spec section 9.7). The
+application name's menu is the same window actions for every application,
+Better OS's own included. D6: old X11 (XEmbed) tray icons are shown in the
+bar through a Better OS bridge modelled on KDE's `xembedsniproxy` (spec
+section 9.6, new ticket 149). ADR 0036 gained a dated amendment saying the
+relay reports no X11 id or GTK menu paths. The mockups lost every application
+menu, `app-menu` became `app-actions` (the application name's menu open),
+`rest-betteros` and `rest-other` now have the same shape, the bar's role is a
+tool bar rather than a menu bar, and every PNG above was rendered again.

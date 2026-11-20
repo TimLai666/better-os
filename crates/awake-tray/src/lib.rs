@@ -9,11 +9,11 @@ pub mod controller;
 pub mod dbusmenu;
 pub mod item;
 pub mod labels;
-pub mod localtime;
 pub mod menu;
 pub mod notify;
 pub mod sni;
 
+pub use better_core::local_time::TimeZone;
 pub use client::{
     ClientError, LowBatteryStop, ServiceClient, ServiceEvent, service_event, start_request,
     status_from_event,
@@ -25,7 +25,6 @@ pub use controller::{
 pub use dbusmenu::DbusMenu;
 pub use item::StatusNotifierItem;
 pub use labels::{Labels, Locale, LocaleLabels};
-pub use localtime::UtcOffset;
 pub use menu::{
     Menu, MenuAction, MenuItem, QuickOptions, build as build_menu,
     build_offered as build_offered_menu,

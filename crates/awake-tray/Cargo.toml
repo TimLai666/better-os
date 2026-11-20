@@ -16,6 +16,8 @@ path = "src/lib.rs"
 [dependencies]
 awake-core.workspace = true
 awake-ipc.workspace = true
+# The one local-time conversion (`better_core::local_time`, ticket 146).
+better-core.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

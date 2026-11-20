@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="zh-Hant-TW" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Better Input 中英混打（淺色）</title>
+<style>
+:root{--font:system-ui,"Inter","Segoe UI","Noto Sans CJK TC","Noto Sans TC",sans-serif}
+html[data-theme=light]{--text:rgba(0,0,0,.894);--text2:rgba(0,0,0,.62);--subtle2:rgba(0,0,0,.06);--stroke:rgba(0,0,0,.06);--elev:rgba(0,0,0,.16);--wall1:#cfe3f4;--wall2:#9cc3e6;--win:#ffffff;--doc:#ffffff;--taskbar:rgba(238,238,238,.92);--shellpop:#fafafa;--shelltext:#2e3436;--shellsel:#3584e4}
+html[data-theme=dark]{--text:#fff;--text2:rgba(255,255,255,.77);--subtle2:rgba(255,255,255,.09);--stroke:rgba(255,255,255,.07);--elev:rgba(0,0,0,.45);--wall1:#1d2b3a;--wall2:#0d1520;--win:#242424;--doc:#1e1e1e;--taskbar:rgba(32,32,32,.92);--shellpop:#353535;--shelltext:#ffffff;--shellsel:#3584e4}
+*{box-sizing:border-box}
+body{margin:0;background:#888;color:var(--text);font:400 14px/20px var(--font);-webkit-font-smoothing:antialiased;padding:24px}
+.screen{position:relative;width:1400px;height:380px;overflow:hidden;background:linear-gradient(160deg,var(--wall1),var(--wall2));border-radius:2px;box-shadow:0 2px 12px rgba(0,0,0,.3);margin-bottom:16px}
+.win{position:absolute;left:160px;top:24px;width:1000px;height:300px;background:var(--win);border-radius:12px 12px 0 0;box-shadow:0 12px 32px rgba(0,0,0,.28);overflow:hidden}
+.win .tb{height:46px;display:flex;align-items:center;padding:0 12px;gap:8px;border-bottom:1px solid var(--stroke)}
+.win .tb .t{font-weight:600;flex:1;text-align:center}
+.win .tb .c{width:24px;height:24px;border-radius:12px;background:var(--subtle2);display:grid;place-items:center;color:var(--text2);font-size:12px}
+.doc{position:absolute;top:46px;left:0;right:0;bottom:0;background:var(--doc);padding:28px 48px;font-size:16px;line-height:28px;color:var(--text)}
+.pre{text-decoration:underline;text-underline-offset:4px;text-decoration-thickness:1px}
+.caret{display:inline-block;width:1px;height:20px;background:var(--text);vertical-align:-4px;margin:0 1px}
+.pop{position:absolute;background:var(--shellpop);color:var(--shelltext);border-radius:12px;box-shadow:0 4px 16px var(--elev);padding:8px 10px;font-size:14px;line-height:20px;z-index:3;border:1px solid var(--stroke)}
+.pop .aux{padding:2px 4px;white-space:nowrap;color:var(--text2)}
+.pop .cand{display:flex;flex-direction:column;margin-top:4px}
+.pop .cand span{padding:3px 8px;border-radius:6px;display:flex;gap:10px;white-space:nowrap}
+.pop .cand span b{font-weight:400;color:var(--text2);width:12px}
+.pop .cand span.sel{background:var(--shellsel);color:#fff}
+.pop .cand span.sel b{color:#fff}
+.pop .cand span i{font-style:normal;font-size:12px;color:var(--text2)}
+.pop .cand span.sel i{color:#fff}
+.kbd{font:600 12px/16px var(--font);border:1px solid var(--stroke);border-bottom-width:2px;border-radius:4px;padding:0 5px;color:var(--shelltext)}
+.taskbar{position:absolute;left:0;right:0;bottom:0;height:45px;background:var(--taskbar);border-top:1px solid var(--stroke);display:flex;align-items:center;gap:6px;padding:0 12px;z-index:4}
+.taskbar .gap{flex:1}
+.taskbar .ind{height:30px;min-width:30px;padding:0 8px;border-radius:6px;display:grid;place-items:center;color:var(--text);background:var(--subtle2);font-weight:600}
+.taskbar .clock{font-size:12px;line-height:16px;text-align:right;color:var(--text)}
+.label{position:absolute;left:16px;top:12px;z-index:5;font-size:12px;line-height:16px;color:#fff;background:rgba(0,0,0,.5);padding:4px 8px;border-radius:4px}
+.legend{max-width:1400px;font-size:12px;line-height:16px;color:#fff}
+</style>
+</head>
+<body>
+
+<div class="screen">
+<span class="label">1 · 中英混打：打 Python 不用切換，最後一個字打開了候選</span>
+<div class="win"><div class="tb"><span style="width:56px"></span><span class="t">筆記 — 文字編輯器</span><span class="c">–</span><span class="c">□</span><span class="c">×</span></div>
+<div class="doc">週末計畫：<br><span class="pre">我想用 Python 寫一個小工具，把照片依日期整</span><span class="caret"></span></div></div>
+<div class="pop" style="left:520px;top:154px"><div class="cand"><span class="sel"><b>1</b>整</span><span><b>2</b>拯</span><span><b>3</b>診<i>近音 ㄓㄣˇ</i></span><span><b>4</b>枕<i>近音 ㄓㄣˇ</i></span><span><b>5</b>疹<i>近音 ㄓㄣˇ</i></span></div><div class="aux">1/2 頁</div></div>
+<div class="taskbar"><span class="gap"></span><span class="ind" title="輸入法：Better Input（中）">中</span><span class="clock">下午 3:42<br>2026/11/21</span></div>
+</div>
+
+<div class="screen">
+<span class="label">2 · Tab 補完：有把握時才提示，按 Tab 接受，按別的鍵就忽略</span>
+<div class="win"><div class="tb"><span style="width:56px"></span><span class="t">筆記 — 文字編輯器</span><span class="c">–</span><span class="c">□</span><span class="c">×</span></div>
+<div class="doc">週末計畫：<br>我想用 Python 寫一個小工具，把照片依日期整理好。<br><span class="pre">如果明天天氣</span><span class="caret"></span></div></div>
+<div class="pop" style="left:322px;top:190px"><div class="aux"><span class="kbd">Tab</span> ⇥ 很好</div></div>
+<div class="taskbar"><span class="gap"></span><span class="ind" title="輸入法：Better Input（中）">中</span><span class="clock">下午 3:43<br>2026/11/21</span></div>
+</div>
+
+<p class="legend">設計稿：Better Input 打字時的樣子，依 design/better-input-spec.md 第 3.1 到 3.4 節。候選數、選字鍵與直式排列沿用新酷音的設定（每頁 5 個、1–0、直式）。候選窗與提示由 GNOME Shell 繪製，外觀依系統主題，這裡只示意位置與文字。文件內容是示意資料。另一個外觀：typing-dark.html。</p>
+</body>
+</html>

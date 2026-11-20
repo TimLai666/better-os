@@ -439,9 +439,7 @@ impl AwakeApp {
                         format!(
                             "{}: {}",
                             provider_label(provider.kind, c),
-                            provider
-                                .explanation
-                                .clone()
+                            c.reason(provider.explanation.as_deref())
                                 .unwrap_or_else(|| c.unknown.to_string())
                         ),
                         cx,

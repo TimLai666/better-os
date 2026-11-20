@@ -47,8 +47,16 @@ pub enum UnitActivity {
     /// crashed.
     Starting,
     /// `inactive` after its main process ran and exited 0 with
-    /// `Result=success`. A service that has nothing to do on this machine ends
-    /// like this on purpose, and it is not a problem.
+    /// `Result=success`. This used to count as a service that finished on
+    /// purpose, which let the touchpad gesture service on 0.2.16 be dead and
+    /// healthy for a whole session (ticket 131); it is resident now. Units
+    /// still exit 0: the Awake tray's and the Monitor tray's Quit, and
+    /// `better-window-attention` when another instance already owns its
+    /// name. None of that is the component being off, which only disabling
+    /// it in Better Manager or removing it means (AGENTS.md), so an exited
+    /// unit is not satisfied, and the startup pass and Check again start it
+    /// like a stopped one. It is kept apart from [`Self::Stopped`] only so the
+    /// words can say what happened.
     Exited,
     /// `inactive` for any other reason, including never having been started,
     /// and `deactivating`.
@@ -101,10 +109,11 @@ impl UnitState {
         self.activity == UnitActivity::Running
     }
 
-    /// Enabled, and either running or finished on its own with success. This
-    /// is what an enabled component's unit has to be.
+    /// Enabled and running: what an enabled component's unit has to be. A
+    /// unit that exited, even with success (a tray the person quit), is not,
+    /// because a component's units run for as long as the component is on.
     pub fn is_satisfied(&self) -> bool {
-        self.enabled && matches!(self.activity, UnitActivity::Running | UnitActivity::Exited)
+        self.enabled && self.activity == UnitActivity::Running
     }
 }
 
@@ -559,7 +568,13 @@ impl SystemdUserUnitController {
             (self.sleep)(self.settle.interval);
             let state = self.state_of(unit)?;
             match state.activity {
-                UnitActivity::Running | UnitActivity::Exited => return Ok(()),
+                UnitActivity::Running => return Ok(()),
+                UnitActivity::Exited => {
+                    return Err(UnitFailure::new(
+                        unit,
+                        "the service exited right after it started",
+                    ));
+                }
                 UnitActivity::Starting => continue,
                 UnitActivity::Failed => {
                     return Err(UnitFailure::new(
@@ -1014,20 +1029,23 @@ mod tests {
         assert!(state.masked && !state.enabled);
     }
 
-    /// The touchpad gesture service exits 0 on purpose when it has nothing to
-    /// do, and its unit is `Restart=on-failure`, so systemd leaves it
-    /// `inactive` with `Result=success`. That is an enabled component working
-    /// as designed. A unit that was never started reads `Result=success` too,
-    /// and it is told apart by `ExecMainCode=0`: no main process ever exited.
-    /// Both shapes are what `systemctl --user show` printed on this host.
+    /// Ticket 131: the touchpad gesture service on 0.2.16 exited 0 when the
+    /// adapter was late, systemd left it `inactive` with `Result=success`, and
+    /// this rule read that as finished on purpose, so a dead service was
+    /// healthy for a whole session. Units still exit 0 (a tray's Quit, a
+    /// second window-attention instance), and none of that is the component
+    /// being off, so an exited unit is not satisfied. It still parses as
+    /// [`UnitActivity::Exited`], told apart from a unit that was never
+    /// started (`ExecMainCode=0`). Both shapes are what `systemctl --user
+    /// show` printed on this host. This test fails on the old rule.
     #[test]
-    fn a_service_that_finished_successfully_is_satisfied_and_a_never_started_one_is_not() {
+    fn a_service_that_exited_is_not_satisfied_even_with_success() {
         let finished = parse_unit_state(
             "better-touchpad-gestures.service",
             "Result=success\nExecMainCode=1\nExecMainStatus=0\nActiveState=inactive\nUnitFileState=enabled\n",
         );
         assert_eq!(finished.activity, UnitActivity::Exited);
-        assert!(finished.is_satisfied());
+        assert!(!finished.is_satisfied());
 
         let never_started = parse_unit_state(
             "better-touchpad-gestures.service",
@@ -1041,6 +1059,26 @@ mod tests {
             "Result=success\nExecMainCode=1\nExecMainStatus=3\nActiveState=inactive\nUnitFileState=enabled\n",
         );
         assert!(!exited_with_an_error.is_satisfied());
+    }
+
+    /// Ticket 131: a gesture service stopped by SIGTERM (a stop by hand, a
+    /// restart, a logout) gives GNOME's gestures back and then ends by that
+    /// signal rather than exiting 0, so systemd records `ExecMainCode=2`
+    /// (`CLD_KILLED`). That must read as stopped, never as a service that
+    /// finished on purpose, or the startup pass would leave it dead.
+    ///
+    /// A guard, not a regression test: the parser already read this shape as
+    /// stopped before ticket 131; what changed is that the service now ends
+    /// this way. It keeps the parser from ever folding a killed process into
+    /// a finished one.
+    #[test]
+    fn a_service_ended_by_its_stop_signal_is_stopped_not_finished() {
+        let stopped = parse_unit_state(
+            "better-touchpad-gestures.service",
+            "Result=success\nExecMainCode=2\nExecMainStatus=15\nActiveState=inactive\nUnitFileState=enabled\n",
+        );
+        assert_eq!(stopped.activity, UnitActivity::Stopped);
+        assert!(!stopped.is_satisfied());
     }
 
     #[test]
