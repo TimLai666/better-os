@@ -2,6 +2,9 @@
 
 **Blocked by:** none
 
+**Blocked:** the owner seeing the held state in each Better OS place on this
+machine, which needs the next release installed. Everything else is done.
+
 ## Why
 
 The owner asked on 2026-11-21: when the charger is connected and the battery
@@ -64,3 +67,56 @@ evidence what it draws at the limit and whether anything outside shell code
 changes it, and if only shell code can, say so on the System page's charge
 limit card; do not write the relay ADR now, because the GNOME bar (tickets
 151 to 159) waits under option D.
+
+## Notes
+
+### Done (2026-11-21)
+
+- The rule is `hardware_core::charge_state` (spec:
+  `engineering/specs/battery-charge-state.md`). `hardware-core` because every
+  place that draws a battery can depend on it without GPUI or I/O (it needs
+  only `serde`), and the System page's battery and limit facts already live
+  there. `battery_look` gives state, picture and words; its tests cover every
+  state and the edges, including a charger online with the battery below the
+  limit and not charging (`PluggedInNotCharging`, never called holding).
+- New pictures in `better-ui`: `battery-plugged` (held) and
+  `battery-full-plugged` (plugged in and full), a white plug over the battery
+  like the charging bolt.
+- Every battery icon and line uses it: Better Monitor's Overview card and
+  list row, Battery page and taskbar popup, the taskbar item's menu line;
+  Better Manager's Home banner, System battery and charge limit cards, Keep
+  awake charge card; Better Awake's power row.
+  `crates/hardware-core/tests/one_battery_rule.rs` fails when a window maps
+  a status or a level to a picture or words of its own.
+- The desktop's own icon under option D: GNOME Shell 46's `system.js`
+  (extracted from the installed gresource) draws UPower's `pending-charge` as
+  the plain level icon, UPower 1.90.3 has no charge-threshold property, and
+  nothing outside the shell's code decides the name (the spec's "desktop's
+  own battery icon" section, with GNOME 42, 47, 48 and 49 compared). The
+  charge limit card says so on GNOME while the limit is under 100%. No relay
+  ADR, as option D says.
+- Screens of every place in the held state, zh-TW and English, light and
+  dark, from fixture readings in a sandbox (headless GNOME Shell, private
+  buses with only dconf and a11y activatable, the hardware and Awake
+  stand-ins): `/home/tim/Developer/better-os-evidence/170/`. The Keep awake
+  page was shot in light only (its dark run came out light, not chased); the
+  System page is in all four. `gnome-own-indicator-at-limit-zoom.png` and
+  `gnome-own-indicator-evidence.txt` are the sandbox shell's own indicator
+  drawing the real machine at its limit: a plain battery, no mark.
+
+### Left
+
+- The held state seen by the owner in each place above, zh-TW and English,
+  light and dark, after the next release is installed. What they should see
+  at 80% with the limit at 80 and the charger in: the plug picture and
+  「已接上電源，維持在 80%」 / "Plugged in, holding at 80%" on Monitor's
+  battery card, Battery page, popup and taskbar menu; on Manager's Home
+  banner, System battery card, charge limit card (which also says what
+  GNOME's own icon shows) and Keep awake charge card; and on Awake's power
+  row. GNOME's own indicator keeps drawing a plain battery until the top bar
+  (ticket 157) draws the desktop's battery.
+- Not seen anywhere yet: the taskbar item's menu (no StatusNotifier host in
+  the sandbox; its words are tested in `monitor-tray`), Home's banner (it
+  reads `/`, not the debug fixture root; tested in `home.rs`), and how far this
+  machine's firmware lets the charge fall before charging again (the
+  five-point window is a starting value).

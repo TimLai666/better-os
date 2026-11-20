@@ -18,7 +18,7 @@ use monitor_collectors_linux::hwmon::{SensorKind as MonitorKind, scan_hwmon};
 pub const FAN_PLATFORM_DEVICES: [&str; 1] = ["asus-nb-wmi"];
 
 /// The variable a debug build of a window reads its sysfs root from.
-pub const DEBUG_ROOT_VARIABLE: &str = "BETTER_OS_DEBUG_SYS_ROOT";
+pub use hardware_core::DEBUG_SYS_ROOT_VARIABLE as DEBUG_ROOT_VARIABLE;
 
 /// Where the machine is: `/` on a real one.
 #[derive(Clone, Debug, Eq, PartialEq)]

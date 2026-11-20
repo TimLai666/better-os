@@ -22,6 +22,12 @@ pub mod power;
 pub mod sensors;
 pub mod write;
 
+/// The variable a debug build of a window reads a fixture sysfs tree from,
+/// laid out as `<root>/sys`, for screenshots in a sandbox
+/// (`hardware_platform::sysfs::SysRoot::for_window`, and Better Monitor's
+/// in-window collector). A release build never reads it.
+pub const DEBUG_SYS_ROOT_VARIABLE: &str = "BETTER_OS_DEBUG_SYS_ROOT";
+
 /// What a machine says about one control.
 ///
 /// `Absent` means the hardware is not there, and the card is not drawn.
