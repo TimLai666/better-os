@@ -482,6 +482,119 @@ impl RenderOnce for SplitButton {
     }
 }
 
+/// The arrow segment of a toolbar's split cell, such as GitHub Desktop's
+/// fetch, pull, and push: the part after the divider that opens the cell's
+/// menu. The whole segment is the target, its full height and width with
+/// its padding, and the hover and pressed fills cover all of it, as the
+/// secondary part of WinUI's `SplitButton` does (ticket 130); a button
+/// drawn inside a taller cell left everything around its glyph dead.
+///
+/// It fills its parent's height. The parent draws the [`MenuFlyout`] from
+/// the same [`MenuOpen`] state, where the cell wants it lined up. A press
+/// opens the menu and a second press closes it; Enter, Space, Alt+Down, and
+/// F4 open it with the first item highlighted.
+#[derive(IntoElement)]
+pub struct MenuSegment {
+    id: ElementId,
+    state: gpui::Entity<MenuOpen>,
+    width: Pixels,
+    tooltip: Option<SharedString>,
+    disabled: bool,
+}
+
+impl MenuSegment {
+    /// The width of a segment holding only the chevron.
+    pub const WIDTH: Pixels = px(36.0);
+
+    pub fn new(id: impl Into<ElementId>, state: gpui::Entity<MenuOpen>) -> Self {
+        Self {
+            id: id.into(),
+            state,
+            width: Self::WIDTH,
+            tooltip: None,
+            disabled: false,
+        }
+    }
+
+    pub fn width(mut self, width: Pixels) -> Self {
+        self.width = width;
+        self
+    }
+
+    /// Said while the menu is shut; open, the menu says what is there.
+    pub fn tooltip(mut self, tooltip: impl Into<SharedString>) -> Self {
+        self.tooltip = Some(tooltip.into());
+        self
+    }
+
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
+        self
+    }
+}
+
+impl RenderOnce for MenuSegment {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let p = palette(cx);
+        let focus = keyed_focus(self.id.clone(), window, cx);
+        let ring = !self.disabled && shows_focus(&focus, ShownState::Live, window);
+        let is_open = self.state.read(cx).is_open();
+        let hover = p.subtle_fill;
+        let pressed = p.subtle_fill_tertiary;
+        let mut segment = div()
+            .id(self.id.clone())
+            .relative()
+            .h_full()
+            .w(self.width)
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_center()
+            .text_color(if self.disabled {
+                p.text_disabled
+            } else {
+                p.text_primary
+            })
+            .when(is_open && !self.disabled, |s| s.bg(pressed))
+            .child(Icon::new(IconName::ChevronDown).size(px(12.0)));
+        if !self.disabled {
+            let toggle = self.state.clone();
+            let key_open = self.state.clone();
+            segment = segment
+                .track_focus(&focus.tab_index(0).tab_stop(true))
+                .hover(move |s| s.bg(hover))
+                .active(move |s| s.bg(pressed))
+                .on_click(move |event, window, cx| {
+                    // Keys are handled on key down, by the WinUI rule.
+                    if event.is_keyboard() {
+                        return;
+                    }
+                    cx.stop_propagation();
+                    if toggle.read(cx).is_open() {
+                        toggle.update(cx, |state, cx| {
+                            state.close();
+                            cx.notify();
+                        });
+                    } else {
+                        open_menu(&toggle, None, window, cx);
+                    }
+                })
+                .on_key_down(move |event, window, cx| {
+                    let key = Key::from_keystroke(&event.keystroke);
+                    let opens = key == Some(Key::OpenDropDown) || key.is_some_and(invoked_by);
+                    if opens && !key_open.read(cx).is_open() {
+                        cx.stop_propagation();
+                        open_menu(&key_open, Some(0), window, cx);
+                    }
+                });
+            if !is_open && let Some(tooltip) = self.tooltip {
+                segment = segment.tooltip(super::dialog::tooltip_builder(tooltip));
+            }
+        }
+        with_focus_ring(segment, ring, px(0.0), p)
+    }
+}
+
 /// `DropDownButton`: a button whose only job is to open a menu of commands,
 /// with a chevron after its label. A press opens the menu, a second press on
 /// the button closes it ([`super::light_dismiss`]), and Enter, Space,

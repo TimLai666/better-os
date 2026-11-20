@@ -14,7 +14,7 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{ActiveTheme as _, Icon, IconName, Sizable as _};
 
-use better_ui::fluent::button::{Button, ButtonKind};
+use better_ui::fluent::button::{Button, ButtonKind, MenuSegment};
 use better_ui::fluent::dialog::{
     ContentDialog, DefaultButton, DialogButtons, DialogResult, Flyout,
 };
@@ -701,7 +701,6 @@ impl GitApp {
         // split button offers (ticket 123).
         let state = self.sync_menu.clone();
         let open = state.read(cx).is_open();
-        let opener = state.clone();
         div()
             .id("toolbar-sync")
             .relative()
@@ -715,23 +714,18 @@ impl GitApp {
             .border_r_1()
             .border_color(p.divider)
             .child(main)
+            // The whole segment after the divider opens the menu, its full
+            // height and width (ticket 130).
             .child(
                 div()
                     .flex_none()
                     .h_full()
-                    .flex()
-                    .items_center()
-                    .px(px(2.0))
                     .border_l_1()
                     .border_color(p.divider)
                     .child(
-                        // Its tooltip only while the menu is shut: open, the
-                        // menu itself says what is there.
-                        Button::new("sync-more", ButtonKind::Subtle)
-                            .icon(IconName::ChevronDown)
-                            .when(!open, |b| b.tooltip(c.sync_more))
-                            .disabled(busy)
-                            .on_click(move |window, cx| open_menu(&opener, None, window, cx)),
+                        MenuSegment::new("sync-more", state.clone())
+                            .tooltip(c.sync_more)
+                            .disabled(busy),
                     ),
             )
             .when(open, |d| {

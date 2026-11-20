@@ -291,3 +291,138 @@ fn a_press_in_a_nested_flyout_past_the_outer_edge_reaches_its_content(cx: &mut T
     press(cx, point(px(600.0), px(500.0)));
     view.read_with(cx, |h, _| assert!(!h.flyout && !h.nested));
 }
+
+/// A toolbar cell 52px tall, as Better Git's sync cell is: a primary part
+/// and, after a divider, a [`MenuSegment`] that fills the cell's height,
+/// with the cell drawing the menu lined up on its right edge. Below it, a
+/// [`SplitButton`].
+struct SplitHarness {
+    menu: Entity<MenuOpen>,
+    primary: usize,
+}
+
+fn plain_entries() -> Vec<MenuEntry> {
+    vec![MenuItem::new("A").entry(), MenuItem::new("B").entry()]
+}
+
+impl Render for SplitHarness {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let view = cx.entity().downgrade();
+        let open = self.menu.read(cx).is_open();
+        div()
+            .size_full()
+            .child(
+                div()
+                    .id("cell")
+                    .absolute()
+                    .left(px(20.0))
+                    .top(px(20.0))
+                    .h(px(52.0))
+                    .flex()
+                    .child(
+                        div()
+                            .id("cell-primary")
+                            .w(px(160.0))
+                            .h_full()
+                            .on_click(cx.listener(|h, _, _, cx| {
+                                h.primary += 1;
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        div()
+                            .debug_selector(|| "segment".into())
+                            .h_full()
+                            .border_l_1()
+                            .child(
+                                super::button::MenuSegment::new("segment", self.menu.clone())
+                                    .tooltip("More"),
+                            ),
+                    )
+                    .when(open, |d| {
+                        d.child(
+                            MenuFlyout::new("segment-menu", plain_entries())
+                                .align_right()
+                                .state(self.menu.clone()),
+                        )
+                    }),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .left(px(20.0))
+                    .top(px(160.0))
+                    .debug_selector(|| "split".into())
+                    .child(
+                        super::button::SplitButton::new("split", "Save")
+                            .entries(plain_entries())
+                            .on_click(move |_, cx| {
+                                let _ = view.update(cx, |h, cx| {
+                                    h.primary += 1;
+                                    cx.notify();
+                                });
+                            }),
+                    ),
+            )
+    }
+}
+
+fn split_harness(cx: &mut TestAppContext) -> (Entity<SplitHarness>, &mut VisualTestContext) {
+    cx.update(gpui_component::init);
+    cx.add_window_view(|_, cx| SplitHarness {
+        menu: super::menu::new_state(cx),
+        primary: 0,
+    })
+}
+
+/// The owner's "only the arrow glyph opens the menu" (ticket 130): a press
+/// in a corner of the arrow segment, far from its glyph, opens the menu, a
+/// second press there closes it, and the primary part is never invoked.
+#[gpui::test]
+fn a_press_in_the_corner_of_a_toolbar_arrow_segment_opens_its_menu(cx: &mut TestAppContext) {
+    let (view, cx) = split_harness(cx);
+    let segment = bounds(cx, "segment");
+    assert_eq!(
+        segment.size.height,
+        px(52.0),
+        "the segment fills the cell's height"
+    );
+    assert!(segment.size.width >= px(36.0));
+    let corners = [
+        point(segment.left() + px(2.0), segment.top() + px(1.0)),
+        point(segment.right() - px(1.0), segment.bottom() - px(1.0)),
+    ];
+    for corner in corners {
+        press(cx, corner);
+        view.read_with(cx, |h, cx| {
+            assert!(
+                h.menu.read(cx).is_open(),
+                "a press at {corner:?} opens the menu"
+            );
+            assert_eq!(h.primary, 0);
+        });
+        assert!(
+            cx.debug_bounds("menu-item-0").is_some(),
+            "its items are drawn"
+        );
+        press(cx, corner);
+        view.read_with(cx, |h, cx| {
+            assert!(!h.menu.read(cx).is_open(), "a second press closes it")
+        });
+    }
+}
+
+/// The same rule for the kit's split button: the corner of its chevron
+/// part, not only the chevron, opens the menu.
+#[gpui::test]
+fn a_press_in_the_corner_of_a_split_buttons_chevron_opens_its_menu(cx: &mut TestAppContext) {
+    let (view, cx) = split_harness(cx);
+    let split = bounds(cx, "split");
+    assert!(cx.debug_bounds("menu-item-0").is_none());
+    press(cx, point(split.right() - px(2.0), split.bottom() - px(2.0)));
+    assert!(
+        cx.debug_bounds("menu-item-0").is_some(),
+        "a press in the chevron part's corner opens the menu"
+    );
+    view.read_with(cx, |h, _| assert_eq!(h.primary, 0));
+}
