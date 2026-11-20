@@ -20,6 +20,7 @@ name = "better-files-before-removal"
 path = "src/bin/files_before_removal.rs"
 
 [dev-dependencies]
+defaults-platform = { workspace = true, features = ["dconf-write", "test-support"] }
 # The mixed-handler-group tests run the production `mimeapps.list` adapter over
 # a temporary file.
 app-chooser-core.workspace = true

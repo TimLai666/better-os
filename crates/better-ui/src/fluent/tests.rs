@@ -1911,13 +1911,13 @@ fn every_language_picker_names_the_languages_the_same_way() {
 #[test]
 fn a_window_that_loses_client_decorations_takes_input_everywhere_again() {
     use crate::system_frame::input_region_changes;
-    let first = Some((52.0, 52.0, 1176.0, 716.0));
+    let first = Some(vec![(52.0, 52.0, 1176.0, 716.0)]);
     // The first frame sets its region.
-    assert!(input_region_changes(None, first));
+    assert!(input_region_changes(None, &first));
     // Server-decorated now: the whole surface, which is a change.
-    assert!(input_region_changes(Some(first), None));
+    assert!(input_region_changes(Some(&first), &None));
     // And only once.
-    assert!(!input_region_changes(Some(None), None));
+    assert!(!input_region_changes(Some(&None), &None));
     // The early return clears it: the source says so.
     let source = include_str!("window_frame.rs");
     let early = source
@@ -1941,4 +1941,51 @@ fn an_error_with_no_details_offers_no_details_toggle() {
     let source = include_str!("info_bar.rs");
     assert!(source.contains(".when(has_details, |actions| actions.child(toggle))"));
     assert!(source.contains("let expanded = has_details &&"));
+}
+
+/// Ticket 141: a window floats a tooltip or a menu through the kit
+/// (`window_frame::float_at`, `light_dismiss::anchored_panel`, the menus),
+/// which keeps it inside the window's rounded shape; GPUI's own `anchored()`
+/// places it anywhere in the surface, the window's shadow included. No crate
+/// but this one builds `anchored()`.
+#[test]
+fn no_window_builds_its_own_floating_placement() {
+    // Files allowed to, each with its reason. None today.
+    let allowed: [(&str, &str); 0] = [];
+    let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let mut found = Vec::new();
+    let mut checked = 0;
+    let mut stack = vec![crates.clone()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if path.is_dir() {
+                if name != "target" && name != "better-ui" && !name.starts_with('.') {
+                    stack.push(path);
+                }
+            } else if name.ends_with(".rs") {
+                checked += 1;
+                let text = std::fs::read_to_string(&path).unwrap_or_default();
+                for (line, content) in text.lines().enumerate() {
+                    let code = content.split("//").next().unwrap_or("");
+                    if code.contains("anchored()") {
+                        let shown = path.strip_prefix(&crates).unwrap_or(&path).display();
+                        let shown = format!("{shown}:{}", line + 1);
+                        if !allowed.iter().any(|(at, _)| shown.starts_with(at)) {
+                            found.push(shown);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(checked > 100, "the window crates' sources were read");
+    assert!(
+        found.is_empty(),
+        "float overlays through better_ui's placement: {found:?}"
+    );
 }

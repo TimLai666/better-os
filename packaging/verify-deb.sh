@@ -57,7 +57,7 @@ required_executables() {
             printf '%s\n' \
                 usr/bin/better-touchpad \
                 usr/bin/better-touchpad-gestured \
-                usr/lib/better-os/before-removal/better-touchpad
+                usr/lib/better-os/before-removal/better-touchpad \
                 usr/libexec/better-touchpad-scrolld
             ;;
         better-awake)

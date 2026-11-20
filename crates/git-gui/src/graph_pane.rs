@@ -597,17 +597,7 @@ impl GitApp {
                 )
             })
             .children(self.graph_tooltip(cx))
-            .children(drop_branches.map(|strip| {
-                div()
-                    .absolute()
-                    .bottom_0()
-                    .left_0()
-                    .right_0()
-                    .bg(p.flyout)
-                    .border_t_1()
-                    .border_color(p.flyout_stroke)
-                    .child(strip)
-            }))
+            .children(drop_branches.map(|strip| crate::render::drop_bar(strip, p)))
     }
 
     /// The rows on screen. Also: ask for the next page near the end, scroll
@@ -1110,19 +1100,12 @@ impl GitApp {
     fn graph_tooltip(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let hover = self.live_hover(cx)?;
         let at = point(px(hover.at.0 + 12.0), px(hover.at.1 + 20.0));
-        Some(
-            deferred(
-                anchored()
-                    .position(at)
-                    .snap_to_window_with_margin(px(8.0))
-                    .child(graph_tip(
-                        SharedString::from(hover.text.clone()),
-                        fluent::palette(cx),
-                    )),
-            )
-            .with_priority(1)
-            .into_any_element(),
-        )
+        // Through the kit's one floating placement, which keeps it inside
+        // the window's rounded shape near the bottom rows (ticket 141).
+        Some(better_ui::window_chrome::float_at(
+            at,
+            graph_tip(SharedString::from(hover.text.clone()), fluent::palette(cx)),
+        ))
     }
 
     /// While a commit is dragged: the local branches it can be dropped on to

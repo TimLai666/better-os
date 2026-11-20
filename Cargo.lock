@@ -1738,6 +1738,7 @@ dependencies = [
  "app-catalog-platform",
  "app-chooser-core",
  "better-core",
+ "libc",
  "serde",
  "serde_json",
  "tempfile",
@@ -4926,6 +4927,7 @@ dependencies = [
 name = "monitor-views"
 version = "0.2.16"
 dependencies = [
+ "better-core",
  "monitor-collectors-linux",
  "monitor-core",
 ]

@@ -11,7 +11,7 @@ use std::process::ExitCode;
 use touchpad_core::{RunState, TouchpadStore};
 use touchpad_platform::GnomeBackend;
 use touchpad_platform::removal::{
-    PutBack, put_back_before_removal, undo_before_removal, user_state_home,
+    PutBack, put_back_before_removal, refused_before_removal, undo_before_removal, user_state_home,
 };
 
 const NOT_RESTORED: u8 = 3;
@@ -31,6 +31,14 @@ fn main() -> ExitCode {
     let mut backend = GnomeBackend::connect(None);
     let reachable = backend.status().reachable;
     let state_home = user_state_home();
+
+    // A session whose settings database could not be decided is not a
+    // missing session: waiting for the next start would wait forever, so the
+    // removal goes on and Activity says why, in the person's words.
+    if let Some(said) = refused_before_removal(&store, &backend) {
+        eprintln!("{said}");
+        return ExitCode::from(NOT_RESTORED);
+    }
 
     if undo {
         return match undo_before_removal(&store, &mut backend, &state_home) {

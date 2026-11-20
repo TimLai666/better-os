@@ -31,24 +31,30 @@
 //! aside, as WinUI's compact display mode does: the content keeps its 48px
 //! offset, the open pane floats on the flyout fill with a shadow, and a press
 //! outside it closes it.
+//!
+//! The view reaches the window's bottom corners, so its fills and the pane's
+//! list keep inside them (ticket 141, [`super::window_frame::CornerFill`]).
 
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, App, ElementId, InteractiveElement, IntoElement, ParentElement, Pixels, RenderOnce,
-    SharedString, StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder as _, px,
+    AnyElement, App, BoxShadow, Edges, ElementId, InteractiveElement, IntoElement, ParentElement,
+    Pixels, RenderOnce, SharedString, StatefulInteractiveElement, Styled, Window, div, hsla, point,
+    prelude::FluentBuilder as _, px,
 };
 use gpui_component::{Icon, IconName};
 
 use super::badge::{Badge, InfoBadge};
 use super::button::{Button, ButtonKind};
 use super::hit_area::{ROW_GROUP, RowInset, hit_row};
+use super::window_frame::{corner_clip, corner_depth, corner_fill};
 use super::words::Locale;
 use super::{
     BODY, BODY_STRONG, Interaction, Key, Palette, ShownState, keyed_focus, palette, radius,
     shows_focus, size, step_index, text, with_alpha, with_focus_ring,
 };
 use super::{Handler, ValueHandler};
+use crate::system_frame::CornerRadii;
 
 /// One line of the pane.
 #[derive(Clone)]
@@ -618,7 +624,8 @@ fn item_row(
     let mut hit = hit_row(
         ElementId::named_usize("nav-item", index),
         RowInset::NAVIGATION,
-    );
+    )
+    .debug_selector(|| format!("nav-item-{index}"));
     if c.compact {
         let tip = match &item.caption {
             Some(caption) => SharedString::from(format!("{} · {}", item.label, caption)),
@@ -644,6 +651,47 @@ fn item_row(
     }
     hit.child(with_focus_ring(row, ring, radius::SM, p))
         .into_any_element()
+}
+
+/// The vertical scroll offset that shows an item spanning `top` to `bottom`
+/// whole in a view spanning `view_top` to `view_bottom` (all as laid out at
+/// `offset`), moving as little as possible; GPUI's offset is 0 at the top
+/// and down to `-max` at the end.
+pub fn reveal_offset(
+    top: f32,
+    bottom: f32,
+    view_top: f32,
+    view_bottom: f32,
+    offset: f32,
+    max: f32,
+) -> f32 {
+    let mut next = offset;
+    if bottom > view_bottom {
+        next -= bottom - view_bottom;
+    }
+    if top + (next - offset) < view_top {
+        next = offset + (view_top - top);
+    }
+    next.clamp(-max.max(0.0), 0.0)
+}
+
+/// Scrolls the list so its item `index` is whole above `end`, the padding
+/// the list keeps over the window's rounded corner.
+fn reveal(scroll: &gpui::ScrollHandle, index: usize, end: Pixels) {
+    let Some(item) = scroll.bounds_for_item(index) else {
+        return;
+    };
+    let view = scroll.bounds();
+    let offset = scroll.offset();
+    let y = reveal_offset(
+        f32::from(item.top()),
+        f32::from(item.bottom()),
+        f32::from(view.top()),
+        f32::from(view.bottom() - end),
+        f32::from(offset.y),
+        f32::from(scroll.max_offset().y),
+    );
+    scroll.set_offset(gpui::point(offset.x, px(y)));
 }
 
 /// Fixed in size, like the rows: in a pane that overflows and scrolls, a
@@ -753,6 +801,14 @@ impl RenderOnce for NavigationView {
             _ => None,
         };
 
+        // Where the list reaches the window's bottom leading corner (nothing
+        // under it), its scroll extent ends with the curve's depth at the
+        // rows' 4px inset, and so does the scrollbar's track.
+        let list_end = if self.footer.is_empty() {
+            corner_depth(px(4.0), window, cx)
+        } else {
+            px(0.0)
+        };
         let mut list = div()
             .id(super::child_id(&self.id, "items"))
             .flex()
@@ -764,6 +820,11 @@ impl RenderOnce for NavigationView {
             // trailing action or badge. Kept whether or not the pane
             // overflows, so nothing moves when it starts to.
             .pr(px(4.0))
+            // With nothing under it the list reaches the window's bottom
+            // leading corner: the curve's depth at the rows' 4px inset is
+            // padding at its end, so the last row scrolls fully above the
+            // curve (ticket 141).
+            .pb(list_end)
             .overflow_y_scroll();
         // A pane taller than the window scrolls, with a scrollbar that stays
         // in sight while there is more below (a compact pane at 960×720
@@ -815,6 +876,8 @@ impl RenderOnce for NavigationView {
         let handler = self.on_select.clone();
         let context = self.on_context.clone();
         let key_cursor = cursor.clone();
+        let key_scroll = scroll.clone();
+        let key_list_end = list_end;
         let selected = self.selected;
         let mut pane = div()
             .id(self.id.clone())
@@ -833,13 +896,15 @@ impl RenderOnce for NavigationView {
                     .flex_col()
                     .flex_1()
                     .min_h_0()
-                    .child(list)
+                    // Rows scrolled past the window's bottom leading corner
+                    // stop the curve's depth at their inset above it.
+                    .child(corner_clip(px(4.0), list))
                     .child(
                         div()
                             .absolute()
                             .top_0()
                             .right_0()
-                            .bottom_0()
+                            .bottom(list_end)
                             .w(px(8.0))
                             .child(
                                 gpui_component::scroll::Scrollbar::vertical(&scroll)
@@ -848,19 +913,43 @@ impl RenderOnce for NavigationView {
                     ),
             )
             .child(footer);
+        let mut floating_fill = None;
         if floating {
             // Open over the content: the flyout fill, an edge, and the
-            // shadow WinUI gives an overlay pane (`PaneOverlayShadowDepth`).
-            pane = pane
-                .absolute()
-                .top_0()
-                .left_0()
-                .bottom_0()
-                .bg(p.flyout)
-                .border_r_1()
-                .border_color(p.flyout_stroke)
-                .rounded_r(radius::MD)
-                .shadow_lg();
+            // shadow WinUI gives an overlay pane (`PaneOverlayShadowDepth`),
+            // drawn as one fill so its bottom-leading corner follows the
+            // window's.
+            let md = f32::from(radius::MD);
+            let fill = corner_fill(p.flyout)
+                .rounded(CornerRadii {
+                    top_right: md,
+                    bottom_right: md,
+                    ..CornerRadii::SQUARE
+                })
+                .border(
+                    Edges {
+                        right: px(1.0),
+                        ..Edges::default()
+                    },
+                    p.flyout_stroke,
+                )
+                .shadow(vec![
+                    BoxShadow {
+                        color: hsla(0., 0., 0., 0.1),
+                        offset: point(px(0.), px(10.)),
+                        blur_radius: px(15.),
+                        spread_radius: px(-3.),
+                        inset: false,
+                    },
+                    BoxShadow {
+                        color: hsla(0., 0., 0., 0.1),
+                        offset: point(px(0.), px(4.)),
+                        blur_radius: px(6.),
+                        spread_radius: px(-4.),
+                        inset: false,
+                    },
+                ]);
+            floating_fill = Some(fill);
             // The search box's suggestions float past the pane's edge; a
             // press in them is not a press outside (`light_dismiss`).
             let order = super::light_dismiss::PanelOrder::default();
@@ -903,6 +992,11 @@ impl RenderOnce for NavigationView {
                     }
                 } else if let Some(next) = nav_step(now, &all, key) {
                     cx.stop_propagation();
+                    // The item the cursor moves to scrolls fully into view,
+                    // above the curve's depth the list keeps at its end.
+                    if next < main_len {
+                        reveal(&key_scroll, next, key_list_end);
+                    }
                     key_cursor.update(cx, |c, cx| {
                         c.0 = Some(next);
                         cx.notify();
@@ -910,28 +1004,59 @@ impl RenderOnce for NavigationView {
                 }
             });
 
+        // The layer's fill and its top and leading edge, as one fill so the
+        // corner that meets the window's bottom trailing corner follows it.
         let content = div()
+            .relative()
             .flex_1()
             .min_w_0()
             .h_full()
-            .bg(p.layer)
+            .child(
+                corner_fill(p.layer)
+                    .rounded(CornerRadii {
+                        top_left: f32::from(radius::MD),
+                        ..CornerRadii::SQUARE
+                    })
+                    .border(
+                        Edges {
+                            top: px(1.0),
+                            left: px(1.0),
+                            ..Edges::default()
+                        },
+                        p.card_stroke,
+                    ),
+            )
+            // The edge's width stays in the layout; the fill draws it.
             .border_t_1()
             .border_l_1()
-            .border_color(p.card_stroke)
-            .rounded_tl(radius::MD)
+            .border_color(gpui::transparent_black())
             .overflow_hidden()
+            // A page keeps its own side padding away from the corner; one
+            // whose list or panel reaches it uses the same rule as the pane
+            // (`corner_clip`, `corner_depth`, `corner_fill`).
             .children(self.content);
         div()
             .relative()
             .flex()
             .size_full()
             .min_h_0()
-            .bg(p.window_background)
+            .child(corner_fill(p.window_background))
             .map(|root| {
                 if floating {
+                    // The fill and its shadow sit outside the pane, which
+                    // clips its own contents.
                     root.child(div().w(content_offset(compact, true)).flex_none())
                         .child(content)
-                        .child(pane)
+                        .child(
+                            div()
+                                .absolute()
+                                .top_0()
+                                .left_0()
+                                .bottom_0()
+                                .flex()
+                                .children(floating_fill)
+                                .child(pane),
+                        )
                 } else {
                     root.child(pane).child(content).children(edge.map(|edge| {
                         div()

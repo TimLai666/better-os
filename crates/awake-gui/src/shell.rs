@@ -85,7 +85,7 @@ impl AwakeApp {
         let menu =
             SidebarMenu::new().children(Section::ALL.map(|section| self.nav_item(section, cx)));
 
-        Sidebar::new("awake-sidebar")
+        let sidebar = Sidebar::new("awake-sidebar")
             .collapsible(SidebarCollapsible::Icon)
             .collapsed(compact)
             .w(px(248.0))
@@ -136,7 +136,28 @@ impl AwakeApp {
                             )
                         }),
                 ),
+            );
+        // The sidebar reaches the window's bottom leading corner: its fill
+        // and edge follow the corner (ticket 141); its rows and footer keep
+        // 12px from its sides, clear of the curve.
+        div()
+            .relative()
+            .child(
+                better_ui::window_chrome::corner_fill(cx.theme().tokens.sidebar).border(
+                    gpui::Edges {
+                        right: px(1.0),
+                        ..gpui::Edges::default()
+                    },
+                    cx.theme().sidebar_border,
+                ),
             )
+            .child(
+                sidebar
+                    .bg(transparent_black())
+                    .border_color(transparent_black()),
+            )
+            .h_full()
+            .flex_none()
             .into_any_element()
     }
 

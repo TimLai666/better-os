@@ -18,9 +18,12 @@
 //! cannot be loaded. [`gtk`] does the drawing and [`service`] keeps the
 //! images current; `crate::fluent::window_frame` paints them.
 
+pub mod corners;
 #[cfg(target_os = "linux")]
 pub mod gtk;
 pub mod service;
+
+pub use corners::{CornerRadii, Rect, WindowShape, input_region, window_corner_radii};
 
 #[cfg(test)]
 mod tests;
@@ -510,7 +513,10 @@ pub const RESIZE_CORNER: f32 = 24.0;
 /// the window (never past the surface), a corner covers
 /// [`RESIZE_CORNER`] of each edge next to it, and a side that touches the
 /// screen or another window does not resize. A maximized window does not
-/// resize at all.
+/// resize at all. A press inside the window's rectangle but outside its
+/// rounded corner (`radii`), where nothing of the window is drawn, resizes
+/// from that corner.
+#[allow(clippy::too_many_arguments)]
 pub fn resize_edge(
     x: f32,
     y: f32,
@@ -519,6 +525,7 @@ pub fn resize_edge(
     inset: Insets,
     tiled: Tiled,
     maximized: bool,
+    radii: CornerRadii,
 ) -> Option<Edge> {
     if maximized || tiled.all() {
         return None;
@@ -569,7 +576,8 @@ pub fn resize_edge(
             Edge::Bottom
         }
     } else {
-        return None;
+        let shape = WindowShape::new(Rect::inside(width, height, inset), radii);
+        return shape.corner_outside(x, y).map(|corner| corner.edge());
     };
     let blocked = match edge {
         Edge::Top => tiled.top,
@@ -588,13 +596,15 @@ pub fn resize_edge(
 /// `(edge, (x, y, width, height))` in the surface. They are exactly the
 /// points [`resize_edge`] maps to that edge, drawn so the pointer can show the
 /// matching resize cursor; corners come after edges, so a corner wins where
-/// they overlap.
+/// they overlap. The rows of the window's rectangle outside its rounded
+/// corners come last, each resizing from its corner.
 pub fn resize_zones(
     width: f32,
     height: f32,
     inset: Insets,
     tiled: Tiled,
     maximized: bool,
+    radii: CornerRadii,
 ) -> Vec<(Edge, (f32, f32, f32, f32))> {
     if maximized || tiled.all() {
         return Vec::new();
@@ -649,6 +659,13 @@ pub fn resize_zones(
             corner(right, bottom - RESIZE_CORNER, hr, RESIZE_CORNER + hb),
         ),
     ]);
+    let shape = WindowShape::new(Rect::inside(width, height, inset), radii);
+    zones.extend(
+        shape
+            .outside_rows()
+            .into_iter()
+            .map(|(corner, row)| (corner.edge(), row.tuple())),
+    );
     zones
         .into_iter()
         .filter(|(edge, (_, _, w, h))| {
@@ -668,27 +685,16 @@ pub fn resize_zones(
         .collect()
 }
 
-/// Where the window takes input: the visible window and the resize handles
-/// around it, as GTK 4 sets its input region, so a press on the outer shadow
-/// reaches whatever is behind the window. `(x, y, width, height)` in the
-/// surface.
-pub fn input_region(width: f32, height: f32, inset: Insets) -> (f32, f32, f32, f32) {
-    let left = (inset.left - RESIZE_HANDLE).max(0.0);
-    let top = (inset.top - RESIZE_HANDLE).max(0.0);
-    let right = (width - inset.right + RESIZE_HANDLE).min(width);
-    let bottom = (height - inset.bottom + RESIZE_HANDLE).min(height);
-    (left, top, (right - left).max(0.0), (bottom - top).max(0.0))
-}
+/// An input region as given to the compositor: rectangles `(x, y, width,
+/// height)`, or `None` for the whole surface.
+pub type InputRegion = Option<Vec<(f32, f32, f32, f32)>>;
 
 /// Whether the input region the window wants now differs from the one it
 /// last gave the compositor. `last` is `None` before the first one, which
 /// always counts as a change: a window that never set a region has none set
 /// by anyone, and one that set a smaller region and then lost its client
 /// decorations must set the whole surface again.
-pub fn input_region_changes(
-    last: Option<Option<(f32, f32, f32, f32)>>,
-    wanted: Option<(f32, f32, f32, f32)>,
-) -> bool {
+pub fn input_region_changes(last: Option<&InputRegion>, wanted: &InputRegion) -> bool {
     last != Some(wanted)
 }
 
@@ -870,6 +876,17 @@ pub fn top_corner_radius(sample: &Bitmap) -> u32 {
         .unwrap_or(size)
 }
 
+/// The bottom corner radius of a rendered sample: a window drawn opaque, with
+/// only its bottom-left corner rounded, into the image's bottom-left; the
+/// same diagonal walk as [`top_corner_radius`], from the bottom row.
+pub fn bottom_corner_radius(sample: &Bitmap) -> u32 {
+    let size = sample.width.min(sample.height);
+    let bottom = sample.height.saturating_sub(1);
+    (0..size)
+        .find(|i| sample.alpha(0, bottom - i) == 255 && sample.alpha(*i, bottom) == 255)
+        .unwrap_or(size)
+}
+
 /// A colour, straight alpha, 0 to 1.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Color {
@@ -1041,6 +1058,10 @@ pub struct FallbackLook {
     pub text: Color,
     /// `window.csd`'s `0 0 0 1px` outline shadow.
     pub border: Color,
+    /// `window.csd`'s `outline: 1px solid rgba(255, 255, 255, 0.07)` at
+    /// `outline-offset: -1px`, drawn over the window's content, light and
+    /// dark alike.
+    pub outline: Color,
     /// The button's box (24px wide plus 5px padding each side).
     pub button_size: f32,
     /// The round image inside it: the button's 24px content box.
@@ -1074,6 +1095,7 @@ pub const ADWAITA_LIGHT: FallbackLook = FallbackLook {
     header_shade: Color::rgb(0x000000).alpha(0.12),
     text: Color::rgb(0x000000).alpha(0.8),
     border: Color::rgb(0x000000).alpha(0.05),
+    outline: Color::rgb(0xffffff).alpha(0.07),
     button_size: 34.0,
     button_image: 24.0,
     button_spacing: 3.0,
@@ -1091,6 +1113,7 @@ pub const ADWAITA_DARK: FallbackLook = FallbackLook {
     header_shade: Color::rgb(0x000000).alpha(0.36),
     text: Color::rgb(0xffffff),
     border: Color::rgb(0x000000).alpha(0.05),
+    outline: Color::rgb(0xffffff).alpha(0.07),
     button_size: 34.0,
     button_image: 24.0,
     button_spacing: 3.0,

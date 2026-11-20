@@ -30,6 +30,10 @@ pub use adapters::{AdapterMode, AdapterSession, AdapterSessionError};
 /// The installed application a restore offers instead of one that is gone. It
 /// is named here so a surface that shows it need not depend on the adapters.
 pub use defaults_platform::ApplicationChoice;
+/// What a dconf refusal or note means to the person, `(en, zh_TW)`: which
+/// database the session reads could not be decided, or a database it reads
+/// is damaged. A surface shows this rather than "needs to be done by hand".
+pub use defaults_platform::dconf_profile::sentence as dconf_sentence;
 /// Why a setting reads as one this desktop does not have: no installed
 /// GSettings schema defines its key.
 pub use defaults_platform::gsettings::NO_SUCH_KEY as NO_SUCH_SETTING;

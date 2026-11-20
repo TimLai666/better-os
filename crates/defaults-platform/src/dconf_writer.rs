@@ -16,8 +16,9 @@
 //! writes the database, updates its own cache, and emits the `Notify` signal
 //! that tells every running application to re-read.
 //!
-//! Nothing here is privileged. The user writer at `/ca/desrt/dconf/Writer/user`
-//! is the caller's own per-user database, reached over the session bus.
+//! Nothing here is privileged. A writer at `/ca/desrt/dconf/Writer/<name>`
+//! is one of the caller's own per-user databases (`user` is GNOME's), reached
+//! over the session bus.
 
 use thiserror::Error;
 use tokio::runtime::Runtime;
@@ -27,8 +28,9 @@ use crate::gvariant::Changeset;
 
 const SERVICE: &str = "ca.desrt.dconf";
 const INTERFACE: &str = "ca.desrt.dconf.Writer";
-/// The caller's own per-user database. There is also a system writer; nothing
-/// in Better OS has business with it and nothing names it.
+/// GNOME's per-user database, the one dconf's built-in profile writes. There
+/// is also a system writer; nothing in Better OS has business with it and
+/// nothing names it.
 pub const USER_WRITER_PATH: &str = "/ca/desrt/dconf/Writer/user";
 
 /// Why a change could not be sent. `touchpad-platform` converts this into its
@@ -48,9 +50,14 @@ pub struct DconfWriter {
 }
 
 impl DconfWriter {
-    /// Connects to the session bus this process was started in.
-    pub fn connect() -> Result<Self, WriterError> {
-        Self::build(None, USER_WRITER_PATH)
+    /// Connects to the session bus this process was started in, to the writer
+    /// object of one database: the session's own, which
+    /// [`crate::dconf_profile::session_database`] names
+    /// (`SessionDatabase::writer_path`). Writing [`USER_WRITER_PATH`] from a
+    /// session whose profile puts another database first would land where
+    /// that session's value hides it.
+    pub fn connect_session(object_path: &str) -> Result<Self, WriterError> {
+        Self::build(None, object_path)
     }
 
     /// Connects to an explicit bus address and writer path. Only a test uses
@@ -118,6 +125,17 @@ impl DconfWriter {
     /// An empty change set is not sent. The service would accept it, but a
     /// call that writes nothing is a notification for no reason.
     pub fn change(&self, changeset: &Changeset) -> Result<String, WriterError> {
+        self.change_at(&self.object_path, changeset)
+    }
+
+    /// Sends one change set to the writer object at `object_path` on the
+    /// same connection: the database a defaults record names, which may not
+    /// be the one this writer was opened for.
+    pub fn change_at(
+        &self,
+        object_path: &str,
+        changeset: &Changeset,
+    ) -> Result<String, WriterError> {
         if changeset.is_empty() {
             return Ok(String::new());
         }
@@ -127,7 +145,7 @@ impl DconfWriter {
                 .connection
                 .call_method(
                     Some(SERVICE),
-                    self.object_path.as_str(),
+                    object_path,
                     Some(INTERFACE),
                     "Change",
                     &(blob,),

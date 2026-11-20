@@ -13,6 +13,9 @@ dconf-write = ["session-bus", "dep:tokio"]
 # The session bus itself: the `user-service` adapter's `ReloadConfig` and
 # name-owner reads (ticket 129, ADR 0041), and the dconf writer's call.
 session-bus = ["dep:zbus"]
+# A real dconf-service on a private bus, for other crates' tests. No shipped
+# binary enables it.
+test-support = ["dconf-write", "dep:tempfile"]
 
 [dependencies]
 app-catalog-core.workspace = true
@@ -20,8 +23,11 @@ app-catalog-core.workspace = true
 app-catalog-platform.workspace = true
 app-chooser-core.workspace = true
 better-core.workspace = true
+# `getuid` and `statfs`, for dconf's mandatory profile and its NFS rule.
+libc.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+tempfile = { workspace = true, optional = true }
 thiserror.workspace = true
 # The runtime is this crate's own: it blocks on the async dconf call. zbus
 # itself stays on its default async-io flavor — see the root Cargo.toml.

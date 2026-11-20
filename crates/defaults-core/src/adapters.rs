@@ -114,9 +114,11 @@ impl AdapterSession {
 /// Every other integration kind has no adapter at all, which is how the planner
 /// reports manual action required instead of guessing a command. The four
 /// GNOME adapters (keybinding, desktop setting, launcher entry, tool entry
-/// point) read the user's dconf database — the last two also the compiled
-/// GSettings schemas, for a key the user never set — and write through the
-/// session's dconf service, which they reach only when a change is made. A
+/// point) read the dconf database the session's profile writes to
+/// (`defaults_platform::dconf_profile`) — the last two also the user databases
+/// beneath it and the compiled GSettings schemas, for a key the session's own
+/// database does not hold — and write through that database's writer object,
+/// which they reach only when a change is made. A
 /// restore checks every captured desktop entry against the applications this
 /// session has installed, read the first time a restore asks and not before,
 /// so status, apply, and verify never read an application directory.
@@ -128,12 +130,14 @@ fn production_adapters() -> Result<AdapterSet, AdapterSessionError> {
     Ok(AdapterSet::new()
         .with(Box::new(writable))
         .with(Box::new(effective))
-        .with(Box::new(DconfAdapter::for_user(AdapterId::GnomeKeybinding)))
-        .with(Box::new(DconfAdapter::for_user(
+        .with(Box::new(DconfAdapter::for_session(
+            AdapterId::GnomeKeybinding,
+        )))
+        .with(Box::new(DconfAdapter::for_session(
             AdapterId::GnomeDesktopSetting,
         )))
-        .with(Box::new(LauncherEntryAdapter::for_user()))
-        .with(Box::new(ToolEntryPointAdapter::for_user()))
+        .with(Box::new(LauncherEntryAdapter::for_session()))
+        .with(Box::new(ToolEntryPointAdapter::for_session()))
         // Which program the session bus starts for a name (ADR 0041).
         .with(Box::new(BusActivationAdapter::for_user()))
         .with_applications(Box::new(LazyApplications::new(
