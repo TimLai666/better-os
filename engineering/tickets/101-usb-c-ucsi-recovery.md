@@ -1,6 +1,13 @@
 # Ticket 101 — The USB-C ports keep working on Linux
 
-**Blocked by:** none for part 1; the owner's go-ahead on Secure Boot for part 2
+**Blocked by:** none
+
+**Owner's decision (2026-11-21):** no Machine Owner Key is enrolled and Secure
+Boot stays on (it is on: `mokutil --sb-state` reports enabled). So nothing in
+this ticket may need a module the kernel would refuse: part 2's DKMS module
+is withdrawn, and the recovery of part 1 has to do the whole job with what
+the running kernel already has. What is left of part 2 is the upstream
+report only (see its heading).
 
 ## Why
 
@@ -34,7 +41,15 @@ firmware is not a fix here: it would lose the ports' Linux-side state.
 - Undo: removing the entry removes the hook.
 - Measured on the owner's machine before and after.
 
-## Part 2 — a real fix in the driver
+## Part 2 — withdrawn as a local fix; the upstream report stays
+
+The owner decided on 2026-11-21 that no key is enrolled, so a patched
+`ucsi_acpi` cannot be loaded on this machine and the steps below that build
+and load one are not done. What remains: collect the traces part 1's
+detection already reads, and send them to linux-usb as a report on the
+existing M5506WA thread, without a patch that nobody could test here. The
+text below is kept as the record of what was planned.
+
 
 - Reproduce on the owner's machine with tracing (`ucsi` tracepoints, dynamic
   debug for `drivers/usb/typec/ucsi`) across suspend and plug events, and find
