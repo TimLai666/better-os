@@ -12,7 +12,7 @@ use gpui_component::IconName;
 
 use super::card;
 use super::copy::copy;
-use super::model::{FaultRow, KnownRow, RowAction, Tone, page_rows};
+use super::model::{FaultRow, KnownRow, RowAction, Tone, page_rows_with};
 use super::state::Work;
 use crate::app::ManagerApp;
 use crate::i18n::shell;
@@ -173,11 +173,12 @@ impl ManagerApp {
         let Some(reports) = self.fixes.reports.as_ref() else {
             return rows;
         };
-        let groups = page_rows(
+        let groups = page_rows_with(
             locale,
             reports,
             &self.fixes.results,
             &self.fixes_override_dir(),
+            &self.fixes.usb,
         );
 
         rows.push(self.group_header(c.group_found, cx));
@@ -216,6 +217,8 @@ impl ManagerApp {
             let card_id = match row.entry {
                 patch_core::EntryId::FontconfigCache => card::FONT_CACHE,
                 patch_core::EntryId::ElectronCursor => card::ELECTRON_CURSOR,
+                patch_core::EntryId::UsbCInterface => card::USB_C_INTERFACE,
+                patch_core::EntryId::UsbController => card::USB_CONTROLLER,
             };
             rows.push(Row::card(gap, card_id, self.known_expander(row, cx)));
         }
@@ -235,6 +238,7 @@ impl ManagerApp {
         let working = match &self.fixes.work {
             Some(Work::Fixing(key)) if key == &row.key => Some(c.fixing),
             Some(Work::Undoing(key)) if key == &row.key => Some(c.undoing),
+            Some(Work::Resetting(key)) if key == &row.key => Some(c.resetting),
             _ => None,
         };
         let mut header = div().flex().flex_wrap().items_center().gap(px(8.0));
@@ -264,6 +268,9 @@ impl ManagerApp {
                 RowAction::FixAgain => c.fix_again,
                 RowAction::Undo => c.undo,
                 RowAction::UndoAll => c.undo_all,
+                RowAction::ResetUsbC => c.reset_usb_c,
+                RowAction::PowerOff(true) => c.power_off_choose,
+                RowAction::PowerOff(false) => c.power_off_back,
             };
             let id = id_for(&format!("fixes-action-{index}"), &row.key);
             let button = if index == 0 && matches!(action, RowAction::Fix | RowAction::FixAgain) {
@@ -279,6 +286,24 @@ impl ManagerApp {
                     RowAction::Fix | RowAction::FixAgain => this.fix_fault(key.clone(), cx),
                     RowAction::Undo => this.undo_fix(key.clone(), false, cx),
                     RowAction::UndoAll => this.undo_fix(key.clone(), true, cx),
+                    RowAction::ResetUsbC => {
+                        let action = match key.entry {
+                            patch_core::EntryId::UsbController => {
+                                patch_core::Privileged::RebindController
+                            }
+                            _ => patch_core::Privileged::ReloadUcsi,
+                        };
+                        this.usb_action(key.clone(), action, cx)
+                    }
+                    RowAction::PowerOff(on) => this.usb_action(
+                        key.clone(),
+                        patch_core::Privileged::SetChoice {
+                            choice:
+                                hardware_core::usb_recovery::UsbChoice::PowerOffWhenSleepBlocked,
+                            on,
+                        },
+                        cx,
+                    ),
                 },
             )));
         }
@@ -311,7 +336,9 @@ impl ManagerApp {
         if let Some(when) = &row.takes_effect {
             expander = expander.row(SettingsRow::new(when.clone()));
         }
-        expander = expander.row(SettingsRow::new(row.undo_note));
+        if !row.undo_note.is_empty() {
+            expander = expander.row(SettingsRow::new(row.undo_note));
+        }
         for line in &row.changed_elsewhere {
             expander = expander.row(SettingsRow::new(line.clone()).content(label(
                 crate::i18n::copy(locale).state_changed_externally,

@@ -39,6 +39,18 @@ pub const DRIVE_MOUNTING_ACTION: &str = "org.betteros.manager.drive-mounting";
 /// ticket 140).
 pub const LOGIN_SCREEN_WATCH_ACTION: &str = "org.betteros.manager.login-screen-watch";
 
+/// The action that gates `org.betteros.UsbRecovery1.ReloadUcsi` (ADR 0046,
+/// ticket 101): unload and load `ucsi_acpi`, only while it is failing.
+pub const USB_C_RELOAD_ACTION: &str = "org.betteros.manager.usb-c-reload";
+
+/// The action that gates `org.betteros.UsbRecovery1.RebindController`:
+/// unbind and bind the one xHCI function this boot's log names as dead.
+pub const USB_CONTROLLER_REBIND_ACTION: &str = "org.betteros.manager.usb-controller-rebind";
+
+/// The action that gates `org.betteros.UsbRecovery1.SetChoice`: the
+/// after-sleep recovery and the power-off choice.
+pub const USB_RECOVERY_SETTINGS_ACTION: &str = "org.betteros.manager.usb-recovery-settings";
+
 /// What polkit answered, with a cancelled prompt told apart from a refusal
 /// so the window can say "authentication wasn't completed" rather than "not
 /// allowed".
@@ -232,10 +244,43 @@ mod tests {
             FAN_MODE_ACTION,
             DRIVE_MOUNTING_ACTION,
             LOGIN_SCREEN_WATCH_ACTION,
+            USB_C_RELOAD_ACTION,
+            USB_CONTROLLER_REBIND_ACTION,
+            USB_RECOVERY_SETTINGS_ACTION,
         ] {
             action_block(id);
         }
         assert_ne!(APPLY_ACTION, REPAIR_ACTION);
+    }
+
+    /// ADR 0046: a reload or rebind is let through for the person at the
+    /// machine (the daemon refuses unless the fault is there and spaces
+    /// them out); the power-off choice asks an administrator. Both
+    /// languages describe all three.
+    #[test]
+    fn the_usb_recovery_actions_have_their_defaults() {
+        for id in [USB_C_RELOAD_ACTION, USB_CONTROLLER_REBIND_ACTION] {
+            let block = action_block(id);
+            assert!(
+                block.contains("<allow_active>yes</allow_active>"),
+                "{block}"
+            );
+            assert!(
+                block.contains("<allow_inactive>auth_admin</allow_inactive>"),
+                "{block}"
+            );
+            assert!(
+                block.contains("<allow_any>auth_admin</allow_any>"),
+                "{block}"
+            );
+            assert!(block.contains("xml:lang=\"zh_TW\""), "{block}");
+        }
+        let block = action_block(USB_RECOVERY_SETTINGS_ACTION);
+        assert!(
+            block.contains("<allow_active>auth_admin_keep</allow_active>"),
+            "{block}"
+        );
+        assert!(block.contains("xml:lang=\"zh_TW\""), "{block}");
     }
 
     /// ADR 0014: a repair runs maintainer scripts of packages Better OS did not

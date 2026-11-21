@@ -7,9 +7,14 @@ license.workspace = true
 
 [dependencies]
 serde.workspace = true
+# The kernel log query's JSON output, read for each entry's transport
+# (usb_recovery::journal_lines).
+serde_json.workspace = true
 
 [dev-dependencies]
-serde_json.workspace = true
+# The kernel log query's --grep pattern, checked against the classifier
+# (tests/usb_recovery.rs).
+regex = "1"
 
 [features]
 # A LampArray in memory (`lamparray::fake`), for tests and sandbox stand-ins.

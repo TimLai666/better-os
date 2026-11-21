@@ -1031,6 +1031,7 @@ for required_file in \
     usr/share/dbus-1/system-services/org.betteros.Manager1.service \
     usr/share/dbus-1/system.d/org.betteros.Manager1.conf \
     usr/share/polkit-1/actions/org.betteros.manager.policy \
+    usr/lib/systemd/system-sleep/better-os-usb-recovery \
     usr/share/doc/better-manager-daemon/copyright \
     usr/share/doc/better-manager-daemon/THIRD-PARTY-LICENSES.md; do
     if [[ ! -s "$daemon_extract/$required_file" ]]; then
@@ -1040,6 +1041,31 @@ for required_file in \
 done
 [[ -x "$daemon_extract/usr/libexec/better-manager-daemon" ]] || {
     printf 'The privileged service binary is not executable\n' >&2
+    exit 1
+}
+
+# Ticket 101 (ADR 0046): the sleep hook is executable, hands both of
+# systemd-sleep's arguments to the daemon's fixed subcommand, and carries no
+# logic of its own: no module command, no sysfs path, no condition.
+usb_hook="$daemon_extract/usr/lib/systemd/system-sleep/better-os-usb-recovery"
+[[ -x "$usb_hook" ]] || {
+    printf 'The USB-C sleep hook is not executable\n' >&2
+    exit 1
+}
+if [[ "$(grep -v '^#' "$usb_hook" | grep -v '^$')" != 'exec /usr/libexec/better-manager-daemon --after-sleep "$1" "$2"' ]]; then
+    printf 'The USB-C sleep hook must only exec the daemon with --after-sleep\n' >&2
+    exit 1
+fi
+for action in org.betteros.manager.usb-c-reload org.betteros.manager.usb-controller-rebind \
+    org.betteros.manager.usb-recovery-settings; do
+    grep -q "$action" "$daemon_extract/usr/share/polkit-1/actions/org.betteros.manager.policy" || {
+        printf 'The polkit policy does not declare %s\n' "$action" >&2
+        exit 1
+    }
+done
+grep -q 'send_interface="org.betteros.UsbRecovery1"' \
+    "$daemon_extract/usr/share/dbus-1/system.d/org.betteros.Manager1.conf" || {
+    printf 'The bus policy does not let callers reach org.betteros.UsbRecovery1\n' >&2
     exit 1
 }
 

@@ -1,0 +1,9 @@
+#!/bin/sh
+# Better OS USB-C recovery after sleep (ticket 101, ADR 0046).
+#
+# systemd-sleep runs this with "pre" or "post" and the sleep operation. It
+# carries no logic: the daemon's program checks both arguments, reads the
+# person's choices in /var/lib/better-os/usb-recovery.json, does nothing at
+# all while they are off, and otherwise queues one transient unit that runs
+# after the sleep is over. It returns at once and never fails the sleep.
+exec /usr/libexec/better-manager-daemon --after-sleep "$1" "$2"
