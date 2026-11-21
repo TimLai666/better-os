@@ -70,6 +70,9 @@ members = [
     "crates/test-prerequisites",
     "crates/patch-core",
     "crates/patch-platform",
+    "crates/screenshot-core",
+    "crates/screenshot-capture",
+    "crates/screenshot-gui",
 ]
 
 [workspace.package]
@@ -146,6 +149,8 @@ hardware-platform = { path = "crates/hardware-platform", default-features = fals
 test-prerequisites = { path = "crates/test-prerequisites" }
 patch-core = { path = "crates/patch-core" }
 patch-platform = { path = "crates/patch-platform" }
+screenshot-core = { path = "crates/screenshot-core" }
+screenshot-capture = { path = "crates/screenshot-capture" }
 libc = "0.2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "signal"] }
 # zbus stays on its default async-io flavor everywhere in this workspace.
