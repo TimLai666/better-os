@@ -32,8 +32,10 @@ jobs:
         # - dbus (`dbus-daemon`): every private-bus test, in awake-service,
         #   awake-tray, files-gui, git-gui, hardware-platform, launcher-platform,
         #   manager-daemon, manager-gui, monitor-service, monitor-tray,
-        #   storage-service, touchpad-gesture-service, touchpad-platform, and
-        #   window-attention-service.
+        #   screenshot-gui, storage-service, touchpad-gesture-service,
+        #   touchpad-platform, and window-attention-service.
+        # - gstreamer1.0-plugins-base and -good (`appsrc`, `vp8enc`):
+        #   screenshot-capture's recorder tests.
         # - dconf-service: the private dconf tests
         #   (`defaults_platform::test_support`): defaults-core's
         #   `gnome_writes` and touchpad-platform's `session_profile`.

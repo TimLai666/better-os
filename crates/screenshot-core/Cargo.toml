@@ -1,0 +1,17 @@
+[package]
+name = "screenshot-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Better Screenshot's rules with no GPUI and no Wayland: the area selector, the interface's state and keys, the window layout, composing a picture, file names and folders, the recording's time, and the words (engineering/specs/screenshot.md)."
+
+[dependencies]
+# The one local-time conversion (ticket 146) for the file names.
+better-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
