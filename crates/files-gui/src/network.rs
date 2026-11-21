@@ -284,6 +284,12 @@ pub enum MountFailure {
     Refused,
     /// The server refused the name and password, or this person.
     PermissionDenied,
+    /// The server answered, and the share or folder asked for is not there
+    /// (GIO's `NOT_FOUND`, ticket 310).
+    ShareGone,
+    /// This computer's network is not reachable (GIO's
+    /// `NETWORK_UNREACHABLE`).
+    NetworkDown,
     /// The server's key is not the one this computer knows for it.
     HostKeyChanged,
     /// GVfs cannot open this kind of address.
@@ -320,6 +326,18 @@ impl MountError {
 /// tested without a server.
 pub trait Mounter: Send + Sync {
     fn mount(&self, address: &str, asker: &Asker) -> Result<PathBuf, MountError>;
+
+    /// Mounts a server's address and says both where the mount is shown
+    /// and its default folder (ticket 310): a reconnect needs the mount's
+    /// own folder to find a folder inside it. A mounter that knows only
+    /// the folder says it is both.
+    fn connect(&self, address: &str, asker: &Asker) -> Result<crate::remote::Mounted, MountError> {
+        self.mount(address, asker)
+            .map(|folder| crate::remote::Mounted {
+                root: folder.clone(),
+                folder,
+            })
+    }
 }
 
 /// GVfs through its bus interface when it is there, `gio` otherwise.
@@ -328,9 +346,13 @@ pub struct SystemMounter;
 
 impl Mounter for SystemMounter {
     fn mount(&self, address: &str, asker: &Asker) -> Result<PathBuf, MountError> {
+        self.connect(address, asker).map(|mounted| mounted.folder)
+    }
+
+    fn connect(&self, address: &str, asker: &Asker) -> Result<crate::remote::Mounted, MountError> {
         match crate::gvfs::GvfsMounter::session() {
-            Some(gvfs) => gvfs.mount(address, asker),
-            None => GioMounter.mount(address, asker),
+            Some(gvfs) => gvfs.connect(address, asker),
+            None => GioMounter.connect(address, asker),
         }
     }
 }
@@ -416,6 +438,10 @@ pub fn gio_failure(output: &str) -> MountFailure {
         MountFailure::HostKeyChanged
     } else if lower.contains("not known") || lower.contains("could not resolve") {
         MountFailure::HostNotFound
+    } else if lower.contains("network is unreachable") {
+        MountFailure::NetworkDown
+    } else if lower.contains("no such file") || lower.contains("does not exist") {
+        MountFailure::ShareGone
     } else if lower.contains("connection refused") || lower.contains("unreachable") {
         MountFailure::Refused
     } else if asks_for_password(output) {

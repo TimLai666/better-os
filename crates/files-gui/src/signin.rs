@@ -362,6 +362,215 @@ impl FilesApp {
         .into_any_element()
     }
 
+    /// The page a tab whose folder is on a server shows while it is not
+    /// connected (ticket 310): connecting with Cancel, why it could not with
+    /// Try again (and Network settings where that helps), not connected
+    /// with Connect, or the address it needs.
+    pub(crate) fn remote_page(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        use crate::remote::Reason;
+        use crate::session::LinkState;
+        use better_ui::fluent::{
+            self, BODY, CAPTION, SUBTITLE,
+            button::Button,
+            progress::{Progress, ProgressRing},
+        };
+        let link = self.session.link()?.clone();
+        let c = copy(self.locale());
+        let p = fluent::palette(cx);
+        let server = link.server();
+        let fill = |text: &str| {
+            text.replace("{server}", &server).replace(
+                "{share}",
+                link.remote
+                    .as_ref()
+                    .and_then(|remote| remote.share())
+                    .unwrap_or(&server),
+            )
+        };
+        let this = cx.entity().downgrade();
+        let settings = crate::remote::network_settings(&crate::terminal::on_path).is_some();
+        let (title, body, warning, busy) = match &link.state {
+            LinkState::Connecting { again: false } => (
+                fill(c.remote_connecting_title),
+                c.remote_connecting_body.to_string(),
+                false,
+                true,
+            ),
+            LinkState::Connecting { again: true } => (
+                fill(c.remote_again_title),
+                c.remote_again_body.to_string(),
+                false,
+                true,
+            ),
+            LinkState::Cancelled => (
+                fill(c.remote_cancelled_title),
+                fill(c.remote_cancelled_body),
+                false,
+                false,
+            ),
+            LinkState::NeedsAddress => (
+                c.remote_address_title.to_string(),
+                c.remote_address_body.to_string(),
+                true,
+                false,
+            ),
+            LinkState::Failed { reason, .. } => {
+                let sentence = match reason {
+                    Reason::NoAnswer => c.remote_no_answer,
+                    Reason::Refused => c.remote_refused,
+                    Reason::NameNotFound => c.remote_name_not_found,
+                    Reason::SignInRefused => c.remote_sign_in_refused,
+                    // Only a mount with a share names one (ticket 310's review).
+                    Reason::ShareGone
+                        if link
+                            .remote
+                            .as_ref()
+                            .is_some_and(|remote| remote.share().is_some()) =>
+                    {
+                        c.remote_share_gone
+                    }
+                    Reason::ShareGone => c.remote_folder_missing,
+                    Reason::NoNetwork => c.remote_no_network,
+                    Reason::Mount(failure) => {
+                        use crate::network::MountFailure as F;
+                        match failure {
+                            F::NoGvfs => c.server_no_gvfs,
+                            F::HostKeyChanged => c.server_key_changed,
+                            F::NotSupported => c.server_not_supported,
+                            F::NoLocalFolder => c.server_no_folder,
+                            F::UntrustedGvfs => c.server_untrusted_gvfs,
+                            _ => c.server_failed,
+                        }
+                    }
+                };
+                (fill(c.remote_failed_title), fill(sentence), true, false)
+            }
+        };
+        let detail = match &link.state {
+            LinkState::Failed { detail, .. } if !detail.is_empty() => Some(detail.clone()),
+            _ => None,
+        };
+        let mut buttons = div().flex().flex_wrap().gap(px(8.0)).pt(px(8.0));
+        match &link.state {
+            LinkState::Connecting { .. } => {
+                let weak = this.clone();
+                buttons =
+                    buttons.child(Button::standard("remote-cancel", c.server_cancel).on_click(
+                        move |_window, cx| {
+                            let _ = weak.update(cx, |app, cx| {
+                                app.session.cancel_connecting();
+                                cx.notify();
+                            });
+                        },
+                    ));
+            }
+            LinkState::Cancelled | LinkState::Failed { .. } => {
+                let label = if link.state == LinkState::Cancelled {
+                    c.remote_connect
+                } else {
+                    c.remote_try_again
+                };
+                let weak = this.clone();
+                buttons = buttons.child(Button::accent("remote-retry", label).on_click(
+                    move |_window, cx| {
+                        let _ = weak.update(cx, |app, cx| {
+                            app.session.retry_connecting();
+                            cx.notify();
+                        });
+                    },
+                ));
+                if let LinkState::Failed { reason, .. } = &link.state
+                    && reason.offers_network_settings()
+                    && settings
+                {
+                    let weak = this.clone();
+                    buttons = buttons.child(
+                        Button::standard("remote-network-settings", c.remote_network_settings)
+                            .on_click(move |_window, cx| {
+                                let _ = weak.update(cx, |app, cx| {
+                                    app.session.open_network_settings(&crate::terminal::on_path);
+                                    cx.notify();
+                                });
+                            }),
+                    );
+                }
+            }
+            LinkState::NeedsAddress => {
+                let weak = this.clone();
+                buttons = buttons.child(
+                    Button::accent("remote-type-address", c.remote_type_address).on_click(
+                        move |window, cx| {
+                            let _ = weak.update(cx, |app, cx| {
+                                app.start_typing_address(window, cx);
+                                cx.notify();
+                            });
+                        },
+                    ),
+                );
+            }
+        }
+        let icon: Glyph = if warning {
+            IconName::TriangleAlert.into()
+        } else {
+            Picture::Network.into()
+        };
+        let address = link
+            .remote
+            .as_ref()
+            .map(crate::remote::Remote::address)
+            .unwrap_or_else(|| link.location.to_uri());
+        Some(
+            div()
+                .id("remote-page")
+                .size_full()
+                .overflow_y_scroll()
+                .flex()
+                .justify_center()
+                .p(px(32.0))
+                .child(
+                    div()
+                        .w_full()
+                        .max_w(px(480.0))
+                        .flex()
+                        .flex_col()
+                        .gap(px(16.0))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(12.0))
+                                .child(if busy {
+                                    ProgressRing::new("remote-ring", Progress::Indeterminate)
+                                        .into_any_element()
+                                } else {
+                                    div()
+                                        .flex()
+                                        .text_color(if warning { p.caution } else { p.accent })
+                                        .child(icon.element(
+                                            px(24.0),
+                                            Placement::Labelled,
+                                            p,
+                                            false,
+                                        ))
+                                        .into_any_element()
+                                })
+                                .child(
+                                    fluent::label(title, SUBTITLE, p.text_primary)
+                                        .min_w_0()
+                                        .whitespace_normal(),
+                                ),
+                        )
+                        .child(fluent::label(body, BODY, p.text_primary).whitespace_normal())
+                        .children(detail.map(|detail| {
+                            fluent::label(detail, CAPTION, p.text_secondary).whitespace_normal()
+                        }))
+                        .child(buttons)
+                        .child(fluent::label(address, CAPTION, p.text_secondary)),
+                )
+                .into_any_element(),
+        )
+    }
+
     /// Any other question: GVfs's words and its own choices.
     fn question_body(
         &self,

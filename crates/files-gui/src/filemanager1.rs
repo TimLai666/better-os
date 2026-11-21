@@ -3,8 +3,10 @@
 //! so does Better Files, when no other file manager owns the name.
 //!
 //! `ShowFolders` opens each folder in a window; `ShowItems` and
-//! `ShowItemProperties` open each item's folder with the item selected. Only
-//! `file://` URIs are taken; anything else is ignored, never guessed at.
+//! `ShowItemProperties` open each item's folder with the item selected.
+//! `file://` URIs and server addresses (`sftp://`, `smb://` and the other
+//! schemes GVfs mounts, ticket 310, connected first) are taken; anything else
+//! is ignored, never guessed at.
 
 use std::sync::mpsc::Sender;
 
@@ -19,17 +21,48 @@ pub const OBJECT_PATH: &str = "/org/freedesktop/FileManager1";
 /// What a call asks for, one window per target.
 pub fn targets(uris: &[String], select: bool) -> Vec<StartTarget> {
     uris.iter()
-        .filter_map(|uri| local_path(uri))
-        .filter_map(|path| {
-            if select {
-                let folder = LocalPath::new(path.parent()?.to_path_buf()).ok()?;
-                let name = path.file_name()?.to_string_lossy().into_owned();
-                Some(StartTarget::File { folder, name })
-            } else {
-                LocalPath::new(path).ok().map(StartTarget::Folder)
+        .filter_map(|uri| {
+            // A file or folder on a server (ticket 310): the window connects
+            // first.
+            if let Some(files_core::Location::Network(network)) =
+                crate::launch::remote_argument(uri)
+            {
+                if !select {
+                    return Some(StartTarget::Remote {
+                        location: files_core::Location::Network(network),
+                        select: None,
+                    });
+                }
+                let trimmed = network.path.trim_end_matches('/');
+                let (parent, name) = trimmed.rsplit_once('/')?;
+                if name.is_empty() {
+                    return None;
+                }
+                let folder = files_core::NetworkLocation::new(
+                    network.scheme,
+                    network.authority.clone(),
+                    if parent.is_empty() { "/" } else { parent },
+                )
+                .ok()?;
+                return Some(StartTarget::Remote {
+                    location: files_core::Location::Network(folder),
+                    select: Some(crate::network::percent_decode(name)),
+                });
             }
+            let path = local_path(uri)?;
+            local_target(path, select)
         })
         .collect()
+}
+
+fn local_target(path: std::path::PathBuf, select: bool) -> Option<StartTarget> {
+    if select {
+        let folder = LocalPath::new(path.parent()?.to_path_buf()).ok()?;
+        let name = path.file_name()?.to_string_lossy().into_owned();
+        Some(StartTarget::File { folder, name })
+    } else {
+        LocalPath::new(path).ok().map(StartTarget::Folder)
+    }
 }
 
 /// A `file://` URI's path, `%XX` decoded. `None` for any other scheme, a

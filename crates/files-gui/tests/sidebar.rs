@@ -17,6 +17,7 @@ fn row(section: SidebarSection, key: &str, available: bool) -> SidebarRow {
         bookmark_index: (section == SidebarSection::Favorites).then_some(0),
         device_state: None,
         identity_volatile: false,
+        connected: None,
     }
 }
 

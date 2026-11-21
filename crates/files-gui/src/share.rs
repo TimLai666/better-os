@@ -134,7 +134,9 @@ pub fn sidebar_machines(machines: Vec<Machine>) -> Vec<Machine> {
 
 /// The address a tailnet machine's files open at.
 pub fn sftp_address(machine: &Machine) -> String {
-    format!("sftp://{}/", machine.address)
+    // No folder: the machine's own default one (its home), as a click has
+    // always opened (ticket 310: `sftp://host/` names the root).
+    format!("sftp://{}", machine.address)
 }
 
 /// The words that send `files` to `machine` with Taildrop.

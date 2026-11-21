@@ -26,7 +26,7 @@ fn the_tailnet_lists_online_machines_first_and_never_itself() {
         .collect();
     assert_eq!(names, ["Laptop", "phone", "nas"]);
     assert_eq!(machines[0].address, "laptop.tail0.ts.net");
-    assert_eq!(sftp_address(&machines[0]), "sftp://laptop.tail0.ts.net/");
+    assert_eq!(sftp_address(&machines[0]), "sftp://laptop.tail0.ts.net");
     assert!(parse_status(r#"{"BackendState":"Stopped","Peer":{}}"#).is_empty());
     assert!(parse_status("not json").is_empty());
 }
@@ -109,12 +109,9 @@ fn the_sidebar_lists_the_online_machines_a_running_tailscale_reports() {
         [
             (
                 "Laptop".to_string(),
-                "sftp://laptop.tail0.ts.net/".to_string()
+                "sftp://laptop.tail0.ts.net".to_string()
             ),
-            (
-                "phone".to_string(),
-                "sftp://phone.tail0.ts.net/".to_string()
-            ),
+            ("phone".to_string(), "sftp://phone.tail0.ts.net".to_string()),
         ],
         "the offline nas is left out; each opens over SFTP by its tailnet name"
     );

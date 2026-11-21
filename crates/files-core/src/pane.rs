@@ -173,6 +173,15 @@ impl Pane {
         true
     }
 
+    /// Puts `location` in place of the current one without a history step,
+    /// and lists it: a server address that turned into the folder its
+    /// connection is shown under, or a remote folder whose mount came back
+    /// at another folder (ticket 310). Back still leads where it led.
+    pub fn replace_current(&mut self, location: Location, reader: &dyn DirectoryReader) {
+        self.history.replace_current(location);
+        self.start_listing(reader);
+    }
+
     /// Lists the current location again, discarding what is loaded. This is
     /// the explicit cache invalidation a watcher resynchronization triggers.
     pub fn reload(&mut self, reader: &dyn DirectoryReader) {

@@ -25,7 +25,8 @@
 //!
 //! Errors come back as GIO's (`…UnmappedGError.Quark._g_2dio_2derror_2dquark.
 //! Code<n>`): 30 the person cancelled, 17 already mounted, 14 refused, 24
-//! timed out, 28 host not found, 37–39 not reachable or refused, 15 not
+//! timed out, 28 host not found, 37 host not reachable, 38 no network, 39
+//! refused, 1 a share or folder that is not there (ticket 310), 15 not
 //! supported; a changed SSH host key is code 0 with GVfs's "Host key
 //! verification failed".
 
@@ -148,6 +149,9 @@ pub fn mount_spec(address: &str) -> Result<MountSpec, MountError> {
     }
     let host = percent_decode(host);
     let port = port.filter(|port| !port.is_empty()).map(str::to_string);
+    // A password in the address is never part of the spec: GIO drops it,
+    // and the server asks (ticket 310).
+    let userinfo = userinfo.map(|userinfo| userinfo.split(':').next().unwrap_or_default());
     let (mut user, mut domain) = (userinfo.map(percent_decode), None);
     if scheme == "smb"
         && let Some(both) = &user
@@ -240,9 +244,15 @@ pub fn failure_of(error: &zbus::Error) -> (MountFailure, String) {
     let failure = match code {
         Some(30 | 19) => MountFailure::Cancelled,
         Some(14) => MountFailure::PermissionDenied,
+        // NOT_FOUND: a share or folder the server does not have.
+        Some(1) => MountFailure::ShareGone,
         Some(24) => MountFailure::TimedOut,
         Some(28) => MountFailure::HostNotFound,
-        Some(37..=39) => MountFailure::Refused,
+        // HOST_UNREACHABLE: nothing answered on the way there.
+        Some(37) => MountFailure::TimedOut,
+        // NETWORK_UNREACHABLE: this computer has no route.
+        Some(38) => MountFailure::NetworkDown,
+        Some(39) => MountFailure::Refused,
         Some(15) => MountFailure::NotSupported,
         _ if is_host_key_failure(&detail) => MountFailure::HostKeyChanged,
         _ => MountFailure::Failed,
@@ -267,6 +277,38 @@ unsafe extern "C" {
         domain: *const libc::c_char,
         codeset: *const libc::c_char,
     ) -> *const libc::c_char;
+    // glibc's, not in the libc crate for Linux.
+    fn strerror_l(errnum: libc::c_int, locale: libc::locale_t) -> *const libc::c_char;
+}
+
+/// What the C library calls `errno` in `locale` (`""`: the environment's),
+/// the words a GVfs backend puts after its own ("Failed to mount Windows
+/// share: …") in the desktop's language. `None` when the locale is not
+/// installed.
+pub fn system_message_in(errno: i32, locale: &std::ffi::CStr) -> Option<String> {
+    // SAFETY: `newlocale` builds a new locale object (null on failure,
+    // checked) that is freed after the call; `strerror_l` gets a valid
+    // locale and returns a NUL-terminated string that stays valid until the
+    // next call on this thread or the locale is freed, and it is copied
+    // before either happens.
+    unsafe {
+        let wanted = libc::newlocale(
+            libc::LC_MESSAGES_MASK | libc::LC_CTYPE_MASK,
+            locale.as_ptr(),
+            std::ptr::null_mut(),
+        );
+        if wanted.is_null() {
+            return None;
+        }
+        let found = strerror_l(errno, wanted);
+        let words = (!found.is_null()).then(|| {
+            std::ffi::CStr::from_ptr(found)
+                .to_string_lossy()
+                .into_owned()
+        });
+        libc::freelocale(wanted);
+        words.filter(|words| !words.is_empty())
+    }
 }
 
 /// `message` in GVfs's own catalog for this session's language (the one
@@ -684,7 +726,7 @@ impl GvfsMounter {
         &self,
         tracker: &MountTrackerProxy<'_>,
         spec: &MountSpec,
-    ) -> Result<PathBuf, MountError> {
+    ) -> Result<crate::remote::Mounted, MountError> {
         let info = tracker.lookup_mount(&spec.wire()).await.map_err(|error| {
             let (failure, detail) = failure_of(&error);
             MountError::new(failure, detail)
@@ -700,10 +742,12 @@ impl GvfsMounter {
         }
         let inside = spec.path.clone().unwrap_or_else(|| text(&info.11));
         let inside = inside.trim_start_matches('/');
-        let mut folder = PathBuf::from(fuse);
+        let root = PathBuf::from(fuse);
+        let mut folder = root.clone();
         if !inside.is_empty() {
             folder.push(inside);
         }
+        let folder = crate::remote::Mounted { root, folder };
         Ok(folder)
     }
 
@@ -755,7 +799,11 @@ impl GvfsMounter {
         Ok((owner, Arc::new(daemon)))
     }
 
-    async fn mount_async(&self, address: &str, asker: &Asker) -> Result<PathBuf, MountError> {
+    async fn mount_async(
+        &self,
+        address: &str,
+        asker: &Asker,
+    ) -> Result<crate::remote::Mounted, MountError> {
         let spec = mount_spec(address)?;
         let trust = self
             .trust
@@ -862,6 +910,10 @@ fn system_trust() -> Result<crate::gvfs_trust::Trust, String> {
 
 impl crate::network::Mounter for GvfsMounter {
     fn mount(&self, address: &str, asker: &Asker) -> Result<PathBuf, MountError> {
+        self.connect(address, asker).map(|mounted| mounted.folder)
+    }
+
+    fn connect(&self, address: &str, asker: &Asker) -> Result<crate::remote::Mounted, MountError> {
         smol::block_on(self.mount_async(address, asker))
     }
 }

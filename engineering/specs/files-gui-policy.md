@@ -44,8 +44,11 @@ Three consequences are deliberate.
 them, so there is no private store to drift out of step with the shared one.
 
 **Foreign lines survive byte for byte.** A line this build does not understand —
-an `sftp://` bookmark, a comment, a blank line, a scheme a newer GTK added — is
+a comment, a blank line, a scheme a newer GTK added — is
 kept as the exact bytes it was read as, at the exact index it was read at.
+Since ticket 310 a server address (`sftp://`, `smb://`, `ftp://`, `dav(s)://`,
+`afp://`, `nfs://`) is a favourite of its own, the form Nautilus writes; see
+"Remote folders connect when they are opened".
 Reordering swaps our bookmarks between the positions our bookmarks already
 occupy, so a foreign line never moves and never disappears. This is the same
 rule Better App Chooser applies to `mimeapps.list`, for the same reason: the
@@ -72,6 +75,205 @@ the other.
 Dragging a favourite between two other favourites to reorder is modelled
 (`BookmarkFile::move_to`) and reachable from the buttons and the keyboard. The
 pointer reorder gesture inside the sidebar is not wired yet.
+
+## Remote folders connect when they are opened (ticket 310)
+
+Owner, 2026-11-22: a folder on a server (SFTP, SMB and the others GVfs
+opens) opens again by itself after its connection has gone — after sleep,
+another network, a restarted server or a new login. Before this ticket a
+pinned server folder was stored as the folder GVfs showed it under
+(`file:///run/user/<uid>/gvfs/sftp:host=…/path`); once the mount had gone,
+the sidebar's availability probe (`path.is_dir()` on the window's thread,
+every frame) found nothing there, drew the row "Unavailable", and the click
+did nothing. A folder open when its server went away was "deleted" to the
+watch hub, which moved the view to GVfs's own folder above it.
+
+**One rule.** `remote::need` is the only place that decides whether a
+location needs its connection and whether it is there:
+
+- a server address (`Location::Network`) always needs one, and opens at the
+  folder GVfs shows it under once its mount is known;
+- a folder under GVfs's folder (`$XDG_RUNTIME_DIR/gvfs/<mount>/…`) whose
+  mount is a server's (`sftp`, `ftp`, `smb-share`, `smb-server`, `dav`,
+  `dav+sd`, `afp-volume`, `afp-server`, `nfs`) needs one when GVfs's mount
+  tracker does not list that mount; its address is read from the mount's
+  name (`sftp:host=h,port=p,user=u`, `smb-share:server=h,share=s,…`);
+- a server's mount whose name does not give its address (`dav+sd:`, one
+  with no host) needs its address asked for once;
+- anything else needs nothing. A phone, a camera or an online account under
+  GVfs's folder (`mtp:`, `gphoto2:`, `afc:`, `google-drive:`, any kind not
+  listed above) is not a server: it keeps the availability any folder has,
+  is never asked an address for, and its favourite is never rewritten.
+
+A mount is a favourite's only when it has the same identity: the same
+scheme, host (in any case), port, user, domain and share. A missing port is
+the scheme's own (22, 21, 445, 80, 443, 548, 2049), never "any port"; a
+missing user is "no user given", never "any user". A mount on the same host
+with another port, user or share is another server's or another account's,
+and a favourite never opens, lists or pastes into it.
+
+The reader applies the rule to every listing, so every way of opening a
+folder goes through it: a favourite, a recent file's folder, the address
+bar, back and forward, a tab restored at start or after an update restart, a
+location on the command line or through `org.freedesktop.FileManager1`, a
+bookmark another program wrote, a Tailscale machine, and a paste into a
+folder that is not connected. A listing that needs a connection fails with
+`ListingError::NotConnected`, and the session connects the tab that listed
+it. Recent files GIO applications recorded as `sftp://` or `smb://`
+addresses (rather than under GVfs's folder) are not listed in Recent; only
+`file://` entries are, as before.
+
+**What is stored.** A pinned server folder is the address GVfs needs to
+mount it again and the folder in it: scheme, host, port, share (SMB) or
+volume (AFP), user (and SMB domain), and path, written as one URI line in the
+shared bookmarks file (`sftp://ann@build.local:2222/srv/site`,
+`smb://WORKGROUP;ann@nas/media/photos`). An address with no folder
+(`sftp://nas`) is the server's own default folder (an SFTP server's home);
+one that names the root (`sftp://nas/`) is the root, and each stays what it
+is through every form it is written in, a migrated mount-root favourite
+included.
+
+**Never a password.** A password typed in an address
+(`sftp://ann:secret@nas/srv`) is dropped where the address becomes a
+location, as GIO drops it, so it reaches no bookmark, no history entry, no
+restart hand-off, no page and no mount request; the server asks for it in
+the sign-in form.
+
+**The old form.** A line an earlier version wrote as a GVfs folder is read
+back as the same address by its mount's name, whether that mount is there
+or not. The file is written in the new form once a process, when the first
+window starts, and only if it still holds what was read; it keeps its mode.
+Nothing else rewrites the shared file without the person doing something to
+it: a line another program writes later is read as an address and left as
+written. A server mount whose name does not give its address keeps its line
+and shows the Address-needed page; only an address typed on that page, for
+that favourite, becomes the favourite's (with the folder it named inside
+that mount). Leaving the page, or connecting elsewhere, rewrites nothing.
+
+**Credentials** are where the first connection put them: GVfs and the
+keyring (through Better Files' own mount operation, ticket 117), an SSH agent
+or key, a Tailscale machine's own authentication, Kerberos. When the server
+asks again, the same sign-in form as a first connection asks, with the same
+"Remember" choices. Better Files stores nothing the first connection did
+not.
+
+**Connecting.** The tab shows "Connecting to {server}…" with Cancel, in the
+content area; the window, the sidebar and every other tab keep working. All
+attempts for one mount are one attempt: a second click, a second tab, or a
+second favourite on the same server joins the one in flight. Cancel ends the
+wait for every tab on it and leaves "Not connected to {server}" with Connect.
+A sign-in or host-key question is shown in the tab that is waiting for it.
+
+**When it cannot connect** the page says why, with Try again, and Network
+settings where the network is the likely cause (the server did not answer,
+its name was not found, no network). Each reason is its own sentence; none
+is only "cannot connect". GVfs's codes decide first; a message without one
+is read in English, through GVfs's own catalog in the desktop's language,
+and for the C library's sentence a backend puts after its own ("Failed to
+mount Windows share: No such file or directory", in zh-TW "無法掛載 Windows
+檔案共用：沒有此一檔案或目錄") through the C library's own text for that error
+in the desktop's language.
+After a failure the host is looked at (its name resolved, one TCP connection
+to its port, closed at once, nothing sent): a name that does not resolve is
+"not found" whatever GVfs said (`gvfsd-smb` says "Invalid argument" for it),
+and "the share is not there" is said only for a server that answered (a
+stopped `smbd` gives "Connection refused", a missing share "No such file or
+directory", both seen in the sandbox). A mount with no share (SFTP) never
+names one: it says the folder is not there. A folder that is gone on a server
+that did connect opens the nearest folder above it that is there, and says
+so.
+
+**A connection that drops while a folder is open** (GVfs's tracker stops
+listing the mount, the watch hub reports the folder gone, or the folder
+stops answering) shows "Connecting to {server} again…" in place. GVfs sends
+the same `Unmounted` signal for a mount the person ejected elsewhere and for
+one whose server went away (seen on the sandbox's bus), so the host is
+looked at first: one that answers at once let the mount go on purpose, and
+the tab is left "Not connected to {server}"; nothing is mounted again without
+a click. One that does not answer is looked at again every 5 s, and
+connected to only once it answers; for 30 s the page says "connecting
+again", then why, while it goes on; 2 minutes after the drop it stops, and
+only a click tries again. On another network (the default routes changed)
+it stops at once. A refused sign-in and a changed host key are never tried
+again by themselves, and their page is shown at once. When the connection is
+back the tab returns to the same folder, selection and scroll. A job writing
+there follows `files-operations`' rules for a destination that disappears,
+unchanged.
+
+**A paste that waits.** A paste into a folder that is not connected is held
+by the tab and goes in once the folder is connected and listed, whether the
+wait ended by a connection or by the folder answering again. It is never
+lost without a word: if the folder is gone on the server meanwhile, nothing
+is pasted (no folder is made again) and the page says so; if the tab leaves
+the folder, the connection is cancelled or stops being tried, or the folder
+cannot be listed, the page says nothing was pasted and why. A held cut
+empties the clipboard only if the clipboard still holds that cut.
+
+**No waiting on the window's thread.** A dead mount can block a `stat` for
+minutes. The mount list is read from GVfs's tracker over the bus on a worker
+thread with a 2 s limit; a remote folder is probed on a thread of its own with
+a 3 s limit before it is listed, and a mount whose probe has not come back is
+known not to answer, so no second probe waits on it; the sidebar decides a
+remote favourite's state from the mount list alone and never touches its
+folder; a favourite on any other network or FUSE filesystem is probed off
+the window's thread; the address bar's check and Tab completion do not read a
+server's folder. Every attempt is given up on after GVfs's own 30 s without
+news (`network::MOUNT_TIMEOUT`), never while the person is answering a
+question.
+
+**Tailscale machines** (ticket 117; ticket 133 adds their SMB shares) open as
+the address `sftp://<machine>` (the machine's own default folder, as a click
+always opened) and follow the same rule.
+
+**How it is checked.** `remote_tests.rs` drives every entry point, the join,
+Cancel, each reason, the migration and the deadlines against a fake
+connector and a fake GVfs folder. `remote_servers_tests.rs` starts an
+OpenSSH `sshd` (key sign-in, and a second one that takes passwords and can
+check none) and a Samba `smbd` unprivileged on loopback, and the installed
+`gvfsd` with its SFTP, SMB and FUSE parts on a private bus with its own
+`HOME` and runtime folder: a pinned folder opens again after its server is
+stopped and started, a drop while open comes back with its selection, a
+server that is away, a wrong password and a deleted folder each show their
+page, and with the server's processes stopped (holding the connection) the
+slowest frame of the window's own work (pump, sidebar rows, a click on the
+favourite) measured 1.5 ms over 15 s; it also reads `gvfsd-smb`'s answers for
+an unknown host, a stopped server and a missing share. CI runs both
+real-server tests on its Ubuntu 24.04 runner (FUSE and an unprivileged
+`smbd` work there), with `CI` set so a missing program fails rather than
+skips. A debug build in a sandbox whose private
+bus starts `gvfsd` itself sets `BETTER_FILES_TEST_SANDBOX_GVFS`, which only
+drops the check that `gvfsd` runs in `gvfs-daemon.service`; a release build
+never reads it.
+
+### What each state says
+
+| State | English | 繁體中文 |
+|---|---|---|
+| Connecting | Connecting to {server}… — The folder opens as soon as the connection is made. | 正在連線到 {server}… — 連上後就會打開這個資料夾。 |
+| Dropped | Connecting to {server} again… — The connection was lost. You'll be back in this folder when it returns. | 正在重新連線到 {server}… — 連線中斷了，恢復後會回到這個資料夾。 |
+| Cancelled | Not connected to {server} — This folder is on {server}. Connect to open it. | 尚未連線到 {server} — 這個資料夾在 {server} 上，連線後就能打開。 |
+| Page title on a failure | Couldn't connect to {server} | 無法連線到 {server} |
+| Did not answer | {server} didn't answer. Check that it's turned on and on the network, then try again. | {server} 沒有回應。請確認它已開機並連上網路，再試一次。 |
+| Refused | {server} is on the network but didn't accept the connection. Check that its file sharing is turned on. | {server} 在網路上，但沒有接受連線。請確認它的檔案分享已開啟。 |
+| Name not found | No computer called {server} was found. Check the name, or connect to the network it's on. | 找不到名為 {server} 的電腦。請檢查名稱，或連上它所在的網路。 |
+| Sign-in refused | {server} didn't accept the sign-in. Choose Try again to enter the user name and password again. | {server} 不接受這組登入資料，請按「再試一次」重新輸入。 |
+| Share gone | {server} is connected, but {share} isn't shared there any more. It may have been renamed or stopped being shared. | 已連上 {server}，但那裡已經沒有分享 {share}，可能被改名或停止分享了。 |
+| Folder gone, no share (SFTP) | {server} answered, but the folder this opens isn't there. | {server} 有回應，但要打開的資料夾不在那裡。 |
+| Held paste, tab left | Nothing was pasted into {folder}: you left it before it was connected. | 沒有貼上任何東西到「{folder}」：連上之前你已經離開了這個資料夾。 |
+| Held paste, folder deleted | Nothing was pasted: {folder} isn't on {server} any more. | 沒有貼上任何東西：{server} 上已經沒有「{folder}」了。 |
+| Held paste, folder not listed | Nothing was pasted into {folder}: it couldn't be opened. | 沒有貼上任何東西到「{folder}」：無法打開這個資料夾。 |
+| Held paste, not connected | Nothing was pasted into {folder}: {server} isn't connected. | 沒有貼上任何東西到「{folder}」：沒有連上 {server}。 |
+| No network | This computer isn't connected to a network. Connect to one, then try again. | 這台電腦目前沒有連上網路。連上網路後再試一次。 |
+| Folder gone, parent opened | {folder} isn't on {server} any more, so the nearest folder above it was opened. | {server} 上已經沒有「{folder}」了，所以打開了上層最接近的資料夾。 |
+| Address needed | This folder was on a server whose address wasn't saved. Type its address in the address bar (for example sftp://server/folder) once; the favourite keeps it from then on. | 這個資料夾在一台伺服器上，但當時沒有存下它的位址。請在網址列輸入一次位址（例如 sftp://server/folder），之後這個常用資料夾就會記住它。 |
+| Sidebar caption, not connected | Not connected | 未連線 |
+| Buttons | Cancel · Connect · Try again · Network settings · Type the address | 取消 · 連線 · 再試一次 · 網路設定 · 輸入位址 |
+
+A changed SSH host key, GVfs missing or not the installed one, an address
+GVfs cannot open, and a mount with no folder keep ticket 117's sentences.
+Network settings opens `gnome-control-center network`, or
+`cosmic-settings network` in the Better OS session, whichever is installed;
+without either the button is not shown.
 
 ## The sidebar's order
 

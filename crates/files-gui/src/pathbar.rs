@@ -154,6 +154,15 @@ pub fn visible_crumbs(crumbs: &[Crumb], width: f32) -> usize {
 /// agree. `~` is the home folder. A name is matched with case first, then
 /// without. `None` when nothing matches or the text is not a local path.
 pub fn complete_path(text: &str, home: Option<&Path>) -> Option<String> {
+    complete_path_beside(text, home, crate::remote::gvfs_root_from_env().as_deref())
+}
+
+/// [`complete_path`], with GVfs's folder named: nothing under it is read.
+pub fn complete_path_beside(
+    text: &str,
+    home: Option<&Path>,
+    gvfs_root: Option<&Path>,
+) -> Option<String> {
     let expanded = match (text.strip_prefix('~'), home) {
         (Some(rest), Some(home)) => format!("{}{rest}", home.display()),
         _ => text.to_string(),
@@ -163,6 +172,11 @@ pub fn complete_path(text: &str, home: Option<&Path>) -> Option<String> {
     }
     let split = expanded.rfind('/')?;
     let (folder, prefix) = (&expanded[..=split], &expanded[split + 1..]);
+    // A server's folder is not read on the window's thread (ticket 310): a
+    // server that is away would hold the key press.
+    if gvfs_root.is_some_and(|root| Path::new(folder).starts_with(root)) {
+        return None;
+    }
     let mut names: Vec<String> = std::fs::read_dir(folder)
         .ok()?
         .flatten()

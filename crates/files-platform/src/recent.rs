@@ -109,6 +109,18 @@ fn percent_decode(text: &str) -> Option<String> {
 /// `notes.txt` in two folders) is shown once, the newer, because a row is
 /// identified by its name.
 pub fn recent_entries(list: &Path, mime: Option<&dyn crate::MimeDetector>) -> Vec<Entry> {
+    recent_entries_beside(list, mime, None)
+}
+
+/// [`recent_entries`], with files under `remote_root` (GVfs's folder, where
+/// a server's files are shown) listed without being looked at (ticket 310):
+/// a server that is away would hold the listing for as long as its `stat`
+/// takes, and opening one connects first. Their size and time are unknown.
+pub fn recent_entries_beside(
+    list: &Path,
+    mime: Option<&dyn crate::MimeDetector>,
+    remote_root: Option<&Path>,
+) -> Vec<Entry> {
     let Ok(text) = fs::read_to_string(list) else {
         return Vec::new();
     };
@@ -118,12 +130,16 @@ pub fn recent_entries(list: &Path, mime: Option<&dyn crate::MimeDetector>) -> Ve
         if entries.len() >= LIMIT {
             break;
         }
-        let Ok(metadata) = fs::metadata(&item.path) else {
-            continue;
+        let remote =
+            remote_root.is_some_and(|root| item.path.starts_with(root) && item.path != root);
+        let metadata = if remote {
+            None
+        } else {
+            match fs::metadata(&item.path) {
+                Ok(metadata) if metadata.is_file() => Some(metadata),
+                _ => continue,
+            }
         };
-        if !metadata.is_file() {
-            continue;
-        }
         let Some(name) = item
             .path
             .file_name()
@@ -138,8 +154,10 @@ pub fn recent_entries(list: &Path, mime: Option<&dyn crate::MimeDetector>) -> Ve
             continue;
         };
         let mut entry = Entry::file(name, path.clone(), EntryKind::File);
-        entry.size = EntrySize::Bytes(metadata.len());
-        entry.modified = metadata.modified().ok().map(FileTime::from_system_time);
+        if let Some(metadata) = &metadata {
+            entry.size = EntrySize::Bytes(metadata.len());
+            entry.modified = metadata.modified().ok().map(FileTime::from_system_time);
+        }
         entry.mime = mime.and_then(|detector| detector.detect(&entry.name));
         entry.body = EntryBody::File(FileFacts {
             path,
@@ -190,6 +208,31 @@ mod tests {
         assert!(parse_xbel("<xbel><bookmark href=\"file:///x%ZZ\"/></xbel>").is_empty());
         assert!(parse_xbel("not xml at all").is_empty());
         assert!(parse_xbel("<bookmark href=\"file://relative\"/>").is_empty());
+    }
+
+    /// Ticket 310: a file on a server is listed without being looked at, so
+    /// a server that is away neither hides it nor holds the list up.
+    #[test]
+    fn a_file_on_a_server_is_listed_without_being_looked_at() {
+        let root = tempfile::tempdir().unwrap();
+        let gvfs = root.path().join("gvfs");
+        let list = root.path().join("recently-used.xbel");
+        fs::write(
+            &list,
+            format!(
+                "<xbel><bookmark href=\"file://{}/sftp:host=nas/srv/plan.txt\" visited=\"2026-01-02T00:00:00Z\"/></xbel>",
+                gvfs.display()
+            ),
+        )
+        .unwrap();
+        assert!(
+            recent_entries(&list, None).is_empty(),
+            "not there to look at"
+        );
+        let entries = recent_entries_beside(&list, None, Some(&gvfs));
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "plan.txt");
+        assert_eq!(entries[0].size, EntrySize::Unknown);
     }
 
     #[test]
