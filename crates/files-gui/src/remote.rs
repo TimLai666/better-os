@@ -23,7 +23,6 @@
 //! - [`Attempts`] are the connections being made: one per mount, joined by
 //!   every tab and click that asks for the same one, each on its own thread.
 
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
