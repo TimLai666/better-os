@@ -9,7 +9,8 @@ Fixes page of the control center (ADR 0017); the page's layout and copy are
 
 An entry is typed Rust in `crates/patch-core`, with tests, for a fault someone
 reproduced and a fix someone verified on a real machine. Nothing is fetched or
-supplied at run time, nothing runs through a shell, and nothing needs root.
+supplied at run time, and nothing runs through a shell. Only entries 3 and 4
+need root, through the daemon's typed methods below.
 
 Every entry implements `patch_core::Entry`:
 
@@ -26,21 +27,23 @@ An entry never touches the machine. The host (`patch_core::Host`,
 implemented by `patch_platform::LinuxHost`) answers each `Read` and makes each
 `Change`. What the host may run is the closed `patch_core::Command` list: a
 fixed absolute path (`/usr/bin/fc-match`, `/usr/bin/fc-cache`,
-`/usr/bin/flatpak`) with fixed arguments, plus a validated Flatpak app ID in
-one case. A command that changes the machine is never run as a read.
+`/usr/bin/flatpak`, `/usr/bin/journalctl`) with fixed arguments, plus a
+validated Flatpak app ID in one case. A command that changes the machine is never run as a read.
 `patch-platform/src/command.rs` is the only place that starts a process; a
 test over both crates' source keeps it that way.
 
 ### An entry that needs root
 
-The trait does not change. The entry's `plan` returns a new `Change` variant
-that names one typed `manager-daemon` method, for example
-`Change::Privileged(PrivilegedAction::ReloadUcsi)`. The method gets its own
-polkit action and takes no path, device name, or free text, as ADR 0017
-requires for every root write. The host sends it over D-Bus. The undo is the
-reverse change in `plan_undo`, and the record says what the daemon reported
-it did. Adding such an entry touches `Change`, the host's `change`, the
-daemon, and its policy file. It never adds a command.
+The trait does not change. The entry's `plan` returns
+`Change::Privileged(Privileged::…)`, which names one typed `manager-daemon`
+method (`ReloadUcsi`, `RebindController`, `SetChoice`, ADR 0046). The method
+has its own polkit action and takes no path, device name, or free text, as
+ADR 0017 requires for every root write. The host sends it over D-Bus. The
+undo is the reverse change in `plan_undo`. A fix that changes the machine
+for every account is kept by the machine (`Entry::kept_by_machine`): its
+record is what the daemon keeps, read with detection, and nothing goes into
+the person's `fixes.json`. Adding such an entry touches `Privileged`, the
+host's `change`, the daemon, and its policy file. It never adds a command.
 
 ## States
 
@@ -56,6 +59,7 @@ recorded, and whether it was just undone:
 | Applied but still present | A fix is recorded and the fault is still there | 已套用，但問題還在。 / Applied, but the problem is still there. |
 | Undone | The fix was undone in this window, until Check again | 已復原。 / Undone. |
 | Cannot check | A read failed. This outranks a record: a fix whose fault can't be checked is never called fixed | 無法檢查：{reason} / Can't check: {reason} |
+| Does not apply | The fault is known only on other models (entries 3 and 4); nothing is read into a fault and nothing is offered | 不適用於這台電腦。 / Doesn't apply to this PC. |
 
 A fault can be found and its fix not offered (entry 2 at a fractional scale,
 or with screens at different scales). The card says why, in place of the
@@ -249,11 +253,225 @@ Limits, which the page states:
   older Electron runs through XWayland on its own, and a newer one would
   have shipped its version file.
 
+## Entries 3 and 4: the USB-C faults of two ASUS models
+
+Ticket 101, ADR 0046. Seen on the owner's ASUS Vivobook S 14 M5406WA (BIOS
+M5406WA.314, kernel 7.0.0-42 and -43, Secure Boot on); the UCSI half also on
+the S 15 M5506WA (linux-usb, 2026-06-23). Secure Boot stays on and no key is
+enrolled (owner, 2026-11-21): the recovery uses only what the running kernel
+already has. Both entries apply only to a model in
+`crates/hardware-core/data/usb-recovery-machines.txt`, matched by DMI
+`board_name` (M5406WA, M5506WA). On any other machine each says
+不適用於這台電腦。 / Doesn't apply to this PC. on "All known problems", is never
+under "Problems found", and offers nothing; its kernel log is not even
+classified.
+
+### What is read
+
+- **The machine** (`hardware_platform::usb`): `/sys/class/dmi/id`, the
+  `/sys/class/typec/portN` entries, every `ucsi-source-psy-*` supply's
+  `online`, the mains adapter's `online` (whether a charger is plugged in
+  at all), and every xHCI function under `/sys/bus/pci/devices` (class
+  0x0c0330): vendor, device, the bound driver, and the root hubs and devices
+  under it from `/sys/bus/usb/devices`' links. No USB device's own
+  attribute is read: on a host whose hub work hangs, reading one blocks for
+  good (`usb1/product` did, 2026-11-14). The daemon's choices,
+  `/var/lib/better-os/usb-recovery.json`, readable by everyone.
+- **This boot's kernel log**, classified by
+  `hardware_core::usb_recovery::classify`, never shown or sent as text:
+  `journalctl --boot=0 --output=cat --grep=… _TRANSPORT=kernel + _UID=0
+  SYSLOG_IDENTIFIER=better-manager-daemon` (the second match is the daemon's
+  own recovery markers). It classifies:
+  - the UCSI timeouts: `ucsi_acpi … (-110)` lines, `failed to re-enable
+    notifications (-110)` counted apart (written about ten seconds after a
+    resume);
+  - an xHCI host's death: `xhci_hcd ADDRESS: HC died`, with the `IO_PAGE_FAULT`,
+    `xHC restore state timeout`, and `PCI post-resume error` lines before it;
+  - each suspend attempt (`PM: suspend entry` to `PM: suspend exit`), and
+    whether it failed because `usb_hub_wq` would not freeze (a `Freezing …
+    failed` line followed by `workqueue usb_hub_wq:`), and how many of the
+    last attempts in a row did;
+  - hung hub work: that failed freeze, or the worker a hung-task report
+    names (`INFO: task … blocked for more than …`, its own lines, then
+    `Workqueue: usb_hub_wq hub_event`, which ends it; any other line ends
+    it first). The same line in any other stack dump (a warning during
+    enumeration) is not hung work, grepped or not: the query keeps the
+    first lines of every dump too;
+  - the daemon's markers after a verified recovery (`usb-recovery: ucsi_acpi
+    reloaded`, `usb-recovery: controller rebound ADDRESS`). A fault before
+    the last marker is not failing now. The query is read as JSON with each
+    entry's transport: a line counts as the kernel's only when the kernel
+    wrote it (`_TRANSPORT=kernel`), and from the daemon's own stream only
+    the two exact marker forms are taken, so nothing another process writes
+    into that stream reads as a fault, a sleep, or a recovery. A reload is
+    marked only when both ports are back and a plugged-in charger shows;
+    one that did not is still failing and may be tried again.
+- **Who reads the log.** On Ubuntu 24.04 and 22.04 the system journal is
+  readable by `root`, `adm`, and `systemd-journal` (the journal files' group
+  and access lists); `dmesg` is not used, since `kernel.dmesg_restrict=1`
+  makes it need `CAP_SYSLOG`. The page runs `journalctl` itself when the
+  person's account can open this machine's `system.journal` (persistent or
+  volatile). Otherwise it asks the daemon's `org.betteros.UsbRecovery1.
+  Findings`, an ungated read-only call that answers with the classified
+  findings and never a log line. Neither: 無法檢查：讀不到這次開機的核心紀錄。 /
+  Can't check: this boot's kernel log can't be read.
+
+### Entry 3: the USB-C interface
+
+- **Found** when a UCSI timeout came after the last verified reload (or
+  there was none): 其中一個 USB-C 連接埠不再充電 / One USB-C port stops charging.
+  Cause: 這款電腦的 USB-C 介面常在睡眠後停止回應，連接埠可能因此不再充電。重設這個介面，
+  兩個連接埠就會恢復，直到下次睡眠。 / On this model the USB-C interface stops
+  answering, often after sleep, and a port can stop charging. Resetting the
+  interface brings both ports back until the next sleep. The card says how
+  often: 這台電腦開機以來，USB-C 介面停止回應了 {n} 次，其中 {m} 次在睡眠後。 / Since
+  this PC started, the USB-C interface stopped answering {n} times, {m} of
+  them after sleep.
+- **Fix.** Turns on the reload after each sleep (`SetChoice
+  ucsi-automatic`), and reloads now when it is failing (`ReloadUcsi`). The
+  exact change: 每次睡眠後，如果 USB-C 介面停止回應，就自動重設（重新載入 ucsi_acpi 驅動程式）。
+  現在先重設一次。 / After each sleep, resets the USB-C interface when it
+  stopped answering (reloads the ucsi_acpi driver). Resets it now.
+- **Check.** No timeout after the last verified reload.
+- **Undo.** `SetChoice ucsi-automatic off`: 復原會把這項功能關掉，其他都不會變。 /
+  Undo turns this off again. Nothing else changes.
+
+### Entry 4: the dead controller and the blocked sleep
+
+- **Found** when an xHCI host died this boot and no verified rebind came
+  after: 睡眠之後，一側的 USB 停止運作 / USB on one side stops working after
+  sleep. Cause: 這款電腦醒來時，一側 USB-C 的 USB 控制器可能停止運作。卡住的時候電腦無法再進入
+  睡眠，闔上螢幕時會整晚一直重試。 / On this model the USB controller of one USB-C
+  side can stop working when the PC wakes. While it is stuck, the PC can't
+  go to sleep again, and with the lid closed it keeps trying all night. The
+  card names the controller (位址 {address} 的 USB 控制器在睡眠後停止運作。 / The USB
+  controller at {address} stopped working after sleep.), the sleeps it
+  blocked (睡眠因此失敗了 {n} 次，最近連續 {m} 次。 / Sleep failed {n} times because of
+  it, the last {m} in a row.), and, when its hub work is stuck, that only a
+  restart helps (它卡住了，只有重新開機才能恢復。請先存好檔案再重新開機。 / It's stuck,
+  and only restarting the PC brings it back. Save your work, then restart.).
+- **Fix.** Turns on the after-sleep rebind and the overnight guard
+  (`SetChoice controller-automatic`), and rebinds the controller now
+  (`RebindController`) unless its hub work is stuck; then it asks for no
+  rebind at all, and the check says the problem is still there with the
+  restart line.
+- **Check.** No dead controller without a verified rebind after it.
+- **Undo.** `SetChoice controller-automatic off`, which turns the power-off
+  choice off too.
+
+### Reset USB-C
+
+On a found card of either entry, a second button, 重設 USB-C / Reset USB-C,
+runs the same daemon action at any time, without turning anything on
+(`ReloadUcsi` on entry 3, `RebindController` on entry 4; not offered while
+the hub work is stuck). The card then says what came back, until Check
+again:
+
+| Result | zh-TW / English |
+| --- | --- |
+| Both ports, charger online | 已重設：兩個 USB-C 連接埠都恢復了，充電器也在充電。 / Reset: both USB-C ports are back, and the charger is charging. |
+| Both ports, no charger plugged in | 已重設：兩個 USB-C 連接埠都恢復了。目前沒有接上充電器。 / Reset: both USB-C ports are back. No charger is plugged in. |
+| Both ports, charger unreadable | 已重設：兩個 USB-C 連接埠都恢復了。讀不到是否接著充電器。 / Reset: both USB-C ports are back. Whether a charger is plugged in can't be read. |
+| Fewer ports | 已重設，但 {m} 個 USB-C 連接埠只恢復了 {n} 個。 / Reset, but only {n} of {m} USB-C ports came back. |
+| Charger plugged in, not shown | 已重設，但接著的充電器還是沒有出現在 USB-C 連接埠上。 / Reset, but the plugged-in charger still doesn't show on a USB-C port. |
+| Controller back | 已重新啟動：USB 控制器恢復了，上面接著 {n} 個裝置。 / Restarted: the USB controller is back, with {n} devices on it. |
+| Controller not back | 已重新啟動，但 USB 控制器沒有恢復。請重新開機。 / Restarted, but the USB controller didn't come back. Restart the PC. |
+| Inside the cooldown (added) | 這是剛才那次重設的結果，不會連續重設兩次。 / This is the reset from a moment ago; it isn't run twice in a row. |
+
+A refusal is a sentence in the error bar, never a key: 這個核心無法載入 USB-C 驅動程式的檔案，所以沒有重設連接埠，也沒有變更任何東西。 / This kernel can't load the USB-C driver's file, so the ports weren't reset. Nothing was changed. (the kernel cannot decompress the distribution's file: no `/sys/module/compression` naming its format and no build config saying so); 不需要重設：USB-C 連接埠運作
+正常。 / Nothing to reset: the USB-C ports are working.; USB 控制器卡住了，只有重新開機
+才能恢復。 / The USB controller is stuck, and only restarting the PC brings it
+back.; 停止運作的控制器不是 Better OS 可以重新啟動的那種。 / The controller that stopped
+isn't one Better OS may restart.; 沒有完成驗證，所以沒有變更任何東西。 / Authentication
+wasn't completed, so nothing changed.; 另一個重設正在進行，請稍後再試。 / Another
+reset is running. Try again in a moment.; 沒有安裝 Better OS 的特權服務，所以無法執行。
+/ The Better OS privileged service isn't installed, so this can't be done.
+
+### After each sleep
+
+The daemon package ships `/usr/lib/systemd/system-sleep/better-os-usb-recovery`
+(systemd 255 reads hooks only from there), one `exec` of the daemon's
+program with systemd-sleep's two arguments. With neither fix on it reads the
+choice file and returns. Otherwise it queues one transient unit ordered
+after the sleep service, so nothing holds the resume, which:
+
+- with entry 3 on, watches up to 25 s for the timeout written after a resume
+  and reloads `ucsi_acpi`;
+- with entry 4 on, rebinds a dead controller whose hub work is free, and
+  runs the overnight guard below.
+
+Both use the daemon's own helpers and their limits (ADR 0046).
+
+### The overnight loop: what is safe
+
+On 2026-11-13 the dead controller's hub work kept every suspend from
+working; logind retried about every 40 s for 11 hours with the lid closed
+(1,672 attempts), each one dropping the Wi-Fi. With entry 4 on:
+
+- After the second failed attempt in a row for that reason, the person is
+  told once per run of failures, as a desktop notification in their
+  language: 這台電腦現在無法進入睡眠 / This PC can't go to sleep right now, and
+  睡眠之後，一側的 USB 停止運作，電腦也因此一直無法進入睡眠。重新開機就能修好。 / USB on one
+  side stopped working after sleep, and that keeps the PC from sleeping.
+  Restarting the PC fixes it. A sleep that works ends the run. Traditional
+  Chinese goes to a person whose language (AccountsService, else the
+  system's) is `zh_TW`, `zh_HK`, or `zh_Hant`, the rule every Better OS
+  notification follows (`better_core::locale`). A notification gets ten
+  seconds; a session bus that does not answer does not hold the run.
+- **Default: notify only.** The card, once the fix is on, says 闔上螢幕後睡眠一直
+  失敗時，Better OS 只會通知你。 / When sleep keeps failing with the lid closed,
+  Better OS only notifies you., with 改成關機 / Turn off the PC instead.
+- **Power-off is the person's choice**, made on that card (an administrator
+  authenticates): 闔上螢幕、沒有接擴充座或外接螢幕時，睡眠一直失敗，Better OS 會關機。開著的應用程式裡沒存的內容會不見。
+  / When sleep keeps failing with the lid closed and no dock or external screen, Better OS turns off the PC. Work you haven't saved in open apps is lost., with 只通知我 / Only
+  notify me. The card says what it never does: 螢幕打開時、接著擴充座或外接螢幕時、有程式暫緩關機時（例如正在更新）、Better Manager 正在變更套件時、還有其他登入的工作階段時（包括你自己在別的螢幕或從網路登入的），或有帳號設定成登出後服務繼續執行時，都不會關機。 / It never turns off the PC while the lid is open, while it's docked or an external screen is connected, while something holds off shutting down (an update, for example), while Better Manager is changing packages, while any other session is signed in (yours on another screen or over the network included), or while an account is set to keep its services running after signing out.
+- Why these: with the lid open the person may be at the machine, and the
+  loop is not burning a battery in a bag. A closed lid alone cannot tell a
+  bag from a desk: a laptop on a dock or with an external screen may be in
+  use with its lid shut, so logind's `Docked` must say no (not knowing is
+  docked). A `block` inhibitor on `shutdown` is someone saying a power-off
+  now would break their work (unattended-upgrades, a disc burn), and
+  root's `PowerOff` would not be stopped by it, so the guard asks logind's
+  `ListInhibitors` itself and treats not knowing as held. Better
+  Manager's own privileged service marks a transaction it runs
+  (`/run/better-os/daemon-busy`), and a power-off then could leave dpkg
+  half way; whether apt itself holds a logind inhibitor while dpkg runs is
+  not known, so the marker is checked whatever it does. Any other login
+  session holds work nobody chose to lose: another person's, or the same
+  person's over SSH or on a tty (a long job), of any of systemd's login
+  classes (`user`, `user-early`, `user-incomplete`, `user-light`,
+  `user-early-light`; an unknown class counts too), and so does an account
+  set to linger, whose services run with no session at all. All of this
+  is read again right before the power-off, after the notifications. The lid state is logind's
+  `LidClosed`; not knowing is not "closed". `PowerOff(false)` goes through
+  logind, so its delay inhibitors (an application saving) still get their
+  time. At most one power-off is asked for per run of failures.
+
+### Limits, which the page states
+
+- Offered only on the two models it was seen on.
+- Entry 3 resets the interface after each sleep; the firmware fault stays
+  until ASUS or the kernel fixes it (the upstream report is
+  `engineering/upstream/101-ucsi-and-xhci-on-asus-m5406wa.txt`).
+- When the controller's hub work is stuck only a restart helps.
+- Neither has run on a real occurrence yet: ticket 101 waits for the next
+  release on the owner's machine.
+
+### The fix is kept by the machine
+
+These two fixes change the machine for every account, so their record is
+the daemon's choice file, not the person's `fixes.json`
+(`Entry::kept_by_machine`, `Entry::machine_records`): every account sees the
+same state, and Undo turns the choice off. Removing Better Manager or the
+daemon package forgets the choices (`--release-hardware`, and the daemon's
+postrm), so the hook, which goes with the daemon package, does nothing.
+
 ## Where the page checks
 
 - A real window checks the person's machine.
 - A demo window (`BETTER_MANAGER_EXECUTION=mock`) checks a fixture machine
-  seeded with both faults under `$XDG_RUNTIME_DIR/better-os/fixes-demo`, so
+  seeded with every fault (the two USB-C faults on an M5406WA included, with
+  a fixture daemon that changes only the fixture's files) under `$XDG_RUNTIME_DIR/better-os/fixes-demo`, so
   a demo never changes this machine. The runtime directory must be a real
   directory the person owns with no access for others, and the two folders
   below it are made 0700 or must be theirs and closed to others' writes
@@ -392,20 +610,25 @@ first run is CI's.
 
 ## Candidate faults, not built
 
-Both are recorded in ticket 90 and are not entries, because neither fault is
-confirmed yet:
+Recorded in ticket 90 and not an entry, because the fault is not confirmed
+yet:
 
 - The panel taking long to light up again on battery after the screen blanks
   (amdgpu PSR). It would be a daemon entry, as above, that sets and restores
   a kernel parameter, with its power cost stated. It waits for the owner's
   trial of `amdgpu.dcdebugmask=0x10`.
-- The USB-C port's UCSI interface timing out. Ticket 101 owns it.
 
 ## Done when
 
 - Each entry's detection (present and absent), fix, check, and undo are
   tested against a fixture machine in a scratch directory
-  (`crates/patch-platform/tests/entries.rs`).
+  (`crates/patch-platform/tests/entries.rs`); entries 3 and 4 also on a
+  machine that is not affected, and their decisions against kernel log
+  excerpts from ticket 101 (`crates/hardware-core/tests/usb_recovery.rs`).
+- The daemon's USB-C methods, helpers, and after-sleep run are tested
+  against a fake machine and a private bus
+  (`crates/manager-daemon/tests/usb_recovery.rs`), and the helpers' units
+  in CI's container check (`packaging/hardware-unit/check.sh`).
 - A test over `patch-core` and `patch-platform` asserts that nothing names a
   shell, that `patch-core` does no I/O, and that only `command.rs` starts a
   process, and only what a `Command` names

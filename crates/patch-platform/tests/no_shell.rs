@@ -135,7 +135,9 @@ fn every_program_a_command_names_is_an_absolute_path_on_the_closed_list() {
         assert!(program.starts_with("/usr/bin/"), "{program}");
         let name = program.rsplit('/').next().unwrap();
         assert!(
-            ["fc-match", "fc-cache", "flatpak"].contains(&name),
+            // journalctl: the USB-C entries' kernel log read, as the person
+            // (ticket 101, spec "Entry 3"); it only ever reads.
+            ["fc-match", "fc-cache", "flatpak", "journalctl"].contains(&name),
             "{program}"
         );
     }

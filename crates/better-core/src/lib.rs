@@ -6,6 +6,7 @@ pub mod defaults;
 pub mod desktop;
 pub mod host;
 pub mod local_time;
+pub mod locale;
 pub mod manifest;
 pub mod package_health;
 pub mod private_dir;
