@@ -29,6 +29,7 @@ members = [
     "crates/launcher-core",
     "crates/launcher-platform",
     "crates/launcher-gui",
+    "crates/layer-check",
     "crates/defaults-core",
     "crates/drive-mounts",
     "crates/defaults-platform",
@@ -177,6 +178,36 @@ gpui = { git = "https://github.com/zed-industries/zed", package = "gpui" }
 gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "88f102d13654fe25aa2fede076274b6b751a3704" }
 gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", rev = "88f102d13654fe25aa2fede076274b6b751a3704" }
 gpui-platform = { git = "https://github.com/zed-industries/zed", package = "gpui_platform", features = ["wayland", "x11"] }
+
+# GPUI comes from the owner's fork of Zed (ADR 0043): upstream `ae394f3` plus
+# only fixes also offered upstream, one commit each, at the exact revision of
+# the tag `better-os/gpui-ae394f3-1`. A patch section rather than another URL
+# above, because gpui-component depends on Zed's repository itself and must get
+# the same GPUI. Every crate the lockfile takes from Zed is listed; when the
+# fork carries nothing, this section goes.
+[patch."https://github.com/zed-industries/zed"]
+collections = { git = "https://github.com/TimLai666/zed", rev = "f05b2a9790aefeca74b4df38489d568d08ab3b4d", version = "=0.1.0" }
+derive_refineable = { git = "https://github.com/TimLai666/zed", rev = "f05b2a9790aefeca74b4df38489d568d08ab3b4d", version = "=0.1.0" }
+gpui = { git = "https://github.com/TimLai666/zed", rev = "f05b2a9790aefeca74b4df38489d568d08ab3b4d", version = "=0.2.2" }
+gpui_linux = { git = "https://github.com/TimLai666/zed", rev = "f05b2a9790aefeca74b4df38489d568d08ab3b4d", version = "=0.1.0" }
+gpui_macos = { git = "https://github.com/TimLai666/zed", rev = "f05b2a9790aefeca74b4df38489d568d08ab3b4d", version = "=0.1.0" }
+gpui_macros = { git = "https://github.com/TimLai666/zed", rev = "f05b2a9790aefeca74b4df38489d568d08ab3b4d", version = "=0.1.0" }
+gpui_platform = { git = "https://github.com/TimLai666/zed", rev = "f05b2a9790aefeca74b4df38489d568d08ab3b4d", version = "=0.1.0" }
+gpui_shared_string = { git = "https://github.com/TimLai666/zed", rev = "f05b2a9790aefeca74b4df38489d568d08ab3b4d", version = "=0.1.0" }
+gpui_util = { git = "https://github.com/TimLai666/zed", rev = "f05b2a9790aefeca74b4df38489d568d08ab3b4d", version = "=0.1.0" }
+gpui_web = { git = "https://github.com/TimLai666/zed", rev = "f05b2a9790aefeca74b4df38489d568d08ab3b4d", version = "=0.1.0" }
+gpui_wgpu = { git = "https://github.com/TimLai666/zed", rev = "f05b2a9790aefeca74b4df38489d568d08ab3b4d", version = "=0.1.0" }
+gpui_windows = { git = "https://github.com/TimLai666/zed", rev = "f05b2a9790aefeca74b4df38489d568d08ab3b4d", version = "=0.1.0" }
+http_client = { git = "https://github.com/TimLai666/zed", rev = "f05b2a9790aefeca74b4df38489d568d08ab3b4d", version = "=0.1.0" }
+media = { git = "https://github.com/TimLai666/zed", rev = "f05b2a9790aefeca74b4df38489d568d08ab3b4d", version = "=0.1.0" }
+perf = { git = "https://github.com/TimLai666/zed", rev = "f05b2a9790aefeca74b4df38489d568d08ab3b4d", version = "=0.1.0" }
+refineable = { git = "https://github.com/TimLai666/zed", rev = "f05b2a9790aefeca74b4df38489d568d08ab3b4d", version = "=0.1.0" }
+scheduler = { git = "https://github.com/TimLai666/zed", rev = "f05b2a9790aefeca74b4df38489d568d08ab3b4d", version = "=0.1.0" }
+sum_tree = { git = "https://github.com/TimLai666/zed", rev = "f05b2a9790aefeca74b4df38489d568d08ab3b4d", version = "=0.1.0" }
+util_macros = { git = "https://github.com/TimLai666/zed", rev = "f05b2a9790aefeca74b4df38489d568d08ab3b4d", version = "=0.1.0" }
+zlog = { git = "https://github.com/TimLai666/zed", rev = "f05b2a9790aefeca74b4df38489d568d08ab3b4d", version = "=0.1.0" }
+ztracing = { git = "https://github.com/TimLai666/zed", rev = "f05b2a9790aefeca74b4df38489d568d08ab3b4d", version = "=0.1.0" }
+ztracing_macro = { git = "https://github.com/TimLai666/zed", rev = "f05b2a9790aefeca74b4df38489d568d08ab3b4d", version = "=0.1.0" }
 
 # Debug builds keep line tables only, not full debug info: a full debug build
 # of the workspace (GPUI and Zed's crates included) was 40-60 GB per target

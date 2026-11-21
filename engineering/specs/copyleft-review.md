@@ -231,6 +231,33 @@ it is never linked into a binary, and it is not built at all on Linux.
 `cfg(target_family = "windows")`. Neither reaches a Linux package. Both would
 need another look if Better OS ever ships for macOS or Windows.
 
+### GPUI from Better OS's fork (added 2026-11-21, ADR 0043)
+
+Since ticket 200 the 22 crates the workspace takes from Zed's repository,
+including the GPL-3.0-or-later `zlog`, `ztracing`, and `ztracing_macro` above,
+are built from `https://github.com/TimLai666/zed` at
+`f05b2a9790aefeca74b4df38489d568d08ab3b4d` (tag
+`better-os/gpui-ae394f3-1`): upstream `ae394f3` plus one commit that changes
+`crates/gpui_linux/src/linux/wayland/window.rs`. `Cargo.lock` and the shipped
+inventory name that source and revision. No license changes: `gpui_linux` is
+Apache-2.0 and the three GPL crates are untouched. What the change adds:
+
+- **A modified dependency.** The windows are conveyed under GPL-3.0-or-later,
+  so their Corresponding Source (GPL-3.0 section 1) now includes the modified
+  `gpui_linux`, and it can no longer be found in Zed's repository. It is
+  offered, like the rest of the dependency source, from a third party's
+  server under section 6(d): the fork, at the exact revision the lockfile and
+  the inventory name. Better OS is responsible for it staying there, which is
+  why the fork tags every revision a build used and never moves or deletes
+  one (ADR 0043). Decision 3 below covers this case as well: a vendored source
+  archive attached to a release would carry the modified file too.
+- **Apache-2.0 section 4(b)** asks that a modified file carry a prominent
+  notice that it was changed. The fork's commit adds one at the top of
+  `window.rs` (date, fork, what changed). Section 4(a)'s copy of the license is
+  the gap already recorded under "A related gap outside copyleft"; nothing new.
+- **Decision 4** is unchanged: `gpui_shared_string` and `gpui_util` still
+  declare no license field in the fork, as upstream.
+
 ## Copyleft code that Cargo metadata does not show
 
 A `-sys` crate can compile C source it carries inside itself, and the license

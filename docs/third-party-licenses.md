@@ -10,11 +10,11 @@ It does not replace the license text supplied by each upstream project.
 ## Review summary
 
 - Root project license: `GPL-3.0-or-later`.
-- Resolved Cargo packages: 982.
-- Packages with an SPDX license expression: 980.
+- Resolved Cargo packages: 984.
+- Packages with an SPDX license expression: 982.
 - Packages with only a license-file field: 0.
 - Packages without package-level license metadata: 2.
-- `Cargo.lock` SHA-256: `566da315dd53128700de1300958fcfbe76d2492fe6941cf01374a25af2095214`.
+- `Cargo.lock` SHA-256: `640c604adfc3b7151b90932a5c1c985d480203b7140fdb73aa7f09f4d350762e`.
 
 The 2 package(s) without package-level license metadata are
 listed separately below. Their pinned upstream checkout contains both
@@ -26,9 +26,9 @@ source of truth for those packages.
 | License expression | Package records |
 | --- | ---: |
 | `MIT OR Apache-2.0` | 424 |
-| `MIT` | 202 |
+| `MIT` | 203 |
 | `Apache-2.0 OR MIT` | 79 |
-| `GPL-3.0-or-later` | 71 |
+| `GPL-3.0-or-later` | 72 |
 | `MIT/Apache-2.0` | 41 |
 | `Apache-2.0` | 32 |
 | `Unicode-3.0` | 18 |
@@ -110,6 +110,7 @@ Better OS does not relicense or silently select a different expression.
 | `launcher-core` | `0.2.16` | `GPL-3.0-or-later` | workspace |
 | `launcher-gui` | `0.2.16` | `GPL-3.0-or-later` | workspace |
 | `launcher-platform` | `0.2.16` | `GPL-3.0-or-later` | workspace |
+| `layer-check` | `0.2.16` | `GPL-3.0-or-later` | workspace |
 | `libbz2-rs-sys` | `0.2.5` | `bzip2-1.0.6` | [crates.io](https://crates.io/crates/libbz2-rs-sys/0.2.5) |
 | `libfuzzer-sys` | `0.4.13` | `(MIT OR Apache-2.0) AND NCSA` | [crates.io](https://crates.io/crates/libfuzzer-sys/0.4.13) |
 | `manager-cli` | `0.2.16` | `GPL-3.0-or-later` | workspace |
@@ -150,9 +151,9 @@ Better OS does not relicense or silently select a different expression.
 | `touchpad-views` | `0.2.16` | `GPL-3.0-or-later` | workspace |
 | `window-attention-core` | `0.2.16` | `GPL-3.0-or-later` | workspace |
 | `window-attention-service` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `zlog` | `0.1.0` | `GPL-3.0-or-later` | `git+https://github.com/zed-industries/zed#ae394f3d474f4996d2cdef6ee97551fdb6748acd` |
-| `ztracing` | `0.1.0` | `GPL-3.0-or-later` | `git+https://github.com/zed-industries/zed#ae394f3d474f4996d2cdef6ee97551fdb6748acd` |
-| `ztracing_macro` | `0.1.0` | `GPL-3.0-or-later` | `git+https://github.com/zed-industries/zed#ae394f3d474f4996d2cdef6ee97551fdb6748acd` |
+| `zlog` | `0.1.0` | `GPL-3.0-or-later` | `git+https://github.com/TimLai666/zed?rev=f05b2a9790aefeca74b4df38489d568d08ab3b4d#f05b2a9790aefeca74b4df38489d568d08ab3b4d` |
+| `ztracing` | `0.1.0` | `GPL-3.0-or-later` | `git+https://github.com/TimLai666/zed?rev=f05b2a9790aefeca74b4df38489d568d08ab3b4d#f05b2a9790aefeca74b4df38489d568d08ab3b4d` |
+| `ztracing_macro` | `0.1.0` | `GPL-3.0-or-later` | `git+https://github.com/TimLai666/zed?rev=f05b2a9790aefeca74b4df38489d568d08ab3b4d#f05b2a9790aefeca74b4df38489d568d08ab3b4d` |
 
 ## System libraries linked dynamically
 
@@ -301,7 +302,7 @@ keeps its own license.
 | `cocoa-foundation` | `0.1.2` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/cocoa-foundation/0.1.2) |
 | `cocoa-foundation` | `0.2.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/cocoa-foundation/0.2.0) |
 | `codespan-reporting` | `0.13.1` | `Apache-2.0` | [crates.io](https://crates.io/crates/codespan-reporting/0.13.1) |
-| `collections` | `0.1.0` | `Apache-2.0` | `git+https://github.com/zed-industries/zed#ae394f3d474f4996d2cdef6ee97551fdb6748acd` |
+| `collections` | `0.1.0` | `Apache-2.0` | `git+https://github.com/TimLai666/zed?rev=f05b2a9790aefeca74b4df38489d568d08ab3b4d#f05b2a9790aefeca74b4df38489d568d08ab3b4d` |
 | `color_quant` | `1.1.0` | `MIT` | [crates.io](https://crates.io/crates/color_quant/1.1.0) |
 | `colorchoice` | `1.0.5` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/colorchoice/1.0.5) |
 | `compression-codecs` | `0.4.38` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/compression-codecs/0.4.38) |
@@ -346,7 +347,7 @@ keeps its own license.
 | `deranged` | `0.5.8` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/deranged/0.5.8) |
 | `derive_more` | `2.1.1` | `MIT` | [crates.io](https://crates.io/crates/derive_more/2.1.1) |
 | `derive_more-impl` | `2.1.1` | `MIT` | [crates.io](https://crates.io/crates/derive_more-impl/2.1.1) |
-| `derive_refineable` | `0.1.0` | `Apache-2.0` | `git+https://github.com/zed-industries/zed#ae394f3d474f4996d2cdef6ee97551fdb6748acd` |
+| `derive_refineable` | `0.1.0` | `Apache-2.0` | `git+https://github.com/TimLai666/zed?rev=f05b2a9790aefeca74b4df38489d568d08ab3b4d#f05b2a9790aefeca74b4df38489d568d08ab3b4d` |
 | `digest` | `0.10.7` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/digest/0.10.7) |
 | `digest` | `0.11.3` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/digest/0.11.3) |
 | `dirs` | `6.0.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/dirs/6.0.0) |
@@ -452,19 +453,19 @@ keeps its own license.
 | `gpu-allocator` | `0.28.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/gpu-allocator/0.28.0) |
 | `gpu-descriptor` | `0.3.2` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/gpu-descriptor/0.3.2) |
 | `gpu-descriptor-types` | `0.2.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/gpu-descriptor-types/0.2.0) |
-| `gpui` | `0.2.2` | `Apache-2.0` | `git+https://github.com/zed-industries/zed#ae394f3d474f4996d2cdef6ee97551fdb6748acd` |
+| `gpui` | `0.2.2` | `Apache-2.0` | `git+https://github.com/TimLai666/zed?rev=f05b2a9790aefeca74b4df38489d568d08ab3b4d#f05b2a9790aefeca74b4df38489d568d08ab3b4d` |
 | `gpui-component` | `0.5.2` | `Apache-2.0` | `git+https://github.com/longbridge/gpui-component?rev=88f102d13654fe25aa2fede076274b6b751a3704#88f102d13654fe25aa2fede076274b6b751a3704` |
 | `gpui-component-assets` | `0.5.1` | `Apache-2.0` | `git+https://github.com/longbridge/gpui-component?rev=88f102d13654fe25aa2fede076274b6b751a3704#88f102d13654fe25aa2fede076274b6b751a3704` |
 | `gpui-component-macros` | `0.5.1` | `Apache-2.0` | `git+https://github.com/longbridge/gpui-component?rev=88f102d13654fe25aa2fede076274b6b751a3704#88f102d13654fe25aa2fede076274b6b751a3704` |
-| `gpui_linux` | `0.1.0` | `Apache-2.0` | `git+https://github.com/zed-industries/zed#ae394f3d474f4996d2cdef6ee97551fdb6748acd` |
-| `gpui_macos` | `0.1.0` | `Apache-2.0` | `git+https://github.com/zed-industries/zed#ae394f3d474f4996d2cdef6ee97551fdb6748acd` |
-| `gpui_macros` | `0.1.0` | `Apache-2.0` | `git+https://github.com/zed-industries/zed#ae394f3d474f4996d2cdef6ee97551fdb6748acd` |
-| `gpui_platform` | `0.1.0` | `Apache-2.0` | `git+https://github.com/zed-industries/zed#ae394f3d474f4996d2cdef6ee97551fdb6748acd` |
-| `gpui_shared_string` | `0.1.0` | `missing package metadata` | `git+https://github.com/zed-industries/zed#ae394f3d474f4996d2cdef6ee97551fdb6748acd` |
-| `gpui_util` | `0.1.0` | `missing package metadata` | `git+https://github.com/zed-industries/zed#ae394f3d474f4996d2cdef6ee97551fdb6748acd` |
-| `gpui_web` | `0.1.0` | `Apache-2.0` | `git+https://github.com/zed-industries/zed#ae394f3d474f4996d2cdef6ee97551fdb6748acd` |
-| `gpui_wgpu` | `0.1.0` | `Apache-2.0` | `git+https://github.com/zed-industries/zed#ae394f3d474f4996d2cdef6ee97551fdb6748acd` |
-| `gpui_windows` | `0.1.0` | `Apache-2.0` | `git+https://github.com/zed-industries/zed#ae394f3d474f4996d2cdef6ee97551fdb6748acd` |
+| `gpui_linux` | `0.1.0` | `Apache-2.0` | `git+https://github.com/TimLai666/zed?rev=f05b2a9790aefeca74b4df38489d568d08ab3b4d#f05b2a9790aefeca74b4df38489d568d08ab3b4d` |
+| `gpui_macos` | `0.1.0` | `Apache-2.0` | `git+https://github.com/TimLai666/zed?rev=f05b2a9790aefeca74b4df38489d568d08ab3b4d#f05b2a9790aefeca74b4df38489d568d08ab3b4d` |
+| `gpui_macros` | `0.1.0` | `Apache-2.0` | `git+https://github.com/TimLai666/zed?rev=f05b2a9790aefeca74b4df38489d568d08ab3b4d#f05b2a9790aefeca74b4df38489d568d08ab3b4d` |
+| `gpui_platform` | `0.1.0` | `Apache-2.0` | `git+https://github.com/TimLai666/zed?rev=f05b2a9790aefeca74b4df38489d568d08ab3b4d#f05b2a9790aefeca74b4df38489d568d08ab3b4d` |
+| `gpui_shared_string` | `0.1.0` | `missing package metadata` | `git+https://github.com/TimLai666/zed?rev=f05b2a9790aefeca74b4df38489d568d08ab3b4d#f05b2a9790aefeca74b4df38489d568d08ab3b4d` |
+| `gpui_util` | `0.1.0` | `missing package metadata` | `git+https://github.com/TimLai666/zed?rev=f05b2a9790aefeca74b4df38489d568d08ab3b4d#f05b2a9790aefeca74b4df38489d568d08ab3b4d` |
+| `gpui_web` | `0.1.0` | `Apache-2.0` | `git+https://github.com/TimLai666/zed?rev=f05b2a9790aefeca74b4df38489d568d08ab3b4d#f05b2a9790aefeca74b4df38489d568d08ab3b4d` |
+| `gpui_wgpu` | `0.1.0` | `Apache-2.0` | `git+https://github.com/TimLai666/zed?rev=f05b2a9790aefeca74b4df38489d568d08ab3b4d#f05b2a9790aefeca74b4df38489d568d08ab3b4d` |
+| `gpui_windows` | `0.1.0` | `Apache-2.0` | `git+https://github.com/TimLai666/zed?rev=f05b2a9790aefeca74b4df38489d568d08ab3b4d#f05b2a9790aefeca74b4df38489d568d08ab3b4d` |
 | `granit-parser` | `0.0.7` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/granit-parser/0.0.7) |
 | `grid` | `1.0.1` | `MIT` | [crates.io](https://crates.io/crates/grid/1.0.1) |
 | `gstreamer` | `0.25.4` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/gstreamer/0.25.4) |
@@ -498,7 +499,7 @@ keeps its own license.
 | `http` | `1.5.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/http/1.5.0) |
 | `http-body` | `1.1.0` | `MIT` | [crates.io](https://crates.io/crates/http-body/1.1.0) |
 | `http-body-util` | `0.1.4` | `MIT` | [crates.io](https://crates.io/crates/http-body-util/0.1.4) |
-| `http_client` | `0.1.0` | `Apache-2.0` | `git+https://github.com/zed-industries/zed#ae394f3d474f4996d2cdef6ee97551fdb6748acd` |
+| `http_client` | `0.1.0` | `Apache-2.0` | `git+https://github.com/TimLai666/zed?rev=f05b2a9790aefeca74b4df38489d568d08ab3b4d#f05b2a9790aefeca74b4df38489d568d08ab3b4d` |
 | `httparse` | `1.10.1` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/httparse/1.10.1) |
 | `hybrid-array` | `0.4.14` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/hybrid-array/0.4.14) |
 | `hyper` | `1.11.0` | `MIT` | [crates.io](https://crates.io/crates/hyper/1.11.0) |
@@ -553,6 +554,7 @@ keeps its own license.
 | `launcher-core` | `0.2.16` | `GPL-3.0-or-later` | workspace |
 | `launcher-gui` | `0.2.16` | `GPL-3.0-or-later` | workspace |
 | `launcher-platform` | `0.2.16` | `GPL-3.0-or-later` | workspace |
+| `layer-check` | `0.2.16` | `GPL-3.0-or-later` | workspace |
 | `lazy_static` | `1.5.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/lazy_static/1.5.0) |
 | `leak` | `0.1.2` | `Apache-2.0 OR MIT` | [crates.io](https://crates.io/crates/leak/0.1.2) |
 | `leaky-cow` | `0.1.1` | `MIT / Apache-2.0` | [crates.io](https://crates.io/crates/leaky-cow/0.1.1) |
@@ -596,7 +598,7 @@ keeps its own license.
 | `markup5ever_rcdom` | `0.3.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/markup5ever_rcdom/0.3.0) |
 | `maybe-rayon` | `0.1.1` | `MIT` | [crates.io](https://crates.io/crates/maybe-rayon/0.1.1) |
 | `md-5` | `0.10.6` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/md-5/0.10.6) |
-| `media` | `0.1.0` | `Apache-2.0` | `git+https://github.com/zed-industries/zed#ae394f3d474f4996d2cdef6ee97551fdb6748acd` |
+| `media` | `0.1.0` | `Apache-2.0` | `git+https://github.com/TimLai666/zed?rev=f05b2a9790aefeca74b4df38489d568d08ab3b4d#f05b2a9790aefeca74b4df38489d568d08ab3b4d` |
 | `memchr` | `2.8.3` | `Unlicense OR MIT` | [crates.io](https://crates.io/crates/memchr/2.8.3) |
 | `memmap2` | `0.9.11` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/memmap2/0.9.11) |
 | `memoffset` | `0.9.1` | `MIT` | [crates.io](https://crates.io/crates/memoffset/0.9.1) |
@@ -695,7 +697,7 @@ keeps its own license.
 | `pathfinder_simd` | `0.5.6` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/pathfinder_simd/0.5.6) |
 | `pbkdf2` | `0.12.2` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/pbkdf2/0.12.2) |
 | `percent-encoding` | `2.3.2` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/percent-encoding/2.3.2) |
-| `perf` | `0.1.0` | `Apache-2.0` | `git+https://github.com/zed-industries/zed#ae394f3d474f4996d2cdef6ee97551fdb6748acd` |
+| `perf` | `0.1.0` | `Apache-2.0` | `git+https://github.com/TimLai666/zed?rev=f05b2a9790aefeca74b4df38489d568d08ab3b4d#f05b2a9790aefeca74b4df38489d568d08ab3b4d` |
 | `phf` | `0.11.3` | `MIT` | [crates.io](https://crates.io/crates/phf/0.11.3) |
 | `phf` | `0.13.1` | `MIT` | [crates.io](https://crates.io/crates/phf/0.13.1) |
 | `phf_codegen` | `0.11.3` | `MIT` | [crates.io](https://crates.io/crates/phf_codegen/0.11.3) |
@@ -775,7 +777,7 @@ keeps its own license.
 | `redox_users` | `0.5.2` | `MIT` | [crates.io](https://crates.io/crates/redox_users/0.5.2) |
 | `ref-cast` | `1.0.26` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/ref-cast/1.0.26) |
 | `ref-cast-impl` | `1.0.26` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/ref-cast-impl/1.0.26) |
-| `refineable` | `0.1.0` | `Apache-2.0` | `git+https://github.com/zed-industries/zed#ae394f3d474f4996d2cdef6ee97551fdb6748acd` |
+| `refineable` | `0.1.0` | `Apache-2.0` | `git+https://github.com/TimLai666/zed?rev=f05b2a9790aefeca74b4df38489d568d08ab3b4d#f05b2a9790aefeca74b4df38489d568d08ab3b4d` |
 | `regex` | `1.13.1` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/regex/1.13.1) |
 | `regex-automata` | `0.4.16` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/regex-automata/0.4.16) |
 | `regex-syntax` | `0.8.11` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/regex-syntax/0.8.11) |
@@ -812,7 +814,7 @@ keeps its own license.
 | `ryu` | `1.0.23` | `Apache-2.0 OR BSL-1.0` | [crates.io](https://crates.io/crates/ryu/1.0.23) |
 | `same-file` | `1.0.6` | `Unlicense/MIT` | [crates.io](https://crates.io/crates/same-file/1.0.6) |
 | `schannel` | `0.1.29` | `MIT` | [crates.io](https://crates.io/crates/schannel/0.1.29) |
-| `scheduler` | `0.1.0` | `Apache-2.0` | `git+https://github.com/zed-industries/zed#ae394f3d474f4996d2cdef6ee97551fdb6748acd` |
+| `scheduler` | `0.1.0` | `Apache-2.0` | `git+https://github.com/TimLai666/zed?rev=f05b2a9790aefeca74b4df38489d568d08ab3b4d#f05b2a9790aefeca74b4df38489d568d08ab3b4d` |
 | `schemars` | `1.2.2` | `MIT` | [crates.io](https://crates.io/crates/schemars/1.2.2) |
 | `schemars_derive` | `1.2.2` | `MIT` | [crates.io](https://crates.io/crates/schemars_derive/1.2.2) |
 | `scoped-tls` | `1.0.1` | `MIT/Apache-2.0` | [crates.io](https://crates.io/crates/scoped-tls/1.0.1) |
@@ -876,7 +878,7 @@ keeps its own license.
 | `strum` | `0.27.2` | `MIT` | [crates.io](https://crates.io/crates/strum/0.27.2) |
 | `strum_macros` | `0.27.2` | `MIT` | [crates.io](https://crates.io/crates/strum_macros/0.27.2) |
 | `subtle` | `2.6.1` | `BSD-3-Clause` | [crates.io](https://crates.io/crates/subtle/2.6.1) |
-| `sum_tree` | `0.1.0` | `Apache-2.0` | `git+https://github.com/zed-industries/zed#ae394f3d474f4996d2cdef6ee97551fdb6748acd` |
+| `sum_tree` | `0.1.0` | `Apache-2.0` | `git+https://github.com/TimLai666/zed?rev=f05b2a9790aefeca74b4df38489d568d08ab3b4d#f05b2a9790aefeca74b4df38489d568d08ab3b4d` |
 | `sval` | `2.21.0` | `Apache-2.0 OR MIT` | [crates.io](https://crates.io/crates/sval/2.21.0) |
 | `sval_buffer` | `2.21.0` | `Apache-2.0 OR MIT` | [crates.io](https://crates.io/crates/sval_buffer/2.21.0) |
 | `sval_dynamic` | `2.21.0` | `Apache-2.0 OR MIT` | [crates.io](https://crates.io/crates/sval_dynamic/2.21.0) |
@@ -985,7 +987,7 @@ keeps its own license.
 | `utf8-zero` | `0.8.1` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/utf8-zero/0.8.1) |
 | `utf8_iter` | `1.0.4` | `Apache-2.0 OR MIT` | [crates.io](https://crates.io/crates/utf8_iter/1.0.4) |
 | `utf8parse` | `0.2.2` | `Apache-2.0 OR MIT` | [crates.io](https://crates.io/crates/utf8parse/0.2.2) |
-| `util_macros` | `0.1.0` | `Apache-2.0` | `git+https://github.com/zed-industries/zed#ae394f3d474f4996d2cdef6ee97551fdb6748acd` |
+| `util_macros` | `0.1.0` | `Apache-2.0` | `git+https://github.com/TimLai666/zed?rev=f05b2a9790aefeca74b4df38489d568d08ab3b4d#f05b2a9790aefeca74b4df38489d568d08ab3b4d` |
 | `uuid` | `1.24.0` | `Apache-2.0 OR MIT` | [crates.io](https://crates.io/crates/uuid/1.24.0) |
 | `v_frame` | `0.3.9` | `BSD-2-Clause` | [crates.io](https://crates.io/crates/v_frame/0.3.9) |
 | `valuable` | `0.1.1` | `MIT` | [crates.io](https://crates.io/crates/valuable/0.1.1) |
@@ -1013,6 +1015,7 @@ keeps its own license.
 | `wayland-client` | `0.31.15` | `MIT` | [crates.io](https://crates.io/crates/wayland-client/0.31.15) |
 | `wayland-cursor` | `0.31.14` | `MIT` | [crates.io](https://crates.io/crates/wayland-cursor/0.31.14) |
 | `wayland-protocols` | `0.32.13` | `MIT` | [crates.io](https://crates.io/crates/wayland-protocols/0.32.13) |
+| `wayland-protocols-misc` | `0.3.12` | `MIT` | [crates.io](https://crates.io/crates/wayland-protocols-misc/0.3.12) |
 | `wayland-protocols-plasma` | `0.3.12` | `MIT` | [crates.io](https://crates.io/crates/wayland-protocols-plasma/0.3.12) |
 | `wayland-protocols-wlr` | `0.3.12` | `MIT` | [crates.io](https://crates.io/crates/wayland-protocols-wlr/0.3.12) |
 | `wayland-scanner` | `0.31.11` | `MIT` | [crates.io](https://crates.io/crates/wayland-scanner/0.31.11) |
@@ -1144,10 +1147,10 @@ keeps its own license.
 | `zerovec` | `0.11.6` | `Unicode-3.0` | [crates.io](https://crates.io/crates/zerovec/0.11.6) |
 | `zerovec-derive` | `0.11.3` | `Unicode-3.0` | [crates.io](https://crates.io/crates/zerovec-derive/0.11.3) |
 | `zip` | `8.6.0` | `MIT` | [crates.io](https://crates.io/crates/zip/8.6.0) |
-| `zlog` | `0.1.0` | `GPL-3.0-or-later` | `git+https://github.com/zed-industries/zed#ae394f3d474f4996d2cdef6ee97551fdb6748acd` |
+| `zlog` | `0.1.0` | `GPL-3.0-or-later` | `git+https://github.com/TimLai666/zed?rev=f05b2a9790aefeca74b4df38489d568d08ab3b4d#f05b2a9790aefeca74b4df38489d568d08ab3b4d` |
 | `zmij` | `1.0.23` | `MIT` | [crates.io](https://crates.io/crates/zmij/1.0.23) |
-| `ztracing` | `0.1.0` | `GPL-3.0-or-later` | `git+https://github.com/zed-industries/zed#ae394f3d474f4996d2cdef6ee97551fdb6748acd` |
-| `ztracing_macro` | `0.1.0` | `GPL-3.0-or-later` | `git+https://github.com/zed-industries/zed#ae394f3d474f4996d2cdef6ee97551fdb6748acd` |
+| `ztracing` | `0.1.0` | `GPL-3.0-or-later` | `git+https://github.com/TimLai666/zed?rev=f05b2a9790aefeca74b4df38489d568d08ab3b4d#f05b2a9790aefeca74b4df38489d568d08ab3b4d` |
+| `ztracing_macro` | `0.1.0` | `GPL-3.0-or-later` | `git+https://github.com/TimLai666/zed?rev=f05b2a9790aefeca74b4df38489d568d08ab3b4d#f05b2a9790aefeca74b4df38489d568d08ab3b4d` |
 | `zune-core` | `0.4.12` | `MIT OR Apache-2.0 OR Zlib` | [crates.io](https://crates.io/crates/zune-core/0.4.12) |
 | `zune-core` | `0.5.1` | `MIT OR Apache-2.0 OR Zlib` | [crates.io](https://crates.io/crates/zune-core/0.5.1) |
 | `zune-inflate` | `0.2.54` | `MIT OR Apache-2.0 OR Zlib` | [crates.io](https://crates.io/crates/zune-inflate/0.2.54) |
@@ -1161,5 +1164,5 @@ keeps its own license.
 
 | Package | Version | Source | Review note |
 | --- | --- | --- | --- |
-| `gpui_shared_string` | `0.1.0` | `git+https://github.com/zed-industries/zed#ae394f3d474f4996d2cdef6ee97551fdb6748acd` | Pinned upstream Zed workspace package has no package-level license metadata; retain the upstream GPL/APACHE notices and review file-level markings. |
-| `gpui_util` | `0.1.0` | `git+https://github.com/zed-industries/zed#ae394f3d474f4996d2cdef6ee97551fdb6748acd` | Pinned upstream Zed workspace package has no package-level license metadata; retain the upstream GPL/APACHE notices and review file-level markings. |
+| `gpui_shared_string` | `0.1.0` | `git+https://github.com/TimLai666/zed?rev=f05b2a9790aefeca74b4df38489d568d08ab3b4d#f05b2a9790aefeca74b4df38489d568d08ab3b4d` | Pinned upstream Zed workspace package has no package-level license metadata; retain the upstream GPL/APACHE notices and review file-level markings. |
+| `gpui_util` | `0.1.0` | `git+https://github.com/TimLai666/zed?rev=f05b2a9790aefeca74b4df38489d568d08ab3b4d#f05b2a9790aefeca74b4df38489d568d08ab3b4d` | Pinned upstream Zed workspace package has no package-level license metadata; retain the upstream GPL/APACHE notices and review file-level markings. |

@@ -5,6 +5,7 @@
 pub mod command_line;
 pub mod fluent;
 pub mod icon_set;
+pub mod layer;
 pub mod pane_edge;
 pub mod restart;
 pub mod system_frame;

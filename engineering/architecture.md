@@ -109,6 +109,14 @@ patch-core ──> patch-platform ──> manager-gui        Fixes page (ticket 
 `better-ui` provides GPUI presentation primitives to every GUI crate in the
 suite, not only the two that exist today.
 
+GPUI comes from the owner's fork of Zed, `https://github.com/TimLai666/zed`,
+branch `better-os/gpui-<pinned revision>`: the pinned upstream revision plus
+only fixes also offered upstream, one commit each. The workspace still names
+`https://github.com/zed-industries/zed` in its dependencies and redirects
+every crate from it, `gpui-component`'s own included, with one
+`[patch."https://github.com/zed-industries/zed"]` section at an exact
+revision ([ADR 0043](/engineering/decisions/0043-gpui-from-a-fork.md)).
+
 ### The Better OS session (being built)
 
 The owner chose a Better OS desktop session on COSMIC's compositor beside
@@ -689,8 +697,9 @@ collection is explicitly configured to include them.
   0038 resolved metadata only); if false the session needs Better OS to build
   the closure itself. Ticket 201 checks it first.
 - GPUI's layer-shell surface at the pinned revision works on `cosmic-comp` -
-  risk: never run; every session surface depends on it. Ticket 200 checks it
-  first.
+  seen in a nested `cosmic-comp` (ticket 200) at 100 %, 150 %, and 200 % once
+  the fork's viewport fix is in (ADR 0043); several outputs on `cosmic-comp`
+  itself are still unseen until ticket 201's VM.
 - `cosmic-comp` changes behaviour between Epoch releases without notice - risk:
   a release breaks the session; ticket 226's routine holds the closure back
   until a release passes.
@@ -761,3 +770,4 @@ verification contract.
 - [ADR 0038: Better OS's desktop: a Better OS session on COSMIC's compositor, beside GNOME](decisions/0038-cosmic-as-the-desktop.md)
 - [ADR 0039: How Better OS keeps its patch to cosmic-comp](decisions/0039-compositor-fork-policy.md) (proposed)
 - [ADR 0040: What Better OS is, now that it has a session of its own](decisions/0040-what-better-os-is.md) (proposed)
+- [ADR 0043: Better OS builds GPUI from its own fork of Zed](decisions/0043-gpui-from-a-fork.md)
