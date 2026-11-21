@@ -68,13 +68,13 @@ one.
 
 ## Done when
 
-- [ ] Every stage's rule has a unit test; the property is asserted on the
+- [x] Every stage's rule has a unit test; the property is asserted on the
       fake clock for every injected outcome.
-- [ ] The container check `packaging/boot-watch/run.sh` gains a stand-in
+- [x] The container check `packaging/boot-watch/run.sh` gains a stand-in
       greeter that never becomes `ready` and a supervisor that cannot
       start, and passes in CI: the fall back in the first case, the
       backstop in the second.
-- [ ] The VM proof is ticket 281's.
+- [x] The VM proof is ticket 281's (its notes say what it runs against).
 
 ## Notes
 
@@ -127,7 +127,11 @@ supervisor crash started the backstop's text login on tty2. Fixed with
 updated); the check now also kills by process id, since `systemctl kill`
 fails on two runners' kernels.
 
-Left: the container check passing in CI with that fix. What needs
+With it, CI run 44950253766 passed on all four runners: the text login
+on tty1 27 s after T0 with three attempts (the third in safe mode), the
+supervisor killed mid-attempt continuing to the text login 27 to 28 s
+after the first T0 with the backstop not run, and a supervisor that
+cannot start ending in the backstop's text login on tty2 in 6 to 7 s. What needs
 greetd, the real greeter, the package or the VM is in the notes of
 tickets 264, 265 and 281.
 
