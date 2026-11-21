@@ -7273,6 +7273,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "session-launcher"
+version = "0.2.16"
+dependencies = [
+ "better-core",
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "zbus",
+]
+
+[[package]]
 name = "sha1_smol"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

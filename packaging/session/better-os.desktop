@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Better OS
+Comment=The Better OS desktop on COSMIC's compositor
+Comment[zh_TW]=在 COSMIC 合成器上的 Better OS 桌面
+Exec=/usr/libexec/better-os/session/start
+TryExec=/usr/libexec/better-os/session/start
+DesktopNames=BetterOS;COSMIC

@@ -132,7 +132,8 @@ cargo build --release \
     -p awake-gui \
     -p storage-service \
     -p storage-platform \
-    -p window-attention-service
+    -p window-attention-service \
+    -p session-launcher
 
 TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT_DIR/target}"
 BUILD_DIR="$TARGET_DIR/release"
@@ -612,7 +613,9 @@ make_package() {
     for entry in ${PACKAGE_DATA[@]+"${PACKAGE_DATA[@]}"}; do
         installed_path="${entry#*:}"
         case "$installed_path" in
-            usr/lib/systemd/user/*) user_units+=("${installed_path##*/}") ;;
+            # Services only: a target is started by whoever needs it, and a
+            # drop-in (a .service.d/ file) belongs to another package's unit.
+            usr/lib/systemd/user/*.service) user_units+=("${installed_path##*/}") ;;
         esac
     done
     if ((${#user_units[@]} > 0)); then
@@ -1192,3 +1195,53 @@ PACKAGE_DEPENDS=("dbus" "udisks2")
 make_package better-storage \
     'Better OS external device removal service' \
     'Direct removal for external drives, with an honest ready-to-unplug state.'
+
+# The Better OS session (ticket 203, engineering/specs/better-os-session.md):
+# the launcher GDM starts, the session file, the systemd user target and the
+# units of COSMIC's daemons and Fcitx 5, the session's dconf profile and
+# portal order, and its defaults for COSMIC's configuration. Ubuntu 24.04
+# bases only: System76's compositor for 22.04 is the January 2025 alpha and
+# its noble builds need libc6 (>= 2.39) (ADR 0038).
+#
+# The 14 COSMIC packages come from System76's source, which manager-daemon
+# adds with its key and a pin limited to them (ADR 0038 C2, ticket 204); the
+# rest is Ubuntu's archive. Each Ubuntu package below is something the
+# session's own files name: Fcitx 5 with Chewing (C4), the GTK portal and the
+# keyring betteros-portals.conf names, and the programs the session's
+# system_actions run (playerctl, wpctl, xdg-open, busctl, loginctl, the
+# machine's terminal). They are Depends and not Recommends because Better
+# Manager installs with --no-install-recommends.
+if [[ "$RELEASE_TARGET" != ubuntu-22.04 ]]; then
+    SESSION_SHORTCUTS="cosmic/com.system76.CosmicSettings.Shortcuts/v1"
+    PACKAGE_BINARIES=("better-os-session:usr/libexec/better-os/session/start")
+    PACKAGE_DATA=(
+        "packaging/session/better-os.desktop:usr/share/wayland-sessions/better-os.desktop"
+        "packaging/session/better-os-session.target:usr/lib/systemd/user/better-os-session.target"
+        "packaging/session/better-os-session-settings-daemon.service:usr/lib/systemd/user/better-os-session-settings-daemon.service"
+        "packaging/session/better-os-session-osd.service:usr/lib/systemd/user/better-os-session-osd.service"
+        "packaging/session/better-os-session-idle.service:usr/lib/systemd/user/better-os-session-idle.service"
+        "packaging/session/better-os-session-background.service:usr/lib/systemd/user/better-os-session-background.service"
+        "packaging/session/better-os-session-input-method.service:usr/lib/systemd/user/better-os-session-input-method.service"
+        "packaging/session/tracker-miner-fs-3-better-os-session.conf:usr/lib/systemd/user/tracker-miner-fs-3.service.d/better-os-session.conf"
+        "packaging/session/betteros.dconf-profile:usr/share/dconf/profile/betteros"
+        "packaging/session/betteros-portals.conf:usr/share/xdg-desktop-portal/betteros-portals.conf"
+        "packaging/session/$SESSION_SHORTCUTS/defaults:usr/share/better-os/session/$SESSION_SHORTCUTS/defaults"
+        "packaging/session/$SESSION_SHORTCUTS/system_actions:usr/share/better-os/session/$SESSION_SHORTCUTS/system_actions"
+    )
+    # Ticket 253 adds Better Screenshot here: its binary, its three files
+    # under packaging/screenshot/, and gstreamer1.0-plugins-base and
+    # gstreamer1.0-plugins-good to the Depends.
+    PACKAGE_DEPENDS=(
+        "adw-gtk3" "cosmic-bg" "cosmic-comp" "cosmic-greeter" "cosmic-greeter-daemon"
+        "cosmic-icons" "cosmic-idle" "cosmic-osd" "cosmic-randr" "cosmic-settings"
+        "cosmic-settings-daemon" "cosmic-theme-bundles" "pop-sound-theme"
+        "xdg-desktop-portal-cosmic"
+        "fcitx5" "fcitx5-chewing" "fcitx5-frontend-gtk3" "fcitx5-frontend-gtk4"
+        "fcitx5-frontend-qt5" "fcitx5-config-qt"
+        "systemd" "dbus" "dconf-gsettings-backend" "xdg-desktop-portal-gtk" "gnome-keyring"
+        "playerctl" "wireplumber" "xdg-utils" "gnome-terminal | x-terminal-emulator"
+    )
+    make_package better-os-session \
+        'Better OS desktop session on the COSMIC compositor' \
+        'The Better OS session GDM lists beside GNOME: cosmic-comp, the COSMIC daemons Better OS keeps, Fcitx 5, and the session rules of Better OS.'
+fi

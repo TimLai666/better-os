@@ -1,0 +1,10 @@
+[Unit]
+Description=COSMIC idle, blanking, and org.freedesktop.ScreenSaver in the Better OS session
+PartOf=better-os-session.target
+After=better-os-session.target
+
+[Service]
+Slice=session.slice
+ExecStart=/usr/bin/cosmic-idle
+Restart=on-failure
+RestartSec=1

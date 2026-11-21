@@ -1,0 +1,34 @@
+[package]
+name = "session-launcher"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# The Better OS session's launcher (ticket 203,
+# engineering/specs/better-os-session.md, "The session"). GDM runs it from
+# /usr/share/wayland-sessions/better-os.desktop; it starts cosmic-comp, imports
+# the session's environment, starts better-os-session.target, and ends all of
+# it again. Every rule (the variables, what is imported and put back, the
+# order, who may log the session out, when a child is started again) is in the
+# library with its tests; the binary is the process edges.
+
+[lib]
+name = "session_launcher"
+path = "src/lib.rs"
+
+[[bin]]
+name = "better-os-session"
+path = "src/main.rs"
+
+[dependencies]
+better-core.workspace = true
+libc.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# The blocking API on zbus's default async-io flavor (AGENTS.md): a few calls
+# to the user manager and the bus, and two methods served.
+zbus.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -10,11 +10,11 @@ It does not replace the license text supplied by each upstream project.
 ## Review summary
 
 - Root project license: `GPL-3.0-or-later`.
-- Resolved Cargo packages: 984.
-- Packages with an SPDX license expression: 982.
+- Resolved Cargo packages: 985.
+- Packages with an SPDX license expression: 983.
 - Packages with only a license-file field: 0.
 - Packages without package-level license metadata: 2.
-- `Cargo.lock` SHA-256: `85e6cb21fff96617a31d15870c7b8494ca75d3eeba70c59be4a15d827f709650`.
+- `Cargo.lock` SHA-256: `3610da6624a47ad75a67fbc33f35da5afccc7dcf6010a67890af7ff6a148f879`.
 
 The 2 package(s) without package-level license metadata are
 listed separately below. Their pinned upstream checkout contains both
@@ -28,7 +28,7 @@ source of truth for those packages.
 | `MIT OR Apache-2.0` | 424 |
 | `MIT` | 203 |
 | `Apache-2.0 OR MIT` | 79 |
-| `GPL-3.0-or-later` | 72 |
+| `GPL-3.0-or-later` | 73 |
 | `MIT/Apache-2.0` | 41 |
 | `Apache-2.0` | 32 |
 | `Unicode-3.0` | 18 |
@@ -137,6 +137,7 @@ Better OS does not relicense or silently select a different expression.
 | `r-efi` | `5.3.0` | `MIT OR Apache-2.0 OR LGPL-2.1-or-later` | [crates.io](https://crates.io/crates/r-efi/5.3.0) |
 | `r-efi` | `6.0.0` | `MIT OR Apache-2.0 OR LGPL-2.1-or-later` | [crates.io](https://crates.io/crates/r-efi/6.0.0) |
 | `self_cell` | `1.3.0` | `Apache-2.0 OR GPL-2.0-only` | [crates.io](https://crates.io/crates/self_cell/1.3.0) |
+| `session-launcher` | `0.2.16` | `GPL-3.0-or-later` | workspace |
 | `storage-core` | `0.2.16` | `GPL-3.0-or-later` | workspace |
 | `storage-platform` | `0.2.16` | `GPL-3.0-or-later` | workspace |
 | `storage-service` | `0.2.16` | `GPL-3.0-or-later` | workspace |
@@ -839,6 +840,7 @@ keeps its own license.
 | `serde_spanned` | `1.1.1` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/serde_spanned/1.1.1) |
 | `serde_urlencoded` | `0.7.1` | `MIT/Apache-2.0` | [crates.io](https://crates.io/crates/serde_urlencoded/0.7.1) |
 | `serde_yaml` | `0.9.34+deprecated` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/serde_yaml/0.9.34+deprecated) |
+| `session-launcher` | `0.2.16` | `GPL-3.0-or-later` | workspace |
 | `sha1_smol` | `1.0.1` | `BSD-3-Clause` | [crates.io](https://crates.io/crates/sha1_smol/1.0.1) |
 | `sha2` | `0.10.9` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/sha2/0.10.9) |
 | `sha2` | `0.11.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/sha2/0.11.0) |

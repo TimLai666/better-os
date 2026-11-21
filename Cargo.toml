@@ -70,6 +70,7 @@ members = [
     "crates/test-prerequisites",
     "crates/patch-core",
     "crates/patch-platform",
+    "crates/session-launcher",
 ]
 
 [workspace.package]

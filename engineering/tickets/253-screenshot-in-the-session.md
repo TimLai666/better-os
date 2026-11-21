@@ -57,6 +57,18 @@ program; ticket 203's test that every action names a shipped program covers
 it. The program ships in the session's package and follows AGENTS.md's rules
 for a window (restart on update, command line, `app_id`).
 
+What ticket 203 left for this ticket (2026-11-22), each place marked "Ticket
+253 adds": in `packaging/build-deb.sh`'s `better-os-session` block the
+binary, the three `packaging/screenshot/` files, and the two GStreamer
+`Depends`; in `packaging/session/betteros-portals.conf` the Screenshot line;
+in `packaging/session/cosmic/com.system76.CosmicSettings.Shortcuts/v1/`
+`system_actions` `Screenshot: "better-screenshot"` and in `defaults` Print →
+`System(Screenshot)` and the three `Spawn(...)` bindings; and in
+`crates/session-launcher/tests/shortcuts.rs` the `Screenshot` line of
+`WAITING` comes out. The session's `defaults` is the whole binding table (a
+configuration's defaults come from one directory, better-os-session.md's
+`XDG_DATA_DIRS` row), so the bindings go there and not in `custom`.
+
 ## Done when
 
 - [x] The owner's answer is recorded in this ticket.

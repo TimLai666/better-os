@@ -344,7 +344,8 @@ jobs:
             better-touchpad \
             better-awake \
             better-storage \
-            better-shell-adapter; do
+            better-shell-adapter \
+            $(test "${{ matrix.asset_target }}" = ubuntu-22.04 || echo better-os-session); do
             asset="dist/${{ matrix.target }}/${package}_${version}_${{ matrix.asset_target }}_${{ matrix.architecture }}.deb"
             test -s "$asset" || { echo "Missing package asset: $asset" >&2; exit 1; }
             test -s "$asset.sha256" || { echo "Missing checksum sidecar: $asset.sha256" >&2; exit 1; }

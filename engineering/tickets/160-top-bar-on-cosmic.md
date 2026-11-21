@@ -51,7 +51,12 @@ OS's own services instead of GNOME Shell.
   dconf profile, and say which in Notes.
 - **Key bindings**: the bar's `--focus` (Ctrl+F2) and `--notifications`
   (Super+V, Super+M; ticket 216) in the session's defaults (ticket 203), not
-  through Better Defaults.
+  through Better Defaults: `Spawn("…")` lines in
+  `packaging/session/cosmic/com.system76.CosmicSettings.Shortcuts/v1/defaults`
+  (Super+M is COSMIC's Maximize there today; this ticket decides which
+  wins), and the bar's program added to
+  `session_launcher::callers::LOGOUT_CALLERS` so its end-session dialog may
+  call `org.betteros.Session1.Logout`.
 - **No panel to hide, no relay**: the service in the session asks for no
   relay and the card shows no adapter state.
 

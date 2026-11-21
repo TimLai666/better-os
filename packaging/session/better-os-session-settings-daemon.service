@@ -1,0 +1,12 @@
+[Unit]
+Description=COSMIC settings daemon in the Better OS session
+# Theme, fonts, GTK and Qt syncing, brightness and volume keys. Its GSettings
+# writes land in ~/.config/dconf/betteros (DCONF_PROFILE=betteros).
+PartOf=better-os-session.target
+After=better-os-session.target
+
+[Service]
+Slice=session.slice
+ExecStart=/usr/bin/cosmic-settings-daemon
+Restart=on-failure
+RestartSec=1

@@ -28,6 +28,16 @@ person sees, and the two acceptance flows that prove it.
 - **Removal** as the spec's five steps, through ticket 204's methods; from
   inside the session, the deferred purge; other users' AccountsService
   sessions reset at purge; the person's `paths` deleted by the check box.
+- **The session package's own units** (ticket 203): `better-os-session`
+  ships five user units under `/usr/lib/systemd/user` that only
+  `better-os-session.target` starts (no `[Install]`, named by the target's
+  `Wants=`). `manager-core`'s unit pass takes every `.service` of a
+  component's dpkg list as that component's units, enables and starts them,
+  and requires them active; done for this component, it would start COSMIC's
+  daemons under GNOME and fail the health check there. The pass must leave
+  this package's units to the target (a component whose units are its
+  session's, decided in the manifest or by the units having no `[Install]`
+  section) before the component is offered.
 - **The startup pass** (`Manager::heal_user_units`' neighbour): a recorded
   session whose source or pin no longer matches is a blocking finding with
   Adopt or Repair, never a silent rewrite.
