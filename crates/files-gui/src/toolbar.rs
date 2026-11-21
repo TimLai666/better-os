@@ -89,13 +89,25 @@ pub trait PathValidator {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct FilesystemValidator;
 
+/// A folder under GVfs's folder (a server's) is not looked at on the
+/// window's thread (ticket 310): it is taken as a folder, and the listing,
+/// off this thread and connecting first, says what it really is.
+fn on_a_server(path: &Path) -> bool {
+    on_a_server_under(path, crate::remote::gvfs_root_from_env().as_deref())
+}
+
+/// Whether `path` is a server's folder under GVfs's folder `gvfs_root`.
+pub fn on_a_server_under(path: &Path, gvfs_root: Option<&Path>) -> bool {
+    gvfs_root.is_some_and(|root| path.starts_with(root) && path != root)
+}
+
 impl PathValidator for FilesystemValidator {
     fn exists(&self, path: &Path) -> bool {
-        path.exists()
+        on_a_server(path) || path.exists()
     }
 
     fn is_directory(&self, path: &Path) -> bool {
-        path.is_dir()
+        on_a_server(path) || path.is_dir()
     }
 }
 

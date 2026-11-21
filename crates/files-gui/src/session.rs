@@ -3067,7 +3067,7 @@ impl FilesSession {
         self.watches
             .retain(|watch| panes.iter().any(|(tab, _)| *tab == watch.tab));
         let mut changed = false;
-        let mut gone: Vec<(TabId, Option<std::path::PathBuf>)> = Vec::new();
+        let mut gone: Vec<(TabId, Location, Option<std::path::PathBuf>)> = Vec::new();
         for (tab, pane) in &mut self.panes {
             let index = match self.watches.iter().position(|watch| watch.tab == *tab) {
                 Some(index) if self.watches[index].folder == *pane.location() => index,
@@ -3130,7 +3130,9 @@ impl FilesSession {
                         }
                         pane.refresh(reader.as_ref())
                     }
-                    files_platform::HubUpdate::Gone { nearest } => gone.push((*tab, nearest)),
+                    files_platform::HubUpdate::Gone { nearest } => {
+                        gone.push((*tab, watch.folder.clone(), nearest))
+                    }
                     files_platform::HubUpdate::Suspended => {}
                 }
             }
@@ -3148,8 +3150,16 @@ impl FilesSession {
                 pane.refresh(reader.as_ref());
             }
         }
-        for (tab, nearest) in gone {
-            changed |= self.folder_gone(tab, nearest);
+        for (tab, folder, nearest) in gone {
+            // A folder the tab has already left (a server folder that was
+            // not there, found again above) is not this tab's news.
+            let still_there = self
+                .panes
+                .iter()
+                .any(|(id, pane)| *id == tab && *pane.location() == folder);
+            if still_there {
+                changed |= self.folder_gone(tab, nearest);
+            }
         }
         changed
     }

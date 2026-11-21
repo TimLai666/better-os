@@ -67,7 +67,11 @@ Status at the end of the fifth ticket-93 pass: **108 of 113 lines ticked**, 5 de
       `network.rs`: `gio mount` (arguments as a list, 30 s timeout), then the
       folder `gio info` names; tests `tests/network.rs` and
       `a_server_address_asks_for_a_password_then_opens_the_mounted_folder`
-      (a fake server). Not tried against a real server.
+      (a fake server). Since ticket 310 a server folder opens by connecting
+      first from every way in, is pinned by its address, and connects again
+      after its server comes back, checked against a real `sshd` and `smbd`
+      on loopback (`remote_servers_tests.rs`); see the GUI policy's "Remote
+      folders connect when they are opened".
 - [x] Backspace / Alt+Up go to the parent; Alt+Left / Alt+Right back and
       forward — folio: `src/FolderPane.qml:193-195`. Existing key table,
       `src/tests.rs` `every_documented_shortcut_maps_to_its_command`.

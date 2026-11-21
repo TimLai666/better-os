@@ -688,6 +688,40 @@ pub struct Mounted {
     pub folder: PathBuf,
 }
 
+/// GVfs's own messages for a failure it sends without a code of its own
+/// (read from `gvfsd-sftp` 1.54), and what each means. GVfs sends them in
+/// the desktop's language, so each is also looked up in its catalog.
+const GVFS_WORDS: &[(&str, Reason)] = &[
+    ("Connection refused by server", Reason::Refused),
+    ("Connection refused", Reason::Refused),
+    // When ssh gave up before the server said anything (seen against a
+    // stopped sshd in ticket 310's sandbox).
+    ("Connection failed", Reason::NoAnswer),
+    (
+        "The connection is closed (the underlying SSH process exited)",
+        Reason::NoAnswer,
+    ),
+    ("No route to host", Reason::NoAnswer),
+    ("Hostname not known", Reason::NameNotFound),
+    ("Permission denied", Reason::SignInRefused),
+];
+
+/// What ssh, libsmbclient and the kernel say, in the C locale they write it.
+const SYSTEM_WORDS: &[(&str, Reason)] = &[
+    ("connection refused", Reason::Refused),
+    ("timed out", Reason::NoAnswer),
+    ("no route", Reason::NoAnswer),
+    ("unreachable", Reason::NoAnswer),
+    ("connection closed", Reason::NoAnswer),
+    ("connection reset", Reason::NoAnswer),
+    ("not known", Reason::NameNotFound),
+    ("could not resolve", Reason::NameNotFound),
+    ("authentication", Reason::SignInRefused),
+    ("logon failure", Reason::SignInRefused),
+    ("no such", Reason::ShareGone),
+    ("not found", Reason::ShareGone),
+];
+
 /// Why a connection did not come about, as the page says it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Reason {
@@ -715,8 +749,20 @@ impl Reason {
     /// server that did not answer on a computer with no network is the
     /// network's fault. A server on this computer is never.
     pub fn of(error: &MountError, server: &str, network_up: bool) -> Self {
+        Self::of_in(error, server, network_up, &|message| {
+            crate::gvfs::gvfs_translation(message)
+        })
+    }
+
+    /// [`Self::of`], with GVfs's words looked up by `translated` (GVfs sends
+    /// a message with no code of its own in the desktop's language).
+    pub fn of_in(
+        error: &MountError,
+        server: &str,
+        network_up: bool,
+        translated: &dyn Fn(&str) -> Option<String>,
+    ) -> Self {
         let local = matches!(server, "localhost" | "127.0.0.1" | "::1");
-        let detail = error.detail.to_lowercase();
         let reason = match error.failure {
             MountFailure::TimedOut => Reason::NoAnswer,
             MountFailure::HostNotFound => Reason::NameNotFound,
@@ -724,31 +770,26 @@ impl Reason {
             MountFailure::PermissionDenied => Reason::SignInRefused,
             MountFailure::ShareGone => Reason::ShareGone,
             MountFailure::NetworkDown => Reason::NoNetwork,
-            MountFailure::Failed if detail.contains("connection refused") => Reason::Refused,
-            MountFailure::Failed
-                if detail.contains("timed out")
-                    || detail.contains("no route")
-                    || detail.contains("unreachable")
-                    || detail.contains("connection is closed")
-                    || detail.contains("connection closed")
-                    || detail.contains("connection reset") =>
-            {
-                Reason::NoAnswer
-            }
-            MountFailure::Failed
-                if detail.contains("not known") || detail.contains("could not resolve") =>
-            {
-                Reason::NameNotFound
-            }
-            MountFailure::Failed
-                if detail.contains("permission denied")
-                    || detail.contains("authentication")
-                    || detail.contains("login") =>
-            {
-                Reason::SignInRefused
-            }
-            MountFailure::Failed if detail.contains("no such") || detail.contains("not found") => {
-                Reason::ShareGone
+            MountFailure::Failed => {
+                let detail = error.detail.to_lowercase();
+                // GVfs's own messages first, in English or as its catalog
+                // has them for this session; then what ssh and the kernel say.
+                GVFS_WORDS
+                    .iter()
+                    .find(|(message, _)| {
+                        detail.contains(&message.to_lowercase())
+                            || translated(message).is_some_and(|words| {
+                                !words.is_empty() && error.detail.contains(&words)
+                            })
+                    })
+                    .map(|(_, reason)| *reason)
+                    .or_else(|| {
+                        SYSTEM_WORDS
+                            .iter()
+                            .find(|(words, _)| detail.contains(words))
+                            .map(|(_, reason)| *reason)
+                    })
+                    .unwrap_or(Reason::Mount(MountFailure::Failed))
             }
             other => Reason::Mount(other),
         };
@@ -1314,6 +1355,10 @@ mod tests {
             ),
             Reason::NoAnswer
         );
+        assert_eq!(
+            of(MountFailure::Failed, "Connection failed", true),
+            Reason::NoAnswer
+        );
         // Without a network, the network is what to fix.
         assert_eq!(of(MountFailure::TimedOut, "", false), Reason::NoNetwork);
         assert_eq!(of(MountFailure::HostNotFound, "", false), Reason::NoNetwork);
@@ -1328,6 +1373,30 @@ mod tests {
         );
         assert!(Reason::NoAnswer.offers_network_settings());
         assert!(!Reason::SignInRefused.offers_network_settings());
+    }
+
+    /// GVfs sends "Connection failed" in the desktop's language (seen in
+    /// the sandbox in zh_TW): it is still a server that did not answer.
+    #[test]
+    fn gvfs_s_own_words_are_read_in_its_chinese_too() {
+        let words = test_prerequisites::require!(
+            "the zh_TW.UTF-8 locale and GVfs's zh_TW catalog",
+            crate::gvfs::gvfs_translation_in("Connection failed", c"zh_TW.UTF-8")
+                .ok_or("gettext found no zh_TW translation of GVfs's message")
+        );
+        assert_eq!(words, "連線失敗");
+        let error = MountError::new(MountFailure::Failed, words.clone());
+        let in_chinese = |message: &str| crate::gvfs::gvfs_translation_in(message, c"zh_TW.UTF-8");
+        assert_eq!(
+            Reason::of_in(&error, "nas", true, &in_chinese),
+            Reason::NoAnswer
+        );
+        // Words GVfs does not have stay unknown, never guessed.
+        let other = MountError::new(MountFailure::Failed, "隨便什麼");
+        assert_eq!(
+            Reason::of_in(&other, "nas", true, &in_chinese),
+            Reason::Mount(MountFailure::Failed)
+        );
     }
 
     #[test]

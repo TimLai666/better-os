@@ -731,6 +731,29 @@ fn every_page_has_its_own_sentence_in_both_languages() {
     }
 }
 
+/// An address naming a folder the server does not have: the nearest folder
+/// above it opens, and stays open (seen in the sandbox: the gone folder's
+/// watch later said "gone" and the tab started connecting again).
+#[test]
+fn an_address_whose_folder_is_not_there_opens_the_folder_above_and_stays() {
+    let world = world();
+    let shown = world.server(NAS, &["srv"]);
+    let mut session = session(&world);
+    session.mount_server("sftp://nas/srv/2025".into());
+    assert!(pump_until(&mut session, |s| shows(s, &shown.join("srv"))));
+    assert!(matches!(
+        session.notice,
+        Some(Notice::RemoteFolderGone { .. })
+    ));
+    let until = Instant::now() + Duration::from_secs(4);
+    while Instant::now() < until {
+        session.pump();
+        assert!(session.link().is_none(), "{:?}", session.link());
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(shows(&session, &shown.join("srv")));
+}
+
 #[test]
 fn a_folder_gone_on_a_server_that_connected_opens_the_nearest_folder_above() {
     let world = world();
@@ -893,6 +916,32 @@ fn nothing_on_the_window_s_thread_waits_on_a_mount_list_or_a_folder_that_does_no
         pane.model().status(),
         files_core::ListingStatus::Failed(files_core::ListingError::NotAnswering { .. })
     ));
+}
+
+/// The address bar does not look at a server's folder on the window's
+/// thread either: a typed path there is taken as a folder (the listing
+/// connects and tells), and Tab completes nothing under GVfs's folder.
+#[test]
+fn the_address_bar_never_reads_a_server_s_folder_on_the_window_s_thread() {
+    let world = world();
+    let shown = world.server(NAS, &["srv"]);
+    let gvfs = Some(world.gvfs.as_path());
+    assert!(crate::toolbar::on_a_server_under(&shown.join("srv"), gvfs));
+    assert!(!crate::toolbar::on_a_server_under(&world.gvfs, gvfs));
+    assert!(!crate::toolbar::on_a_server_under(&world.home, gvfs));
+    // Not mounted: the folder is not there to read, and is not read.
+    let typed = format!("{}/s", shown.display());
+    assert_eq!(
+        crate::pathbar::complete_path_beside(&typed, None, gvfs),
+        None
+    );
+    world.mount(NAS);
+    assert_eq!(
+        crate::pathbar::complete_path_beside(&typed, None, gvfs),
+        None,
+        "even mounted, a server's folder is not read here"
+    );
+    assert!(crate::pathbar::complete_path_beside(&typed, None, None).is_some());
 }
 
 #[test]

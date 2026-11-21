@@ -230,7 +230,12 @@ impl FilesSession {
     /// or named by a plugin: the tab goes to it and connects.
     pub fn mount_server(&mut self, address: String) {
         match Location::parse_uri(&address) {
-            location @ Location::Network(_) => self.navigate_to(location),
+            location @ Location::Network(_) => {
+                // What was said about the folder left behind is not about
+                // this one.
+                self.notice = None;
+                self.navigate_to(location);
+            }
             _ => {
                 self.notice = Some(Notice::MountFailed {
                     address,

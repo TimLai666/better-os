@@ -59,18 +59,56 @@ connection must make that connection again by itself.
 
 ## Done when
 
-- [ ] The spec states the rule, the stored form of a remote favourite, every
+- [x] The spec states the rule, the stored form of a remote favourite, every
       state and its sentences in zh-TW and English.
-- [ ] Tests on the GPUI-free model for every entry point above, the join of a
+- [x] Tests on the GPUI-free model for every entry point above, the join of a
       second attempt, cancel, each failure reason, the migration of old
       favourites, and the deadline; against a fake connector.
-- [ ] A check against real servers in the sandbox: an SFTP server and an SMB
+- [x] A check against real servers in the sandbox: an SFTP server and an SMB
       server started by the test itself (in the brief's sandbox, on loopback,
       with fixture accounts), a folder pinned, the server stopped and started
       again, and the favourite opening the folder with no further action;
       wrong password, server away, and folder deleted each showing their
       page. Screenshots light and dark, zh-TW and English, under
       `better-os-evidence/310/`.
-- [ ] The sidebar and the window stay responsive with a favourite whose
+- [x] The sidebar and the window stay responsive with a favourite whose
       server silently drops packets (a firewalled loopback port or a stopped
       process holding the socket), measured.
+
+## Notes
+
+**Root cause (2026-11-22, read in the code and reproduced against a real
+`sshd` through the installed GVfs on a private bus).** Better Files mounted a
+server and then navigated to the folder GVfs shows it under,
+`$XDG_RUNTIME_DIR/gvfs/sftp:host=…,port=…/path`, and pinning stored that path
+as `file://…` in the bookmarks file. When the server stops, `gvfsd-sftp`
+exits and the mount leaves GVfs's FUSE folder (`ls` gives ENOENT at once; an
+SMB mount stays and gives EIO). The sidebar's `FilesystemProbe`
+(`sidebar.rs`: `path.is_dir()` on the window's thread, for every favourite,
+every frame, from `shell.rs` `nav_targets`) found nothing there, drew the row
+"Unavailable", and `open_nav_target` (`shell.rs`) refused the click. A folder
+open when its server went was reported `Gone` by the watch hub, and the tab
+went to GVfs's own folder above it. Nothing remembered the address, and a
+dead mount could freeze the window in that `is_dir()`.
+
+**What was built.** `remote.rs`: the address model (from an address and from
+a GVfs folder's name), the one rule `need`, the mount list read from GVfs's
+tracker off the window's thread, the probe with a deadline, the attempts (one
+per mount, joined), the reasons. The reader applies the rule to every listing
+(`ListingError::NotConnected` / `NotAnswering`); `session/remote_tabs.rs`
+connects the tab, joins, cancels, lands on the same folder, selection and
+scroll, climbs to the nearest folder that is there, and retries a dropped
+connection by itself. Favourites are stored as addresses and old ones
+migrated; FileManager1 and the command line take server addresses; a paste
+waits for the connection; recents on a server are listed without a `stat`;
+the address bar's check and Tab completion do not read a server's folder.
+Spec: `files-gui-policy.md`, "Remote folders connect when they are opened".
+
+**Checks.** `remote_tests.rs` (fake connector) and `remote_servers_tests.rs`
+(real `sshd` and `smbd` on loopback, GVfs on a private bus; with the server's
+processes stopped, the slowest frame of the window's own work measured
+1.5 ms over 15 s). Screenshots in `better-os-evidence/310/`, light and dark,
+en and zh-TW, against the same servers in a headless sway. Not done here: the
+owner's own servers and tailnet, a GNOME desktop, and CI's first run of the
+real-server tests (its install step now names `openssh-server`, `samba`,
+`gvfs-fuse`). A tailnet machine's SMB shares remain ticket 133.

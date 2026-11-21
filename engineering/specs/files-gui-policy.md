@@ -118,8 +118,8 @@ shared bookmarks file (`sftp://ann@build.local:2222/srv/site`,
 version wrote as a GVfs folder is read back as the same address, by its
 mount's name, whether that mount is there or not, and the file is written
 once in the new form. One whose mount name is not understood keeps its line,
-draws as needing its address, and is rewritten the first time a server
-connected by its typed address is the mount it sat on.
+draws as needing its address, and the address typed on that page (once)
+becomes the favourite's, with the folder it named inside that mount.
 
 **Credentials** are where the first connection put them: GVfs and the
 keyring (through Better Files' own mount operation, ticket 117), an SSH agent
@@ -162,6 +162,22 @@ a question.
 **Tailscale machines** (ticket 117; ticket 133 adds their SMB shares) open as
 the address `sftp://<machine>/` and follow the same rule.
 
+**How it is checked.** `remote_tests.rs` drives every entry point, the join,
+Cancel, each reason, the migration and the deadlines against a fake
+connector and a fake GVfs folder. `remote_servers_tests.rs` starts an
+OpenSSH `sshd` (key sign-in, and a second one that takes passwords and can
+check none) and a Samba `smbd` unprivileged on loopback, and the installed
+`gvfsd` with its SFTP, SMB and FUSE parts on a private bus with its own
+`HOME` and runtime folder: a pinned folder opens again after its server is
+stopped and started, a drop while open comes back with its selection, a
+server that is away, a wrong password and a deleted folder each show their
+page, and with the server's processes stopped (holding the connection) the
+slowest frame of the window's own work (pump, sidebar rows, a click on the
+favourite) measured 1.5 ms over 15 s. A debug build in a sandbox whose private
+bus starts `gvfsd` itself sets `BETTER_FILES_TEST_SANDBOX_GVFS`, which only
+drops the check that `gvfsd` runs in `gvfs-daemon.service`; a release build
+never reads it.
+
 ### What each state says
 
 | State | English | 繁體中文 |
@@ -173,7 +189,7 @@ the address `sftp://<machine>/` and follow the same rule.
 | Did not answer | {server} didn't answer. Check that it's turned on and on the network, then try again. | {server} 沒有回應。請確認它已開機並連上網路，再試一次。 |
 | Refused | {server} is on the network but didn't accept the connection. Check that its file sharing is turned on. | {server} 在網路上，但沒有接受連線。請確認它的檔案分享已開啟。 |
 | Name not found | No computer called {server} was found. Check the name, or connect to the network it's on. | 找不到名為 {server} 的電腦。請檢查名稱，或連上它所在的網路。 |
-| Sign-in refused | {server} didn't accept the sign-in. Choose Try again to enter the user name and password again. | {server} 不接受這組登入資料。按「再試一次」重新輸入使用者名稱和密碼。 |
+| Sign-in refused | {server} didn't accept the sign-in. Choose Try again to enter the user name and password again. | {server} 不接受這組登入資料，請按「再試一次」重新輸入。 |
 | Share or folder gone | {server} is connected, but {share} isn't shared there any more. It may have been renamed or stopped being shared. | 已連上 {server}，但那裡已經沒有分享 {share}，可能被改名或停止分享了。 |
 | No network | This computer isn't connected to a network. Connect to one, then try again. | 這台電腦目前沒有連上網路。連上網路後再試一次。 |
 | Folder gone, parent opened | {folder} isn't on {server} any more, so the nearest folder above it was opened. | {server} 上已經沒有「{folder}」了，所以打開了上層最接近的資料夾。 |

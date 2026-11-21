@@ -644,6 +644,17 @@ GUI or dependency compiles when the relevant command was not executed.
   carries application back, forward, zoom, and rotate because Issue #3's table
   does, and every adapter reports all four unsupported. A four-row preview that
   says "no backend can do this yet" is honest but it is not a feature.
+- A Better Files server folder connects when it is opened (ticket 310):
+  `files_gui::remote::need` is the one rule, applied by the reader to every
+  listing; a favourite on a server is stored as its address, never as the
+  GVfs FUSE folder, and nothing on the window's thread touches a remote
+  folder. It has run against a real `sshd` and `smbd` on loopback through the
+  installed GVfs on a private bus (`remote_servers_tests.rs`; its first CI
+  run is still to come), not against the owner's servers or tailnet, and not on a
+  GNOME desktop. Two limits stay: the watch hub, one thread for every
+  window, still `stat`s a FUSE folder when it re-attaches a watch, so a
+  dead mount can stall other folders' change notices (never the window);
+  and a tailnet machine's SMB shares are ticket 133's.
 - Better Files becomes the desktop's file manager (ticket 129, ADR 0041) by a
   user-level D-Bus activation file for `org.freedesktop.FileManager1` that
   runs `better-files --service`; a running owner is never stopped.

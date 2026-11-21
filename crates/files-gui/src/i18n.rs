@@ -1724,7 +1724,7 @@ pub const ZH_TW: Copy = Copy {
     remote_no_answer: "{server} 沒有回應。請確認它已開機並連上網路，再試一次。",
     remote_refused: "{server} 在網路上，但沒有接受連線。請確認它的檔案分享已開啟。",
     remote_name_not_found: "找不到名為 {server} 的電腦。請檢查名稱，或連上它所在的網路。",
-    remote_sign_in_refused: "{server} 不接受這組登入資料。按「再試一次」重新輸入使用者名稱和密碼。",
+    remote_sign_in_refused: "{server} 不接受這組登入資料，請按「再試一次」重新輸入。",
     remote_share_gone: "已連上 {server}，但那裡已經沒有分享 {share}，可能被改名或停止分享了。",
     remote_no_network: "這台電腦目前沒有連上網路。連上網路後再試一次。",
     remote_folder_gone: "{server} 上已經沒有「{folder}」了，所以打開了上層最接近的資料夾。",
