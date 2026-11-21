@@ -40,7 +40,7 @@ impl Image {
     /// From one StatusNotifierItem pixmap: ARGB32 in network byte order.
     pub fn from_argb(width: i32, height: i32, argb: &[u8]) -> Self {
         let mut rgba = Vec::with_capacity(argb.len());
-        for pixel in argb.chunks_exact(4) {
+        for pixel in argb.as_chunks::<4>().0 {
             rgba.extend_from_slice(&[pixel[1], pixel[2], pixel[3], pixel[0]]);
         }
         Self {
@@ -82,7 +82,7 @@ impl Image {
         for (pixel, rgba) in pixmap
             .pixels_mut()
             .iter_mut()
-            .zip(self.rgba.chunks_exact(4))
+            .zip(self.rgba.as_chunks::<4>().0)
         {
             *pixel = resvg::tiny_skia::ColorU8::from_rgba(rgba[0], rgba[1], rgba[2], rgba[3])
                 .premultiply();

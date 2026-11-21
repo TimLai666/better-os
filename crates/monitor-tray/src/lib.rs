@@ -246,16 +246,16 @@ impl TrayState {
         let mark_mode = menu::mark_mode(&self.power, &self.choice);
         let picture = mark_mode
             .and_then(|mode| self.marks.mark(mode, picture::HEIGHT))
-            .map(|mark| {
+            .and_then(|mark| {
                 let readings = icon
                     .iter()
                     .find(|(width, height, _)| *width == 22 && *height == 22)
-                    .map(|(w, h, argb)| Image::from_argb(*w, *h, argb));
-                readings.map(|readings| {
-                    picture::compose(&picture::scaled(&readings, picture::HEIGHT), Some(&mark))
-                })
-            })
-            .flatten();
+                    .map(|(w, h, argb)| Image::from_argb(*w, *h, argb))?;
+                Some(picture::compose(
+                    &picture::scaled(&readings, picture::HEIGHT),
+                    Some(&mark),
+                ))
+            });
         let mut changes = self.install(menu, now);
         changes.icon = icon != self.icon || picture != self.picture;
         changes.tooltip = tooltip != self.tooltip;
