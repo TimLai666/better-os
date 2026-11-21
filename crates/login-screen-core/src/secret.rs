@@ -198,24 +198,20 @@ pub struct Secret {
     bytes: SecretBytes<SECRET_CAPACITY>,
 }
 
-impl Default for Secret {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl Secret {
-    /// A new, empty buffer, or the reason none can be made.
+    /// A new, empty buffer, or the reason none can be made. The only way a
+    /// program makes one: a field that cannot have its buffer shows "The
+    /// sign-in service isn't responding." and logs the error (tickets 262
+    /// and 264), rather than ending the program.
     pub fn try_new() -> Result<Self, SecretError> {
         Ok(Self {
             bytes: SecretBytes::try_new()?,
         })
     }
 
-    /// A new, empty buffer. Panics when the kernel reports no usable page
-    /// size, which Linux always does; a program that would rather say so uses
-    /// [`Secret::try_new`].
-    pub fn new() -> Self {
+    /// A new, empty buffer, for this crate's own tests.
+    #[cfg(test)]
+    pub(crate) fn new() -> Self {
         Self::try_new().expect("the kernel reports a usable page size")
     }
 

@@ -256,9 +256,12 @@ removed. What limits it:
   removed), and none of `Debug`, `Display`, `Clone` or `Serialize` is
   implemented by either type. The view model (`login_screen_core::view`)
   never holds a password: it only says when the field's `Secret` is sent
-  and when it is wiped. The drop test reads only page-aligned blocks, the
-  password buffers' own, which are allocated zeroed, so it never reads a
-  byte nothing wrote.
+  and when it is wiped. The drop test's allocator hands out every block
+  zeroed (a growing reallocation is a new zeroed block, a copy and a free),
+  so it reads only bytes that were written, and checks every block freed:
+  it fails on a buffer freed unwiped and on a copy of the password in any
+  ordinary heap block (checked by adding a `to_string()` of the secret to
+  the message builder, which made it fail, and removing it).
 - **When the lock fails.** `mlock` can fail (an `RLIMIT_MEMLOCK` of 0, a
   container's limit). The buffer is then not locked and may be written to
   swap; it still wipes itself. This is not silent: `Secret::is_locked` and
@@ -269,12 +272,21 @@ removed. What limits it:
   through `test_prerequisites::require_that!` (a skip on a developer's
   machine, a failure under CI). A page size the kernel does not report is
   an error (`SecretError::PageSize`), never a guessed 4096, which on a
-  16 KiB or 64 KiB page arm64 kernel would break the page alignment.
-- **Who may read it.** Only `Secret::expose_str` gives the text out, and
-  only the greetd message builder calls it; `tests/one_secret_reader.rs`
-  reads every crate's source and fails on any other caller. Ticket 262 adds
-  its PAM conversation to that test's audited list in the change that adds
-  it.
+  16 KiB or 64 KiB page arm64 kernel would break the page alignment. A
+  buffer is made only with `Secret::try_new()` (`new()` and `Default` exist
+  for the crate's tests alone); when it fails the field shows "The sign-in
+  service isn't responding." and the program logs the error (tickets 262,
+  264), rather than ending.
+- **Who may read it.** Two readers give the password out:
+  `Secret::expose_str` (the text) and `GreetdMessage::frame_bytes` (the
+  framed message that holds it). Only the greetd message builder calls the
+  first; nothing outside the crate's tests calls the second yet.
+  `tests/one_secret_reader.rs` reads every crate's source and fails on any
+  other caller of either, or any use of the buffer type outside its two
+  modules, and holds those modules to their known functions that return
+  `&str` or `&[u8]`, so a wrapper added there fails too. Ticket 262 adds its
+  PAM conversation (`expose_str`) and ticket 264 its socket writer
+  (`frame_bytes`) to the audited lists in the change that adds them.
 - **Where it goes.** In the greeter, into greetd's
   `post_auth_message_response` JSON, built directly into a second `Secret`
   buffer, written to the socket, then both are wiped. In the lock program
@@ -399,15 +411,26 @@ screen back rather than the session unlocked.
 
 - **At the keyboard:** a password prompt backed by PAM's own rules and
   delay, with the greeter's doubling wait on top; the text fallback is the
-  standard `login`. The doubling wait is kept per user name and is not
-  reset by anything the person at the keyboard can do: Switch account is
-  not offered while it runs, choosing the account again (or typing its name
-  under "Other account…") finds it still running, and a restart of the
-  greeter or the lock program reads it back from the program's own record
-  (`/run/better-os-greeter/attempts.json`, written only by
-  `_better-greeter`, mode 0600 in a 0700 directory; the lock program's in the
-  person's `$XDG_RUNTIME_DIR/better-os/`). Only a reboot, which empties
-  `/run`, ends it early; spec section 3.9. Text another program puts on the
+  standard `login`. The doubling wait is kept per account (the name
+  service's `pw_name`, so case variants of one domain account share it) and
+  is not reset by anything the person at the keyboard can do: Switch account
+  is not offered while it runs or while a password is being checked,
+  choosing the account again (or typing its name under "Other account…")
+  finds it still running, a password cancelled while it is with PAM (two
+  Escapes, a new name, sleep) counts as a failure at once, and a restart of
+  the greeter or the lock program reads it back from the program's own
+  record (`/run/better-os-greeter/attempts.json`, written only by
+  `_better-greeter`, mode 0600 in a 0700 directory that survives a restart
+  of the greeter's unit; the lock program's in the person's
+  `$XDG_RUNTIME_DIR/better-os/`). Only resolved account names are written;
+  a name no account has, which may be a password typed into the name field,
+  is counted in memory only and waits on screen exactly as an account does,
+  so the screen does not tell which names exist (a restart of the greeter
+  forgets only those in-memory counts). A record read back is clamped to a
+  wait of at most 30 seconds from now, and its read errors name only their
+  kind. Only a reboot, which empties `/run`, ends a wait early; spec section
+  3.9. The cost, accepted: anyone at the keyboard can keep an account in a
+  wait, of at most 30 seconds at a time, by typing wrong passwords for it. Text another program puts on the
   lock screen (notifications, media) is put on one line, stripped of control
   and direction characters and capped (spec section 4.2), so it cannot
   imitate a system message there. Nothing to open, no launcher, no network menu. The power

@@ -41,17 +41,24 @@ the login screen.
   security review of 2026-11-22:
   - write `login_screen_core::NOT_LOCKED_LOG_LINE` to the journal once when
     a field's `Secret::lock_warning()` says its pages are not locked;
+  - make the field's buffer with `Secret::try_new()` (the only public
+    constructor); when it fails, show 「登入服務沒有回應。請重新開機。」 /
+    "The sign-in service isn't responding." in the message line (the view
+    model's `Event::ServiceNotResponding`) and log the error, never end the
+    program, which would leave every output black;
   - load `Attempts` from `$XDG_RUNTIME_DIR/better-os/lock-attempts.json`
-    (`attempts::LOCK_RECORD_NAME`, directory 0700) into `Screen::lock(…)
+    (`attempts::LOCK_RECORD_NAME`, directory 0700) with
+    `Attempts::load(path, boot_time_now())` into `Screen::lock(…)
     .with_attempts(…)`, and save it whenever `Effects::attempts_changed`;
-    log a record that cannot be read and start empty;
+    log a record that cannot be read by its error (which names only the
+    kind) and start empty;
   - pass `boot_time_now()` (`CLOCK_BOOTTIME`) as every event's time;
   - give each PAM conversation the `ConversationId` its `Request::Begin`
     names and report every prompt, message and outcome with it;
   - send `Event::Suspending` and `Event::Resumed` from logind's
     `PrepareForSleep(true / false)`, whatever asked for the sleep;
   - add its PAM conversation module, the one other caller of
-    `Secret::expose_str`, to `AUDITED` in
+    `Secret::expose_str`, to `READERS` in
     `crates/login-screen-core/tests/one_secret_reader.rs`, with its review.
 
 ## Done when

@@ -112,36 +112,88 @@ pub const MAX_BODY_CHARS: usize = 200;
 pub const MAX_ARTIST_CHARS: usize = 120;
 pub const MAX_TRACK_CHARS: usize = 120;
 
-/// Whether a character changes the direction or the look of the text around
-/// it without being seen: the Unicode bidirectional controls (U+061C, U+200E,
-/// U+200F, U+202A to U+202E, U+2066 to U+2069) and the other invisible
-/// format characters that can hide or reorder text (U+00AD, U+2060 to
-/// U+2064, U+FEFF, U+FFF9 to U+FFFB). Joiners (U+200C, U+200D) stay, since
-/// emoji and some scripts need them.
-fn is_hidden_format(character: char) -> bool {
-    matches!(character,
-        '\u{00AD}' | '\u{061C}' | '\u{200B}' | '\u{200E}' | '\u{200F}'
-        | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{2069}'
-        | '\u{FEFF}' | '\u{FFF9}'..='\u{FFFB}')
+/// Invisible characters that are not of General_Category `Cf` but still show
+/// nothing and can make a name or a line look empty or different: the
+/// combining grapheme joiner (U+034F, `Mn`) and the Hangul fillers (U+115F,
+/// U+1160, U+3164, U+FFA0, `Lo`). U+180E is `Cf` since Unicode 6.3 and is
+/// removed with the rest.
+const INVISIBLE_NOT_FORMAT: &[char] = &['\u{034F}', '\u{115F}', '\u{1160}', '\u{3164}', '\u{FFA0}'];
+
+/// The black flag that begins an emoji tag sequence (UTS #51, a subdivision
+/// flag such as 🏴 + tags `gbeng` + cancel tag).
+const TAG_BASE: char = '\u{1F3F4}';
+const TAG_CANCEL: char = '\u{E007F}';
+
+fn is_tag_spec(character: char) -> bool {
+    ('\u{E0020}'..='\u{E007E}').contains(&character)
+}
+
+/// Which characters of `chars` are tags inside a valid emoji tag sequence:
+/// the black flag, one or more tag characters, and the cancel tag.
+fn tags_in_sequences(chars: &[char]) -> Vec<bool> {
+    let mut kept = vec![false; chars.len()];
+    let mut index = 0;
+    while index < chars.len() {
+        if chars[index] == TAG_BASE {
+            let mut end = index + 1;
+            while end < chars.len() && is_tag_spec(chars[end]) {
+                end += 1;
+            }
+            if end > index + 1 && end < chars.len() && chars[end] == TAG_CANCEL {
+                for keep in &mut kept[index + 1..=end] {
+                    *keep = true;
+                }
+                index = end;
+            }
+        }
+        index += 1;
+    }
+    kept
+}
+
+/// Whether a character is removed before display: every character of
+/// General_Category `Cf` (format: the bidirectional controls and isolates,
+/// U+200B, U+2060 to U+2064, U+206A to U+206F, U+FEFF, U+180E, the tags, and
+/// the rest), except the joiners U+200C and U+200D that scripts and emoji
+/// need and the tags of a valid emoji tag sequence; and the invisible
+/// characters in [`INVISIBLE_NOT_FORMAT`]. The categories are the Unicode
+/// 17.0 tables of the `unicode-properties` crate the workspace already
+/// locks.
+fn is_hidden(character: char, in_tag_sequence: bool) -> bool {
+    use unicode_properties::{GeneralCategory, UnicodeGeneralCategory};
+    if INVISIBLE_NOT_FORMAT.contains(&character) {
+        return true;
+    }
+    // The whole Tags block, its unassigned points included, outside a valid
+    // sequence.
+    if ('\u{E0000}'..='\u{E007F}').contains(&character) {
+        return !in_tag_sequence;
+    }
+    character.general_category() == GeneralCategory::Format
+        && !matches!(character, '\u{200C}' | '\u{200D}')
+        && !in_tag_sequence
 }
 
 /// Text from another program (a notification, a media player) as the lock
-/// screen may show it: on one line, with control characters and the
-/// invisible direction and format characters removed, runs of white space
-/// made one space, and at most `max_chars` characters (the last one then an
-/// ellipsis). `None` when nothing is left. Every notification and media
-/// text goes through it, so a sender cannot reverse text, fake a second
-/// line, or fill the card.
+/// screen may show it: on one line, with control characters (`Cc`) made a
+/// word break, every format character (`Cf`) and the other invisible
+/// characters removed ([`is_hidden`]), runs of white space made one space,
+/// and at most `max_chars` characters (the last one then an ellipsis).
+/// `None` when nothing is left. Every notification and media text goes
+/// through it, so a sender cannot reverse text, fake a second line, make a
+/// name look empty, or fill the card.
 pub fn shown_text(text: &str, max_chars: usize) -> Option<String> {
+    let chars: Vec<char> = text.chars().collect();
+    let tags = tags_in_sequences(&chars);
     let mut cleaned = String::with_capacity(text.len().min(max_chars * 4));
     let mut pending_space = false;
-    for character in text.chars() {
+    for (character, in_tag_sequence) in chars.iter().copied().zip(tags) {
         if character.is_whitespace() || character.is_control() {
             // A newline, a tab or any other control is a word break at most.
             pending_space = true;
             continue;
         }
-        if is_hidden_format(character) {
+        if is_hidden(character, in_tag_sequence) {
             continue;
         }
         if pending_space && !cleaned.is_empty() {
@@ -515,6 +567,65 @@ mod tests {
         );
         assert_eq!(shown_text("  \n\u{202E} ", 120), None);
         assert_eq!(shown_text("x", 0), None);
+    }
+
+    /// The ranges the review listed, every character of them: tags outside a
+    /// sequence, U+206A to U+206F, U+180E, U+034F and the Hangul fillers.
+    #[test]
+    fn every_listed_invisible_character_is_removed() {
+        let ranges: &[(u32, u32)] = &[
+            (0xE0000, 0xE007F),
+            (0x206A, 0x206F),
+            (0x180E, 0x180E),
+            (0x034F, 0x034F),
+            (0x115F, 0x1160),
+            (0x3164, 0x3164),
+            (0xFFA0, 0xFFA0),
+            (0x202A, 0x202E),
+            (0x2066, 0x2069),
+            (0x200B, 0x200B),
+            (0x200E, 0x200F),
+            (0x2060, 0x2064),
+            (0xFEFF, 0xFEFF),
+            (0xFFF9, 0xFFFB),
+            (0x00AD, 0x00AD),
+            (0x061C, 0x061C),
+        ];
+        for &(start, end) in ranges {
+            for code in start..=end {
+                let Some(character) = char::from_u32(code) else {
+                    continue;
+                };
+                assert_eq!(
+                    shown_text(&format!("a{character}b"), 120).as_deref(),
+                    Some("ab"),
+                    "U+{code:04X}"
+                );
+            }
+        }
+        // A name made only of fillers is no name.
+        assert_eq!(shown_text("\u{3164}\u{115F}", 120), None);
+        // Variation selectors are not format characters: an emoji keeps them.
+        assert_eq!(shown_text("❤\u{FE0F}", 120).as_deref(), Some("❤\u{FE0F}"));
+    }
+
+    #[test]
+    fn a_valid_emoji_tag_sequence_keeps_its_tags() {
+        // England's flag: black flag, tags "gbeng", cancel tag.
+        let england = "\u{1F3F4}\u{E0067}\u{E0062}\u{E0065}\u{E006E}\u{E0067}\u{E007F}";
+        assert_eq!(
+            shown_text(&format!("go {england}!"), 120).as_deref(),
+            Some(format!("go {england}!").as_str())
+        );
+        // Without the cancel tag, or without the flag, the tags go.
+        assert_eq!(
+            shown_text("\u{1F3F4}\u{E0067}\u{E0062}x", 120).as_deref(),
+            Some("\u{1F3F4}x")
+        );
+        assert_eq!(
+            shown_text("a\u{E0067}\u{E007F}b", 120).as_deref(),
+            Some("ab")
+        );
     }
 
     #[test]

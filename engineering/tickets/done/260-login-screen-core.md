@@ -109,6 +109,29 @@ OS 17's were not read), and every conversation has an id, so a stale
 reply is dropped in the view model. What this leaves to 262 and 264 is
 written into their tickets.
 
+The second review of the same day
+(`/home/tim/Developer/better-os-evidence/260/security-review-2-2026-11-22.md`)
+found one P2 and seven P3, all fixed with tests: a secret answer cancelled
+while it is with PAM counts as a failure at once (two Escapes, a new name,
+sleep), and Switch account is not offered while checking; counts are keyed
+by the name service's account name (`AccountResolver`, `NameService`), only
+resolved accounts are written, unresolved names (possibly a mistyped
+password) are counted in memory and wait alike on screen; names are held to
+`LOGIN_NAME_MAX`, `save` never writes more than `load` reads, a record read
+back is clamped (30 s, 1000 failures), and read errors name only their
+kind; the drop test's allocator zeroes every block again and catches a
+`to_string()` of the secret (tried, then removed); `one_secret_reader`
+also guards `GreetdMessage::frame_bytes` (renamed from `as_bytes`) and the
+buffer type, and holds the audited files to their known borrowing
+functions; `shown_text` removes every `Cf` character (Unicode 17.0 from
+`unicode-properties`) but the joiners and a valid emoji tag sequence, plus
+U+034F and the Hangul fillers; `Secret::new()` and `Default` are test-only.
+Tickets 262 and 264 now say how to build the buffer with `try_new()` and
+what to show when it fails, and 264 that `/run/better-os-greeter/` must
+survive a restart of its unit, with a check. Spec 3.9 and the security
+review state the accepted cost: anyone at the keyboard can keep an account
+waiting, 30 seconds at a time at most.
+
 Unverified: the strings greetd 0.9.0 puts in an `auth_error` description
 (`pam::classify_refusal` matches both `pam_strerror`'s text and the return
 code's name); ticket 264 sees the real ones. Left to their tickets: drawing

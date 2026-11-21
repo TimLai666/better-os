@@ -43,7 +43,7 @@ pub struct GreetdMessage {
 
 impl GreetdMessage {
     /// The whole frame: length, then JSON.
-    pub fn as_bytes(&self) -> &[u8] {
+    pub fn frame_bytes(&self) -> &[u8] {
         self.bytes.as_bytes()
     }
 
@@ -213,7 +213,7 @@ mod tests {
         let mut secret = Secret::new();
         secret.push_str("pa\"ss\\wo\u{1}rd 密碼").unwrap();
         let message = post_auth_message_response(Some(&secret)).unwrap();
-        let parsed = value(message.as_bytes());
+        let parsed = value(message.frame_bytes());
         assert_eq!(parsed["type"], "post_auth_message_response");
         assert_eq!(parsed["response"], "pa\"ss\\wo\u{1}rd 密碼");
     }
@@ -221,7 +221,7 @@ mod tests {
     #[test]
     fn an_info_message_is_answered_with_null() {
         let message = post_auth_message_response(None).unwrap();
-        let parsed = value(message.as_bytes());
+        let parsed = value(message.frame_bytes());
         assert_eq!(parsed["response"], serde_json::Value::Null);
     }
 
@@ -232,8 +232,8 @@ mod tests {
             secret.push_char('\u{1f}').unwrap();
         }
         let message = post_auth_message_response(Some(&secret)).unwrap();
-        assert_eq!(message.as_bytes().len(), MESSAGE_CAPACITY);
-        let parsed = value(message.as_bytes());
+        assert_eq!(message.frame_bytes().len(), MESSAGE_CAPACITY);
+        let parsed = value(message.frame_bytes());
         assert_eq!(parsed["response"].as_str().unwrap().len(), SECRET_CAPACITY);
     }
 
@@ -243,7 +243,7 @@ mod tests {
         secret.push_str("hunter2").unwrap();
         let mut message = post_auth_message_response(Some(&secret)).unwrap();
         message.wipe();
-        assert!(message.as_bytes().is_empty());
+        assert!(message.frame_bytes().is_empty());
         assert!(message.bytes.storage().iter().all(|byte| *byte == 0));
     }
 

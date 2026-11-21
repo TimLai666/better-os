@@ -533,22 +533,47 @@ success that names any other conversation, one cancelled while its reply was
 on the way, is dropped, never applied to the current one.
 
 **The wait belongs to the account, and survives a restart.** Failures in a
-row and the end of the wait are kept per user name (`login_screen_core::
-attempts`). Switching account and back, choosing "Other account…" and typing
-the same name, or the greeter or the lock program restarting, all keep them:
-while a wait runs, Switch account is not offered, and an account chosen
-while its own wait runs starts in that wait. The record is a file in the
-program's own runtime directory, written only by that program, mode 0600,
-created anew and renamed into place, at most 64 accounts:
-`/run/better-os-greeter/attempts.json` (the greeter's account, directory
-0700, ticket 264) and `$XDG_RUNTIME_DIR/better-os/lock-attempts.json` (the
-person, directory 0700, ticket 262). Its times are `CLOCK_BOOTTIME`
-milliseconds, which count through sleep; `/run` is emptied at boot, so a
-reboot ends every wait, as it ends PAM's own delay. A success removes the
-account's entry. A record that cannot be read is logged and replaced by an
-empty one: refusing every login over a damaged file would lock everyone out.
-The person's own programs can delete the lock program's record, as they can
+row and the end of the wait are kept per account (`login_screen_core::
+attempts`). A name is counted under the account the system's name service
+resolves it to (`getpwnam_r`'s `pw_name`), so on a machine whose domain
+accounts ignore case `Tim` and `tim` share one count. Switching account and
+back, choosing "Other account…" and typing the same name, or the greeter or
+the lock program restarting, all keep it: while a wait runs, and while a
+password is being checked, Switch account is not offered; an account chosen
+while its own wait runs starts in that wait; and a password already sent
+that is cancelled before its answer comes back (two Escapes, a new name under
+"Other account…", the machine going to sleep) counts as a failure at once,
+because its answer arrives for a conversation that no longer runs and is
+dropped. A late success is dropped as well and never unlocks or signs in.
+
+What is written down, and where: the record is a file in the program's own
+runtime directory, written only by that program, mode 0600, created anew
+and renamed into place: `/run/better-os-greeter/attempts.json` (the
+greeter's account, directory 0700, which must survive a restart of the
+greeter's unit, ticket 264) and `$XDG_RUNTIME_DIR/better-os/
+lock-attempts.json` (the person, directory 0700, ticket 262). Only names that
+resolve to an account are written. A name that resolves to no account (it
+may be anything typed into the name field, a password by mistake among
+them) is counted in memory only, so the record never holds typed text; on
+screen it waits exactly as an account does, so the screen does not tell
+which names exist. A name longer than `LOGIN_NAME_MAX` (256 bytes) is
+counted under its first 256 bytes, in memory. The record holds at most 64
+accounts and never more than the 64 KiB it is read with. Its times are
+`CLOCK_BOOTTIME` milliseconds, which count through sleep; `/run` is emptied
+at boot, so a reboot ends every wait, as it ends PAM's own delay. A record
+read back is held to what the program could have written: no wait longer
+than 30 seconds from now, no count above 1000. A success removes the
+account's entry. A record that cannot be read is logged by the kind of
+error only (never its content) and replaced by an empty one: refusing every
+login over a damaged file would lock everyone out. The person's own
+programs can delete or rewrite the lock program's record, as they can
 unlock the session through logind anyway (section 4.5).
+
+**The cost.** Anyone at the keyboard can keep an account in its wait by
+typing wrong passwords for it: after the seventh failure in a row each
+further one holds the account for 30 seconds, never longer, and a correct
+password works as soon as the wait ends. This is accepted: the wait is what
+makes guessing slow, and 30 seconds is its ceiling.
 
 ### 3.10 Later additions: PIN, fingerprint, smart card
 
@@ -717,13 +742,16 @@ the mockups' 24-hour `15:31` on a 12-hour clock is not followed.
 Notification and media text comes from other programs, and a notification's
 from other people. Before it is shown, every application name, title, body
 line, artist and track goes through one function
-(`login_screen_core::lock_content::shown_text`): it is put on one line,
-control characters and the invisible direction and format characters
-(U+202A to U+202E, U+2066 to U+2069, U+200E, U+200F, U+061C and the like)
-are removed, and it is cut with an ellipsis at 64 characters for the
+(`login_screen_core::lock_content::shown_text`): it is put on one line
+(control characters become a space), every character of Unicode
+General_Category `Cf` is removed except the joiners U+200C and U+200D and the
+tags of a valid emoji tag sequence (a subdivision flag), and so are the
+invisible U+034F and the Hangul fillers U+115F, U+1160, U+3164 and U+FFA0;
+the categories are Unicode 17.0's, from the `unicode-properties` crate the
+workspace already locks. It is cut with an ellipsis at 64 characters for the
 application name, 120 for a title, an artist or a track, and 200 for the body
 line. A sender cannot reverse text, fake a second line that reads like a
-message from the system, or fill the card.
+message from the system, make a name look empty, or fill the card.
 
 ### 4.3 Media controls
 

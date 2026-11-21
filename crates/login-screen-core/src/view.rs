@@ -31,7 +31,7 @@
 use std::time::Duration;
 
 use crate::accounts::Account;
-use crate::attempts::Attempts;
+use crate::attempts::{AccountResolver, AttemptKey, Attempts, NoResolver};
 use crate::copy::{Language, fill};
 use crate::pam::{PamText, Refusal, classify};
 use crate::power::PowerAction;
@@ -284,8 +284,11 @@ enum Conversation {
         kind: PromptKind,
         text: PamText,
     },
-    /// The answer is with greetd or PAM.
-    Answered,
+    /// The answer is with greetd or PAM; `secret` when it answered a hidden
+    /// question (a password, which counts as a failure if cancelled).
+    Answered {
+        secret: bool,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -369,6 +372,7 @@ pub struct Screen {
     queued_submit: bool,
     changing_password: bool,
     attempts: Attempts,
+    resolver: Box<dyn AccountResolver + Send>,
     /// The time of the event being handled.
     now: Millis,
     problem: Option<Problem>,
@@ -437,6 +441,14 @@ impl Screen {
         self
     }
 
+    /// Resolves typed names to accounts (the greeter and the lock program
+    /// pass [`crate::attempts::NameService`]); without one, every typed name
+    /// is counted in memory only.
+    pub fn with_resolver(mut self, resolver: Box<dyn AccountResolver + Send>) -> Self {
+        self.resolver = resolver;
+        self
+    }
+
     /// The failures to save when [`Effects::attempts_changed`] is set.
     pub fn attempts(&self) -> &Attempts {
         &self.attempts
@@ -465,6 +477,7 @@ impl Screen {
             queued_submit: false,
             changing_password: false,
             attempts: Attempts::default(),
+            resolver: Box::new(NoResolver),
             now,
             problem: None,
             notice: None,
@@ -668,7 +681,7 @@ impl Screen {
         self.kind == ScreenKind::Login
             && self.accounts.len() > 1
             && self.view == View::Entry
-            && !matches!(self.phase, Phase::Waiting { .. })
+            && !matches!(self.phase, Phase::Waiting { .. } | Phase::Checking { .. })
     }
 
     /// The rows of "Choose an account", the preselected (most recent) first
@@ -788,10 +801,34 @@ impl Screen {
         }
     }
 
+    /// Which count the chosen name falls under: a listed account is one by
+    /// AccountsService's own name; a typed one is resolved
+    /// ([`crate::attempts::AccountResolver`]), so names the system treats as
+    /// one account share a count, and one that resolves to nothing is
+    /// counted in memory only.
+    fn attempt_key(&self) -> Option<AttemptKey> {
+        match &self.selection {
+            Selection::Listed(index) => self
+                .accounts
+                .get(*index)
+                .map(|account| AttemptKey::Account(account.user_name.clone())),
+            Selection::Other { .. } => self
+                .user()
+                .map(|name| AttemptKey::for_name(&name, self.resolver.as_ref())),
+        }
+    }
+
     /// The end of the chosen account's wait, if one runs now.
     fn current_wait(&self) -> Option<Millis> {
-        self.user()
-            .and_then(|user| self.attempts.waiting_until(&user, self.now))
+        self.attempt_key()
+            .and_then(|key| self.attempts.waiting_until(&key, self.now))
+    }
+
+    /// Counts a failure for the chosen name, now, and says so.
+    fn count_failure(&mut self, effects: &mut Effects) -> Option<Millis> {
+        let key = self.attempt_key()?;
+        effects.attempts_changed = true;
+        Some(self.attempts.record_failure(&key, self.now).wait_until)
     }
 
     /// Puts the chosen account's own wait in force (or ends one that
@@ -840,7 +877,20 @@ impl Screen {
         self.conversation = Conversation::Begun;
     }
 
+    /// Cancels the conversation. A secret answer already with greetd or PAM
+    /// is counted as a failure first: its refusal will arrive under a
+    /// conversation that no longer runs and be dropped, so without this
+    /// every guess could escape the wait by cancelling before the answer
+    /// came back (a late success is dropped as well and never unlocks).
     fn cancel(&mut self, effects: &mut Effects) {
+        if self.conversation == (Conversation::Answered { secret: true }) {
+            self.count_failure(effects);
+        }
+        self.end_conversation(effects);
+    }
+
+    /// Ends the conversation without counting (its outcome is known).
+    fn end_conversation(&mut self, effects: &mut Effects) {
         if self.conversation != Conversation::NotStarted {
             effects.requests.push(Request::Cancel);
         }
@@ -866,14 +916,16 @@ impl Screen {
     }
 
     fn answer(&mut self, now: Millis, effects: &mut Effects) {
-        if let Conversation::Prompted { text, .. } = &self.conversation
-            && text.is_password_change()
-        {
-            self.changing_password = true;
+        let mut secret = true;
+        if let Conversation::Prompted { text, kind } = &self.conversation {
+            if text.is_password_change() {
+                self.changing_password = true;
+            }
+            secret = *kind == PromptKind::Secret;
         }
         effects.requests.push(Request::Answer);
         effects.wipe_field = true;
-        self.conversation = Conversation::Answered;
+        self.conversation = Conversation::Answered { secret };
         self.phase = Phase::Checking { since: now };
         self.queued_submit = false;
     }
@@ -891,7 +943,7 @@ impl Screen {
                 }
                 self.answer(now, effects)
             }
-            Conversation::Answered => {}
+            Conversation::Answered { .. } => {}
             Conversation::NotStarted | Conversation::Begun => {
                 // The person typed before PAM's question arrived: the answer
                 // goes with the first question if it is a secret one.
@@ -906,8 +958,7 @@ impl Screen {
     }
 
     fn refused(&mut self, refusal: Refusal, now: Millis, effects: &mut Effects) {
-        let user = self.user();
-        self.cancel(effects);
+        self.end_conversation(effects);
         self.notice = None;
         effects.wipe_field = true;
         effects.focus_field = true;
@@ -917,11 +968,7 @@ impl Screen {
         match refusal {
             Refusal::WrongPassword => {
                 self.problem = Some(Problem::WrongPassword);
-                let until = user.map(|user| {
-                    effects.attempts_changed = true;
-                    self.attempts.record_failure(&user, now).wait_until
-                });
-                match until {
+                match self.count_failure(effects) {
                     Some(until) if until > now => self.phase = Phase::Waiting { until },
                     _ => {
                         self.phase = Phase::Ready;
@@ -1095,10 +1142,12 @@ impl Screen {
             }
             Event::UserNameEdited(name) => {
                 self.note_input(now);
-                if let Selection::Other { user_name } = &mut self.selection {
-                    *user_name = name;
+                if matches!(self.selection, Selection::Other { .. }) {
                     // A new name is a new conversation, with its own wait.
+                    // Cancelled under the old name, so an answer already
+                    // with PAM counts against the name it was given for.
                     self.cancel(&mut effects);
+                    self.selection = Selection::Other { user_name: name };
                     if matches!(self.phase, Phase::Waiting { .. }) {
                         self.phase = Phase::Ready;
                         self.problem = None;
@@ -1214,10 +1263,10 @@ impl Screen {
                 if !self.is_current(conversation) {
                     return effects;
                 }
-                if let Some(user) = self.user()
-                    && self.attempts.get(&user).failures > 0
+                if let Some(key) = self.attempt_key()
+                    && self.attempts.get(&key).failures > 0
                 {
-                    self.attempts.record_success(&user);
+                    self.attempts.record_success(&key);
                     effects.attempts_changed = true;
                 }
                 self.problem = None;
@@ -1315,7 +1364,7 @@ impl Screen {
             // Sent now with what was typed before the question came.
             effects.requests.push(Request::Answer);
             effects.wipe_field = true;
-            self.conversation = Conversation::Answered;
+            self.conversation = Conversation::Answered { secret: true };
             self.queued_submit = false;
         } else {
             self.queued_submit = false;

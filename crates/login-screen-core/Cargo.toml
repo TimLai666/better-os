@@ -32,6 +32,9 @@ serde_json.workspace = true
 thiserror.workspace = true
 # Wipes the password buffer in a way the optimizer keeps.
 zeroize = "1"
+# General_Category for what the lock screen strips from other programs' text
+# (Unicode 17.0 tables; already in the lockfile through the toolkit).
+unicode-properties = { version = "0.1", default-features = false, features = ["general-category"] }
 
 [dev-dependencies]
 tempfile.workspace = true

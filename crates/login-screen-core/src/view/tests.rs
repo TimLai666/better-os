@@ -4,6 +4,10 @@ use app_catalog_core::NoProbe;
 
 const SECOND: Millis = 1000;
 
+fn account_key(name: &str) -> AttemptKey {
+    AttemptKey::Account(name.into())
+}
+
 fn account(user: &str, real: &str, login: i64, session: &str) -> Account {
     Account {
         user_name: user.into(),
@@ -233,7 +237,7 @@ fn a_wrong_password_clears_the_field_and_keeps_focus() {
     assert!(effects.attempts_changed);
     assert_eq!(said(&effects), ["cancel", "begin lin"]);
     assert_eq!(screen.phase(), Phase::Ready);
-    assert_eq!(screen.attempts().get("lin").failures, 1);
+    assert_eq!(screen.attempts().get(&account_key("lin")).failures, 1);
     let line = screen.message_line(SECOND).unwrap();
     assert_eq!(line.kind, MessageKind::Error);
     assert_eq!(line.text, "密碼不正確，請再試一次。");
@@ -333,15 +337,15 @@ fn the_wait_stays_with_the_account_across_switching() {
             until: until + 4 * SECOND
         }
     );
-    assert_eq!(screen.attempts().get("lin").failures, 4);
-    assert_eq!(screen.attempts().get("wang").failures, 0);
+    assert_eq!(screen.attempts().get(&account_key("lin")).failures, 4);
+    assert_eq!(screen.attempts().get(&account_key("wang")).failures, 0);
 }
 
 #[test]
 fn choosing_an_account_puts_its_own_running_wait_in_force() {
     let mut attempts = Attempts::default();
-    attempts.record_failure("wang", 0);
-    attempts.record_failure("wang", 0);
+    attempts.record_failure(&account_key("wang"), 0);
+    attempts.record_failure(&account_key("wang"), 0);
     let mut screen = login().with_attempts(attempts);
     screen.handle(Event::Shown, 0);
     ask(&mut screen, 0);
@@ -360,8 +364,8 @@ fn choosing_an_account_puts_its_own_running_wait_in_force() {
 #[test]
 fn other_account_with_a_waiting_name_waits_too() {
     let mut attempts = Attempts::default();
-    attempts.record_failure("guest", 0);
-    attempts.record_failure("guest", 0);
+    attempts.record_failure(&AttemptKey::Unresolved("guest".into()), 0);
+    attempts.record_failure(&AttemptKey::Unresolved("guest".into()), 0);
     let mut screen = ready_login(0).with_attempts(attempts);
     screen.handle(Event::ShowChooser, 0);
     screen.handle(Event::ChooseOtherAccount, 0);
@@ -382,7 +386,7 @@ fn a_restart_does_not_end_a_wait() {
     let path = dir.path().join("attempts.json");
     screen.attempts().save(&path).unwrap();
     // The greeter starts again a moment later.
-    let mut restarted = login().with_attempts(Attempts::load(&path).unwrap());
+    let mut restarted = login().with_attempts(Attempts::load(&path, 10 * SECOND + 500).unwrap());
     let shown = restarted.handle(Event::Shown, 10 * SECOND + 500);
     assert!(shown.requests.is_empty());
     assert_eq!(restarted.phase(), Phase::Waiting { until: 11 * SECOND });
@@ -390,7 +394,7 @@ fn a_restart_does_not_end_a_wait() {
     restarted.handle(Event::Tick, 11 * SECOND);
     ask(&mut restarted, 11 * SECOND);
     fail(&mut restarted, 11 * SECOND);
-    assert_eq!(restarted.attempts().get("lin").failures, 3);
+    assert_eq!(restarted.attempts().get(&account_key("lin")).failures, 3);
 }
 
 #[test]
@@ -409,12 +413,174 @@ fn a_success_resets_the_failures() {
     assert!(screen.attempts().is_empty());
 }
 
+/// A guess cancelled while its answer is with greetd or PAM counts: its
+/// refusal comes back under a dropped conversation, so without counting at
+/// the cancel every guess could escape the wait.
+#[test]
+fn cancelling_an_answered_guess_counts_it() {
+    // 1. Switch account while the answer is out: not offered.
+    let mut screen = ready_login(0);
+    screen.handle(Event::Submit, 0);
+    assert!(!screen.shows_switch_account());
+    assert_eq!(screen.handle(Event::ShowChooser, 0), Effects::default());
+    assert!(screen.busy(), "still checking the guess");
+
+    // 2. Two Escapes on the lock screen.
+    let mut screen = lock();
+    screen.handle(Event::Shown, 0);
+    screen.handle(Event::Pointer, 0);
+    ask(&mut screen, 0);
+    screen.handle(Event::Submit, 0);
+    let answered = current(&screen);
+    screen.handle(Event::Key(Key::Escape), 0);
+    let quiet = screen.handle(Event::Key(Key::Escape), 0);
+    assert_eq!(screen.view(), View::Quiet);
+    assert!(quiet.attempts_changed);
+    assert_eq!(screen.attempts().get(&account_key("lin")).failures, 1);
+    // The late refusal adds nothing more; a late success never unlocks.
+    let late = screen.handle(
+        Event::Refused {
+            conversation: answered,
+            refusal: Refusal::WrongPassword,
+        },
+        0,
+    );
+    assert_eq!(late, Effects::default());
+    assert!(
+        !screen
+            .handle(
+                Event::Authenticated {
+                    conversation: answered
+                },
+                0
+            )
+            .unlock
+    );
+    assert_eq!(screen.attempts().get(&account_key("lin")).failures, 1);
+    // Twice is the doubling wait, which the next wake finds.
+    screen.handle(Event::Pointer, 0);
+    ask(&mut screen, 0);
+    screen.handle(Event::Submit, 0);
+    screen.handle(Event::Key(Key::Escape), 0);
+    screen.handle(Event::Key(Key::Escape), 0);
+    assert_eq!(screen.attempts().get(&account_key("lin")).failures, 2);
+    let woke = screen.handle(Event::Pointer, 0);
+    assert!(woke.requests.is_empty());
+    assert_eq!(screen.phase(), Phase::Waiting { until: SECOND });
+
+    // 3. Changing the name under Other account: counted for the old name.
+    let mut screen = ready_login(0);
+    screen.handle(Event::ShowChooser, 0);
+    screen.handle(Event::ChooseOtherAccount, 0);
+    screen.handle(Event::UserNameEdited("guest".into()), 0);
+    screen.handle(Event::Submit, 0);
+    ask(&mut screen, 0);
+    assert!(screen.busy());
+    let renamed = screen.handle(Event::UserNameEdited("guest2".into()), 0);
+    assert!(renamed.attempts_changed);
+    assert_eq!(
+        screen
+            .attempts()
+            .get(&AttemptKey::Unresolved("guest".into()))
+            .failures,
+        1
+    );
+    assert_eq!(
+        screen
+            .attempts()
+            .get(&AttemptKey::Unresolved("guest2".into()))
+            .failures,
+        0
+    );
+
+    // 4. Going to sleep with the answer out.
+    let mut screen = ready_login(0);
+    screen.handle(Event::Submit, 0);
+    let suspending = screen.handle(Event::Suspending, 0);
+    assert!(suspending.attempts_changed);
+    assert_eq!(screen.attempts().get(&account_key("lin")).failures, 1);
+
+    // An answer queued but never sent (no question came) is no guess.
+    let mut screen = login();
+    screen.handle(Event::Shown, 0);
+    screen.handle(Event::Submit, 0);
+    let unsent = screen.handle(Event::Suspending, 0);
+    assert!(!unsent.attempts_changed);
+    assert!(screen.attempts().is_empty());
+}
+
+/// The screen shows the same for a name that exists and one that does not:
+/// the resolver decides only whether the count is written down.
+#[test]
+fn an_existing_and_a_missing_name_wait_alike() {
+    struct Only(&'static str);
+    impl crate::attempts::AccountResolver for Only {
+        fn account_name(&self, name: &str) -> Option<String> {
+            name.eq_ignore_ascii_case(self.0)
+                .then(|| self.0.to_string())
+        }
+    }
+    let run = |name: &str| {
+        let mut screen = ready_login(0).with_resolver(Box::new(Only("guest")));
+        screen.handle(Event::ShowChooser, 0);
+        screen.handle(Event::ChooseOtherAccount, 0);
+        screen.handle(Event::UserNameEdited(name.into()), 0);
+        let mut seen = Vec::new();
+        for round in 0..4u64 {
+            let now = round * 60 * SECOND;
+            screen.handle(Event::Tick, now);
+            screen.handle(Event::Submit, now);
+            ask(&mut screen, now);
+            screen.handle(Event::Submit, now);
+            let refused = refuse(&mut screen, Refusal::WrongPassword, now);
+            seen.push((
+                said(&refused),
+                screen.phase(),
+                screen.message_line(now).map(|line| line.text),
+            ));
+        }
+        (seen, screen)
+    };
+    let (existing, existing_screen) = run("Guest");
+    let (missing, missing_screen) = run("nobody");
+    let rename = |seen: Vec<(Vec<String>, Phase, Option<String>)>| -> Vec<_> {
+        seen.into_iter()
+            .map(|(said, phase, line)| {
+                let said: Vec<String> = said
+                    .into_iter()
+                    .map(|s| s.replace("Guest", "nobody"))
+                    .collect();
+                (said, phase, line)
+            })
+            .collect()
+    };
+    assert_eq!(rename(existing), missing);
+    // `Guest` counts under the account `guest`, and is written down;
+    // `nobody` is counted in memory only.
+    assert_eq!(
+        existing_screen
+            .attempts()
+            .get(&account_key("guest"))
+            .failures,
+        4
+    );
+    assert_eq!(existing_screen.attempts().len(), 1);
+    assert_eq!(
+        missing_screen
+            .attempts()
+            .get(&AttemptKey::Unresolved("nobody".into()))
+            .failures,
+        4
+    );
+    assert_eq!(missing_screen.attempts().len(), 0);
+}
+
 #[test]
 fn a_stale_reply_from_a_cancelled_conversation_is_dropped() {
     let mut screen = ready_login(0);
     let old = current(&screen);
-    screen.handle(Event::Submit, 0);
-    // The person switches account while the answer is with greetd.
+    // The person switches account while greetd's question is open (not
+    // answered: Switch account is not offered while an answer is out).
     screen.handle(Event::ShowChooser, 0);
     let wang = screen.handle(Event::ChooseAccount(1), 0);
     assert_eq!(said(&wang), ["begin wang"]);
