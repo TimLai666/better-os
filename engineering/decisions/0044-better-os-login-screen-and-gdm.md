@@ -5,7 +5,8 @@
 Proposed on 2026-11-21 for ticket 259 (`design/login-screen-spec.md`,
 decisions L1, L2, L7 and L8), and revised the same day for the owner's two
 requirements: locking must never depend on GDM, and a boot must never be
-left without a login screen. Accepted when the owner answers L1. It does not
+left without a login screen. Accepted by the owner on 2026-11-21, who answered L1 (B), L2 (a) and L8 (a)
+as recommended; L7 is still open. It does not
 change ADR 0038's C3 by itself: GDM stays the login screen until
 the fifth step of the design's section 9, and then only for a person who
 chooses otherwise. ADR 0033 is not

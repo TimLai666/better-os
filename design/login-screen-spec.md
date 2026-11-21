@@ -45,8 +45,9 @@ file decides layout and copy.
 
 ## 0. Decisions that are the owner's
 
-Nothing is built until L1 is answered (it is ADR 0044's decision); each other
-decision blocks only the tickets named with it.
+**Decided by the owner on 2026-11-21: L1 = (B), L2 = (a), L8 = (a), each as
+recommended.** L3 to L7 are still open; each blocks only the tickets named
+with it.
 
 | # | Decision | Recommendation | What each choice costs |
 | --- | --- | --- | --- |
