@@ -35,11 +35,7 @@ pub(crate) fn sentences(locale: Locale, parts: &[&str]) -> String {
 }
 
 pub(crate) fn profile_label(profile: Profile, c: &Copy) -> &'static str {
-    match profile {
-        Profile::PowerSaver => c.power_saver,
-        Profile::Balanced => c.balanced,
-        Profile::Performance => c.performance,
-    }
+    profile.name(c.language)
 }
 
 /// A profile as the daemon names it, in words when this version knows it.

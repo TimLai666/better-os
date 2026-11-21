@@ -25,6 +25,27 @@ impl Profile {
     pub fn from_wire(name: &str) -> Option<Profile> {
         Profile::ALL.into_iter().find(|p| p.wire() == name)
     }
+
+    /// The mode's name, as the System page, the taskbar item and its popup
+    /// all write it (GNOME Settings' words).
+    pub fn name(self, language: crate::charge_state::Language) -> &'static str {
+        let zh = language == crate::charge_state::Language::TraditionalChinese;
+        match (self, zh) {
+            (Profile::PowerSaver, false) => "Best power efficiency",
+            (Profile::PowerSaver, true) => "最佳電源效率",
+            (Profile::Balanced, false) => "Balanced",
+            (Profile::Balanced, true) => "平衡",
+            (Profile::Performance, false) => "Best performance",
+            (Profile::Performance, true) => "最佳效能",
+        }
+    }
+}
+
+/// The mode in force, as a place that only shows it (the taskbar item)
+/// reads it: `None` when the machine offers no modes or the daemon's active
+/// mode is not one it lists, so nothing is guessed.
+pub fn mode_in_force(facts: &PowerProfilesFacts) -> Option<Profile> {
+    power_mode_view(facts).selected
 }
 
 /// Why the daemon says performance is reduced (`PerformanceDegraded`).
@@ -169,6 +190,35 @@ mod tests {
                 Caution::Degraded(Degradation::LapDetected)
             ]
         );
+    }
+
+    #[test]
+    fn every_mode_has_a_name_in_both_languages() {
+        use crate::charge_state::Language;
+        let english: Vec<&str> = Profile::ALL
+            .iter()
+            .map(|p| p.name(Language::English))
+            .collect();
+        assert_eq!(
+            english,
+            ["Best power efficiency", "Balanced", "Best performance"]
+        );
+        let chinese: Vec<&str> = Profile::ALL
+            .iter()
+            .map(|p| p.name(Language::TraditionalChinese))
+            .collect();
+        assert_eq!(chinese, ["最佳電源效率", "平衡", "最佳效能"]);
+    }
+
+    #[test]
+    fn the_mode_in_force_is_only_a_listed_one() {
+        assert_eq!(
+            mode_in_force(&facts(&["power-saver", "balanced"], "power-saver")),
+            Some(Profile::PowerSaver)
+        );
+        assert_eq!(mode_in_force(&facts(&[], "")), None);
+        assert_eq!(mode_in_force(&facts(&["balanced"], "performance")), None);
+        assert_eq!(mode_in_force(&PowerProfilesFacts::default()), None);
     }
 
     #[test]

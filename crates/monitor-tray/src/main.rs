@@ -145,6 +145,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     report(register_and_verify(&connection, &unique).await);
 
+    // The power mode beside the icon, followed on the system bus.
+    monitor_tray::power::spawn(tray.clone());
+
     let poller = tray.clone();
     let polling = tokio::spawn(async move {
         let mut client: Option<MonitorClient> = None;

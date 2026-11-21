@@ -16,6 +16,10 @@
 //! so they are full the moment the popup opens rather than starting empty.
 //! The figures are the live round, once a second.
 //!
+//! Above them is the power mode in force, with every mode the machine offers
+//! (ticket 295), read from power-profiles-daemon the way the System page
+//! reads it and followed as it changes; a machine without modes has no block.
+//!
 //! What is shown, in what order, and how a history sample becomes a point is
 //! decided in the GPUI-free half of this module and tested directly.
 
@@ -25,6 +29,8 @@ use better_ui::fluent::{BODY, BODY_STRONG, CAPTION, label, palette, radius, spac
 use better_ui::icon_set::{self, Picture};
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
+use hardware_core::Presence;
+use hardware_core::power::{PowerProfilesFacts, power_mode_view};
 use monitor_core::{EntityKind, MetricId};
 use monitor_store::Sample;
 use monitor_views::ProcessFacts;
@@ -294,6 +300,68 @@ pub(crate) fn top_processes(
         .collect()
 }
 
+/// What power-profiles-daemon says, absent on a machine without it.
+pub(crate) type PowerFacts = Presence<PowerProfilesFacts>;
+
+/// The popup's power mode block: the mode in force, and every mode the
+/// machine offers with whether it is the one in force.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PowerBlock {
+    pub(crate) figure: String,
+    pub(crate) modes: Vec<(&'static str, bool)>,
+}
+
+/// The block for what the daemon says, or `None` on a machine with no
+/// modes: nothing is guessed. The names are the System page's
+/// (`Profile::name`).
+pub(crate) fn power_block(power: &PowerFacts, locale: Locale) -> Option<PowerBlock> {
+    let c = copy(locale);
+    let facts = match power {
+        Presence::Absent => return None,
+        Presence::Unreadable(_) => {
+            return Some(PowerBlock {
+                figure: c.popup_power_mode_unreadable.to_string(),
+                modes: Vec::new(),
+            });
+        }
+        Presence::Present(facts) => facts,
+    };
+    let view = power_mode_view(facts);
+    if view.options.is_empty() {
+        return None;
+    }
+    let language = i18n::language(locale);
+    let figure = match view.selected {
+        Some(mode) => mode.name(language).to_string(),
+        // A mode this version does not know, in the daemon's own word.
+        None if !facts.active.trim().is_empty() => facts.active.trim().to_string(),
+        None => c.not_available.to_string(),
+    };
+    Some(PowerBlock {
+        figure,
+        modes: view
+            .options
+            .iter()
+            .map(|mode| (mode.name(language), view.selected == Some(*mode)))
+            .collect(),
+    })
+}
+
+/// Follows power-profiles-daemon on the system bus from a thread of its own,
+/// sending each reading until the popup is gone.
+fn follow_power(sender: smol::channel::Sender<PowerFacts>) {
+    let _ = std::thread::Builder::new()
+        .name("power-mode".into())
+        .spawn(move || match zbus::blocking::Connection::system() {
+            Ok(system) => hardware_platform::bus::follow_power_profiles(&system, |facts| {
+                sender.send_blocking(facts).is_ok()
+            }),
+            Err(error) => {
+                let _ = sender.send_blocking(Presence::Unreadable(error.to_string()));
+            }
+        });
+}
+
 /// `--at X,Y`, the point the tray icon was clicked at.
 pub(crate) fn parse_point(text: &str) -> Option<(i32, i32)> {
     let (x, y) = text.split_once(',')?;
@@ -318,6 +386,7 @@ pub(crate) fn placement(
 pub(crate) struct PopupView {
     locale: Locale,
     readings: Readings,
+    power: PowerFacts,
     facts: Vec<ProcessFacts>,
     samples: Vec<Sample>,
     fetched_at_ms: u64,
@@ -346,6 +415,19 @@ impl PopupView {
         let pump = cx.spawn(async move |this, cx| {
             while let Ok(update) = update_receiver.recv().await {
                 if this.update(cx, |view, cx| view.adopt(update, cx)).is_err() {
+                    break;
+                }
+            }
+        });
+        let (power_sender, power_receiver) = smol::channel::unbounded::<PowerFacts>();
+        follow_power(power_sender);
+        let power = cx.spawn(async move |this, cx| {
+            while let Ok(facts) = power_receiver.recv().await {
+                let adopted = this.update(cx, |view, cx| {
+                    view.power = facts;
+                    cx.notify();
+                });
+                if adopted.is_err() {
                     break;
                 }
             }
@@ -382,6 +464,7 @@ impl PopupView {
         Self {
             locale,
             readings: Readings::default(),
+            power: Presence::Absent,
             facts: Vec::new(),
             samples: Vec::new(),
             fetched_at_ms: 0,
@@ -389,7 +472,7 @@ impl PopupView {
             focus,
             was_active: false,
             _link: request_sender,
-            _tasks: vec![pump, history],
+            _tasks: vec![pump, history, power],
             _subscriptions: vec![observe],
         }
     }
@@ -653,6 +736,55 @@ impl PopupView {
     }
 }
 
+impl PopupView {
+    /// The power mode in force and the modes the machine offers.
+    fn power_section(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let block = power_block(&self.power, self.locale)?;
+        let p = palette(cx);
+        let c = copy(self.locale);
+        Some(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(6.0))
+                .px(spacing::MD)
+                .py(spacing::SM)
+                .rounded(radius::MD)
+                .bg(p.card)
+                .border_1()
+                .border_color(p.card_stroke)
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.0))
+                        .child(icon_set::picture(Picture::Gauge, 16.0))
+                        .child(label(c.popup_power_mode, CAPTION, p.text_secondary)),
+                )
+                .child(label(block.figure, BODY_STRONG, p.text_primary))
+                .when(!block.modes.is_empty(), |el| {
+                    el.child(div().flex().flex_wrap().gap(px(4.0)).children(
+                        block.modes.into_iter().map(|(name, current)| {
+                            let (fill, ink) = if current {
+                                (p.accent, p.text_on_accent)
+                            } else {
+                                (p.card_secondary, p.text_secondary)
+                            };
+                            div()
+                                .px(spacing::SM)
+                                .py(px(2.0))
+                                .rounded(radius::MD)
+                                .bg(fill)
+                                .child(label(name, CAPTION, ink))
+                                .into_any_element()
+                        }),
+                    ))
+                })
+                .into_any_element(),
+        )
+    }
+}
+
 impl Render for PopupView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(cx);
@@ -663,6 +795,7 @@ impl Render for PopupView {
             .enumerate()
             .map(|(index, section)| self.section(index, *section, cx))
             .collect();
+        let power = self.power_section(cx);
         div()
             .id("popup")
             .track_focus(&self.focus)
@@ -701,6 +834,7 @@ impl Render for PopupView {
                     .when(blocks.is_empty(), |el| {
                         el.child(label(c.waiting_for_first_reading, BODY, p.text_secondary))
                     })
+                    .children(power)
                     .children(blocks),
             )
             .child(div().p(spacing::MD).flex().justify_end().child(
@@ -763,9 +897,12 @@ pub(crate) fn open(at: Option<(i32, i32)>, cx: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::{
-        EntityKind, ProcessFacts, Readings, Sample, Section, history_line, line_top, metric,
-        parse_point, placement, sections, top_processes,
+        EntityKind, PowerBlock, PowerFacts, ProcessFacts, Readings, Sample, Section, history_line,
+        line_top, metric, parse_point, placement, power_block, sections, top_processes,
     };
+    use crate::i18n::Locale;
+    use hardware_core::Presence;
+    use hardware_core::power::PowerProfilesFacts;
     use monitor_core::{MetricSet, Observation};
     use monitor_store::EntitySample;
 
@@ -865,6 +1002,58 @@ mod tests {
                 ("firefox".to_string(), "20%".to_string())
             ]
         );
+    }
+
+    fn modes(profiles: &[&str], active: &str) -> PowerFacts {
+        Presence::Present(PowerProfilesFacts {
+            active: active.into(),
+            profiles: profiles.iter().map(|p| p.to_string()).collect(),
+            ..PowerProfilesFacts::default()
+        })
+    }
+
+    #[test]
+    fn the_popup_names_the_mode_in_force_among_the_modes_offered() {
+        let all = ["performance", "balanced", "power-saver"];
+        assert_eq!(
+            power_block(&modes(&all, "balanced"), Locale::EnUs),
+            Some(PowerBlock {
+                figure: "Balanced".into(),
+                modes: vec![
+                    ("Best power efficiency", false),
+                    ("Balanced", true),
+                    ("Best performance", false)
+                ],
+            })
+        );
+        assert_eq!(
+            power_block(&modes(&all, "performance"), Locale::ZhTw)
+                .unwrap()
+                .figure,
+            "最佳效能"
+        );
+        // Only the modes the machine offers.
+        let two = power_block(
+            &modes(&["balanced", "power-saver"], "power-saver"),
+            Locale::EnUs,
+        )
+        .unwrap();
+        assert_eq!(
+            two.modes,
+            vec![("Best power efficiency", true), ("Balanced", false)]
+        );
+    }
+
+    #[test]
+    fn a_machine_without_modes_has_no_power_block() {
+        assert_eq!(power_block(&Presence::Absent, Locale::EnUs), None);
+        assert_eq!(power_block(&modes(&[], ""), Locale::EnUs), None);
+        let unknown = power_block(&modes(&["balanced"], "turbo"), Locale::EnUs).unwrap();
+        assert_eq!(unknown.figure, "turbo");
+        assert_eq!(unknown.modes, vec![("Balanced", false)]);
+        let unreadable = power_block(&Presence::Unreadable("failed".into()), Locale::ZhTw).unwrap();
+        assert_eq!(unreadable.figure, "無法讀取");
+        assert!(unreadable.modes.is_empty());
     }
 
     #[test]

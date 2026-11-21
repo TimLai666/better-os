@@ -14,9 +14,9 @@ pub(crate) struct Copy {
 
     pub(crate) power_mode: &'static str,
     pub(crate) power_mode_description: &'static str,
-    pub(crate) power_saver: &'static str,
-    pub(crate) balanced: &'static str,
-    pub(crate) performance: &'static str,
+    /// The modes' names are `hardware_core::power::Profile::name` in this
+    /// language, the words the taskbar item and its popup use too.
+    pub(crate) language: hardware_core::charge_state::Language,
     pub(crate) degraded_lap: &'static str,
     pub(crate) degraded_hot: &'static str,
     /// Not in the spec: a reason this version does not know. `{reason}`.
@@ -115,9 +115,7 @@ static EN: Copy = Copy {
     group_about: "About this PC",
     power_mode: "Power mode",
     power_mode_description: "Balance battery life against performance.",
-    power_saver: "Best power efficiency",
-    balanced: "Balanced",
-    performance: "Best performance",
+    language: hardware_core::charge_state::Language::English,
     degraded_lap: "Performance is reduced while the PC is on your lap, to keep it cool.",
     degraded_hot: "It's running hot, so performance is reduced for now.",
     degraded_other: "Performance is reduced for now ({reason}).",
@@ -186,9 +184,7 @@ static ZH_TW: Copy = Copy {
     group_about: "關於這台電腦",
     power_mode: "電源模式",
     power_mode_description: "在電池續航力和效能之間取捨。",
-    power_saver: "最佳電源效率",
-    balanced: "平衡",
-    performance: "最佳效能",
+    language: hardware_core::charge_state::Language::TraditionalChinese,
     degraded_lap: "電腦放在腿上時，效能模式會降低以免過熱。",
     degraded_hot: "溫度太高，效能模式暫時降低。",
     degraded_other: "效能模式暫時降低（{reason}）。",

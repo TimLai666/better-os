@@ -38,3 +38,75 @@ the same there.
   with no modes, and a mode changed by something else.
 - Seen in the panel in a sandbox, light and dark, zh-TW and English, and on
   the owner's machine after the next release.
+
+## Notes
+
+**Blocked:** the owner decides whether the menu also switches the power mode
+(the mock-up `better-os-evidence/295/mockup-power-mode.png` shows both
+menus), and the panel is checked on the owner's machine after the next
+release; everything else is built.
+
+### Built (2026-11-22)
+
+- The battery's picture in the icon is the battery rule's `BatteryIcon`
+  drawn in pixels (`monitor_tray::icon::battery_drawing`): a battery with a
+  cap, filled to the charge (amber when low), and a bolt, a plug, an amber
+  "!" or a "?" over it; in the numbers style the same mark, or a small
+  battery for a level, beside the charge. Spec: "The taskbar item" in
+  `engineering/specs/battery-charge-state.md`. The first sandbox look showed
+  a 5×7 mark on a 9-pixel battery is a blur once GNOME draws the icon at
+  16 px, so the battery takes a 14-pixel slot with the mark at double size
+  when it is shown with one other reading or alone.
+- The power mode is a second panel item beside the icon
+  (`monitor_tray::PowerModeItem`, `/PowerModeItem` on the tray's own
+  connection), drawn from the icon theme's `power-profile-*-symbolic`, so it
+  takes the panel's colour light and dark. The mock-up compared it with a
+  mark inside the readings icon, which at 16 px is 5 pixels over the memory
+  bar; the themed item reads at every size. It is `Passive` (hidden) on a
+  machine without modes, when the daemon's active mode is not one it lists,
+  or when the person unticks "Power mode" under "Show in the taskbar".
+- The menu (shared by both items) and the tooltip say "Power mode: …" /
+  「電源模式：…」 in the System page's words, now `Profile::name` in
+  `hardware-core` (the System page's copy calls it too); the popup has a
+  Power mode card listing every mode the machine offers with the one in
+  force marked.
+- The modes come from power-profiles-daemon, read by
+  `hardware_platform::bus::follow_power_profiles` (new; the watch is in place
+  before the first read), not from `/sys/firmware/acpi/platform_profile_choices`
+  as this ticket's text says: ADR 0017 keeps Better OS off `platform_profile`,
+  which the daemon drives, and on such a machine the daemon's list comes from
+  it. Likewise the System page sets the mode through the daemon directly, not
+  through `manager-daemon` (the ticket names ADR 0029, which is about root
+  writes); a menu switch, if the owner wants one, would call
+  `hardware_platform::bus::set_power_profile` the same way.
+- A debug build of `better-monitor-service` now reads `/sys` from
+  `BETTER_OS_DEBUG_SYS_ROOT` like the window (`ServiceConfig::for_session`,
+  one place for both), so a sandbox can show every battery state in the
+  taskbar.
+
+### Checked
+
+- Tests: each state's picture and that no two of the six states look the
+  same in either style (`monitor-tray` `icon::tests`), each mode's line,
+  tooltip and themed icon, no modes, an unknown or unreadable mode
+  (`menu::tests`), a mode changed by another program reaching the item and
+  the menu without a layout change (`lib::tests`, and `tests/power.rs`
+  against a stand-in daemon on a private bus, including a daemon that starts
+  late and one with no modes), the popup's block (`monitor-gui`
+  `popup::tests`).
+- Screenshots in `/home/tim/Developer/better-os-evidence/295/`: every battery
+  state and every mode with the menu open, English and zh-TW, dark and light
+  (`battery-*-{en,zh-TW}-{dark,light}.png`, `mode-*-….png`), the icons alone
+  at panel size zoomed 4× in both styles and both panels
+  (`panel-icons-{bars,numbers}-{dark,light}.png`), the popup
+  (`popup-{en,zh-TW}-{dark,light}.png`), and a machine with no modes
+  (`no-power-modes-en-light.png`: the item is gone and the menu has no mode
+  line). Headless GNOME Shell 46 with the Zorin AppIndicator extension (the
+  light panel is GNOME's `light-style` extension), a stand-in
+  power-profiles-daemon on a private system bus whose mode was changed by
+  `gdbus` as another program would, a fixture `/sys`; never the machine's
+  own power mode or limit. The scripts are in `scripts/` beside them. The
+  processor, memory and network figures in the menus are the sandbox
+  machine's real ones; the battery is the fixture's.
+- Not checked: swaybar or waybar hiding a `Passive` item, and the owner's
+  desktop.

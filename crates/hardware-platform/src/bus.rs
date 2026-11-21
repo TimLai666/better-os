@@ -222,6 +222,18 @@ pub fn power_profiles(system: &Connection) -> Presence<PowerProfilesFacts> {
     read().map_or_else(Presence::from, Presence::Present)
 }
 
+/// Reads power-profiles-daemon now and again after every change it
+/// announces, or its name getting or losing an owner, handing each reading
+/// to `send` until it returns `false` or the bus closes. The watch is in
+/// place before the first read, so no change is missed. Better Monitor's
+/// taskbar item and its popup follow the mode in force with it (ticket 295).
+pub fn follow_power_profiles(
+    system: &Connection,
+    mut send: impl FnMut(Presence<PowerProfilesFacts>) -> bool,
+) {
+    watch(system, &POWER_PROFILES, || send(power_profiles(system)));
+}
+
 /// Sets the active profile; no root (the daemon's own polkit action is
 /// `allow_active=yes`).
 pub fn set_power_profile(system: &Connection, profile: Profile) -> Result<(), BusError> {
@@ -349,7 +361,23 @@ pub fn shell_major_version(session: &Connection) -> Option<String> {
 /// Calls `changed` whenever a `PropertiesChanged` arrives from any of
 /// `endpoints`, or one of their names gets or loses an owner. Runs until the
 /// connection closes or `changed` returns `false`.
-pub fn follow(connection: &Connection, endpoints: &[Endpoint], mut changed: impl FnMut() -> bool) {
+pub fn follow(connection: &Connection, endpoints: &[Endpoint], changed: impl FnMut() -> bool) {
+    follow_after(connection, endpoints, false, changed)
+}
+
+/// [`follow`], calling `changed` once as soon as the watch is in place, so
+/// a reader that reads there misses no change between its first reading and
+/// the watch (the taskbar item's power mode, ticket 295).
+pub fn watch(connection: &Connection, endpoints: &[Endpoint], changed: impl FnMut() -> bool) {
+    follow_after(connection, endpoints, true, changed)
+}
+
+fn follow_after(
+    connection: &Connection,
+    endpoints: &[Endpoint],
+    now: bool,
+    mut changed: impl FnMut() -> bool,
+) {
     let (merged, events) = std::sync::mpsc::channel::<()>();
     let mut rules = Vec::new();
     for at in endpoints {
@@ -386,6 +414,9 @@ pub fn follow(connection: &Connection, endpoints: &[Endpoint], mut changed: impl
         }
     }
     drop(merged);
+    if now && !changed() {
+        return;
+    }
     while events.recv().is_ok() {
         if !changed() {
             return;

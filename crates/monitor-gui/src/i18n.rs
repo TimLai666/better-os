@@ -317,6 +317,9 @@ pub(crate) struct Copy {
     pub(crate) collection_version_mismatch: &'static str,
     pub(crate) collection_component_off: &'static str,
     pub(crate) popup_last_minutes: &'static str,
+    /// The popup's power mode block (ticket 295).
+    pub(crate) popup_power_mode: &'static str,
+    pub(crate) popup_power_mode_unreadable: &'static str,
 
     // Startup apps and services.
     pub(crate) startup_hint: &'static str,
@@ -643,6 +646,8 @@ pub(crate) const EN: Copy = Copy {
     collection_component_off: "Better Monitor is turned off in Better Manager, so its background service isn't running and isn't started from here. This window collects for itself while it is open.",
     collection_version_mismatch: "Better Monitor was updated, but its background service is still the older version, so this window is collecting for itself. The service restarts with the new version at your next sign-in.",
     popup_last_minutes: "Last 5 minutes",
+    popup_power_mode: "Power mode",
+    popup_power_mode_unreadable: "Couldn't be read",
 
     startup_hint: "Apps that start when you sign in. Turning one off writes your own copy of its setting; files installed for everyone are never changed.",
     enabled: "Enabled",
@@ -963,6 +968,8 @@ pub(crate) const ZH: Copy = Copy {
     collection_component_off: "系統監控在 Better Manager 裡是關閉的，所以背景服務沒有執行，這裡也不會啟動它。這個視窗開著的時候會自己收集資料。",
     collection_version_mismatch: "系統監控已更新，但背景服務還是舊版本，所以這個視窗先自己收集資料。下次登入時服務會以新版本重新啟動。",
     popup_last_minutes: "最近 5 分鐘",
+    popup_power_mode: "電源模式",
+    popup_power_mode_unreadable: "無法讀取",
 
     startup_hint: "登入時會自動啟動的應用程式。關閉時只會寫入你自己的設定副本，不會改動為所有人安裝的檔案。",
     enabled: "已啟用",

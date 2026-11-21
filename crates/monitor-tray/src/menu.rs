@@ -4,7 +4,13 @@
 
 use std::path::{Path, PathBuf};
 
+use hardware_core::Presence;
+use hardware_core::power::{PowerProfilesFacts, Profile, mode_in_force};
 use monitor_core::{CollectorReport, EntityKind, MetricId, MetricScalar, Observation};
+
+/// What power-profiles-daemon says, as `hardware_platform::bus::power_profiles`
+/// reads it for the System page: absent on a machine without it.
+pub type PowerFacts = Presence<PowerProfilesFacts>;
 
 /// A reading the icon can show.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -315,6 +321,48 @@ impl Locale {
     pub fn app_name(self) -> &'static str {
         self.pick("Better Monitor", "系統監控")
     }
+
+    /// The battery rule's and the power modes' language.
+    pub fn language(self) -> hardware_core::charge_state::Language {
+        if self.zh() {
+            hardware_core::charge_state::Language::TraditionalChinese
+        } else {
+            hardware_core::charge_state::Language::English
+        }
+    }
+
+    pub fn power_mode(self) -> &'static str {
+        self.pick("Power mode", "電源模式")
+    }
+}
+
+/// The power mode in force, when the machine offers modes and the daemon's
+/// active one is among them (`hardware_core::power::mode_in_force`).
+pub fn power_mode(power: &PowerFacts) -> Option<Profile> {
+    match power {
+        Presence::Present(facts) => mode_in_force(facts),
+        _ => None,
+    }
+}
+
+/// The menu's and the tooltip's power mode line: the mode's name, the
+/// daemon's own word for a mode this version does not know, or that it could
+/// not be read. `None` on a machine with no modes, so nothing is guessed.
+pub fn power_line(power: &PowerFacts, locale: Locale) -> Option<String> {
+    let text = match power {
+        Presence::Absent => return None,
+        Presence::Unreadable(_) => locale.pick("could not be read", "無法讀取").to_string(),
+        Presence::Present(facts) => match mode_in_force(facts) {
+            Some(mode) => mode.name(locale.language()).to_string(),
+            None if facts.profiles.is_empty() || facts.active.trim().is_empty() => return None,
+            None => facts.active.trim().to_string(),
+        },
+    };
+    Some(if locale.zh() {
+        format!("{}：{text}", locale.power_mode())
+    } else {
+        format!("{}: {text}", locale.power_mode())
+    })
 }
 
 fn bytes(value: f64) -> String {
@@ -473,6 +521,8 @@ pub fn fan_line(r: &TrayReadings, locale: Locale) -> Option<String> {
 pub struct IconChoice {
     pub shown: Vec<Reading>,
     pub style: crate::icon::IconStyle,
+    /// Whether the power mode is shown beside the icon (ticket 295).
+    pub power_mode: bool,
 }
 
 impl Default for IconChoice {
@@ -481,6 +531,7 @@ impl Default for IconChoice {
         Self {
             shown: vec![Reading::Cpu, Reading::Memory],
             style: crate::icon::IconStyle::Bars,
+            power_mode: true,
         }
     }
 }
@@ -515,6 +566,7 @@ impl IconChoice {
                         _ => crate::icon::IconStyle::Bars,
                     }
                 }
+                "power_mode" => choice.power_mode = value.trim() != "hidden",
                 _ => {}
             }
         }
@@ -527,7 +579,11 @@ impl IconChoice {
             crate::icon::IconStyle::Bars => "bars",
             crate::icon::IconStyle::Numbers => "numbers",
         };
-        format!("show={}\nstyle={style}\n", shown.join(","))
+        let power_mode = if self.power_mode { "shown" } else { "hidden" };
+        format!(
+            "show={}\nstyle={style}\npower_mode={power_mode}\n",
+            shown.join(",")
+        )
     }
 
     pub fn load(path: &Path) -> Self {
@@ -566,6 +622,8 @@ pub enum MenuAction {
     OpenPopup,
     Toggle(Reading),
     Style(crate::icon::IconStyle),
+    /// Show or hide the power mode beside the icon.
+    TogglePowerMode,
     Quit,
 }
 
@@ -764,6 +822,10 @@ mod ids {
     pub const STYLE_NUMBERS: i32 = 23;
     pub const BEFORE_QUIT: i32 = 24;
     pub const QUIT: i32 = 25;
+    /// The power mode line, after the reading lines (ticket 295).
+    pub const POWER: i32 = 26;
+    /// Its check box under [`SHOW`], after the readings'.
+    pub const SHOW_POWER: i32 = 27;
 }
 
 fn reading_offset(reading: Reading) -> i32 {
@@ -779,6 +841,7 @@ fn reading_offset(reading: Reading) -> i32 {
 /// (see [`ids`]), so a reading that comes or goes moves no other item.
 pub fn build(
     readings: Option<&TrayReadings>,
+    power: &PowerFacts,
     choice: &IconChoice,
     locale: Locale,
     service: ServiceState,
@@ -801,6 +864,11 @@ pub fn build(
         None => items.push(
             MenuItem::new(service.sentence(locale), ItemKind::Info, None).with_id(ids::SERVICE),
         ),
+    }
+    // The power mode comes from power-profiles-daemon, not the service, so
+    // it is said whether or not the service answers.
+    if let Some(line) = power_line(power, locale) {
+        items.push(MenuItem::new(line, ItemKind::Info, None).with_id(ids::POWER));
     }
     items.push(MenuItem::separator().with_id(ids::AFTER_READINGS));
     items.push(
@@ -839,6 +907,17 @@ pub fn build(
             !(checked && choice.shown.len() == 1) && readings.is_none_or(|r| r.has(reading));
         show.children.push(item);
     }
+    let mut power_item = MenuItem::new(
+        locale.power_mode(),
+        ItemKind::Checkmark {
+            checked: choice.power_mode,
+        },
+        Some(MenuAction::TogglePowerMode),
+    )
+    .with_id(ids::SHOW_POWER);
+    // Nothing to show on a machine without modes.
+    power_item.enabled = power_mode(power).is_some();
+    show.children.push(power_item);
     show.children
         .push(MenuItem::separator().with_id(ids::AFTER_SHOW_READINGS));
     for (style, label, id) in [
@@ -880,18 +959,64 @@ pub fn build(
 /// The tooltip: the app's name, and every reading on its own line.
 pub fn tooltip(
     readings: Option<&TrayReadings>,
+    power: &PowerFacts,
     locale: Locale,
     service: ServiceState,
 ) -> (String, String) {
-    let body = match readings {
+    let mut lines: Vec<String> = match readings {
         Some(r) => Reading::ALL
             .into_iter()
             .filter_map(|reading| reading_line(reading, r, locale))
-            .collect::<Vec<_>>()
-            .join("\n"),
-        None => service.sentence(locale).to_string(),
+            .collect(),
+        None => vec![service.sentence(locale).to_string()],
     };
-    (locale.app_name().to_string(), body)
+    lines.extend(power_line(power, locale));
+    (locale.app_name().to_string(), lines.join("\n"))
+}
+
+/// What the power mode item beside the icon shows (ticket 295): the desktop's
+/// own icon for the mode, its name, and whether it is there at all.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct PowerItem {
+    /// The mode in force, or `None` when the item is hidden.
+    pub mode: Option<Profile>,
+    pub title: String,
+    pub tooltip: (String, String),
+}
+
+impl PowerItem {
+    /// `Active` while it shows a mode, `Passive` (hidden) otherwise.
+    pub fn status(&self) -> &'static str {
+        if self.mode.is_some() {
+            "Active"
+        } else {
+            "Passive"
+        }
+    }
+
+    /// The icon theme's name for the mode, which GNOME's own power mode
+    /// menu uses too, so the panel draws it in its own colour and size.
+    pub fn icon_name(&self) -> &'static str {
+        match self.mode {
+            Some(Profile::PowerSaver) => "power-profile-power-saver-symbolic",
+            Some(Profile::Balanced) => "power-profile-balanced-symbolic",
+            Some(Profile::Performance) => "power-profile-performance-symbolic",
+            None => "",
+        }
+    }
+}
+
+pub fn power_item(power: &PowerFacts, choice: &IconChoice, locale: Locale) -> PowerItem {
+    let mode = power_mode(power).filter(|_| choice.power_mode);
+    PowerItem {
+        mode,
+        title: locale.power_mode().to_string(),
+        tooltip: (
+            locale.power_mode().to_string(),
+            mode.map(|m| m.name(locale.language()).to_string())
+                .unwrap_or_default(),
+        ),
+    }
 }
 
 #[cfg(test)]
@@ -960,6 +1085,7 @@ mod tests {
         ] {
             let menu = build(
                 Some(&readings),
+                &Presence::Absent,
                 &IconChoice::default(),
                 locale,
                 ServiceState::Answering,
@@ -972,6 +1098,7 @@ mod tests {
     fn the_menu_lists_the_readings_the_machine_has() {
         let menu = build(
             Some(&readings()),
+            &Presence::Absent,
             &IconChoice::default(),
             Locale::English,
             ServiceState::Answering,
@@ -1000,6 +1127,7 @@ mod tests {
     fn an_outdated_service_is_told_apart_from_a_missing_one() {
         let menu = build(
             None,
+            &Presence::Absent,
             &IconChoice::default(),
             Locale::English,
             ServiceState::Outdated,
@@ -1011,6 +1139,7 @@ mod tests {
         );
         let menu = build(
             None,
+            &Presence::Absent,
             &IconChoice::default(),
             Locale::English,
             ServiceState::Unavailable,
@@ -1019,7 +1148,12 @@ mod tests {
             menu.labels()[0],
             "Better Monitor's service is not answering"
         );
-        let (_, body) = tooltip(None, Locale::English, ServiceState::Outdated);
+        let (_, body) = tooltip(
+            None,
+            &Presence::Absent,
+            Locale::English,
+            ServiceState::Outdated,
+        );
         assert!(body.contains("was updated"));
     }
 
@@ -1028,11 +1162,13 @@ mod tests {
         let mut choice = IconChoice {
             shown: vec![Reading::Cpu],
             style: IconStyle::Bars,
+            power_mode: true,
         };
         choice.toggle(Reading::Cpu);
         assert_eq!(choice.shown, vec![Reading::Cpu]);
         let menu = build(
             Some(&readings()),
+            &Presence::Absent,
             &choice,
             Locale::English,
             ServiceState::Answering,
@@ -1056,6 +1192,7 @@ mod tests {
         let choice = IconChoice {
             shown: vec![Reading::Cpu, Reading::Temperature],
             style: IconStyle::Numbers,
+            power_mode: false,
         };
         choice.save(&path).unwrap();
         assert_eq!(IconChoice::load(&path), choice);
@@ -1078,6 +1215,7 @@ mod tests {
         assert_eq!(Locale::resolve(None, None), Locale::English);
         let menu = build(
             Some(&readings()),
+            &Presence::Absent,
             &IconChoice::default(),
             Locale::TraditionalChinese,
             ServiceState::Answering,
@@ -1092,12 +1230,14 @@ mod tests {
                 battery: None,
                 ..readings()
             }),
+            &Presence::Absent,
             &IconChoice::default(),
             Locale::English,
             ServiceState::Answering,
         );
         let with = build(
             Some(&readings()),
+            &Presence::Absent,
             &IconChoice::default(),
             Locale::English,
             ServiceState::Answering,
@@ -1112,10 +1252,175 @@ mod tests {
         }
     }
 
+    fn power(profiles: &[&str], active: &str) -> PowerFacts {
+        Presence::Present(PowerProfilesFacts {
+            active: active.into(),
+            profiles: profiles.iter().map(|p| p.to_string()).collect(),
+            ..PowerProfilesFacts::default()
+        })
+    }
+
+    const ALL_MODES: [&str; 3] = ["power-saver", "balanced", "performance"];
+
+    #[test]
+    fn each_power_mode_is_named_in_the_menu_the_tooltip_and_beside_the_icon() {
+        for (active, english, chinese, icon) in [
+            (
+                "power-saver",
+                "Power mode: Best power efficiency",
+                "電源模式：最佳電源效率",
+                "power-profile-power-saver-symbolic",
+            ),
+            (
+                "balanced",
+                "Power mode: Balanced",
+                "電源模式：平衡",
+                "power-profile-balanced-symbolic",
+            ),
+            (
+                "performance",
+                "Power mode: Best performance",
+                "電源模式：最佳效能",
+                "power-profile-performance-symbolic",
+            ),
+        ] {
+            let facts = power(&ALL_MODES, active);
+            for (locale, line) in [
+                (Locale::English, english),
+                (Locale::TraditionalChinese, chinese),
+            ] {
+                let menu = build(
+                    Some(&readings()),
+                    &facts,
+                    &IconChoice::default(),
+                    locale,
+                    ServiceState::Answering,
+                );
+                assert!(menu.labels().contains(&line), "{:?}", menu.labels());
+                let (_, body) = tooltip(Some(&readings()), &facts, locale, ServiceState::Answering);
+                assert!(body.ends_with(line), "{body}");
+            }
+            let item = power_item(&facts, &IconChoice::default(), Locale::English);
+            assert_eq!(item.status(), "Active");
+            assert_eq!(item.icon_name(), icon);
+            assert_eq!(item.tooltip.0, "Power mode");
+        }
+    }
+
+    #[test]
+    fn a_machine_without_power_modes_shows_nothing_for_them() {
+        for facts in [Presence::Absent, power(&[], ""), power(&[], "balanced")] {
+            let menu = build(
+                Some(&readings()),
+                &facts,
+                &IconChoice::default(),
+                Locale::English,
+                ServiceState::Answering,
+            );
+            assert!(
+                !menu.labels().iter().any(|l| l.starts_with("Power mode:")),
+                "{:?}",
+                menu.labels()
+            );
+            let (_, body) = tooltip(
+                Some(&readings()),
+                &facts,
+                Locale::English,
+                ServiceState::Answering,
+            );
+            assert!(!body.contains("Power mode"), "{body}");
+            let item = power_item(&facts, &IconChoice::default(), Locale::English);
+            assert_eq!(item.status(), "Passive");
+            assert_eq!(item.icon_name(), "");
+            // Its check box has nothing to show.
+            assert!(!menu.find_by_label("Power mode").unwrap().enabled);
+        }
+    }
+
+    #[test]
+    fn a_mode_the_daemon_does_not_list_is_never_drawn_as_one_it_does() {
+        // An active mode this version does not know is said in the daemon's
+        // word and never drawn as a known mode's icon.
+        let facts = power(&["balanced", "turbo"], "turbo");
+        let menu = build(
+            Some(&readings()),
+            &facts,
+            &IconChoice::default(),
+            Locale::English,
+            ServiceState::Answering,
+        );
+        assert!(
+            menu.labels().contains(&"Power mode: turbo"),
+            "{:?}",
+            menu.labels()
+        );
+        assert_eq!(
+            power_item(&facts, &IconChoice::default(), Locale::English).status(),
+            "Passive"
+        );
+        let unreadable: PowerFacts = Presence::Unreadable("the daemon failed".into());
+        let menu = build(
+            Some(&readings()),
+            &unreadable,
+            &IconChoice::default(),
+            Locale::TraditionalChinese,
+            ServiceState::Answering,
+        );
+        assert!(
+            menu.labels().contains(&"電源模式：無法讀取"),
+            "{:?}",
+            menu.labels()
+        );
+        assert_eq!(
+            power_item(&unreadable, &IconChoice::default(), Locale::English).status(),
+            "Passive"
+        );
+    }
+
+    #[test]
+    fn the_power_mode_is_said_even_while_the_service_is_not_answering() {
+        let menu = build(
+            None,
+            &power(&ALL_MODES, "performance"),
+            &IconChoice::default(),
+            Locale::English,
+            ServiceState::Unavailable,
+        );
+        assert!(menu.labels().contains(&"Power mode: Best performance"));
+    }
+
+    #[test]
+    fn the_power_mode_item_can_be_hidden_and_the_choice_is_kept() {
+        let facts = power(&ALL_MODES, "balanced");
+        let mut choice = IconChoice::default();
+        assert!(choice.power_mode);
+        choice.power_mode = false;
+        assert_eq!(
+            power_item(&facts, &choice, Locale::English).status(),
+            "Passive"
+        );
+        let menu = build(
+            Some(&readings()),
+            &facts,
+            &choice,
+            Locale::English,
+            ServiceState::Answering,
+        );
+        let check = menu.find_by_label("Power mode").unwrap();
+        assert_eq!(check.kind, ItemKind::Checkmark { checked: false });
+        assert!(check.enabled);
+        assert_eq!(check.action, Some(MenuAction::TogglePowerMode));
+        // The line in the menu stays: hiding the item hides the item.
+        assert!(menu.labels().contains(&"Power mode: Balanced"));
+        assert_eq!(IconChoice::parse(&choice.render()), choice);
+        assert!(IconChoice::parse("show=cpu\nstyle=bars\n").power_mode);
+    }
+
     #[test]
     fn ids_are_unique_and_stable() {
         let menu = build(
             Some(&readings()),
+            &power(&ALL_MODES, "balanced"),
             &IconChoice::default(),
             Locale::English,
             ServiceState::Answering,
@@ -1132,6 +1437,7 @@ mod tests {
             menu,
             build(
                 Some(&readings()),
+                &power(&ALL_MODES, "balanced"),
                 &IconChoice::default(),
                 Locale::English,
                 ServiceState::Answering

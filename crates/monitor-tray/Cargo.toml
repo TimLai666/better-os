@@ -19,6 +19,8 @@ better-core.workspace = true
 monitor-core.workspace = true
 # The battery's state and words, shared by every battery icon (ticket 170).
 hardware-core.workspace = true
+# The power mode, read the way the System page reads it (ticket 295).
+hardware-platform.workspace = true
 monitor-ipc.workspace = true
 monitor-service.workspace = true
 serde.workspace = true
@@ -31,4 +33,6 @@ zbus = { version = "5" }
 # under CI (ticket 177).
 test-prerequisites.workspace = true
 tempfile.workspace = true
+# A stand-in power-profiles-daemon on a private bus.
+hardware-platform = { workspace = true, features = ["test-support"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "signal", "test-util"] }
