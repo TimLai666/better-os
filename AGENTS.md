@@ -175,6 +175,15 @@ contract.
   against the files. Widening them needs a new ADR, not a commit.
 - Use GPUI with `gpui-component` for first-party desktop GUIs. `better-ui` owns
   shared presentation primitives.
+- GPUI comes from the owner's fork of Zed (ADR 0043): the workspace's one
+  `[patch."https://github.com/zed-industries/zed"]` section names
+  `https://github.com/TimLai666/zed` at an exact revision of a
+  `better-os/gpui-<pinned revision>` branch, so `gpui-component`'s copy is the
+  same. The fork carries only fixes also offered to Zed upstream, each its own
+  commit on the pinned revision, tagged and never force-pushed once a build
+  used it; a commit upstream has is dropped at the next GPUI update, and with
+  none left the patch section goes. Anything larger needs its own ADR. Never a
+  local path dependency on GPUI.
 - Treat manifests as untrusted input: validate schema, targets, artifacts,
   dependencies, conflicts, and lifecycle metadata before planning.
 - Do not add a public APT repository, signing implementation, or automatic
@@ -641,15 +650,16 @@ GUI or dependency compiles when the relevant command was not executed.
   a manager started without the Flatpak paths reports Flatpak applications as
   gone. The choice buttons in the window have not been looked at.
 - Every Better OS session surface opens through `better_ui::layer`
-  (ticket 200); never open a `WindowKind::LayerShell` window directly. At the
-  pinned GPUI a surface that fills an axis (size 0) dies of a
-  `wp_viewport` protocol error on any output above 100 %, the owner's
-  decision in ticket 200; fixed-size surfaces work. GPUI also keeps removed
-  outputs in `App::displays` and draws every window at the integer scale on
-  `cosmic-comp` at 150 %. The spec's "Surfaces on layer-shell" section has
-  all three and `packaging/tests/cosmic-nested.sh`, the nested `cosmic-comp`
-  every session ticket tests in; it has one output, so anything about
-  several outputs runs on its headless sway until ticket 201's VM.
+  (ticket 200); never open a `WindowKind::LayerShell` window directly. A
+  surface that fills an axis (size 0) works above 100 % only because of the
+  GPUI fork's viewport fix (ADR 0043). GPUI still keeps removed outputs in
+  `App::displays` and draws every window at the integer scale on
+  `cosmic-comp` at 150 %, and `cosmic-comp` does not move a window maximized
+  before a surface's zone appeared. The spec's "Surfaces on layer-shell"
+  section has these and `packaging/tests/cosmic-nested.sh`, the nested
+  `cosmic-comp` every session ticket tests in; its bus activates nothing
+  installed. It has one output, so anything about several outputs runs on its
+  headless sway until ticket 201's VM.
 - Better Patch, the Fixes page (ticket 90, `engineering/specs/better-patch.md`),
   has run its two entries only against fixture machines in scratch
   directories: no agent session may rebuild the person's font cache or write

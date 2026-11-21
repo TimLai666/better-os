@@ -12,12 +12,11 @@
 //!
 //! The rules are in [`rules`] and [`clock`], which have no GPUI in them.
 //!
-//! Known limit at the pinned GPUI (`ae394f3`, ticket 200): a surface with an
-//! [`Extent::Fill`] dimension is killed by a `wp_viewport` protocol error
-//! when the compositor sends its fractional scale before its first configure,
-//! which `cosmic-comp` does on every output above 100 %. Fixed-size surfaces
-//! are not affected. The fix is the owner's decision (ticket 200's notes);
-//! nothing here works around it.
+//! An [`Extent::Fill`] surface relies on the GPUI fork's viewport fix
+//! (ADR 0043): upstream GPUI at `ae394f3` is disconnected by a `wp_viewport`
+//! protocol error when the compositor sends a fractional scale before the
+//! surface's first configure, which `cosmic-comp` does above 100 %.
+//!
 //! Layer-shell exists only on a compositor that offers it: on GNOME, opening
 //! one fails with GPUI's `LayerShellNotSupportedError`, which
 //! [`LayerSurfaces::last_error`] reports.

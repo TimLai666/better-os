@@ -573,7 +573,11 @@ it back when it closes; the input region lets clicks through outside it.
 Ticket 200's notes have each one with how it was seen.
 
 **Three GPUI defects at `ae394f3` bear on the surfaces**, all three still in
-Zed's `main` on 2026-11-21 except the second:
+Zed's `main` on 2026-11-21 except the second. One behaviour of `cosmic-comp`
+does too: a window maximized before a surface's exclusive zone appears is not
+moved out of it (a zone that changes on a mapped surface does move it), so a
+bar restarted under open windows covers their tops until they are
+re-maximized. Session surfaces start before any window.
 
 1. A surface that fills an axis (size 0, the top bar, the taskbar, the
    desktop) is killed by a protocol error when the compositor sends its
@@ -581,8 +585,11 @@ Zed's `main` on 2026-11-21 except the second:
    `wp_viewport.set_destination(0, h)` (`gpui_linux` `wayland/window.rs`,
    `set_size_and_scale`, lines 1286–1290). `cosmic-comp` sent them in that
    order in every run at 150 % and 200 %, so there a filled surface never
-   showed; sway did it for the second of two surfaces. **This stops every filled surface on a HiDPI output
-   and is with the owner** (ticket 200's Blocked line).
+   showed; sway did it for the second of two surfaces. **Fixed in Better
+   OS's GPUI fork** (ADR 0043: GPUI unsets the destination while a dimension
+   is 0); with it, full-width and full-height surfaces show at 150 % and
+   200 % on `cosmic-comp` and on two outputs at 200 % on sway. The fix is
+   offered upstream (zed-industries/zed#61368, open, fixes it more widely).
 2. An output removed is never dropped from `App::displays` (`client.rs` line
    1286, `GlobalRemove` is a TODO), and there is no event for an output
    added. `LayerSurfaces` polls the list every 500 ms and treats the
@@ -609,6 +616,11 @@ AGENTS.md's sandbox rules, and `stop` ends it by PID. Its limits:
   on `cosmic-comp` itself wait for ticket 201's VM.
 - The scale is set through the `outputs.ron` it reads at start; the mode there
   must be the winit window's first size, 1280×800, or the whole entry is reset.
+- Its private bus is started from a configuration whose only service
+  directory is the sandbox's own empty one, with the sandbox's `HOME` and XDG
+  directories, so it activates nothing installed on the machine; `start` and
+  `bus-check` refuse a name owned by a process outside the sandbox's scope, and
+  `stop` ends every process holding the bus address.
 - `cosmic-comp` has no `wlr-screencopy` and no virtual pointer, so `shot` and
   `click` go through the outer sway, which shows `cosmic-comp`'s window 1:1;
   `keys` types on `cosmic-comp`'s own virtual keyboard.
@@ -710,12 +722,11 @@ recorded:
   avoided: the line stops and goes back to the owner.
 - **GDM starts the session** — **unverified**; ticket 201. If not, C3 goes back
   to the owner.
-- **GPUI's layer-shell surface works on `cosmic-comp`** — seen working at
-  100 % in the nested compositor (ticket 200); a surface that fills an axis is
-  killed by a GPUI protocol error above 100 % ("Surfaces on layer-shell",
-  defect 1). Until the owner decides how GPUI gets the fix, the top bar,
-  taskbar, and desktop cannot be built for HiDPI; surfaces of a fixed size can.
-  Several outputs on `cosmic-comp` itself are unseen until ticket 201's VM.
+- **GPUI's layer-shell surface works on `cosmic-comp`** — seen in the nested
+  compositor at 100 %, 150 %, and 200 % (ticket 200), with the viewport fix
+  Better OS's GPUI fork carries (ADR 0043; without it a surface that fills an
+  axis dies above 100 %). Several outputs on `cosmic-comp` itself are unseen
+  until ticket 201's VM; on sway they work at 200 %.
 - **The gesture patch is feasible within budget** — ticket 202. If not, C8 and
   S6 go back to the owner before any surface is built to follow fingers.
 - **Chinese input faults upstream** (issues 2947, 2952, 2702, 2778) —

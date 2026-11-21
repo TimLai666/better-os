@@ -25,7 +25,7 @@
 #   packaging/tests/cosmic-nested.sh click X Y                   a left click, in the client's logical pixels
 #   packaging/tests/cosmic-nested.sh keys TEXT                   typed on a virtual keyboard ({Return}, {Escape}, ...)
 #   packaging/tests/cosmic-nested.sh output add|remove [NAME]    --sway-only: hotplug a headless output
-#   packaging/tests/cosmic-nested.sh status | stop
+#   packaging/tests/cosmic-nested.sh status | bus-check | stop
 #
 # `shot`, `click` and `keys` use better-wl-probe from crates/layer-check:
 # set BETTER_WL_PROBE to it, or it is looked for in target/debug.
@@ -257,10 +257,35 @@ wait
 INNER
     chmod +x "$RUN/inner.sh"
 
+    # The private bus may activate only what is in its own empty service
+    # directory, never the services installed on this machine (Better OS's
+    # own among them), and it is started with the sandbox's HOME and XDG
+    # directories so nothing it starts reads the person's settings.
+    mkdir -p "$RUN/dbus-services"
+    cat > "$RUN/bus.conf" <<CONF
+<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+<busconfig>
+  <type>session</type>
+  <keep_umask/>
+  <listen>unix:dir=$RUN/xdg</listen>
+  <servicedir>$RUN/dbus-services</servicedir>
+  <policy context="default">
+    <allow send_destination="*" eavesdrop="true"/>
+    <allow eavesdrop="true"/>
+    <allow own="*"/>
+  </policy>
+</busconfig>
+CONF
+
     setsid systemd-run --user --scope --quiet --collect \
         --unit="better-os-cosmic-nested-$$" \
         -p MemoryMax=4G -p MemorySwapMax=0 \
-        -- dbus-run-session -- bash "$RUN/inner.sh" "$RUN" "$ROOT" "$outputs" "$sway_only" \
+        -- env HOME="$RUN/home" XDG_RUNTIME_DIR="$RUN/xdg" XDG_CONFIG_HOME="$RUN/config" \
+        XDG_DATA_HOME="$RUN/data" XDG_STATE_HOME="$RUN/state" XDG_CACHE_HOME="$RUN/cache" \
+        PATH="$RUN/bin:$PATH" \
+        dbus-run-session --config-file="$RUN/bus.conf" -- \
+        bash "$RUN/inner.sh" "$RUN" "$ROOT" "$outputs" "$sway_only" \
         > "$RUN/log/scope.log" 2>&1 &
     printf '%s\n' "$!" > "$(pidfile)"
 
@@ -270,11 +295,44 @@ INNER
         sleep 0.1
     done
     [[ -f "$RUN/nested.env" ]] || die "the compositor was not up after 20 s; logs in $RUN/log"
+    bus_check || { stop; die "the sandbox bus has a name it should not: see above"; }
     if ((sway_only)); then
         say "up: headless sway with $outputs output(s) at scale $scale, scope pid $(cat "$(pidfile)")"
     else
         say "up: cosmic-comp $(cat "$ROOT/root/VERSION"), one output ${width}x${height} at scale $scale, scope pid $(cat "$(pidfile)")"
     fi
+}
+
+# No installed service may appear on the sandbox's bus: every name on it
+# must belong to a process this sandbox started.
+bus_check() {
+    local address name pid bad=0
+    address="$(grep '^DBUS_SESSION_BUS_ADDRESS=' "$RUN/nested.env" | cut -d= -f2-)"
+    while read -r name pid _; do
+        [[ "$name" == :* || "$name" == org.freedesktop.DBus ]] && continue
+        # A name is fine only when its owner runs inside this sandbox's scope.
+        if [[ "$name" == *[Bb]etter* ]] || ! grep -q 'better-os-cosmic-nested-' "/proc/$pid/cgroup" 2>/dev/null; then
+            printf 'cosmic-nested: %s is owned by pid %s, outside the sandbox\n' "$name" "$pid" >&2
+            bad=1
+        fi
+    done < <(DBUS_SESSION_BUS_ADDRESS="$address" busctl --user list --no-legend 2>/dev/null)
+    return "$bad"
+}
+
+# Ends every process connected to this sandbox's bus, found by the bus
+# address in its environment: all of them were started inside the scope.
+end_bus_clients() {
+    local address pid
+    [[ -f "$RUN/nested.env" ]] || return 0
+    address="$(grep '^DBUS_SESSION_BUS_ADDRESS=' "$RUN/nested.env" | cut -d= -f2-)"
+    [[ -n "$address" ]] || return 0
+    for pid in $(pgrep -u "$(id -u)" .); do
+        [[ "$pid" == "$$" ]] && continue
+        # Processes of other users' sessions or already gone are skipped.
+        if { tr '\0' '\n' < "/proc/$pid/environ"; } 2>/dev/null | grep -qxF "DBUS_SESSION_BUS_ADDRESS=$address"; then
+            kill "$pid" 2>/dev/null || true
+        fi
+    done
 }
 
 stop() {
@@ -292,6 +350,7 @@ stop() {
     [[ -n "${COSMIC_PID:-}" ]] && kill "$COSMIC_PID" 2>/dev/null || true
     [[ -n "${SWAY_PID:-}" ]] && kill "$SWAY_PID" 2>/dev/null || true
     for _ in $(seq 50); do kill -0 "$pid" 2>/dev/null || break; sleep 0.1; done
+    end_bus_clients
     if kill -0 "$pid" 2>/dev/null; then kill -- "-$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true; fi
     rm -f "$(pidfile)"
     say "stopped"
@@ -328,6 +387,10 @@ case "$cmd" in
     start) start "$@" ;;
     stop) stop ;;
     status) status ;;
+    bus-check)
+        running || die "not running"
+        bus_check && say "the sandbox bus has only the sandbox's own names"
+        ;;
     exec)
         [[ "${1:-}" == "--" ]] && shift
         (($#)) || die "exec: nothing to run"

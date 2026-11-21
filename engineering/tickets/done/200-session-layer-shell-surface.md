@@ -50,78 +50,69 @@ surface ticket can be built, so this is checked first and cheaply.
       `/home/tim/Developer/better-os-evidence/200/`.
 - [x] `better_ui::layer`'s rules are unit-tested (outputs added, removed,
       rescaled; a change that needs recreation; input region).
-- [ ] The test program, built from this branch, shows a top strip with an
+- [x] The test program, built from this branch, shows a top strip with an
       exclusive zone and a popup on two nested outputs at scale 2.
 - [x] `better_core::desktop` tests for `BetterOS:COSMIC`, `COSMIC` alone, and
       GNOME's values.
 - [x] fmt, clippy on stable, and the crates' tests pass.
 
-**Blocked:** on the owner. A GPUI layer surface that fills an axis (the top
-bar, the taskbar, the desktop) dies of a protocol error on any output above
-100 % (GPUI defect 1 below); choosing how GPUI gets the fix is the owner's.
-Two outputs on `cosmic-comp` itself also wait for ticket 201's VM.
-
 ## Notes
 
 ### Where it stands
 
-Built: `packaging/tests/cosmic-nested.sh` (the nested `cosmic-comp`),
-`packaging/tests/session-layer-facts.sh` (every fact below, again, in one
-command), `crates/layer-check` (`better-layer-check`, the GPUI program, and
-`better-wl-probe`, screenshots, clicks, keys, globals), `better_ui::layer`
-(`rules`, `clock`, and `LayerSurfaces`), and
-`better_core::desktop::CurrentDesktop::is_better_os_session`. The spec's
-"Surfaces on layer-shell" section documents the helper, the three GPUI defects,
-and the test compositor's commands. Evidence, screenshots and logs:
-`/home/tim/Developer/better-os-evidence/200/`.
+Done. Built: `packaging/tests/cosmic-nested.sh` (the nested `cosmic-comp`,
+whose private bus activates nothing installed), `packaging/tests/session-layer-facts.sh`
+(every fact below, again, in one command), `crates/layer-check`
+(`better-layer-check`, the GPUI program, and `better-wl-probe`: screenshots,
+clicks, keys, globals), `better_ui::layer` (`rules`, `clock`, and
+`LayerSurfaces`), and `better_core::desktop::CurrentDesktop::is_better_os_session`.
+The spec's "Surfaces on layer-shell" section documents the helper, the GPUI
+defects, and the test compositor's commands. Evidence, screenshots and logs:
+`/home/tim/Developer/better-os-evidence/200/` (`before-fork-fix-*` and
+`logs/` are the first runs; `logs/after-fork-fix/` the runs with the fix).
 
-Left, and why:
+**The stop condition was hit and decided.** A layer surface that fills an
+axis (the top bar, the taskbar, the desktop) was disconnected on every output
+above 100 %: `wp_fractional_scale_v1.preferred_scale` arrives before the
+surface's first configure, GPUI rescales a window whose width is still the
+requested 0 and sends `wp_viewport.set_destination(0, 32)` (`gpui_linux`
+`wayland/window.rs` lines 1286–1290 at `ae394f3`), which the viewporter
+protocol answers with `bad_value`
+(`logs/wayland-debug-cosmic-scale2-filled-strip-viewport-error.log`). The
+owner chose on 2026-11-21 to carry the fix in a fork of GPUI and offer it
+upstream (ADR 0043). The fork is `https://github.com/TimLai666/zed`, branch
+`better-os/gpui-ae394f3` at `f05b2a9790aefeca74b4df38489d568d08ab3b4d` (tag
+`better-os/gpui-ae394f3-1`); the workspace takes all 22 Zed crates from it
+through one `[patch."https://github.com/zed-industries/zed"]` section. The
+same fix on Zed's `main` is the fork's branch `gpui-linux-layer-shell-zero-size`
+for an upstream pull request; zed-industries/zed#61368 (open since
+2026-07-20) fixes the same defect more widely.
 
-1. **A filled surface above 100 %.** Seen on `cosmic-comp` at 150 % and 200 %
-   (`09-scale-1.5-…`, `09-scale-2-…`: no strip, no reserved zone) and on sway
-   at 200 % for the second of two strips (`logs/outputs-scale2-strip-strip.log`).
-   `logs/wayland-debug-cosmic-scale2-filled-strip-viewport-error.log` shows the
-   order: `wp_fractional_scale_v1.preferred_scale(240)` arrives before the
-   layer surface's first `configure`; GPUI rescales a window whose width is
-   still the requested 0 and sends `wp_viewport.set_destination(0, 32)`
-   (`gpui_linux` `wayland/window.rs` lines 1286–1290 at `ae394f3`); the
-   compositor answers `error 0: negative or zero values` and the connection is
-   dead. Zed's `main` (fetched 2026-11-21) has the same code (`window.rs` line
-   1560), so a GPUI bump alone does not fix it. What it would take:
-   - **(a, recommended) a three-line GPUI patch**: in `set_size_and_scale`,
-     skip `set_destination` while either dimension is 0 (the configure that
-     follows sets it). Carrying it means a Better OS fork of `zed` at
-     `ae394f3` plus the patch, named in a `[patch."https://github.com/zed-industries/zed"]`
-     section of the workspace manifest: every Zed crate's source line in
-     `Cargo.lock` changes, the third-party notices are regenerated, and the fix
-     is offered upstream so the fork can go at the next bump. Defect 3 below is
-     a one-line condition in the same file and could ride along.
-   - (b) wait for upstream, then bump GPUI: Zed's `main` has not fixed it, and
-     a bump drags in everything since `ae394f3` against the
-     `gpui-component` revision the workspace pins.
-   - (c) no GPUI change: give a filled surface an explicit width learned from
-     the output's logical size. GPUI exposes no logical size it can be trusted
-     for at fractional scales (its display bounds divide by the integer
-     `wl_output` scale: 960 for a 1920-pixel output at 150 %), so this needs a
-     second Wayland connection of Better OS's own reading `xdg-output`, and
-     still breaks when an output's mode changes. Not recommended.
-   Fixed-size surfaces are not affected: a 400×120 surface with a popup
-   showed at 150 % and 200 % on `cosmic-comp`
-   (`13-cosmic-scale-*-fixed-size-surface-with-popup.png`), and per-output
-   600×40 surfaces followed outputs at 200 % on sway (`10/11/12-outputs-scale2-fixed-*`).
-2. **"A top strip with an exclusive zone and a popup on two nested outputs at
-   scale 2"** cannot pass until 1 is decided, and "nested" can only mean sway:
-   `cosmic-comp`'s nested backends have exactly one output (`src/backend/winit.rs`
-   `all_outputs` returns one; `src/backend/x11.rs` calls `add_window` once, line
-   367, at commit `6968c5d`). On sway it passed at scale 1 with two outputs,
-   one added and one removed (`10/11/12-outputs-scale1-strip-*`). Two outputs on
-   `cosmic-comp` itself wait for ticket 201's VM (a virtio-gpu with two heads).
+With the fix (`logs/after-fork-fix/`, no protocol error in any log):
+
+- On `cosmic-comp` at 150 % and 200 % a full-width strip with a popup and a
+  full-height strip show and reserve their zones, and a maximized window
+  opened after them leaves both free (`09-scale-1.5-…`, `09-scale-2-…`:
+  at 200 % the strip is 2560×64 device pixels, the side 96 wide, the window
+  from x=96, y=136).
+- On sway, two outputs at 200 %: a full-width strip with a popup on each,
+  the maximized window below it (`10-outputs-scale2-strip-*`); a third output
+  added got a strip, the second removed lost its strip (`closed output=5`), a
+  fourth added got one (`11-…`, `12-…`). The same at 100 % (`…scale1-strip…`)
+  and with fixed-size surfaces at 200 % (`…scale2-fixed…`).
+
+Still for ticket 201's VM, not part of this ticket's "Done when": several
+outputs on `cosmic-comp` itself. Its nested backends have exactly one output
+(`src/backend/winit.rs` `all_outputs` returns one; `src/backend/x11.rs` calls
+`add_window` once, line 367, at commit `6968c5d`), so the two outputs above
+are sway's, which is what this ticket's facts list asks for.
 
 ### The facts, and how each was seen
 
 All on `cosmic-comp` `0.1~1795167359~24.04~6968c5d` (Pop `noble`, `.deb`
 SHA-256 `2cf26f10…7606f`, checked against the signed `InRelease`), nested in a
-headless sway 1.9, unless marked sway. GPUI at `ae394f3`. Every line comes from
+headless sway 1.9, unless marked sway. GPUI at `ae394f3` (the first runs) and
+the fork's `f05b2a97` (scale and outputs again). Every line comes from
 `better-layer-check`'s own event log and `better-wl-probe find`'s pixel
 measurement on a screenshot; the logs are in the evidence directory.
 
@@ -160,8 +151,12 @@ measurement on a screenshot; the logs are in the evidence directory.
 - **Input region** (`08`): an overlay with input only in its left 300 pixels;
   a click at x=100 reached the overlay, a click at x=800 the window under it.
 - **Scale** (`09-*`, `13-*`): at 100 % everything above. At 150 % and 200 % a
-  fixed-size surface and its popup show at the right size; a filled one dies
-  (Left 1). At 150 % `cosmic-comp` sends `preferred_scale(180)`, and GPUI
+  fixed-size surface and its popup show at the right size; a filled one died
+  on upstream GPUI (`before-fork-fix-09-*`) and shows with the fork (above).
+  A window maximized before the surfaces mapped was not moved out of their
+  zones (`14-cosmic-scale-2-window-maximized-before-the-strips-is-not-moved.png`,
+  window 1280×764 logical under both strips), while a zone changing on a
+  mapped surface does move it (`04`, `04b`). At 150 % `cosmic-comp` sends `preferred_scale(180)`, and GPUI
   then sets buffer scale 2 on entering the output, because `cosmic-comp`
   offers `wl_compositor` version 5 and GPUI's integer path runs below 6
   (`window.rs` lines 1191–1195): every GPUI window draws at 2 and is scaled

@@ -36,6 +36,9 @@ run() {
 }
 end_programs() {
     local pid
+    # Before anything ends: nothing installed may have been activated on the
+    # sandbox's bus while the programs ran.
+    ((${#PIDS[@]})) && nested bus-check
     for pid in "${PIDS[@]}"; do
         # `nested exec` execs the program, so this PID is the program itself.
         kill "$pid" 2>/dev/null
@@ -176,15 +179,21 @@ case_input_region() {
 case_scale() {
     local scale
     for scale in 1 1.5 2; do
-        fact "scale $scale: a strip, a popup, and a maximized window on cosmic-comp's output at $scale"
+        fact "scale $scale: a full-width strip with a popup, a full-height strip, and a maximized window on cosmic-comp's output at $scale"
         nested start --scale "$scale" >/dev/null
         nested exec -- "$BETTER_WL_PROBE" outputs
-        run "scale-$scale-window.log" --toplevel --maximized
+        # The surfaces first: cosmic-comp does not move a window maximized
+        # before a surface's zone appears (ticket 200's notes).
         run "scale-$scale-strip.log" --popup
+        run "scale-$scale-side.log" --anchor top,bottom,left --width 48 --color 8e44ad --label side
+        run "scale-$scale-window.log" --toplevel --maximized
         nested click 300 16; sleep 1.5
         nested shot "$OUT/09-scale-$scale-strip-popup-window.png"
         find_color "$OUT/09-scale-$scale-strip-popup-window.png" 2f6fdf
-        events "scale-$scale-strip.log"; events "scale-$scale-window.log"
+        find_color "$OUT/09-scale-$scale-strip-popup-window.png" 8e44ad
+        find_color "$OUT/09-scale-$scale-strip-popup-window.png" 1a9e5c
+        events "scale-$scale-strip.log"; events "scale-$scale-side.log"; events "scale-$scale-window.log"
+        grep -h -m1 'error 0' "$OUT/logs/scale-$scale-strip.log" "$OUT/logs/scale-$scale-side.log" || true
         end_programs; nested stop >/dev/null
     done
 }
