@@ -25,12 +25,40 @@ jobs:
         # The runners have lost name resolution for the Ubuntu mirrors for minutes
         # at a time, which failed this step and so the whole run. `apt-get update`
         # exits 0 with stale lists in that state, so the retry is around both.
-        # `dconf-service` is what the private-bus dconf tests run against
-        # (`defaults_platform::test_support`); under CI they fail without it
-        # rather than skip.
+        #
+        # What the tests run, beside the build dependencies. Each test that
+        # needs one goes through `test_prerequisites`, so under CI a missing
+        # one fails the test rather than skipping it (ticket 177):
+        # - dbus (`dbus-daemon`): every private-bus test, in awake-service,
+        #   awake-tray, files-gui, hardware-platform, launcher-platform,
+        #   manager-daemon, manager-gui, monitor-service, monitor-tray,
+        #   storage-service, touchpad-gesture-service, touchpad-platform, and
+        #   window-attention-service.
+        # - dconf-service: the private dconf tests
+        #   (`defaults_platform::test_support`): defaults-core's
+        #   `gnome_writes` and touchpad-platform's `session_profile`.
+        # - gjs: the two shell extensions parsed by the interpreter GNOME
+        #   Shell uses (`window-attention-service/tests/extension.rs`,
+        #   `touchpad-session/tests/extension.rs`). They need nothing else:
+        #   `gjs -m` stops at the first `resource:///org/gnome/shell` import,
+        #   which no machine outside a shell has, so no shell typelib is read.
+        # - locales and language-pack-gnome-zh-hant-base: files-gui's GVfs
+        #   zh_TW host-key test, with the locale generated below.
+        # - gvfs-backends (with gvfs-daemons): files-gui's
+        #   `the_installed_gvfs_is_found_when_there_is_one`.
+        # - poppler-utils (`pdftoppm`): files-preview's
+        #   `poppler_renders_and_searches_a_real_pdf_when_installed`.
+        # - dpkg (`dpkg-query`): better-core's self_update journal test; the
+        #   image ships it.
+        # The ubuntu-24.04 image already ships dbus and locales (and dpkg), so
+        # taking those off this line would not turn CI red; the line names
+        # them so the dependency is written down. The runner itself gives the
+        # rest: a user other than root (files-gui, files-operations,
+        # files-platform, monitor-collectors-linux) and a temporary directory
+        # with sparse files and user extended attributes (files-operations).
         run: |
           for attempt in 1 2 3 4 5; do
-            if sudo apt-get update && sudo apt-get install -y libfontconfig1-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-base gstreamer1.0-plugins-good dbus dconf-service locales language-pack-gnome-zh-hant-base; then
+            if sudo apt-get update && sudo apt-get install -y libfontconfig1-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-base gstreamer1.0-plugins-good dbus dconf-service gjs locales language-pack-gnome-zh-hant-base gvfs-backends poppler-utils; then
               exit 0
             fi
             echo "apt attempt $attempt failed; waiting before the next" >&2
@@ -45,7 +73,21 @@ jobs:
       - run: cargo check --workspace
       - run: cargo build --workspace
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-      - run: cargo test --workspace
+      # A test that cannot run here prints `better-os-test-skipped:` and
+      # passes, and under CI fails instead (`test_prerequisites`, ticket 177).
+      # The output of a passing test is captured and never reaches this log,
+      # so the tests run with `--show-output`, which prints it after each test
+      # binary, and the run fails when a skip line is in it: a skip that got
+      # past a misread `CI` variable, or one written the old way.
+      - name: Tests, and none of them skipped
+        run: |
+          set -o pipefail
+          log="$RUNNER_TEMP/test-output.log"
+          cargo test --workspace -- --show-output 2>&1 | tee "$log"
+          if grep -nE 'better-os-test-skipped:|^(skipping|skipped):' "$log"; then
+            echo "A test skipped on CI. Install what it needs in the install step above." >&2
+            exit 1
+          fi
 
   # The workspace declares the oldest Rust it builds with, and stable CI would
   # never notice that declaration going stale: it did, from 1.85 to a lockfile

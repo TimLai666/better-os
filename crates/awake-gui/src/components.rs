@@ -196,21 +196,24 @@ impl AwakeApp {
                         .text_color(cx.theme().muted_foreground)
                         .child(c.service_unreachable_detail),
                 )
-                // The reason is a stable key. Showing it beats showing nothing
-                // to someone who has to diagnose this.
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(detail.clone()),
-                )
+                // What went wrong, when the title has not said it, and the
+                // system's own message for someone who has to diagnose this.
+                .when_some(c.banner_detail(detail), |view, line| {
+                    view.child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(line),
+                    )
+                })
                 .into_any_element(),
         )
     }
 
     pub(crate) fn action_banner(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let detail = self.action_error.as_ref()?;
-        Some(self.warning(detail.clone(), cx))
+        let said = crate::i18n::copy(self.locale).client_error(detail);
+        Some(self.warning(said, cx))
     }
 
     /// A number with a decrement and an increment beside it. Used for the

@@ -28,19 +28,24 @@ RELEASE_TARGET="${2:-}"
 ARCH="$(dpkg --print-architecture)"
 # The wire contract wants the bare release, the packaging contract wants the
 # `ubuntu-` prefixed target.
-RELEASE_ID="${RELEASE_TARGET#ubuntu-}"
-if [[ -z "$RELEASE_ID" ]]; then
-    RELEASE_ID="$(sed -n 's/^VERSION_ID="\?\([^"]*\)"\?/\1/p' /etc/os-release)"
+#
+# The release is the one the image was built for (the Dockerfile's
+# RELEASE_TARGET), never read from /etc/os-release here (ticket 173). The
+# daemon under test reads the host with better_core::host and refuses a plan
+# for another release, so a test that read the host by the same rule would
+# agree with the daemon by construction and could not catch that rule going
+# wrong, and one that read it by a rule of its own (a sed of VERSION_ID, which
+# a derivative such as Zorin sets to its own number) would be a second copy.
+if [[ -z "$RELEASE_TARGET" ]]; then
+    printf 'Usage: %s DIST_DIR RELEASE_TARGET (for example ubuntu-24.04)\n' "$0" >&2
+    exit 2
 fi
+RELEASE_ID="${RELEASE_TARGET#ubuntu-}"
 
 find_package() {
     local name="$1"
     local paths
-    if [[ -n "$RELEASE_TARGET" ]]; then
-        paths=("$DIST_DIR/${name}_"*"_${RELEASE_TARGET}_${ARCH}.deb")
-    else
-        paths=("$DIST_DIR/${name}_"*.deb)
-    fi
+    paths=("$DIST_DIR/${name}_"*"_${RELEASE_TARGET}_${ARCH}.deb")
     if [[ ${#paths[@]} -ne 1 || ! -f "${paths[0]}" ]]; then
         printf 'Expected exactly one %s package in %s\n' "$name" "$DIST_DIR" >&2
         exit 1

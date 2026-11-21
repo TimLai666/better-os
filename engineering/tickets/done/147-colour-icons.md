@@ -199,12 +199,12 @@ Done since: DESIGN.md's Icons section points to
 `design/design-demos/icon-set.html` and the gallery's Icons page, and
 `icon-directions.html` is removed (merge of 2026-11-21).
 
-**Left before this ticket closes:** the owner's go-ahead on the final
-screens. The owner approved the set on 2026-11-21 before these were redrawn
-or added: `battery`, `file`, `pointer`, `dashboard`, `pictures`, `palette`,
-`scrolling`, `startup`, `fixes`, `new-file`, `download`, `open-external`,
-`show-pane`, `view-list`, `open-terminal`; and has not seen Better Awake's
-and Better Touchpad's new navigation panes.
+The owner gave the go-ahead on 2026-11-21 after the final screens: the icons
+redrawn or added after the first approval (`battery`, `file`, `pointer`,
+`dashboard`, `pictures`, `palette`, `scrolling`, `startup`, `fixes`,
+`new-file`, `download`, `open-external`, `show-pane`, `view-list`,
+`open-terminal`) and Better Awake's and Better Touchpad's new navigation
+panes. What nobody has seen on a real desktop is in `engineering/handoff.md`.
 
 ### Review round (2026-11-21): two reviews' findings fixed
 

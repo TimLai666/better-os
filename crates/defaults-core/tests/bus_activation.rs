@@ -282,20 +282,14 @@ impl Run {
 }
 
 /// A private bus, or, where `dbus-daemon` cannot be started, a skip on a
-/// developer's machine and a failure in CI (`CI` is set there, and the `rust`
+/// developer's machine and a failure in CI (`test_prerequisites`; the `rust`
 /// job installs the `dbus` package): the routing must be proved somewhere.
 macro_rules! bus_or_skip {
     () => {
-        match PrivateBus::start() {
-            Some(bus) => bus,
-            None if std::env::var_os("CI").is_some() => {
-                panic!("CI has no dbus-daemon to start a private bus with")
-            }
-            None => {
-                eprintln!("skipped: no dbus-daemon to start a private bus with");
-                return;
-            }
-        }
+        test_prerequisites::require!(
+            "dbus-daemon",
+            PrivateBus::start().ok_or("a private dbus-daemon did not start")
+        )
     };
 }
 

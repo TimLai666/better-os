@@ -60,9 +60,7 @@ fn a_symlink_loop_terminates_and_names_the_directory_it_looped_at() {
 
 #[test]
 fn a_source_that_cannot_be_read_fails_with_permission_denied_and_names_the_path() {
-    if support::running_as_root() {
-        return;
-    }
+    test_prerequisites::require_that!("a user other than root", !support::running_as_root());
     let root = tempfile::tempdir().unwrap();
     let locked = root.path().join("locked.bin");
     write_pattern(&locked, 64);
@@ -87,9 +85,7 @@ fn a_source_that_cannot_be_read_fails_with_permission_denied_and_names_the_path(
 
 #[test]
 fn a_destination_directory_that_refuses_writes_fails_without_losing_the_source() {
-    if support::running_as_root() {
-        return;
-    }
+    test_prerequisites::require_that!("a user other than root", !support::running_as_root());
     let root = tempfile::tempdir().unwrap();
     let source = root.path().join("a.bin");
     write_pattern(&source, 128);
@@ -334,9 +330,7 @@ fn copying_a_directory_into_its_own_subdirectory_is_refused_before_anything_move
 
 #[test]
 fn a_failure_keeps_its_error_and_its_affected_path_in_the_log() {
-    if support::running_as_root() {
-        return;
-    }
+    test_prerequisites::require_that!("a user other than root", !support::running_as_root());
     let root = tempfile::tempdir().unwrap();
     let source = root.path().join("locked.bin");
     write_pattern(&source, 32);
@@ -361,9 +355,7 @@ fn a_failure_keeps_its_error_and_its_affected_path_in_the_log() {
 
 #[test]
 fn one_bad_item_does_not_abandon_the_rest_of_the_job() {
-    if support::running_as_root() {
-        return;
-    }
+    test_prerequisites::require_that!("a user other than root", !support::running_as_root());
     let root = tempfile::tempdir().unwrap();
     let source = root.path().join("source");
     fs::create_dir(&source).unwrap();

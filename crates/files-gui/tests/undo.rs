@@ -529,10 +529,8 @@ fn undoing_a_merge_takes_back_only_what_it_brought_and_restores_what_it_replaced
 #[test]
 fn an_undo_that_stops_part_way_can_be_finished_later() {
     use std::os::unix::fs::PermissionsExt;
-    if unsafe { libc::geteuid() } == 0 {
-        eprintln!("skipping: root ignores the folder permission this test relies on");
-        return;
-    }
+    // Root ignores the folder permission this test relies on.
+    test_prerequisites::require_that!("a user other than root", unsafe { libc::geteuid() } != 0);
     let rig = rig();
     let first_home = rig.dir.join("first");
     let second_home = rig.dir.join("second");

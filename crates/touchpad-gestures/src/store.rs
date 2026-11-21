@@ -22,7 +22,7 @@ use crate::profiles::GestureProfiles;
 pub enum GestureStoreError {
     #[error(transparent)]
     Store(#[from] StoreError),
-    #[error("{path} could not be read as a gesture configuration: {source}")]
+    #[error("{source} ({path})")]
     Damaged {
         path: String,
         #[source]

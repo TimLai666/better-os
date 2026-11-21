@@ -904,16 +904,18 @@ mod tests {
     /// The case the status file alone gets wrong: while dpkg runs a postinst
     /// its change is in the updates journal, and the status file still says
     /// the old version is installed. dpkg-query, run against a scratch admin
-    /// directory, applies the journal. Skipped where there is no dpkg.
+    /// directory, applies the journal. Skipped where there is no dpkg, and
+    /// failed there under CI.
     #[test]
     fn the_updates_journal_wins_over_a_stale_status_file() {
-        if std::process::Command::new("dpkg-query")
-            .arg("--version")
-            .output()
-            .is_err()
-        {
-            return;
-        }
+        test_prerequisites::require!(
+            "dpkg-query",
+            std::process::Command::new("dpkg-query")
+                .arg("--version")
+                .output()
+                .map(|_| ())
+                .map_err(|error| format!("dpkg-query could not be run: {error}"))
+        );
         let tmp = scratch();
         let admin = tmp.path();
         fs::create_dir_all(admin.join("updates")).unwrap();

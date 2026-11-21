@@ -196,10 +196,10 @@ fn require_every_start_answered(unanswered: &[String]) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn every_start_answers_the_call_that_activated_it() {
     let names = names("org.betteros.Manager1Test");
-    let Some(bus) = ActivatingBus::start("manager-daemon", &names) else {
-        eprintln!("skipping: dbus-daemon is not available in this environment");
-        return;
-    };
+    let bus = test_prerequisites::require!(
+        "dbus-daemon",
+        ActivatingBus::start("manager-daemon", &names).ok_or("a private dbus-daemon did not start")
+    );
     let caller = bus.caller().await;
     let artifacts = Arc::new(ArtifactStore::new(bus.directory.join("archives")));
     let journal = Arc::new(Journal::new(bus.directory.join("state")));

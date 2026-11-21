@@ -239,7 +239,7 @@ pub(crate) fn description(drive: &Drive, c: &Copy) -> String {
     format!("{} · {kind} · {state}", bytes(drive.size))
 }
 
-pub(crate) fn reason(outcome: &SetOutcome, c: &Copy) -> String {
+pub(crate) fn reason(outcome: &SetOutcome, c: &Copy, locale: crate::i18n::Locale) -> String {
     match outcome {
         SetOutcome::Done { .. } | SetOutcome::Cancelled => String::new(),
         SetOutcome::NotAllowed => c.reason_not_allowed.into(),
@@ -254,7 +254,7 @@ pub(crate) fn reason(outcome: &SetOutcome, c: &Copy) -> String {
         SetOutcome::Malformed(_) => c.reason_malformed.into(),
         SetOutcome::TableBusy => c.reason_table_busy.into(),
         SetOutcome::MountFailed(detail) => c.reason_mount_failed.replace("{detail}", detail),
-        SetOutcome::Failed(detail) => detail.clone(),
+        SetOutcome::Failed(detail) => crate::reasons::details_in_words(detail, locale),
     }
 }
 
@@ -419,7 +419,7 @@ impl ManagerApp {
                 .background_spawn(async move {
                     let outcome = match system_bus() {
                         Some(bus) => client::set_mount_automatically(&bus, &uuid, on),
-                        None => SetOutcome::Failed("the system bus is not reachable".into()),
+                        None => SetOutcome::Failed("manager.system.bus_unreachable".into()),
                     };
                     after_change(outcome, || follow(&drive, on), c)
                 })
@@ -454,7 +454,7 @@ impl ManagerApp {
             let text = c
                 .unchanged
                 .replace("{drive}", drive)
-                .replace("{reason}", &reason(outcome, c));
+                .replace("{reason}", &reason(outcome, c, self.locale));
             let close = Self::act(cx, |this, _, cx| {
                 this.system.drives.bar = None;
                 cx.notify();
@@ -631,7 +631,7 @@ mod tests {
                 SetOutcome::TableBusy,
                 SetOutcome::MountFailed("x".into()),
             ] {
-                assert!(!reason(&outcome, c).is_empty());
+                assert!(!reason(&outcome, c, crate::i18n::Locale::EnUs).is_empty());
             }
         }
         assert_eq!(bytes(32_000_000_000), "29.8 GB");

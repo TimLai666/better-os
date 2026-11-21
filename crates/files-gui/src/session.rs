@@ -295,7 +295,7 @@ impl Notice {
             Notice::Navigation(error) => match error {
                 NavigationError::LastTab => c.last_tab_stays_open.to_string(),
                 NavigationError::NothingToRestore => c.nothing_to_reopen.to_string(),
-                NavigationError::NoSuchTab(_) => error.to_string(),
+                NavigationError::NoSuchTab(_) => crate::errors::explain(&error.to_string(), c),
             },
             Notice::Undo { undoing, outcome } => match outcome {
                 Ok(kind) => (if *undoing { c.undo_done } else { c.redo_done })

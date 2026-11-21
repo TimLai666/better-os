@@ -396,7 +396,7 @@ fn unescape(value: &str) -> String {
 
 /// Splits a semicolon-separated list value. `\;` is a literal semicolon, and a
 /// trailing separator does not produce an empty final element.
-fn split_list(value: &str) -> Vec<String> {
+pub(crate) fn split_list(value: &str) -> Vec<String> {
     let mut items = Vec::new();
     let mut current = String::new();
     let mut escaped = false;

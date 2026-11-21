@@ -189,10 +189,11 @@ fn require_every_start_answered(unanswered: &[String]) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn every_start_answers_the_call_that_activated_it() {
     let names = names("org.betteros.Launcher1Test");
-    let Some(bus) = ActivatingBus::start("launcher-platform", &names) else {
-        eprintln!("skipping: dbus-daemon is not available in this environment");
-        return;
-    };
+    let bus = test_prerequisites::require!(
+        "dbus-daemon",
+        ActivatingBus::start("launcher-platform", &names)
+            .ok_or("a private dbus-daemon did not start")
+    );
     let caller = bus.caller().await;
 
     let mut unanswered = Vec::new();
@@ -265,10 +266,11 @@ async fn a_forward_only_registry_serves_nothing_and_still_forwards() {
     use launcher_platform::activation::{NameOwnership, NameRegistry};
 
     let names = names("org.betteros.Launcher1ForwardTest");
-    let Some(bus) = ActivatingBus::start("launcher-platform-forward", &names[..1]) else {
-        eprintln!("skipping: dbus-daemon is not available in this environment");
-        return;
-    };
+    let bus = test_prerequisites::require!(
+        "dbus-daemon",
+        ActivatingBus::start("launcher-platform-forward", &names[..1])
+            .ok_or("a private dbus-daemon did not start")
+    );
     let name = names[0].clone();
     let address = bus.address.clone();
     let (primary_inbox, refused, registries) = tokio::task::spawn_blocking(move || {

@@ -325,10 +325,11 @@ mod tests {
     /// person chose comes back; a cancel comes back as a cancel.
     #[test]
     fn the_portal_is_asked_and_its_answer_is_the_path() {
-        let Some(private) = crate::first_call_tests::PrivateBus::start() else {
-            eprintln!("skipping: dbus-daemon is not available in this environment");
-            return;
-        };
+        let private = test_prerequisites::require!(
+            "dbus-daemon",
+            crate::first_call_tests::PrivateBus::start()
+                .ok_or("a private dbus-daemon did not start")
+        );
         for (response, uris, expected) in [
             (
                 0,

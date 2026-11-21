@@ -9,9 +9,10 @@
 //! settings.
 //!
 //! When either program is missing, [`PrivateDconf::start_or_skip`] says so
-//! and the test does nothing — except under CI (`CI=true`), where a missing
-//! program fails the test: CI installs both, and a test that quietly did
-//! nothing there would be a check nobody runs.
+//! and the test does nothing, except under CI, where a missing program fails
+//! the test: CI installs both, and a test that quietly did nothing there
+//! would be a check nobody runs. The rule is `test_prerequisites`' (ticket
+//! 177).
 
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -134,19 +135,11 @@ impl PrivateDconf {
     }
 
     /// [`Self::start`], or `None` with the reason on standard error. Under
-    /// CI (`CI=true`) a missing service fails the test instead.
+    /// CI a missing service fails the test instead: the rule is
+    /// `test_prerequisites`', which every skipping test shares.
+    #[track_caller]
     pub fn start_or_skip() -> Option<Self> {
-        match Self::start() {
-            Ok(dconf) => Some(dconf),
-            Err(reason) => {
-                assert!(
-                    std::env::var("CI").as_deref() != Ok("true"),
-                    "CI must run the private dconf tests: {reason}"
-                );
-                eprintln!("skipping: {reason}");
-                None
-            }
-        }
+        test_prerequisites::available("dbus-daemon and dconf-service", Self::start())
     }
 
     /// The scratch directory every XDG variable of the service points into.

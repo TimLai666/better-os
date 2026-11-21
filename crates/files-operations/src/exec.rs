@@ -1042,10 +1042,12 @@ fn trash_one_with(
             }
         },
     };
-    // An item that cannot be located falls through to the plain move, which
-    // reports a missing source as the skip it is.
-    if matches!(trash::shares_device(&home, source, devices), Ok(false)) {
-        return trash_on_own_device(&home, source, devices, uid, control);
+    // The choice is `files_platform::trash`'s, the one Better Git's discards
+    // make too (ticket 173). An item that cannot be located is given the home
+    // trash, whose move reports a missing source as the skip it is.
+    let target = trash::choose_trash(&home, source, uid, devices);
+    if !matches!(target, trash::TrashTarget::Home) {
+        return trash_on_own_device(&home, source, target, control);
     }
     match trash::move_to_trash(&home, source) {
         Ok(item) => trashed(item, control),
@@ -1053,7 +1055,8 @@ fn trash_one_with(
         // The device numbers agreed and the kernel still said `EXDEV`: a bind
         // mount does that. The item's own device decides, as above.
         Err(trash::TrashError::CrossDevice { .. }) => {
-            trash_on_own_device(&home, source, devices, uid, control)
+            let target = trash::own_device_trash(source, uid, devices);
+            trash_on_own_device(&home, source, target, control)
         }
         Err(error) => ItemOutcome::Failed(OperationError::TrashUnavailable {
             reason: error.to_string(),
@@ -1079,18 +1082,11 @@ fn trashed(item: trash::TrashedItem, control: &mut dyn JobControl) -> ItemOutcom
 fn trash_on_own_device(
     home: &TrashDirectory,
     source: &Path,
-    devices: &dyn DeviceProbe,
-    uid: Option<u32>,
+    target: trash::TrashTarget,
     control: &mut dyn JobControl,
 ) -> ItemOutcome {
-    let volume = match uid {
-        Some(uid) => {
-            trash::volume_trash_for(source, uid, devices).map_err(|error| error.to_string())
-        }
-        None => Err("files.trash.error.no_uid".to_string()),
-    };
-    match volume {
-        Ok(volume) => {
+    match target {
+        trash::TrashTarget::Volume(volume) => {
             if !matches!(volume.shared, SharedTrash::Usable | SharedTrash::Missing) {
                 // The specification asks for a failed `.Trash` check to be
                 // reported. The item still goes to the private trash.
@@ -1112,7 +1108,17 @@ fn trash_on_own_device(
                 Err(error) => home_copy_fallback(home, source, error.to_string(), control),
             }
         }
-        Err(reason) => home_copy_fallback(home, source, reason, control),
+        trash::TrashTarget::HomeCopy { reason } => {
+            home_copy_fallback(home, source, reason, control)
+        }
+        // `choose_trash` gives the home trash only to an item on its device;
+        // one that got here after an `EXDEV` is copied like any other.
+        trash::TrashTarget::Home => home_copy_fallback(
+            home,
+            source,
+            "files.trash.error.cross_device".into(),
+            control,
+        ),
     }
 }
 

@@ -409,7 +409,12 @@ impl AppChooser {
                     Err(message) => self.notice = Some(Notice::LaunchFailed(message)),
                 }
             }
-            Err(error) => self.notice = Some(Notice::AssociationFailed(error.to_string())),
+            Err(error) => {
+                self.notice = Some(Notice::AssociationFailed(crate::i18n::association_details(
+                    &error,
+                    self.locale,
+                )))
+            }
         }
         cx.notify();
     }
@@ -420,7 +425,9 @@ impl AppChooser {
             AssociationStore::for_user().and_then(|store| store.restore(&rollback).map(|()| store));
         self.notice = Some(match outcome {
             Ok(_) => Notice::AssociationRolledBack,
-            Err(error) => Notice::AssociationFailed(error.to_string()),
+            Err(error) => {
+                Notice::AssociationFailed(crate::i18n::association_details(&error, self.locale))
+            }
         });
         self.warnings.clear();
         cx.notify();
@@ -729,8 +736,11 @@ impl AppChooser {
             let element = match notice {
                 Notice::LaunchFailed(detail) => ErrorBar::new(
                     "launch-failed",
-                    ErrorReport::new(c.launch_failed, detail.clone())
-                        .advice(c.launch_failed_advice),
+                    ErrorReport::new(
+                        c.launch_failed,
+                        crate::i18n::launch_details(detail, self.locale),
+                    )
+                    .advice(c.launch_failed_advice),
                 )
                 .locale(words)
                 .into_any_element(),

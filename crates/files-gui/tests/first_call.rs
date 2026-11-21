@@ -133,10 +133,10 @@ impl Drop for ActivatingBus {
 
 #[test]
 fn every_start_answers_the_call_that_activated_it() {
-    let Some(bus) = ActivatingBus::start() else {
-        eprintln!("skipping: dbus-daemon is not available in this environment");
-        return;
-    };
+    let bus = test_prerequisites::require!(
+        "dbus-daemon",
+        ActivatingBus::start().ok_or("a private dbus-daemon did not start")
+    );
     let caller = bus
         .builder()
         .method_timeout(CALLER_TIMEOUT)
@@ -229,10 +229,10 @@ fn every_start_answers_the_call_that_activated_it() {
 /// instead of being answered and lost.
 #[test]
 fn a_call_is_answered_only_once_its_window_opened() {
-    let Some(bus) = ActivatingBus::start() else {
-        eprintln!("skipping: dbus-daemon is not available in this environment");
-        return;
-    };
+    let bus = test_prerequisites::require!(
+        "dbus-daemon",
+        ActivatingBus::start().ok_or("a private dbus-daemon did not start")
+    );
     let (sender, requests) = std::sync::mpsc::channel();
     let (connection, reply) = serve_on(bus.builder(), sender).expect("served on the bus");
     assert!(reply.is_ok());
@@ -280,10 +280,10 @@ fn a_call_is_answered_only_once_its_window_opened() {
 /// answer: the connection stays until the process ends.
 #[test]
 fn a_call_received_before_the_name_is_given_back_is_still_answered() {
-    let Some(bus) = ActivatingBus::start() else {
-        eprintln!("skipping: dbus-daemon is not available in this environment");
-        return;
-    };
+    let bus = test_prerequisites::require!(
+        "dbus-daemon",
+        ActivatingBus::start().ok_or("a private dbus-daemon did not start")
+    );
     let (sender, requests) = std::sync::mpsc::channel();
     let (connection, reply) = serve_on(bus.builder(), sender).expect("served on the bus");
     assert!(reply.is_ok());

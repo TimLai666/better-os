@@ -28,5 +28,6 @@ manager-core.workspace = true
 manager-platform.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
+test-prerequisites.workspace = true
 # The file managers a private bus starts in `tests/bus_activation.rs`.
 zbus.workspace = true
