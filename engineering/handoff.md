@@ -16,3 +16,13 @@ Unfinished work that has no ticket. Delete a section when its work is done, and 
   - An object picture drawn large (Better Launcher's 64px preview, a 48px device banner) on a display scaled above 2x, where GPUI's fixed 2x raster may still look soft (ticket 147).
   - Better Git with a repository open (its rows, chips, and Push and Pull buttons) and Better Manager's pages other than Home, with the new icons (ticket 147).
 - **Sources:** tickets 43, 45, 47, 48, 61 and 147.
+
+## Work in flight when the session of 2026-11-22 stopped
+- **Asked:** finish every open ticket; the owner paused the session to update the application, which ends its background workers.
+- **Done and checked:** pull request 30 (the login and lock design, ADR 0044 accepted, L1 B, L2 a, L8 a) is merged. Ticket 253's decision (Better OS's own screenshot program, as rich as GNOME's) and ADR 0045 (GPUI Kit on GPUI Fast, measured) are on main.
+- **Next, in this order:**
+  - **Pull request 31 (ticket 101, branch `ticket-101`):** its checks were still running, and its independent review was running and is lost with the session. Start a new read-only review of `git diff main...ticket-101` (what a local process can make root do through `UsbRecovery1`, the helper sandbox, the power-off path, forged kernel-log lines), fix what it confirms, and merge on GitHub only then. Do not merge on green checks alone.
+  - **The login and lock design's review:** an independent review found one P0 and nine P1 in the merged design (the supervisor's `PartOf=` stops itself on every retry; the 60-second arithmetic; the unlock socket's directory mode; switching off ends the running session; and more). Its full text is in `/home/tim/Developer/better-os-evidence/259/design-review-2026-11-22.md`. A worker had started revising `design/login-screen-spec.md`, `engineering/specs/login-screen-security.md`, ADR 0044 and tickets 259 to 281 in the worktree `.claude/worktrees/agent-ae6d97c181f9293c1` (one file changed, nothing committed). Finish the revision for every finding, push it as `ticket-259-design-review`, and open a pull request. No login or lock code (tickets 260 to 281) starts before that is merged.
+  - **Ticket 253 (the screenshot program):** a worker's first commit `c3e1aec` and 24 uncommitted files are in the worktree `.claude/worktrees/agent-a4618b636f029ffba` (branch `worktree-agent-a4618b636f029ffba`). Nothing in it has been reviewed or gated. Continue from that tree; the ticket says what done means.
+  - **Ticket 257:** the upgrade to GPUI Kit's current release on GPUI Fast is not started; ADR 0045 lists the edits and the two things the owner accepts with it.
+- **Sources:** tickets 101, 253, 257, 259; ADR 0044, 0045, 0046 (on `ticket-101`).
