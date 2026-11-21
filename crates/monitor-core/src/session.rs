@@ -4,23 +4,27 @@
 //!
 //! Most processes are fine to end, by asking (`SIGTERM`) or at once
 //! (`SIGKILL`), including every ordinary user service, a terminal and its
-//! shell, and a Flatpak application. A few are not, because the session
-//! ends with them whichever signal it is: the compositor, the session's
-//! message bus, the user's service manager, the session manager, what logind
-//! records as the session's leader, the X server when the compositor treats
-//! it as mandatory, and Better Monitor itself with what it runs under.
+//! shell, and a Flatpak application. A few are not, because a session ends
+//! with them whichever signal it is: the compositor, the session's message
+//! bus, the user's service manager, the session manager, what logind records
+//! as a graphical session's leader, the X server when the compositor treats
+//! it as mandatory, and Better Monitor itself with what it runs under. A
+//! second graphical session of the same person counts too: ending its
+//! compositor closes every app there.
 //!
 //! Which process plays each part is decided from what the system records
-//! about it first: who holds the session bus's and the Wayland display's
-//! listening sockets, the cgroup systemd put a process in, and logind's
-//! record of the display session. A name is used only where nothing else
-//! says it ([`NAMED`], every entry with its reason), or where the fact that
-//! would have decided could not be read: an unknown never makes a process
-//! that matches part of the rule safe to kill.
+//! about it first: who holds the listening sockets of the session bus and of
+//! each Wayland and X display, the cgroup systemd put a process in, and
+//! logind's sessions (read over D-Bus by the window). A name is used only
+//! where nothing else says it ([`NAMED`], every entry with its reason), or
+//! where the fact that would have decided could not be read, for the whole
+//! session or for that one process: an unknown never makes a process that
+//! matches part of the rule safe to end.
 //!
 //! This module only decides. `monitor-actions-linux` reads the facts.
 
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet};
 
 /// The part a process plays in the session.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -34,11 +38,11 @@ pub enum SessionRole {
     UserManager,
     /// The session's message bus.
     MessageBus,
-    /// The Wayland compositor: the desktop itself.
+    /// A Wayland compositor of one of the person's graphical sessions.
     Compositor,
-    /// The X server, when the compositor ends with it.
+    /// An X server a compositor ends with.
     XServer,
-    /// What logind records as the display session's leader, or what that
+    /// What logind records as a graphical session's leader, or what that
     /// leader started (GDM's `gdm-wayland-session`, a greeter's session
     /// command).
     SessionLauncher,
@@ -58,27 +62,74 @@ pub struct SessionMember {
     pub cgroup: Option<String>,
 }
 
-/// What the session's own records say. Every `Option` is `None` when the
-/// record could not be read, which is not the same as "no such process".
+/// One of the person's logind sessions, as `org.freedesktop.login1` says.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LoginSession {
+    pub id: String,
+    /// `Session.Leader`; `None` when logind reports none (0).
+    pub leader: Option<u32>,
+    /// `Type` is `wayland`, `x11` or `mir` and `Class` is `user`.
+    pub graphical: bool,
+    /// The session Better Monitor runs in (`GetSessionByPID`), or the
+    /// user's `Display` session when the window runs outside any.
+    pub own: bool,
+}
+
+/// What the session's own records say, at one moment. Every `Option` is
+/// `None` when the record could not be read, which is not the same as "no
+/// such process"; [`SessionFacts::fds_read`] says for which processes a
+/// holder list is a fact.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct SessionFacts {
     /// The user the window runs as.
     pub uid: u32,
-    /// Better Monitor's own process and every process above it.
+    /// The processes above Better Monitor.
     pub monitor_ancestors: Vec<u32>,
-    /// The processes holding the session bus's listening socket.
+    /// The holders of the session bus's listening socket (the window's
+    /// `DBUS_SESSION_BUS_ADDRESS`, and `$XDG_RUNTIME_DIR/bus`, the one user
+    /// bus every session of the person shares).
     pub bus_holders: Option<Vec<u32>>,
-    /// The processes holding the Wayland display's listening socket.
+    /// The holders of the window's own Wayland display socket.
     pub compositor_holders: Option<Vec<u32>>,
-    /// The processes holding the X display's listening socket; empty when
-    /// the session has no X display.
+    /// The holders of the window's own X display sockets; empty when it has
+    /// no X display.
     pub x_display_holders: Option<Vec<u32>>,
-    /// The compositor is known to start Xwayland on demand and to survive
-    /// it ending ([`xwayland_on_demand`]). `false` when that is not known.
-    pub xwayland_on_demand: bool,
-    /// logind's leader of the display session: `Some(None)` when the user has
-    /// no display session.
-    pub session_leader: Option<Option<u32>>,
+    /// The holders of every other listening `$XDG_RUNTIME_DIR/wayland-*`
+    /// socket: a compositor of another of the person's sessions when it runs
+    /// in a graphical session ([`in_graphical_session`]), a nested or
+    /// sandboxed one otherwise.
+    pub other_compositor_holders: Option<Vec<u32>>,
+    /// The same for every other listening `/tmp/.X11-unix/X*` socket.
+    pub other_x_holders: Option<Vec<u32>>,
+    /// Compositors known to start Xwayland on demand and carry on without it
+    /// ([`keeps_xwayland_on_demand`]).
+    pub on_demand_compositors: Vec<u32>,
+    /// The processes whose descriptors were read: a holder list is a fact
+    /// only for these.
+    pub fds_read: BTreeSet<u32>,
+    /// What was read about each process scanned.
+    pub members: BTreeMap<u32, SessionMember>,
+    /// The person's logind sessions; `None` when logind could not be asked.
+    pub sessions: Option<Vec<LoginSession>>,
+}
+
+impl SessionFacts {
+    /// Every process the facts name as holding something: when one of them
+    /// is gone, the facts are read again.
+    pub fn holders(&self) -> BTreeSet<u32> {
+        [
+            &self.bus_holders,
+            &self.compositor_holders,
+            &self.x_display_holders,
+            &self.other_compositor_holders,
+            &self.other_x_holders,
+        ]
+        .into_iter()
+        .flatten()
+        .flatten()
+        .copied()
+        .collect()
+    }
 }
 
 /// A process recognised by its name, with why a name is used.
@@ -124,49 +175,49 @@ pub const NAMED: &[NamedProcess] = &[
         name: "dbus-daemon",
         role: SessionRole::MessageBus,
         by_name_alone: false,
-        reason: "a message bus, when the holders of the session bus's socket cannot be read",
+        reason: "a message bus, when whether it holds the session bus's socket cannot be read",
     },
     NamedProcess {
         name: "dbus-broker",
         role: SessionRole::MessageBus,
         by_name_alone: false,
-        reason: "a message bus, when the holders of the session bus's socket cannot be read",
+        reason: "a message bus, when whether it holds the session bus's socket cannot be read",
     },
     NamedProcess {
         name: "dbus-broker-launch",
         role: SessionRole::MessageBus,
         by_name_alone: false,
-        reason: "dbus-broker's launcher holds the bus socket, when its holders cannot be read",
+        reason: "dbus-broker's launcher holds the bus socket, when that cannot be read",
     },
     NamedProcess {
         name: "gnome-shell",
         role: SessionRole::Compositor,
         by_name_alone: false,
-        reason: "GNOME's compositor, when the holder of the Wayland display socket cannot be read; also the one compositor whose Xwayland policy is known (mutter: on demand inside a systemd user unit)",
+        reason: "GNOME's compositor, when whether it holds a Wayland display socket cannot be read; also the one compositor whose Xwayland policy is known (mutter: on demand inside a systemd user unit)",
     },
     NamedProcess {
         name: "cosmic-comp",
         role: SessionRole::Compositor,
         by_name_alone: false,
-        reason: "COSMIC's compositor, when the holder of the Wayland display socket cannot be read",
+        reason: "COSMIC's compositor, when whether it holds a Wayland display socket cannot be read",
     },
     NamedProcess {
         name: "Xwayland",
         role: SessionRole::XServer,
         by_name_alone: false,
-        reason: "the X server, when the holders of the X display socket cannot be read",
+        reason: "an X server, when whether it holds an X display socket cannot be read",
     },
     NamedProcess {
         name: "gdm-wayland-session",
         role: SessionRole::SessionLauncher,
         by_name_alone: false,
-        reason: "what GDM starts a Wayland session with, when logind's record of the session cannot be read",
+        reason: "what GDM starts a Wayland session with, when logind cannot be asked",
     },
     NamedProcess {
         name: "gdm-x-session",
         role: SessionRole::SessionLauncher,
         by_name_alone: false,
-        reason: "what GDM starts an X session with, when logind's record of the session cannot be read",
+        reason: "what GDM starts an X session with, when logind cannot be asked",
     },
 ];
 
@@ -178,7 +229,9 @@ pub const MONITOR_SERVICE_UNIT: &str = "better-monitor.service";
 /// `gnome-session-b`.
 pub fn comm_is(comm: &str, name: &str) -> bool {
     const COMM_LENGTH: usize = 15;
-    if name.len() <= COMM_LENGTH {
+    // A full name (a target's own name, before the snapshot covers it)
+    // matches itself.
+    if comm == name || name.len() <= COMM_LENGTH {
         comm == name
     } else {
         comm.len() == COMM_LENGTH && name.as_bytes().starts_with(comm.as_bytes())
@@ -207,7 +260,35 @@ fn in_user_unit(cgroup: &str, uid: u32) -> bool {
     leaf != "init.scope" && (leaf.ends_with(".service") || leaf.ends_with(".scope"))
 }
 
-/// Whether the compositor is known to start Xwayland only on demand and to
+/// Whether a process runs as part of one of the person's graphical sessions:
+/// in the user manager's `session.slice` (systemd's slice for units the
+/// graphical session needs, where GNOME runs gnome-shell), or in the scope
+/// logind made for a graphical session. An unreadable cgroup counts, so an
+/// unknown never makes a compositor safe; a nested or sandboxed compositor
+/// in `app.slice` does not.
+pub fn in_graphical_session(member: &SessionMember, facts: &SessionFacts) -> bool {
+    let Some(cgroup) = member.cgroup.as_deref() else {
+        return true;
+    };
+    if cgroup.contains(&format!("{}session.slice/", user_manager_cgroup(facts.uid))) {
+        return true;
+    }
+    match &facts.sessions {
+        Some(sessions) => sessions.iter().filter(|s| s.graphical).any(|session| {
+            cgroup
+                .rsplit('/')
+                .next()
+                .is_some_and(|leaf| leaf == format!("session-{}.scope", session.id))
+        }),
+        // Without logind, any session scope may be a graphical one.
+        None => cgroup
+            .rsplit('/')
+            .next()
+            .is_some_and(|leaf| leaf.starts_with("session-") && leaf.ends_with(".scope")),
+    }
+}
+
+/// Whether a compositor is known to start Xwayland only on demand and to
 /// carry on when it ends.
 ///
 /// Read from mutter 46.2 (the GNOME 46 of Ubuntu 24.04 and Zorin 18):
@@ -219,19 +300,38 @@ fn in_user_unit(cgroup: &str, uid: u32) -> bool {
 /// Xwayland ends under `MANDATORY`, and shuts the X11 display down and sets
 /// its sockets up again under `ON_DEMAND`. No other compositor's policy is
 /// known here, so every other one keeps its X server protected.
-pub fn xwayland_on_demand(compositors: &[SessionMember], uid: u32) -> bool {
-    !compositors.is_empty()
-        && compositors.iter().all(|member| {
-            comm_is(&member.name, "gnome-shell")
-                && member
-                    .cgroup
-                    .as_deref()
-                    .is_some_and(|cgroup| in_user_unit(cgroup, uid))
-        })
+pub fn keeps_xwayland_on_demand(compositor: &SessionMember, uid: u32) -> bool {
+    comm_is(&compositor.name, "gnome-shell")
+        && compositor
+            .cgroup
+            .as_deref()
+            .is_some_and(|cgroup| in_user_unit(cgroup, uid))
 }
 
-/// The part `member` plays in the session, or `None` when the session does
-/// not stand on it and it may be force stopped.
+/// Whether `member` holds a socket the facts list, by the facts when its
+/// descriptors were read, and by its name when they were not.
+fn holds(
+    member: &SessionMember,
+    holders: &Option<Vec<u32>>,
+    facts: &SessionFacts,
+    role: SessionRole,
+) -> bool {
+    match holders {
+        Some(holders) if holders.contains(&member.pid) => true,
+        Some(_) if facts.fds_read.contains(&member.pid) => false,
+        _ => named(member, role, false),
+    }
+}
+
+/// Whether an X server's compositor is known to carry on without it.
+fn x_server_on_demand(member: &SessionMember, facts: &SessionFacts) -> bool {
+    member
+        .parent
+        .is_some_and(|parent| facts.on_demand_compositors.contains(&parent))
+}
+
+/// The part `member` plays in the session, or `None` when no session stands
+/// on it and it may be ended.
 pub fn session_role(member: &SessionMember, facts: &SessionFacts) -> Option<SessionRole> {
     if facts.monitor_ancestors.contains(&member.pid) {
         return Some(SessionRole::Monitor);
@@ -255,22 +355,47 @@ pub fn session_role(member: &SessionMember, facts: &SessionFacts) -> Option<Sess
             }
         }
     }
-    let held = |holders: &Option<Vec<u32>>, role: SessionRole| match holders {
-        Some(holders) => holders.contains(&member.pid),
-        None => named(member, role, false),
-    };
-    if held(&facts.bus_holders, SessionRole::MessageBus) {
+    if holds(member, &facts.bus_holders, facts, SessionRole::MessageBus) {
         return Some(SessionRole::MessageBus);
     }
-    if held(&facts.compositor_holders, SessionRole::Compositor) {
+    if holds(
+        member,
+        &facts.compositor_holders,
+        facts,
+        SessionRole::Compositor,
+    ) {
         return Some(SessionRole::Compositor);
     }
-    if !facts.xwayland_on_demand && held(&facts.x_display_holders, SessionRole::XServer) {
-        return Some(SessionRole::XServer);
+    if holds(
+        member,
+        &facts.other_compositor_holders,
+        facts,
+        SessionRole::Compositor,
+    ) && in_graphical_session(member, facts)
+    {
+        return Some(SessionRole::Compositor);
     }
-    let launcher = match facts.session_leader {
-        Some(Some(leader)) => member.pid == leader || member.parent == Some(leader),
-        Some(None) => false,
+    if !x_server_on_demand(member, facts) {
+        if holds(
+            member,
+            &facts.x_display_holders,
+            facts,
+            SessionRole::XServer,
+        ) {
+            return Some(SessionRole::XServer);
+        }
+        if holds(member, &facts.other_x_holders, facts, SessionRole::XServer)
+            && in_graphical_session(member, facts)
+        {
+            return Some(SessionRole::XServer);
+        }
+    }
+    let launcher = match &facts.sessions {
+        Some(sessions) => sessions
+            .iter()
+            .filter(|session| session.graphical || session.own)
+            .filter_map(|session| session.leader)
+            .any(|leader| member.pid == leader || member.parent == Some(leader)),
         None => named(member, SessionRole::SessionLauncher, false),
     };
     if launcher {
@@ -338,18 +463,25 @@ mod tests {
         format!("user@1000.service/{unit}")
     }
 
+    fn session(id: &str, leader: u32, graphical: bool, own: bool) -> LoginSession {
+        LoginSession {
+            id: id.into(),
+            leader: Some(leader),
+            graphical,
+            own,
+        }
+    }
+
+    fn read(facts: &mut SessionFacts, members: &[SessionMember]) {
+        for member in members {
+            facts.fds_read.insert(member.pid);
+            facts.members.insert(member.pid, member.clone());
+        }
+    }
+
     /// A GNOME 46 session as Ubuntu 24.04 and Zorin 18 run it, with the
     /// PIDs and cgroups read on the owner's desktop on 2026-11-22.
     fn gnome() -> (SessionFacts, Vec<SessionMember>) {
-        let facts = SessionFacts {
-            uid: UID,
-            monitor_ancestors: vec![9000, 2338],
-            bus_holders: Some(vec![2338, 2370]),
-            compositor_holders: Some(vec![2545]),
-            x_display_holders: Some(vec![2545, 2600]),
-            xwayland_on_demand: true,
-            session_leader: Some(Some(2321)),
-        };
         let members = vec![
             member(2338, "systemd", 1, &user("init.scope")),
             member(
@@ -385,6 +517,19 @@ mod tests {
                 &user("app.slice/better-monitor.service"),
             ),
         ];
+        let mut facts = SessionFacts {
+            uid: UID,
+            monitor_ancestors: vec![2338],
+            bus_holders: Some(vec![2338, 2370]),
+            compositor_holders: Some(vec![2545]),
+            x_display_holders: Some(vec![2545, 2600]),
+            other_compositor_holders: Some(vec![]),
+            other_x_holders: Some(vec![]),
+            on_demand_compositors: vec![2545],
+            sessions: Some(vec![session("2", 2321, true, true)]),
+            ..SessionFacts::default()
+        };
+        read(&mut facts, &members);
         (facts, members)
     }
 
@@ -410,8 +555,6 @@ mod tests {
                 (3336, Some(SessionRole::MonitorService)),
             ]
         );
-        // The user manager is recognised by its cgroup even when it is not
-        // above the window.
         let mut away = facts.clone();
         away.monitor_ancestors = vec![9000];
         assert_eq!(
@@ -424,60 +567,104 @@ mod tests {
     fn what_mutter_does_with_xwayland_is_read_from_where_gnome_shell_runs() {
         let (_, members) = gnome();
         let shell = members[2].clone();
-        assert!(xwayland_on_demand(std::slice::from_ref(&shell), UID));
-        // A gnome-shell outside a user unit runs X11 as mandatory.
+        assert!(keeps_xwayland_on_demand(&shell, UID));
         let mut bare = shell.clone();
         bare.cgroup = Some("/user.slice/user-1000.slice/session-2.scope".into());
-        assert!(!xwayland_on_demand(std::slice::from_ref(&bare), UID));
-        // An unreadable cgroup is not proof.
+        assert!(!keeps_xwayland_on_demand(&bare, UID));
         bare.cgroup = None;
-        assert!(!xwayland_on_demand(&[bare], UID));
-        // Nor is another compositor, or none.
+        assert!(!keeps_xwayland_on_demand(&bare, UID));
         let comp = member(70, "cosmic-comp", 60, &user("app.slice/cosmic.service"));
-        assert!(!xwayland_on_demand(&[comp], UID));
-        assert!(!xwayland_on_demand(&[], UID));
+        assert!(!keeps_xwayland_on_demand(&comp, UID));
     }
 
-    /// A COSMIC session from a greeter: the leader's command starts
+    /// COSMIC from a greeter: the leader starts `start-cosmic`, which starts
     /// cosmic-session, which starts cosmic-comp, which starts Xwayland.
-    #[test]
-    fn a_cosmic_session_keeps_its_compositor_its_x_server_and_its_session() {
-        let facts = SessionFacts {
+    fn cosmic(own: bool) -> (SessionFacts, Vec<SessionMember>) {
+        let scope = "session-3.scope";
+        let members = vec![
+            member(55, "start-cosmic", 50, scope),
+            member(60, "cosmic-session", 55, scope),
+            member(70, "cosmic-comp", 60, scope),
+            member(71, "Xwayland", 70, scope),
+            member(72, "cosmic-panel", 60, scope),
+            member(80, "cosmic-edit", 60, scope),
+        ];
+        let mut facts = SessionFacts {
             uid: UID,
             monitor_ancestors: vec![9000],
             bus_holders: Some(vec![20, 21]),
-            compositor_holders: Some(vec![70]),
-            x_display_holders: Some(vec![70, 71]),
-            xwayland_on_demand: false,
-            session_leader: Some(Some(50)),
+            compositor_holders: Some(if own { vec![70] } else { vec![] }),
+            x_display_holders: Some(if own { vec![70, 71] } else { vec![] }),
+            other_compositor_holders: Some(if own { vec![] } else { vec![70] }),
+            other_x_holders: Some(if own { vec![] } else { vec![70, 71] }),
+            sessions: Some(vec![session("3", 50, true, own)]),
+            ..SessionFacts::default()
         };
-        let scope = "session-3.scope";
-        let start = member(55, "start-cosmic", 50, scope);
-        let session = member(60, "cosmic-session", 55, scope);
-        let comp = member(70, "cosmic-comp", 60, scope);
-        let x = member(71, "Xwayland", 70, scope);
-        let panel = member(72, "cosmic-panel", 60, scope);
-        let app = member(80, "cosmic-edit", 60, scope);
-        assert_eq!(
-            session_role(&start, &facts),
-            Some(SessionRole::SessionLauncher)
-        );
-        assert_eq!(
-            session_role(&session, &facts),
-            Some(SessionRole::SessionManager)
-        );
-        assert_eq!(session_role(&comp, &facts), Some(SessionRole::Compositor));
-        assert_eq!(session_role(&x, &facts), Some(SessionRole::XServer));
-        // The panel and an application in the same scope are not the session.
-        assert_eq!(session_role(&panel, &facts), None);
-        assert_eq!(session_role(&app, &facts), None);
+        read(&mut facts, &members);
+        (facts, members)
     }
 
     #[test]
-    fn a_terminal_its_shell_a_user_service_and_a_flatpak_app_may_be_force_stopped() {
-        let (facts, _) = gnome();
-        // Every one of these leads its own session; that is not the rule.
-        for one in [
+    fn a_cosmic_session_keeps_its_compositor_its_x_server_and_its_session() {
+        let (facts, m) = cosmic(true);
+        let roles: Vec<Option<SessionRole>> = m.iter().map(|x| session_role(x, &facts)).collect();
+        assert_eq!(
+            roles,
+            vec![
+                Some(SessionRole::SessionLauncher),
+                Some(SessionRole::SessionManager),
+                Some(SessionRole::Compositor),
+                Some(SessionRole::XServer),
+                None,
+                None,
+            ]
+        );
+    }
+
+    /// The person signed in to GNOME and to COSMIC at once, with Better
+    /// Monitor in GNOME: the COSMIC session's compositor, X server, leader
+    /// and session manager are protected by the same facts, as is GNOME's.
+    #[test]
+    fn a_second_graphical_session_of_the_same_person_is_protected_too() {
+        let (mut facts, mut members) = gnome();
+        let (cosmic_facts, cosmic_members) = cosmic(false);
+        facts.other_compositor_holders = cosmic_facts.other_compositor_holders.clone();
+        facts.other_x_holders = cosmic_facts.other_x_holders.clone();
+        facts
+            .sessions
+            .as_mut()
+            .unwrap()
+            .push(session("3", 50, true, false));
+        read(&mut facts, &cosmic_members);
+        members.extend(cosmic_members);
+        let role = |pid: u32, facts: &SessionFacts| {
+            let member = members.iter().find(|m| m.pid == pid).unwrap();
+            session_role(member, facts)
+        };
+        // GNOME, as before.
+        assert_eq!(role(2545, &facts), Some(SessionRole::Compositor));
+        assert_eq!(role(2408, &facts), Some(SessionRole::SessionLauncher));
+        // COSMIC's own parts.
+        assert_eq!(role(55, &facts), Some(SessionRole::SessionLauncher));
+        assert_eq!(role(60, &facts), Some(SessionRole::SessionManager));
+        assert_eq!(role(70, &facts), Some(SessionRole::Compositor));
+        assert_eq!(role(71, &facts), Some(SessionRole::XServer));
+        assert_eq!(role(72, &facts), None);
+        assert_eq!(role(80, &facts), None);
+        // A nested compositor someone runs in an app scope is not a session.
+        let nested = member(4400, "gnome-shell", 4390, &user("app.slice/run-r1.scope"));
+        facts.other_compositor_holders.as_mut().unwrap().push(4400);
+        facts.fds_read.insert(4400);
+        assert_eq!(session_role(&nested, &facts), None);
+        // Without logind, any session scope may be a graphical session's.
+        facts.sessions = None;
+        assert_eq!(role(70, &facts), Some(SessionRole::Compositor));
+    }
+
+    #[test]
+    fn a_terminal_its_shell_a_user_service_and_a_flatpak_app_may_be_ended() {
+        let (mut facts, _) = gnome();
+        let ones = [
             member(
                 4000,
                 "ptyxis-agent",
@@ -504,21 +691,49 @@ mod tests {
                 4300,
                 &user("app.slice/app-flatpak-net.nokyan.Resources-1.scope"),
             ),
-        ] {
+        ];
+        read(&mut facts, &ones);
+        for one in ones {
             assert_eq!(session_role(&one, &facts), None, "{one:?}");
         }
     }
 
+    /// A process whose descriptors could not be read (a non-dumpable one
+    /// such as gpg-agent or ssh-agent here) is not known not to hold a
+    /// socket: a matching name protects it.
     #[test]
-    fn a_gnome_shell_that_is_not_this_sessions_compositor_may_be_stopped() {
-        // A nested shell another program started, in its own scope.
-        let (facts, _) = gnome();
+    fn a_process_whose_descriptors_cannot_be_read_is_not_known_to_hold_nothing() {
+        let (mut facts, _) = gnome();
+        let hidden_bus = member(2371, "dbus-daemon", 2338, &user("app.slice/x.service"));
+        let hidden_shell = member(2546, "gnome-shell", 2338, &user("app.slice/y.service"));
+        let agent = member(2372, "gpg-agent", 2338, &user("app.slice/gpg.service"));
+        for one in [&hidden_bus, &hidden_shell, &agent] {
+            facts.members.insert(one.pid, one.clone());
+        }
+        assert_eq!(
+            session_role(&hidden_bus, &facts),
+            Some(SessionRole::MessageBus)
+        );
+        assert_eq!(
+            session_role(&hidden_shell, &facts),
+            Some(SessionRole::Compositor)
+        );
+        assert_eq!(session_role(&agent, &facts), None);
+        // Read and holding nothing, the same name is not protected.
+        facts.fds_read.insert(2371);
+        assert_eq!(session_role(&hidden_bus, &facts), None);
+    }
+
+    #[test]
+    fn a_gnome_shell_that_is_not_a_sessions_compositor_may_be_stopped() {
+        let (mut facts, _) = gnome();
         let nested = member(
             3100671,
             "gnome-shell",
             3100668,
             &user("app.slice/run-r1.scope"),
         );
+        facts.fds_read.insert(nested.pid);
         assert_eq!(session_role(&nested, &facts), None);
     }
 
@@ -526,12 +741,7 @@ mod tests {
     fn an_unknown_never_makes_a_matching_process_safe() {
         let unknown = SessionFacts {
             uid: UID,
-            monitor_ancestors: vec![],
-            bus_holders: None,
-            compositor_holders: None,
-            x_display_holders: None,
-            xwayland_on_demand: false,
-            session_leader: None,
+            ..SessionFacts::default()
         };
         let blind = |pid: u32, name: &str| SessionMember {
             pid,
@@ -552,11 +762,37 @@ mod tests {
         ] {
             assert_eq!(session_role(&one, &unknown), Some(role), "{one:?}");
         }
-        // Something no part of the rule names stays allowed.
         assert_eq!(session_role(&blind(19, "make"), &unknown), None);
-        // When the facts were read, a name alone does not protect.
+        // When the facts were read for that process, a name alone does not
+        // protect it.
+        let (mut facts, _) = gnome();
+        facts.fds_read.insert(20);
+        let mut known = blind(20, "dbus-daemon");
+        known.cgroup =
+            Some("/user.slice/user-1000.slice/user@1000.service/app.slice/a.scope".into());
+        assert_eq!(session_role(&known, &facts), None);
+    }
+
+    #[test]
+    fn logind_that_cannot_be_asked_is_unknown_and_not_no_session() {
+        let (mut facts, members) = gnome();
+        facts.sessions = None;
+        assert_eq!(
+            session_role(&members[4], &facts),
+            Some(SessionRole::SessionLauncher),
+            "gdm-wayland-session by name"
+        );
+        facts.sessions = Some(vec![]);
+        assert_eq!(session_role(&members[4], &facts), None, "logind says none");
+    }
+
+    #[test]
+    fn the_facts_list_every_holder_once() {
         let (facts, _) = gnome();
-        assert_eq!(session_role(&blind(20, "dbus-daemon"), &facts), None);
+        assert_eq!(
+            facts.holders().into_iter().collect::<Vec<_>>(),
+            vec![2338, 2370, 2545, 2600]
+        );
     }
 
     #[test]
@@ -572,7 +808,6 @@ mod tests {
         for entry in NAMED {
             assert!(!entry.reason.is_empty(), "{}", entry.name);
         }
-        // Only the session managers are decided by name alone.
         let alone: Vec<&str> = NAMED
             .iter()
             .filter(|entry| entry.by_name_alone)
@@ -583,8 +818,7 @@ mod tests {
 
     #[test]
     fn a_tree_is_refused_by_its_root_or_by_a_protected_process_below_it() {
-        let (facts, members) = gnome();
-        // The user manager's tree: the root itself.
+        let (mut facts, members) = gnome();
         assert!(matches!(
             tree_refusal(2338, &members, &facts),
             Some(crate::ActionRefusal::SessionProcess {
@@ -593,7 +827,6 @@ mod tests {
                 ..
             })
         ));
-        // GDM's launcher, whose tree holds the session manager.
         let launcher = [members[4].clone(), members[5].clone()];
         assert!(matches!(
             tree_refusal(2408, &launcher, &facts),
@@ -602,7 +835,6 @@ mod tests {
                 ..
             })
         ));
-        // A plain process that started something the session stands on.
         let wrapper = member(5000, "sh", 2338, &user("app.slice/run-r9.scope"));
         let below = [
             member(
@@ -613,6 +845,7 @@ mod tests {
             ),
             wrapper.clone(),
         ];
+        read(&mut facts, &below);
         assert_eq!(
             tree_refusal(5000, &below, &facts),
             Some(crate::ActionRefusal::ProtectedTree {
@@ -621,7 +854,6 @@ mod tests {
                 role: SessionRole::SessionManager,
             })
         );
-        // A terminal that is not above the window, with its shell and a build.
         let terminal = [
             member(6002, "make", 6001, &user("app.slice/app-ptyxis-6000.scope")),
             member(6001, "bash", 6000, &user("app.slice/app-ptyxis-6000.scope")),
@@ -632,6 +864,7 @@ mod tests {
                 &user("app.slice/app-ptyxis-6000.scope"),
             ),
         ];
+        read(&mut facts, &terminal);
         assert_eq!(tree_refusal(6000, &terminal, &facts), None);
         assert_eq!(tree_refusal(6000, &[wrapper], &facts), None);
     }

@@ -216,6 +216,9 @@ pub struct MenuOpen {
     pub highlight: Option<usize>,
     pub submenu: Option<usize>,
     pub sub_highlight: Option<usize>,
+    /// The disabled item whose reason is shown beside the menu, while the
+    /// pointer is on it.
+    pub reason: Option<usize>,
     /// Where keyboard input goes while the menu is open. Only a state made
     /// outside a window, for its keyboard rules alone, has none.
     pub focus: Option<FocusHandle>,
@@ -237,6 +240,7 @@ impl MenuOpen {
             highlight: None,
             submenu: None,
             sub_highlight: None,
+            reason: None,
             focus: None,
         }
     }
@@ -263,6 +267,7 @@ impl MenuOpen {
         self.highlight = highlight;
         self.submenu = None;
         self.sub_highlight = None;
+        self.reason = None;
     }
 
     /// The pointer entered item `index` of the menu: it is the highlighted
@@ -297,6 +302,17 @@ impl MenuOpen {
         self.highlight = None;
         self.submenu = None;
         self.sub_highlight = None;
+        self.reason = None;
+    }
+
+    /// The pointer entered (`true`) or left a disabled item that says why
+    /// it is disabled: its reason shows beside the menu while it is there.
+    pub fn pointer_on_reason(&mut self, index: usize, on: bool) {
+        if on {
+            self.reason = Some(index);
+        } else if self.reason == Some(index) {
+            self.reason = None;
+        }
     }
 
     /// Applies one key press to the menu whose structure is `entries`.
@@ -631,11 +647,43 @@ impl RenderOnce for MenuPanel {
                         p,
                     )
                     // For the interaction tests; nothing outside a test build.
-                    .debug_selector(move || format!("menu-item-{index}"));
+                    .debug_selector(move || format!("menu-item-{index}"))
+                    .role(gpui::Role::MenuItem)
+                    .aria_label(item.label.clone());
                     if item.disabled
                         && let Some(reason) = item.reason.clone()
                     {
-                        element = element.tooltip(super::dialog::tooltip_builder(reason));
+                        // Assistive technology reads the reason as the
+                        // item's description; the pointer sees it beside
+                        // the menu, never over the next item.
+                        element = element.aria_description(reason.clone());
+                        if let Some(state) = state.clone() {
+                            let state_hover = state.clone();
+                            element = element.relative().on_hover(move |hovered, _, cx| {
+                                state_hover.update(cx, |menu, cx| {
+                                    menu.pointer_on_reason(index, *hovered);
+                                    cx.notify();
+                                });
+                            });
+                            if state.read(cx).reason == Some(index) {
+                                let span = super::window_frame::RowSpan::default();
+                                element = element
+                                    .child(super::window_frame::row_span_probe(span.clone()))
+                                    .child(
+                                        div().absolute().top(px(-2.0)).left(relative(1.0)).child(
+                                            deferred(
+                                                anchored().child(
+                                                    super::window_frame::inside_window(
+                                                        super::dialog::tooltip_inline(reason, cx),
+                                                    )
+                                                    .beside(span),
+                                                ),
+                                            )
+                                            .with_priority(2),
+                                        ),
+                                    );
+                            }
+                        }
                     }
                     if !item.disabled
                         && let Some(state) = state.clone()
@@ -803,11 +851,13 @@ impl RenderOnce for SubmenuPanel {
                         shortcut,
                         shown,
                         p,
-                    );
+                    )
+                    .role(gpui::Role::MenuItem)
+                    .aria_label(item.label.clone());
                     if item.disabled
                         && let Some(reason) = item.reason.clone()
                     {
-                        element = element.tooltip(super::dialog::tooltip_builder(reason));
+                        element = element.aria_description(reason);
                     }
                     if !item.disabled
                         && let Some(state) = self.state.clone()

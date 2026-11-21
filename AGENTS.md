@@ -312,7 +312,8 @@ GUI or dependency compiles when the relevant command was not executed.
   boundary that would allow them is not built. End task, End process tree and
   Force stop are never offered on what the desktop stands on (owner,
   2026-11-22): `monitor_core::session` is the one rule, decided from socket
-  holders, cgroups and logind's record before names, and `session::NAMED` is
+  holders, cgroups and logind (over D-Bus) before names, read off the
+  window's interface thread and never while drawing, and `session::NAMED` is
   the only place a session process is named.
 - `monitor-service` owns collection. `monitor-gui` has no sampler: it reaches
   the service over `org.betteros.Monitor1`, and where there is no service it

@@ -5,6 +5,7 @@ mod ending;
 mod i18n;
 mod layout;
 mod link;
+mod logind;
 mod pages;
 mod popup;
 mod render;

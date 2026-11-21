@@ -1554,6 +1554,8 @@ fn force_question(
                 )
             } else if total <= 1 {
                 "It started nothing else, so only it is stopped at once, with no chance to save. Anything it hasn't saved is lost.".to_string()
+            } else if count == 1 {
+                "1 process is stopped at once, with no chance to save. Anything it hasn't saved is lost.".to_string()
             } else {
                 format!(
                     "{count} processes are stopped at once, with no chance to save. Anything they haven't saved is lost."
@@ -1630,6 +1632,8 @@ fn close_question(
                 format!("會要求 {count} 個處理程序關閉，從它啟動的開始。還沒儲存的內容可能會遺失。")
             } else if total <= 1 {
                 "It started nothing else, so only it is asked to close. Anything it hasn't saved may be lost.".to_string()
+            } else if count == 1 {
+                "1 process is asked to close. Anything it hasn't saved may be lost.".to_string()
             } else {
                 format!(
                     "{count} processes are asked to close, starting with the ones it started. Anything they haven't saved may be lost."

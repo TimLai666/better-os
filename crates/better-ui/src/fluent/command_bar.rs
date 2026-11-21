@@ -18,7 +18,8 @@ use std::rc::Rc;
 use crate::icon_set::{Glyph, Placement};
 use gpui::{
     App, ElementId, InteractiveElement, IntoElement, ParentElement, Pixels, RenderOnce,
-    SharedString, Styled, Window, div, prelude::FluentBuilder as _, px,
+    SharedString, StatefulInteractiveElement as _, Styled, Window, div,
+    prelude::FluentBuilder as _, px, relative,
 };
 use gpui_component::{Icon, IconName};
 
@@ -325,12 +326,36 @@ impl RenderOnce for AppBarButton {
             })
             .when(command.chevron, |b| {
                 b.child(Icon::new(IconName::ChevronDown).size(px(12.0)))
-            });
+            })
+            .role(gpui::Role::Button)
+            .aria_label(command.label.clone());
         if disabled && let Some(reason) = command.reason.clone() {
-            element = gpui::StatefulInteractiveElement::tooltip(
-                element,
-                super::dialog::tooltip_builder(reason),
-            );
+            // Read as the button's description by assistive technology, and
+            // shown under the button (not at the pointer, where it would
+            // cover the commands beside it) while the pointer is on it.
+            element = element.aria_description(reason.clone());
+            let shown = window.use_keyed_state(child_id(&self.id, "reason"), cx, |_, _| false);
+            let hover = shown.clone();
+            element = element.relative().on_hover(move |hovered, _, cx| {
+                hover.update(cx, |on, cx| {
+                    *on = *hovered;
+                    cx.notify();
+                });
+            });
+            if *shown.read(cx) {
+                element = element.child(
+                    div().absolute().top(relative(1.0)).left_0().child(
+                        gpui::deferred(
+                            gpui::anchored().child(super::window_frame::inside_window(
+                                div()
+                                    .pt(px(4.0))
+                                    .child(super::dialog::tooltip_inline(reason, cx)),
+                            )),
+                        )
+                        .with_priority(2),
+                    ),
+                );
+            }
         } else if command.icon_only {
             element = gpui::StatefulInteractiveElement::tooltip(
                 element,

@@ -85,6 +85,32 @@ appears, and the controller refuses again when run.
   (message bus) and the `dbus-run-session` the window runs under. First
   round in `better-os-evidence/272`, this round in
   `better-os-evidence/272/round2`, light and dark, en-US and zh-TW.
+- Second review round (2026-11-22): the facts are read off the window's
+  interface thread (one pass over this person's descriptors for every
+  socket, logind over D-Bus instead of its private files) and kept in the
+  model; drawing answers from them only (`snapshot_view`, tested with a
+  reader that panics), they are read again when a holder is gone or an
+  answer met a process they do not cover, and `perform` reads fresh facts
+  before every signal. A process whose descriptors cannot be read is
+  protected by its name. Another graphical session of the person (COSMIC
+  beside GNOME) has its compositor, X server, leader and session manager
+  protected by the same facts. Timing: one read is 22.7 / 25.9 / 30.5 ms
+  (fastest / median / slowest of ten, release build, 212 processes of the
+  person, 205 with readable descriptors), from
+  `print_what_the_guard_decides_on_this_desktop`.
+- A disabled item's reason now shows beside the menu, or under the command
+  bar's button, never over another item, and is the item's accessible
+  description (`role`, `aria_label`, `aria_description` in the pinned
+  GPUI). The pinned GPUI has no disabled state for accesskit, so a screen
+  reader is not told the item is disabled; not checked with a screen
+  reader, because a sandbox on a private bus has no accessibility bus.
+  Screenshots in `better-os-evidence/272/round3`.
+- Seen here, read-only: logind answers `User.Display` `("2", …/session/_32)`,
+  session 2 `Leader` 2321, `Type` wayland, `Class` user, and
+  `GetSessionByPID` fails for a process outside any session (the window
+  then takes the display session as its own). Whether GDM lets one person
+  hold a GNOME and a COSMIC session at once is not checked (no VM here); the
+  rule is tested with a fixture of both.
 - Not seen: the guard against a real GNOME or COSMIC session's own
   processes in a window (only read-only, by the ignored test), and a
   COSMIC session at all (fixture trees only).

@@ -1712,6 +1712,21 @@ fn the_tree_confirmation_says_how_many_processes_it_ends() {
             .1
             .contains("7 個處理程序")
     );
+    // One of two reached: singular, and the other said to keep running.
+    assert_eq!(
+        i18n::end_question(&target, EndHow::Close, 1, 2, Locale::EnUs).1,
+        "1 process is asked to close. Anything it hasn't saved may be lost. 1 other can't be ended from here and keeps running."
+    );
+    assert_eq!(
+        i18n::end_question(&target, EndHow::Force, 1, 2, Locale::EnUs).1,
+        "1 process is stopped at once, with no chance to save. Anything it hasn't saved is lost. 1 other can't be stopped from here and keeps running."
+    );
+    for how in [EndHow::Close, EndHow::Force] {
+        for (reach, total) in [(1, 2), (1, 5), (2, 5), (3, 3)] {
+            let body = i18n::end_question(&target, how, reach, total, Locale::EnUs).1;
+            assert!(!body.contains("1 processes"), "{body}");
+        }
+    }
 }
 
 #[test]
@@ -3128,4 +3143,69 @@ fn a_delivered_signal_is_described_by_what_was_sent_and_never_as_an_exit() {
         i18n::signal_sentence(SignalKind::Continue, 1, Locale::ZhTw),
         "已讓它繼續執行。"
     );
+}
+
+/// A session reader the window's drawing must never reach.
+#[derive(Debug)]
+struct PanickingReader;
+
+impl monitor_actions_linux::SessionReader for PanickingReader {
+    fn read(&self, _: &monitor_actions_linux::ScanRequest) -> monitor_core::session::SessionFacts {
+        panic!("the window read /proc while drawing")
+    }
+}
+
+/// What the commands and menus ask while the window draws (whether an end
+/// is offered, and how many processes the confirmation counts) comes from
+/// the session snapshot alone: a reader that panics is never called, for a
+/// protected process, an ordinary one, and one the snapshot does not cover.
+#[test]
+fn deciding_what_to_offer_while_drawing_never_reads_proc() {
+    use crate::app::EndHow;
+    use crate::ending;
+    use monitor_actions_linux::LinuxProcessController;
+    use monitor_core::session::{SessionFacts, SessionMember};
+    let uid = LinuxProcessController::for_current_process()
+        .current_uid()
+        .unwrap();
+    let mut facts = SessionFacts {
+        uid,
+        bus_holders: Some(vec![2370]),
+        ..SessionFacts::default()
+    };
+    for (pid, name) in [(2370, "dbus-daemon"), (4000, "editor")] {
+        facts.fds_read.insert(pid);
+        facts.members.insert(
+            pid,
+            SessionMember {
+                pid,
+                name: name.into(),
+                parent: Some(1),
+                cgroup: Some(format!(
+                    "/user.slice/user-{uid}.slice/user@{uid}.service/app.slice/{name}.scope"
+                )),
+            },
+        );
+    }
+    let mut controller = LinuxProcessController::for_current_process()
+        .with_reader(std::sync::Arc::new(PanickingReader));
+    controller.set_session(facts);
+    let target = |pid: u32, name: &str| {
+        ProcessTarget::new(pid, name)
+            .owned_by(uid)
+            .started_at(1)
+            .with_nice(0)
+    };
+    let view = controller.snapshot_view();
+    for how in [EndHow::Close, EndHow::Force] {
+        assert!(matches!(
+            ending::refusal(&view, &[target(2370, "dbus-daemon")], how),
+            Some(ActionRefusal::SessionProcess { .. })
+        ));
+        assert_eq!(ending::refusal(&view, &[target(4000, "editor")], how), None);
+        assert_eq!(
+            ending::reachable(&view, &[target(4000, "editor"), target(4001, "new")], how),
+            2
+        );
+    }
 }
