@@ -54,7 +54,7 @@ wait_for() {
 }
 # The journal of one unit since the last `mark`.
 cursor=
-mark() { cursor="$(journalctl -b -n 0 --show-cursor --no-pager | sed -n 's/^-- cursor: //p')"; }
+mark() { cursor="$(journalctl -b -n 1 -o cat --show-cursor --no-pager | sed -n 's/^-- cursor: //p')"; }
 journal() {
     if [[ -n "$cursor" ]]; then
         journalctl -b --no-pager -o cat --after-cursor="$cursor" -u "$1" 2>/dev/null
@@ -63,6 +63,8 @@ journal() {
     fi
 }
 retried() { journal "$SUPERVISOR" | grep -q 'RESULT=retried'; }
+# The journal is written a moment after the line is printed.
+has_line() { journal "$SUPERVISOR" | grep -qxF "$1"; }
 seconds_between() { echo $((($2 - $1) / 1000000)); }
 
 # --- The stand-ins -----------------------------------------------------------
@@ -104,6 +106,11 @@ install -m 0644 /login/greeter/org.betteros.LoginSupervisor1.conf \
     /usr/share/dbus-1/system.d/org.betteros.LoginSupervisor1.conf
 install -D -m 0644 /login/greeter/login-supervisor-failed.issue \
     /usr/share/better-os/login-supervisor-failed.issue
+
+# The greeter's account, as the package's sysusers entry makes it, so a
+# missed stage 5 is the session that did not open, not the account.
+id _better-greeter >/dev/null 2>&1 \
+    || useradd --system --no-create-home --shell /usr/sbin/nologin _better-greeter
 
 # The greeter never becomes ready: no greetd, no greeter session, no
 # heartbeat.
@@ -154,10 +161,9 @@ after="$(seconds_between "$t0" "$text_login")"
 ((after + 3 <= 80)) || fail "the text login: expected to accept input within 80 s of T0, found $((after + 3)) s"
 pass "the greeter never ready: the text login on tty1 ${after} s after T0 ($((SECONDS - started)) s here)"
 
-supervisor_journal="$(journal "$SUPERVISOR")"
 for line in "BETTER_OS_LOGIN_STAGE=5 RESULT=retried REASON=no-greeter-session" \
     "BETTER_OS_LOGIN_STAGE=5 RESULT=fell-back REASON=no-greeter-session"; do
-    grep -qxF "$line" <<<"$supervisor_journal" || fail "the journal: expected the line '$line'"
+    wait_for "the journal line '$line'" 5 has_line "$line"
 done
 expect "the greeter's starts" 3 "$(greeter_starts)"
 expect "the third attempt's mode" safe "$(cat "$RUN/greeter-mode" 2>/dev/null)"
@@ -217,16 +223,22 @@ t0="$(show "$SUPERVISOR" InactiveExitTimestampMonotonic)"
 wait_for "the first retry" 40 retried
 sleep 2
 systemctl kill -s KILL "$SUPERVISOR"
-wait_for "the supervisor's restart" 10 test "$(show "$SUPERVISOR" NRestarts)" -ge 1
+restarted() { (($(show "$SUPERVISOR" NRestarts) >= 1)); }
+wait_for "the supervisor's restart" 10 restarted
 wait_for "the text login on tty1" 85 systemctl is-active --quiet better-os-login-fallback@tty1.service
 text_login="$(show better-os-login-fallback@tty1.service ActiveEnterTimestampMonotonic)"
 after="$(seconds_between "$t0" "$text_login")"
 ((after + 3 <= 80)) || fail "after a restart: expected the text login within 80 s of the first start, found $((after + 3)) s"
 expect "T0 kept across the restart" "$t0" \
     "$(grep -o '"t0":[0-9]*' "$RUN/login-path.json" | cut -d: -f2)"
-journal "$SUPERVISOR" | grep -qxF "BETTER_OS_LOGIN_STAGE=supervisor RESULT=ok REASON=restarted" \
-    || fail "the journal: expected the restart's line"
+wait_for "the journal line of the restart" 5 \
+    has_line "BETTER_OS_LOGIN_STAGE=supervisor RESULT=ok REASON=restarted"
 expect "the greeter's starts across the restart" 3 "$(greeter_starts)"
+# One crash is the supervisor's own restart, never the backstop's: OnFailure=
+# fires only once systemd gives up on the unit.
+expect "the backstop's runs after one crash" 0 "$(journal "$BACKSTOP" | grep -c . || true)"
+expect "the text login on tty2 after one crash" inactive \
+    "$(show better-os-login-fallback@tty2.service ActiveState)"
 pass "killed mid-attempt: restarted, continued from its state file, the text login ${after} s after the first T0"
 
 # --- C. A supervisor that cannot start ----------------------------------------
@@ -254,14 +266,16 @@ pass "a supervisor that cannot start: the backstop's text login on tty2 in ${too
 
 # Run again with a fall back running: nothing.
 tty2="$(show better-os-login-fallback@tty2.service InvocationID)"
-systemctl start "$BACKSTOP"
+# A condition that is not met skips the unit; systemctl's own status is not
+# what is checked.
+systemctl start "$BACKSTOP" || true
 expect "the text login after a second backstop run" "$tty2" "$(show better-os-login-fallback@tty2.service InvocationID)"
 # With the greeter once ready this boot: nothing.
 systemctl stop better-os-login-fallback@tty2.service
 rm -f "$RUN/login-fallback.active"
 mkdir -p /run/better-os-greeter
 : > /run/better-os-greeter/ready-seen
-systemctl start "$BACKSTOP"
+systemctl start "$BACKSTOP" || true
 expect "the text login after the greeter was ready" inactive "$(show better-os-login-fallback@tty2.service ActiveState)"
 pass "the backstop does nothing once the greeter was ready or a fall back runs"
 
