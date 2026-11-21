@@ -160,25 +160,34 @@ tickets 156 and 157, composes the same picture).
 - The picture is an SVG document 16 logical pixels tall, so a panel draws
   it at the display's own resolution.
 - The mark is the desktop's own icon, `power-profile-power-saver-symbolic`,
-  `-balanced-` or `-performance-`, found in the current icon theme by the Icon
-  Theme Specification's lookup (the theme, what it inherits, then `hicolor`;
-  SVG files only) and nested in the picture as it is, its colours replaced by
-  the panel's foreground as a symbolic icon's are: white on a dark panel,
-  `#2e3436` on a light one. Which the panel is comes from the settings
-  portal's `org.freedesktop.appearance` `color-scheme` (2 is light; no
-  preference is GNOME Shell's own dark panel); the icon theme comes from
-  `org.gnome.desktop.interface` `icon-theme`; both are followed through
-  `SettingChanged`. A theme without the icon gets no mark; the tooltip and
-  menu still name the mode. `resvg`, GPUI's own renderer, checks that the
-  icon can be drawn and draws the picture in the tests.
-- The readings are their 22-pixel canvas's pixels as squares, scaled to 16
-  with `shape-rendering="crispEdges"` so every edge falls on a display pixel;
-  the mark adds width beside them and takes none, and they are the same
-  pixels with and without it at 100 %, 125 %, 150 % and 200 % (tested).
+  `-balanced-` or `-performance-`, found by the icon theme lookup every
+  Better OS program shares (`better_core::icon_theme`, moved there from
+  `better-ui`: the theme, what it inherits, Adwaita, `hicolor`; the theme's
+  `Status` directories from its `index.theme`; theme names and directories
+  that are paths refused; an SVG within `MAX_ICON_BYTES`). It is parsed and
+  written out again by `usvg` (`Tree::to_string`), so what goes into the
+  picture is self-contained: styles applied and dropped, entities expanded,
+  no namespace it does not declare, ids prefixed. Its colours are then
+  replaced by the panel's ink.
+- The ink: the shell theme in force (the User Themes extension's `name`,
+  read with `gsettings` since the settings portal does not offer it), else
+  the GTK theme's `-Light`/`-Dark` name (every Zorin theme, `Adwaita-dark`),
+  else an explicit `color-scheme`: white on a dark panel, `#2e3436` on a
+  light one. Anything else is not known (Zorin's light desktop leaves
+  `color-scheme` at `default`, and GNOME 46's own panel ignores it), and the
+  mark is then light ink with a dark edge, the readings' own rule, which
+  reads on both. Re-read whenever the portal says the GTK theme, the icon
+  theme or the colour scheme changed.
+- The readings are drawn natively on the picture's 16-pixel grid
+  (`icon::draw_on_grid`), bars and numbers, one square per cell with
+  `crispEdges`: no row is dropped at 100 %, 125 %, 150 % or 200 % (each cell
+  keeps a pixel of its colour, tested), and at 200 % each cell is two by two.
+  The mark adds width beside them and takes none; they are the same pixels
+  with and without it (tested). The square pixmaps keep the 22-pixel canvas.
 - With no mode to show (no daemon, a masked or stopped one, a mode this
-  version does not know, a daemon that cannot be read, or "Power mode"
-  unticked under "Show in the taskbar") there is no mark, and the item is
-  the square pixmaps it always was.
+  version does not know, a daemon that cannot be read, "Power mode"
+  unticked, or a theme without the icon) there is no mark and no file: the
+  item is the square pixmaps it always was.
 - How a panel gets a picture wider than tall. GNOME's AppIndicator extension
   (Zorin's copy, `/usr/share/gnome-shell/extensions/zorin-appindicator@zorinos.com/appIndicator.js`,
   and Ubuntu's upstream at `fbc758a4`, read: the same code) fits every
@@ -187,43 +196,49 @@ tickets 156 and 157, composes the same picture).
   strip. An `IconName` that is the path of an image in a place the person
   can write and at least half again as wide as tall is drawn at the image's
   own size (`_createIconByIconData`, line 1271; `_loadCustomImage`, line
-  1290: `load_file_async(file, -1, height, 1, iconScaling)`, the actor
-  `width * scaleFactor` by `height * scaleFactor`). An SVG's own size is in
-  logical pixels and St rasterises it at the stage's scale, so it is sharp at
-  200 %; a PNG is scaled up. Seen in a headless GNOME Shell 46:
-  `better-os-evidence/295/wide-pixmap-vs-file.png` (scale 1) and
-  `scale2-png-vs-svg.png` (scale 2, PNG left, SVG right). So while there is a
-  mark the item writes the picture as an SVG under
-  `$XDG_RUNTIME_DIR/better-os/monitor-tray/`, a new name per change, and
-  names it in `IconName`.
+  1290). An SVG's own size is in logical pixels and St rasterises it at the
+  stage's scale, so it is sharp at 200 %; a PNG is scaled up
+  (`better-os-evidence/295/scale2-png-vs-svg.png`).
+- The file: GNOME Shell 46's texture cache keeps a `GFileMonitor` for every
+  path it ever loaded until the shell ends (`st-texture-cache.c`,
+  `ensure_monitor_for_file`, lines 1173-1191, keyed by `g_file_equal`), and
+  loads a file again each time with no cache (`ST_TEXTURE_CACHE_POLICY_NONE`,
+  line 1442). So the picture is written under `picture-a.svg` and
+  `picture-b.svg` in `$XDG_RUNTIME_DIR/better-os/monitor-tray/` in turn:
+  `IconName` changes with every new picture, which makes the extension load
+  it again, and the shell holds two monitors. A picture identical to the
+  one on disk is not written. The files are removed when the item ends
+  (Quit, SIGTERM; nothing is written after) and when it starts.
 - The pixmaps: GNOME's extension draws a wide file without handing a result
   back and then falls through to the pixmaps, which would cover it
   (`_createIcon`, line 1579), so while its watcher (the process owning
   `org.kde.StatusNotifierWatcher` is `gnome-shell`) draws the item, the
-  pixmaps are left out while the file is named. Every other panel keeps them
-  beside the file and draws the readings without the mark when it cannot use
-  the path: waybar loads a path starting with `/` and falls back to the
-  pixmap (`src/modules/sni/item.cpp` at `b4f03e63`, `loadIconFromNameOrFile`),
-  KDE Plasma falls back to the pixmap when the name gives no icon
-  (`applets/systemtray/statusnotifieritemsource.cpp`, `loadIcon`), swaybar
-  looks the name up only in icon themes and then uses the pixmap
-  (`swaybar/tray/item.c`, `reload_sni`), COSMIC's status area loads a path
-  that exists (`cb3ea91a`). All four were read from source only.
-- What it costs: the file follows the readings, so it is written each time
-  their drawing changes: 34 times in a minute of this machine's live readings
-  in the sandbox at scale 2, on the runtime directory's tmpfs; in that minute
-  the tray used 0.44 s of processor and GNOME Shell 0.61 s, against 0.45 s
-  and 0.37 s with no mark (pixmaps only). The extension has no second layer
-  for an item (its overlay icon is an emblem at a fifth of the size,
-  `_updateIcon`, `iconSize / 1.6`), so the readings cannot stay pixmaps
-  beside a file.
+  pixmaps are left out while the file is named. Every other panel keeps
+  them. waybar loads a path starting with `/` keeping its aspect and falls
+  back to the pixmap (`src/modules/sni/item.cpp` at `b4f03e63`); swaybar
+  looks `IconName` up only in icon themes, finds no path, and uses the pixmap
+  (`swaybar/tray/item.c`, `reload_sni`); COSMIC's status area loads a path
+  that exists (`cb3ea91a`); KDE Plasma takes `IconName` first and the
+  pixmap only when `KIconEngine` says the icon is null, which for an
+  absolute path is only when the file is missing (`kiconengine.cpp`
+  `isNull`, `kiconloader.cpp` `iconPath`), so it draws the file through Qt's
+  SVG renderer, which has no filters: there the mark would keep the theme's
+  own colour. All four were read from source only.
+- What it costs: the file follows the readings. In a minute of this
+  machine's live readings in the sandbox at scale 2 it was written 34 times
+  (before identical pictures were skipped); the tray used 0.44 s of
+  processor and GNOME Shell 0.61 s, against 0.45 s and 0.37 s with no mark.
+  10,000 picture changes in the sandbox shell: under a new name each time
+  its resident memory grew by 3.4 MB, under two names by 2.9 MB; open files
+  and inotify watches did not grow in either (GLib's inotify backend watches
+  the directory, not each file), so the per-path monitors cost memory and
+  main-loop sources rather than watches. Two names keeps both at two.
 - The extension's own icon size (its `icon-size` key: 20 or 24) does not
   change a picture drawn at its own size, so the item stays 16 pixels tall
-  there (`icon-size-24-*`); following it would mean reading that extension's
-  private settings, which differ by distribution, so it is not done.
+  there; following it would mean reading that extension's private settings,
+  which differ by distribution, so it is not done.
 - Fractional scales: 125 % and 150 % were set in the sandbox through
-  Mutter's `scale-monitor-framebuffer` and drawn sharp (`*-scale125-*`,
-  `*-scale150-*`).
+  Mutter's `scale-monitor-framebuffer` and drawn sharp.
 - The modes are the ones power-profiles-daemon lists (`Profiles`), read the
   way the System page reads them (`hardware_platform::bus::power_profiles`).
   Better OS never reads or writes `platform_profile` itself (ADR 0017).

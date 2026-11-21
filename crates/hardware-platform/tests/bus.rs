@@ -301,8 +301,10 @@ fn reading_and_following_the_daemon_never_start_it() {
     assert_eq!(end, bus::WatchEnd::Stopped);
     assert_eq!(readings, vec![Presence::Absent]);
 
-    // The race: a daemon that answers and then goes away between two calls.
-    // Every call after it left is absent, never an activation.
+    // A daemon that answered and then went away: every call after it left
+    // is absent and starts nothing, since each one carries NO_AUTO_START.
+    // (A call racing the daemon's exit is the same call on the wire; this
+    // does not stage that race.)
     let daemon = fakes::serve_system(
         zbus::blocking::connection::Builder::address(address.as_str()).unwrap(),
         FakeProfiles::owners_machine(),

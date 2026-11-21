@@ -314,12 +314,5 @@ pub fn config_home(
     xdg_config_home: Option<std::ffi::OsString>,
     home: Option<std::ffi::OsString>,
 ) -> Option<std::path::PathBuf> {
-    xdg_config_home
-        .map(std::path::PathBuf::from)
-        .filter(|path| path.is_absolute())
-        .or_else(|| {
-            home.map(std::path::PathBuf::from)
-                .filter(|path| path.is_absolute())
-                .map(|home| home.join(".config"))
-        })
+    better_core::icon_theme::config_home(xdg_config_home, home)
 }

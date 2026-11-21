@@ -235,5 +235,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     polling.abort();
     rewatch.abort();
+    // Nothing the item wrote outlives it.
+    tray.clear_pictures();
     Ok(())
 }

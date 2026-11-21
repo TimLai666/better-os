@@ -50,7 +50,6 @@ use crate::menu::{
     IconChoice, ItemKind, Locale, Menu, MenuAction, MenuItem, PowerFacts, ServiceState,
     TrayReadings,
 };
-use crate::picture::Image;
 use crate::popup::PopupLauncher;
 
 pub const WATCHER_SERVICE: &str = "org.kde.StatusNotifierWatcher";
@@ -251,14 +250,13 @@ impl TrayState {
             self.service,
         );
         let mark_mode = menu::mark_mode(&self.power, &self.choice);
+        // The readings drawn natively on the picture's grid beside the mark.
         let picture = mark_mode
             .and_then(|mode| self.marks.mark(mode))
-            .and_then(|mark| {
-                let readings = icon
-                    .iter()
-                    .find(|(width, height, _)| *width == 22 && *height == 22)
-                    .map(|(w, h, argb)| Image::from_argb(*w, *h, argb))?;
-                Some(picture::compose(&readings, Some(&mark)))
+            .map(|mark| {
+                let readings =
+                    icon::draw_on_grid(&self.choice.shown, self.choice.style, readings, icon::GRID);
+                picture::compose(&readings, Some(&mark))
             });
         let mut changes = self.install(menu, now);
         changes.icon = icon != self.icon || picture != self.picture;
@@ -361,9 +359,9 @@ impl TrayState {
         self.redraw()
     }
 
-    /// Adopt whether the panel is light or dark now.
-    pub fn adopt_panel(&mut self, panel: picture::Panel) -> Changes {
-        self.marks.set_panel(panel);
+    /// Adopt what the desktop says about the panel's colour now.
+    pub fn adopt_panel_hints(&mut self, hints: picture::PanelHints) -> Changes {
+        self.marks.set_hints(hints);
         self.redraw()
     }
 
@@ -472,6 +470,14 @@ impl Tray {
             }
         };
         state.picture_file = file;
+    }
+
+    /// Removes the picture files, as the item ends: an `Arc` the bus
+    /// connection still holds may keep the tray alive past `main`.
+    pub fn clear_pictures(&self) {
+        if let Some(pictures) = &self.pictures {
+            pictures.close();
+        }
     }
 
     /// Announce what changed to the panel.
@@ -657,7 +663,7 @@ impl StatusNotifierItem {
     }
 
     /// Empty, so the panel draws the square pixmap; or, while the picture
-    /// shows the power mode's mark, the PNG file of that wider picture.
+    /// shows the power mode's mark, the SVG file of that wider picture.
     #[zbus(property)]
     async fn icon_name(&self) -> String {
         self.tray
@@ -1385,11 +1391,11 @@ mod tests {
     /// A theme with the three power mode icons, each a different shape.
     fn theme() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
-        let base = dir.path().join("Test");
+        let base = dir.path().join("icons/Test");
         std::fs::create_dir_all(base.join("status")).unwrap();
         std::fs::write(
             base.join("index.theme"),
-            "[Icon Theme]\nDirectories=status\n\n[status]\nSize=16\nType=Scalable\n",
+            "[Icon Theme]\nDirectories=status\n\n[status]\nContext=Status\nSize=16\nType=Scalable\n",
         )
         .unwrap();
         for (mode, x) in [("power-saver", 1), ("balanced", 6), ("performance", 11)] {
@@ -1420,7 +1426,7 @@ mod tests {
         let first = state.adopt_power(modes("balanced"));
         assert!(first.icon && first.layout && first.tooltip);
         let balanced = state.picture.clone().expect("the mark is drawn");
-        let drawn = |svg: &str| picture::render(svg, 2.0).unwrap();
+        let drawn = |svg: &str| picture::testing::render(svg, 2.0).unwrap();
         assert_eq!(drawn(&balanced).width, 2 * (16 + picture::GAP + 16));
         let line = state.menu.find_by_label("Power mode: Balanced").unwrap().id;
 
@@ -1433,7 +1439,12 @@ mod tests {
         let performance = state.picture.clone().unwrap();
         assert_ne!(balanced, performance);
         // The readings are the same pixels beside either mark as alone.
-        let readings = Image::from_argb(state.icon[0].0, state.icon[0].1, &state.icon[0].2);
+        let readings = icon::draw_on_grid(
+            &state.choice.shown,
+            state.choice.style,
+            state.readings.as_ref().unwrap(),
+            icon::GRID,
+        );
         let alone = drawn(&picture::compose(&readings, None));
         for picture in [&balanced, &performance] {
             let offset = 2 * (16 + picture::GAP);
@@ -1470,10 +1481,13 @@ mod tests {
         let dir = theme();
         let mut state = themed(&dir);
         state.adopt_power(modes("balanced"));
-        let dark = state.picture.clone().unwrap();
-        let changes = state.adopt_panel(picture::Panel::Light);
+        let unknown = state.picture.clone().unwrap();
+        let changes = state.adopt_panel_hints(picture::PanelHints {
+            gtk_theme: Some("ZorinBlue-Light".into()),
+            ..picture::PanelHints::default()
+        });
         assert!(changes.icon);
-        assert_ne!(state.picture.clone().unwrap(), dark);
+        assert_ne!(state.picture.clone().unwrap(), unknown);
     }
 
     #[test]

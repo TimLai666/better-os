@@ -50,6 +50,10 @@ jobs:
         #   `poppler_renders_and_searches_a_real_pdf_when_installed`.
         # - dpkg (`dpkg-query`): better-core's self_update journal test; the
         #   image ships it.
+        # - libgdk-pixbuf2.0-bin (`gdk-pixbuf-thumbnailer`) with
+        #   librsvg2-common (the SVG loader): monitor-tray's
+        #   `picture` tests draw the taskbar picture with librsvg, as GNOME
+        #   Shell does (ticket 295).
         # The ubuntu-24.04 image already ships dbus and locales (and dpkg), so
         # taking those off this line would not turn CI red; the line names
         # them so the dependency is written down. The runner itself gives the
@@ -58,7 +62,7 @@ jobs:
         # with sparse files and user extended attributes (files-operations).
         run: |
           for attempt in 1 2 3 4 5; do
-            if sudo apt-get update && sudo apt-get install -y libfontconfig1-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-base gstreamer1.0-plugins-good dbus dconf-service gjs locales language-pack-gnome-zh-hant-base gvfs-backends poppler-utils; then
+            if sudo apt-get update && sudo apt-get install -y libfontconfig1-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-base gstreamer1.0-plugins-good dbus dconf-service gjs locales language-pack-gnome-zh-hant-base gvfs-backends poppler-utils libgdk-pixbuf2.0-bin librsvg2-common; then
               exit 0
             fi
             echo "apt attempt $attempt failed; waiting before the next" >&2

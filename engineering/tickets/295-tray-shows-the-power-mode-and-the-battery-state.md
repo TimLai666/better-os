@@ -69,28 +69,28 @@ a release.
   alone falls back to processor and memory). The readings have their widths
   from before ticket 295.
 - The picture (`monitor_tray::picture`, GPUI-free) is an SVG document 16
-  logical pixels tall: the theme's `power-profile-*-symbolic` found by the
-  Icon Theme Specification's lookup and nested as it is, recoloured to the
-  panel's foreground (white on dark, `#2e3436` on light, from the portal's
-  `color-scheme`), a gap, then the readings' canvas as crisp squares. The
-  icon theme and the colour scheme are followed through the settings portal
-  (`icon_theme`). No mark, no file: the item is its square pixmaps.
-- The panel gets it as a file: GNOME's AppIndicator extension fits a pixmap
-  into a square but draws a wide image named by `IconName` at its own size,
-  and an SVG at the display's scale (spec, file and line; seen at scale 2 in
-  `scale2-png-vs-svg.png`, where a PNG was soft). The file is written under
-  `$XDG_RUNTIME_DIR/better-os/monitor-tray/` with a new name per change
-  (`picture_file`). The pixmaps are left out only for GNOME Shell's watcher,
-  which would draw them over the file; waybar, KDE, swaybar and COSMIC keep
-  them and fall back to the readings (read from source).
+  logical pixels tall: the theme's `power-profile-*-symbolic`, found by the
+  shared icon theme lookup (`better_core::icon_theme`, moved from
+  `better-ui`, which re-exports it), parsed and written out again by `usvg`
+  so it is self-contained, recoloured to the panel's ink; a gap; the
+  readings drawn natively on the 16-pixel grid. The ink follows the shell
+  theme, then the GTK theme's `-Light`/`-Dark` name, then the colour scheme;
+  when none says, the mark has the readings' light ink and dark edge. Spec:
+  "The power mode in the same item".
+- The panel gets it as a file named by `IconName` (GNOME's AppIndicator
+  extension squeezes a wide pixmap into a square), written under two names
+  in turn so GNOME Shell keeps two file monitors, not one per picture, and
+  not written at all when the picture did not change. The pixmaps are left
+  out only for GNOME Shell's watcher; other panels keep them. The files go
+  when the item ends (checked with SIGTERM in the sandbox) or starts.
 - A mode change is a new picture on the same item: no second item, no
   second connection, no new registration.
 - The menu, the tooltip and the popup name the mode and the System page's
   caution sentences through one rule, `hardware_core::power::mode_shown`.
 - The modes come from power-profiles-daemon; every call carries
   `NO_AUTO_START` (`hardware_platform::bus::invoke`), so no read or write
-  starts a stopped, masked or just-stopped daemon, for the System page too.
-  A watch that ends says "could not be read" last. Not from
+  starts a stopped or masked daemon, for the System page too. A watch that
+  ends says "could not be read" last. Not from
   `/sys/firmware/acpi/platform_profile_choices` as this ticket's text says:
   ADR 0017 keeps Better OS off `platform_profile`. The System page sets the
   mode through the daemon directly, not through ADR 0029's path; a menu
@@ -99,40 +99,62 @@ a release.
   `etc/passwd` when the fixture has them, from `BETTER_OS_DEBUG_SYS_ROOT`
   (`ServiceConfig::for_session`).
 
+### Measured
+
+- 10,000 picture changes in the sandbox's GNOME Shell 46 (`scripts/churn.py`,
+  `scripts/leak.sh`, one item changing every 20 ms): under a new name each
+  time (the first design) resident memory went from 274,244 kB to
+  277,712 kB (+3.4 MB); under two names in turn from 270,828 kB to
+  273,692 kB (+2.9 MB). Open files went from 61 to 52 and 60 to 52, inotify
+  watches from 11 to 12 in both: GLib watches the directory, so the per-path
+  monitors the source shows (`st-texture-cache.c` 1173-1191) cost memory and
+  main-loop sources, not watches. Two names caps them at two.
+- One minute of this machine's live readings at scale 2, before identical
+  pictures were skipped: 34 writes; the tray 0.44 s of processor, GNOME
+  Shell 0.61 s, against 0.45 s and 0.37 s with no mark.
+
 ### Limits found
 
-- The file follows the readings: 34 writes in a minute of live readings
-  (sandbox, scale 2, tmpfs); in that minute the tray used 0.44 s of
-  processor and GNOME Shell 0.61 s, against 0.45 s and 0.37 s without the
-  mark. The extension has no second layer to keep the readings as pixmaps
-  beside a file (its overlay is a small emblem).
 - The extension's own `icon-size` setting (20, 24) does not grow a picture
-  drawn at its own size; the item stays 16 pixels tall
-  (`icon-size-24-*`). Following it would mean reading that extension's
-  private settings.
-- Light or dark comes from the portal's `color-scheme`; a light shell theme
-  chosen without that preference (some Zorin layouts) is drawn as dark.
+  drawn at its own size; the item stays 16 pixels tall. Following it would
+  mean reading that extension's private settings.
+- At 150 % on ZorinBlue-Dark the mark shows a dark rim
+  (`mode-performance-zorin-dark-en-scale150-panel-zoom.png`) although the
+  file says white ink with no edge; where the shell adds it was not found.
+- Right after login the panel's colour is read once the settings portal
+  answers; until then the mark has the light-with-dark-edge look, which
+  reads on both.
+- KDE Plasma would draw the file through Qt's SVG renderer, which has no
+  filters, so the mark would keep the theme's colour there (read from
+  source, not run).
 
 ### Checked
 
-- Tests in `monitor-tray` (`picture`, `picture_file`, `icon_theme`,
-  `menu`, `lib`, `tests/power.rs`), `hardware-core` (`power`),
-  `hardware-platform` (`tests/bus.rs`: nothing activated on a bus that could
-  start the daemon, including a daemon that leaves between calls; a closed
-  bus ends unreadable), `monitor-gui` (`popup`), `monitor-service`,
-  `manager-gui`, `awake-gui`, `window-attention-service`, `manager-daemon`.
+- Tests: `monitor-tray` (`picture`: the readings the same with and without
+  the mark and every cell kept at 100, 125, 150 and 200 %, the ink per
+  panel, the panel rule, icons with Inkscape namespaces, an entity, a
+  comment holding `<svg` and a style composed and drawn by librsvg through
+  `gdk-pixbuf-thumbnailer`; `picture_file`: two names, no rewrite of the
+  same picture, nothing left after closing; `icon_theme`; `menu`; `lib`;
+  `tests/power.rs`), `better-core` and `better-ui` (the shared lookup),
+  `hardware-core`, `hardware-platform` (`tests/bus.rs`: nothing activated
+  on a bus that could start the daemon, before and after a daemon left; a
+  closed bus ends unreadable), `monitor-gui`, `monitor-service`,
+  `manager-gui` and the crates that depend on these.
 - Screenshots in `/home/tim/Developer/better-os-evidence/295/`, headless
-  GNOME Shell 46 with the Zorin AppIndicator extension and the Adwaita icon
-  theme, a stand-in daemon on a private system bus, fixture `/sys` and
-  `/proc` with invented round figures: each mode with the menu open and the
-  panel at real size and zoomed, English and zh-TW, dark and light, at
-  scale 1 and 2 (`mode-*-scale1-*`, `mode-*-scale2-*`); 125 % and 150 % with
-  Mutter's `scale-monitor-framebuffer` (`*-scale125-*`, `*-scale150-*`);
-  the extension at icon size 20 and 24; the popup; no modes; the wide
-  pixmap against the wide file, and a PNG against an SVG at scale 2. Never
-  the machine's own power mode.
-- Read from source only: Ubuntu's AppIndicator extension (`fbc758a4`, the
-  same rule as Zorin's copy), waybar (`b4f03e63`), KDE Plasma's system
-  tray, swaybar, COSMIC's status area (`cb3ea91a`), dbus-daemon's and
-  dbus-broker's activation errors. Not run: KDE, waybar, swaybar, COSMIC,
-  the owner's desktop.
+  GNOME Shell 46 with the Zorin AppIndicator extension, the User Themes
+  extension applying ZorinBlue-Light (with `color-scheme` left at
+  `default`, as Zorin leaves it) or ZorinBlue-Dark, a stand-in daemon on a
+  private system bus, fixture `/sys` and `/proc`: each mode with the menu
+  open (scale 1) and the panel at real size and zoomed (scale 1 and 2),
+  English and zh-TW (`mode-*-zorin-{light,dark}-*`); the numbers style
+  (`numbers-*`); a panel whose colour cannot be told
+  (`panel-unknown-adwaita-default-*`); 125 % and 150 % (`*-scale125-*`,
+  `*-scale150-*`, ZorinBlue-Dark); the popup; no modes; the wide
+  pixmap against the wide file; a PNG against an SVG at scale 2. Never the
+  machine's own power mode.
+- Read from source only: Ubuntu's AppIndicator extension (`fbc758a4`),
+  GNOME Shell 46.0's `st-texture-cache.c`, waybar (`b4f03e63`), KDE Plasma's
+  system tray and KIconThemes, swaybar, COSMIC's status area (`cb3ea91a`),
+  dbus-daemon's and dbus-broker's activation errors. Not run: KDE, waybar,
+  swaybar, COSMIC, the owner's desktop.

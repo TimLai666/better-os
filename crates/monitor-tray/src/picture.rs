@@ -7,105 +7,30 @@
 //! The picture is an SVG document, because a panel draws an SVG at the
 //! display's own resolution: GNOME Shell rasterises it at the stage's scale,
 //! so it is as sharp at 200 % as at 100 %, where a PNG would be scaled up.
-//! The mark is the desktop's own power mode icon (`power-profile-*-symbolic`),
-//! found in the current icon theme by the icon theme rules and nested in the
-//! document as it is, recoloured to the panel's foreground as a symbolic
-//! icon is. The readings are their canvas's pixels as squares, edges kept
-//! crisp, scaled to the picture's height; the mark adds width beside them
-//! and never takes any.
-
-use std::path::{Path, PathBuf};
+//!
+//! - The mark is the desktop's own power mode icon
+//!   (`power-profile-*-symbolic`), found by the icon theme lookup every
+//!   Better OS program shares (`better_core::icon_theme`). It is parsed and
+//!   written out again by `usvg`, so what goes into the picture is
+//!   self-contained: no styles that could reach the readings, no entities,
+//!   no namespaces it does not declare. Its colours are then replaced by the
+//!   panel's ink, as a symbolic icon's are.
+//! - The readings are drawn natively on the picture's 16-pixel grid
+//!   (`icon::draw_on_grid`), one square per cell, so no scaling drops a row.
+//!   The mark adds width beside them and never takes any.
 
 use hardware_core::power::Profile;
 
-/// A picture as pixels: width, height, and straight (not premultiplied)
-/// RGBA8, row by row. The readings' canvas arrives as one, and the tests
-/// draw the SVG into one to compare.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Image {
-    pub width: u32,
-    pub height: u32,
-    pub rgba: Vec<u8>,
-}
-
-impl Image {
-    pub fn empty(width: u32, height: u32) -> Self {
-        Self {
-            width,
-            height,
-            rgba: vec![0; (width * height * 4) as usize],
-        }
-    }
-
-    /// From one StatusNotifierItem pixmap: ARGB32 in network byte order.
-    pub fn from_argb(width: i32, height: i32, argb: &[u8]) -> Self {
-        let mut rgba = Vec::with_capacity(argb.len());
-        for pixel in argb.as_chunks::<4>().0 {
-            rgba.extend_from_slice(&[pixel[1], pixel[2], pixel[3], pixel[0]]);
-        }
-        Self {
-            width: width.max(0) as u32,
-            height: height.max(0) as u32,
-            rgba,
-        }
-    }
-
-    fn at(&self, x: u32, y: u32) -> [u8; 4] {
-        let i = ((y * self.width + x) * 4) as usize;
-        [
-            self.rgba[i],
-            self.rgba[i + 1],
-            self.rgba[i + 2],
-            self.rgba[i + 3],
-        ]
-    }
-
-    /// The pixels of a rectangle, for comparing one part of two pictures.
-    pub fn region(&self, x: u32, y: u32, width: u32, height: u32) -> Vec<[u8; 4]> {
-        let mut out = Vec::new();
-        for row in y..y + height {
-            for column in x..x + width {
-                out.push(self.at(column, row));
-            }
-        }
-        out
-    }
-}
+use crate::icon::Pixmap;
 
 /// The gap between the mark and the readings, in logical pixels.
 pub const GAP: u32 = 4;
 
 /// The picture's height in logical pixels: the size GNOME Shell draws a
-/// panel icon at (`PANEL_ICON_SIZE`). A wide picture is drawn at its own
-/// size, which the SVG states in logical pixels.
-pub const HEIGHT: u32 = 16;
-
-/// The panel's foreground for a symbolic icon: light on a dark panel, dark
-/// on a light one, as GNOME's Adwaita draws symbolic icons in each.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Panel {
-    Dark,
-    Light,
-}
-
-impl Panel {
-    /// From the desktop's colour scheme (`org.freedesktop.appearance`
-    /// `color-scheme`: 0 no preference, 1 dark, 2 light). With no
-    /// preference GNOME Shell's own panel is dark.
-    pub fn from_color_scheme(scheme: Option<u32>) -> Self {
-        match scheme {
-            Some(2) => Panel::Light,
-            _ => Panel::Dark,
-        }
-    }
-
-    pub fn ink(self) -> [u8; 3] {
-        match self {
-            Panel::Dark => [0xff, 0xff, 0xff],
-            Panel::Light => [0x2e, 0x34, 0x36],
-        }
-    }
-}
+/// panel icon at (`PANEL_ICON_SIZE`), and the readings' grid
+/// (`icon::GRID`). A wide picture is drawn at its own size, which the SVG
+/// states in logical pixels.
+pub const HEIGHT: u32 = crate::icon::GRID as u32;
 
 /// The icon theme's name for a mode, as GNOME's own power mode menu uses.
 pub fn icon_name(mode: Profile) -> &'static str {
@@ -116,203 +41,139 @@ pub fn icon_name(mode: Profile) -> &'static str {
     }
 }
 
-/// Where icon themes live: `$XDG_DATA_HOME/icons`, then each of
-/// `$XDG_DATA_DIRS`' `icons` (freedesktop Icon Theme Specification,
-/// "Directory Layout"). `~/.icons` comes first when there is a home.
-pub fn theme_dirs(home: Option<&Path>, data_home: Option<&Path>, data_dirs: &str) -> Vec<PathBuf> {
-    let mut dirs = Vec::new();
-    if let Some(home) = home {
-        dirs.push(home.join(".icons"));
-    }
-    match data_home {
-        Some(data_home) => dirs.push(data_home.join("icons")),
-        None => {
-            if let Some(home) = home {
-                dirs.push(home.join(".local/share/icons"));
-            }
-        }
-    }
-    let data_dirs = if data_dirs.trim().is_empty() {
-        "/usr/local/share:/usr/share"
+/// How the panel's symbolic icons are drawn: light on a dark panel, dark on
+/// a light one, and when which cannot be told, light with a dark edge, the
+/// readings' own rule, which reads on both.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Panel {
+    Dark,
+    Light,
+    Unknown,
+}
+
+/// What the desktop says that decides the panel's colour, each `None` when
+/// it could not be read.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct PanelHints {
+    /// The GNOME Shell theme the User Themes extension applies
+    /// (`org.gnome.shell.extensions.user-theme` `name`): Zorin's panel.
+    pub shell_theme: Option<String>,
+    /// The GTK theme (`org.gnome.desktop.interface` `gtk-theme`).
+    pub gtk_theme: Option<String>,
+    /// `org.freedesktop.appearance` `color-scheme`: 0 none, 1 dark, 2 light.
+    pub color_scheme: Option<u32>,
+}
+
+/// A theme name's light or dark half, by the `-Light`/`-Dark` naming every
+/// Zorin theme and Adwaita's `Adwaita-dark` follow.
+fn by_name(theme: &str) -> Option<Panel> {
+    let lower = theme.to_ascii_lowercase();
+    if lower.ends_with("-dark") {
+        Some(Panel::Dark)
+    } else if lower.ends_with("-light") {
+        Some(Panel::Light)
     } else {
-        data_dirs
-    };
-    for dir in data_dirs.split(':').filter(|d| !d.is_empty()) {
-        dirs.push(Path::new(dir).join("icons"));
+        None
     }
-    dirs
 }
 
-/// One theme's `index.theme`: what it inherits and its directories, each
-/// with its nominal size and type.
-struct ThemeIndex {
-    inherits: Vec<String>,
-    directories: Vec<(String, u32, String)>,
-}
-
-fn read_index(dirs: &[PathBuf], theme: &str) -> Option<ThemeIndex> {
-    let text = dirs
-        .iter()
-        .find_map(|dir| std::fs::read_to_string(dir.join(theme).join("index.theme")).ok())?;
-    let mut section = String::new();
-    let mut inherits = Vec::new();
-    let mut listed = Vec::new();
-    let mut details: std::collections::HashMap<String, (u32, String)> = Default::default();
-    for line in text.lines().map(str::trim) {
-        if let Some(name) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
-            section = name.to_string();
-            continue;
+impl Panel {
+    /// The shell theme in force decides; then the GTK theme's name, which
+    /// Zorin keeps in step with its shell theme; then an explicit colour
+    /// scheme. Anything else is not known: Zorin's light desktop says no
+    /// colour scheme at all, and GNOME 46's own panel ignores it.
+    pub fn from_hints(hints: &PanelHints) -> Self {
+        if let Some(panel) = hints.shell_theme.as_deref().and_then(by_name) {
+            return panel;
         }
-        let Some((key, value)) = line.split_once('=') else {
-            continue;
-        };
-        let (key, value) = (key.trim(), value.trim());
-        if section == "Icon Theme" {
-            match key {
-                "Inherits" => inherits = value.split(',').map(|s| s.trim().to_string()).collect(),
-                "Directories" | "ScaledDirectories" => listed.extend(
-                    value
-                        .split(',')
-                        .map(|s| s.trim().to_string())
-                        .filter(|s| !s.is_empty()),
-                ),
-                _ => {}
-            }
-        } else {
-            let entry = details
-                .entry(section.clone())
-                .or_insert((0, "Threshold".into()));
-            match key {
-                "Size" => entry.0 = value.parse().unwrap_or(0),
-                "Type" => entry.1 = value.to_string(),
-                _ => {}
-            }
+        if let Some(panel) = hints.gtk_theme.as_deref().and_then(by_name) {
+            return panel;
+        }
+        match hints.color_scheme {
+            Some(1) => Panel::Dark,
+            Some(2) => Panel::Light,
+            _ => Panel::Unknown,
         }
     }
-    let directories = listed
-        .into_iter()
-        .map(|dir| {
-            let (size, kind) = details
-                .get(&dir)
-                .cloned()
-                .unwrap_or((0, "Threshold".into()));
-            (dir, size, kind)
-        })
-        .collect();
-    Some(ThemeIndex {
-        inherits,
-        directories,
-    })
-}
 
-/// The SVG file for `name` in `theme` or a theme it inherits, then
-/// `hicolor`, as the Icon Theme Specification looks icons up. Only SVG
-/// files: the mark is drawn at whatever size the picture needs. Among a
-/// theme's directories a scalable one wins, then the nearest in size.
-pub fn find_icon(dirs: &[PathBuf], theme: &str, name: &str, size: u32) -> Option<PathBuf> {
-    let mut queue = vec![theme.to_string()];
-    let mut seen = Vec::new();
-    while let Some(current) = queue.first().cloned() {
-        queue.remove(0);
-        if seen.contains(&current) {
-            continue;
-        }
-        seen.push(current.clone());
-        if let Some(index) = read_index(dirs, &current) {
-            let mut best: Option<(u32, PathBuf)> = None;
-            for (directory, nominal, kind) in &index.directories {
-                for base in dirs {
-                    let file = base
-                        .join(&current)
-                        .join(directory)
-                        .join(format!("{name}.svg"));
-                    if !file.is_file() {
-                        continue;
-                    }
-                    // A scalable file draws at any size, so it wins over a
-                    // fixed one even of the same nominal size.
-                    let distance = if kind == "Scalable" {
-                        0
-                    } else {
-                        nominal.abs_diff(size) + 1
-                    };
-                    if best.as_ref().is_none_or(|(d, _)| distance < *d) {
-                        best = Some((distance, file));
-                    }
-                }
-            }
-            if let Some((_, file)) = best {
-                return Some(file);
-            }
-            queue.extend(index.inherits);
-        }
-        if queue.is_empty() && !seen.iter().any(|t| t == "hicolor") {
-            queue.push("hicolor".into());
+    /// The ink, and the edge drawn around it when the panel is not known.
+    fn ink(self) -> ([u8; 3], Option<[u8; 3]>) {
+        match self {
+            Panel::Dark => ([0xff, 0xff, 0xff], None),
+            Panel::Light => ([0x2e, 0x34, 0x36], None),
+            Panel::Unknown => ([0xe8, 0xe8, 0xe8], Some([0x1c, 0x1c, 0x1c])),
         }
     }
-    None
 }
 
-/// The mark: the icon's SVG document nested as an element `size` logical
-/// pixels square at `x`, its own content untouched, with its colours
-/// replaced by `ink` and its opacity kept, as a symbolic icon is recoloured.
-/// `None` when the file is not an SVG that can be drawn.
-pub fn mark(svg: &[u8], x: u32, size: u32, ink: [u8; 3]) -> Option<String> {
-    let tree = resvg::usvg::Tree::from_data(svg, &resvg::usvg::Options::default()).ok()?;
-    let text = std::str::from_utf8(svg).ok()?;
-    let open = text.find("<svg")?;
-    let close = open + text[open..].find('>')?;
-    let tag = &text[open..close];
-    let end = text.rfind("</svg>")?;
-    if end <= close {
+/// The mark: the icon's SVG made self-contained by `usvg` and nested `size`
+/// logical pixels square at the left, its colours replaced by the panel's
+/// ink and its opacity kept. `None` when the file is not an SVG that can be
+/// drawn.
+pub fn mark(svg: &[u8], size: u32, panel: Panel) -> Option<String> {
+    let tree = usvg::Tree::from_data(svg, &usvg::Options::default()).ok()?;
+    let (width, height) = (tree.size().width(), tree.size().height());
+    if width <= 0.0 || height <= 0.0 {
         return None;
     }
-    let inner = &text[close + 1..end];
-    let view_box = attribute(tag, "viewBox").unwrap_or_else(|| {
-        let size = tree.size();
-        format!("0 0 {} {}", size.width(), size.height())
+    let written = tree.to_string(&usvg::WriteOptions {
+        id_prefix: Some("mark-".into()),
+        ..usvg::WriteOptions::default()
     });
-    let [r, g, b] = ink.map(|c| f64::from(c) / 255.0);
+    let start = written.find("<svg")?;
+    let element = &written[start..];
+    let scale = f64::from(size) / f64::from(width.max(height));
+    let ([r, g, b], edge) = panel.ink();
+    let channel = |c: u8| f64::from(c) / 255.0;
+    let colour = format!(
+        "0 0 0 0 {:.4} 0 0 0 0 {:.4} 0 0 0 0 {:.4} 0 0 0 1 0",
+        channel(r),
+        channel(g),
+        channel(b)
+    );
+    let filter = match edge {
+        None => format!(
+            r#"<filter id="ink" x="0" y="0" width="1" height="1" color-interpolation-filters="sRGB"><feColorMatrix type="matrix" values="{colour}"/></filter>"#
+        ),
+        Some(edge) => format!(
+            r##"<filter id="ink" x="-0.2" y="-0.2" width="1.4" height="1.4" color-interpolation-filters="sRGB"><feMorphology in="SourceAlpha" operator="dilate" radius="0.75" result="wide"/><feFlood flood-color="#{:02x}{:02x}{:02x}" flood-opacity="0.8"/><feComposite in2="wide" operator="in" result="edge"/><feColorMatrix in="SourceGraphic" type="matrix" values="{colour}" result="fill"/><feMerge><feMergeNode in="edge"/><feMergeNode in="fill"/></feMerge></filter>"##,
+            edge[0], edge[1], edge[2]
+        ),
+    };
     Some(format!(
-        r#"<filter id="ink" x="0" y="0" width="1" height="1" color-interpolation-filters="sRGB"><feColorMatrix type="matrix" values="0 0 0 0 {r:.4} 0 0 0 0 {g:.4} 0 0 0 0 {b:.4} 0 0 0 1 0"/></filter><g filter="url(#ink)"><svg x="{x}" y="0" width="{size}" height="{size}" viewBox="{view_box}">{inner}</svg></g>"#
+        r#"<defs>{filter}</defs><g filter="url(#ink)"><g transform="scale({scale:.6})">{element}</g></g>"#
     ))
 }
 
-/// The value of one attribute in an element's opening tag.
-fn attribute(tag: &str, name: &str) -> Option<String> {
-    let at = tag.find(&format!(" {name}="))? + name.len() + 2;
-    let quote = tag[at..].chars().next()?;
-    let rest = &tag[at + 1..];
-    Some(rest[..rest.find(quote)?].to_string())
-}
-
-/// The readings' canvas as squares, one per drawn pixel, at `x`, scaled so
-/// the canvas is `HEIGHT` tall. `crispEdges` keeps every square's edges on
-/// the display's pixels at any scale.
-fn readings_svg(readings: &Image, x: u32) -> String {
-    let scale = f64::from(HEIGHT) / f64::from(readings.height.max(1));
-    let mut out = format!(
-        r#"<g shape-rendering="crispEdges" transform="translate({x} 0) scale({scale:.6})">"#
-    );
-    for row in 0..readings.height {
+/// The readings' grid as squares, one per drawn cell (a run of one colour
+/// in a row is one rectangle), at `x`. `crispEdges` keeps every edge on the
+/// display's pixels; at 200 % each cell is exactly two by two.
+fn readings_svg(readings: &Pixmap, x: u32) -> String {
+    let (width, height, argb) = readings;
+    let (width, height) = ((*width).max(0) as usize, (*height).max(0) as usize);
+    let at = |column: usize, row: usize| {
+        let i = (row * width + column) * 4;
+        [argb[i], argb[i + 1], argb[i + 2], argb[i + 3]]
+    };
+    let mut out = format!(r#"<g shape-rendering="crispEdges" transform="translate({x} 0)">"#);
+    for row in 0..height {
         let mut column = 0;
-        while column < readings.width {
-            let pixel = readings.at(column, row);
-            if pixel[3] == 0 {
+        while column < width {
+            let pixel = at(column, row);
+            if pixel[0] == 0 {
                 column += 1;
                 continue;
             }
-            // A run of the same colour is one rectangle.
             let mut run = 1;
-            while column + run < readings.width && readings.at(column + run, row) == pixel {
+            while column + run < width && at(column + run, row) == pixel {
                 run += 1;
             }
             out.push_str(&format!(
                 r##"<rect x="{column}" y="{row}" width="{run}" height="1" fill="#{:02x}{:02x}{:02x}" fill-opacity="{:.4}"/>"##,
-                pixel[0],
                 pixel[1],
                 pixel[2],
-                f64::from(pixel[3]) / 255.0
+                pixel[3],
+                f64::from(pixel[0]) / 255.0
             ));
             column += run;
         }
@@ -321,16 +182,12 @@ fn readings_svg(readings: &Image, x: u32) -> String {
     out
 }
 
-/// The readings' width in the picture, in logical pixels.
-pub fn readings_width(readings: &Image) -> u32 {
-    (readings.width * HEIGHT).div_ceil(readings.height.max(1))
-}
-
-/// The one picture as an SVG document: the mark ([`mark`], drawn at x 0),
-/// [`GAP`], then the readings; `mark_width` is 0 without a mark.
-pub fn compose(readings: &Image, mark: Option<&str>) -> String {
+/// The one picture as an SVG document: the mark ([`mark`]) at the left,
+/// [`GAP`], then the readings drawn on the grid; without a mark, the
+/// readings alone.
+pub fn compose(readings: &Pixmap, mark: Option<&str>) -> String {
     let mark_width = if mark.is_some() { HEIGHT + GAP } else { 0 };
-    let width = mark_width + readings_width(readings);
+    let width = mark_width + readings.0.max(0) as u32;
     format!(
         r#"<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{HEIGHT}" viewBox="0 0 {width} {HEIGHT}">{}{}</svg>"#,
         mark.unwrap_or(""),
@@ -338,80 +195,181 @@ pub fn compose(readings: &Image, mark: Option<&str>) -> String {
     )
 }
 
-/// The document drawn at `scale` device pixels per logical pixel, as a
-/// panel draws it.
-pub fn render(svg: &str, scale: f32) -> Option<Image> {
-    let tree =
-        resvg::usvg::Tree::from_data(svg.as_bytes(), &resvg::usvg::Options::default()).ok()?;
-    let size = tree.size();
-    let (width, height) = (
-        (size.width() * scale).round() as u32,
-        (size.height() * scale).round() as u32,
-    );
-    let mut pixmap = resvg::tiny_skia::Pixmap::new(width, height)?;
-    resvg::render(
-        &tree,
-        resvg::tiny_skia::Transform::from_scale(scale, scale),
-        &mut pixmap.as_mut(),
-    );
-    let mut image = Image::empty(width, height);
-    for (i, pixel) in pixmap.pixels().iter().enumerate() {
-        let c = pixel.demultiply();
-        image.rgba[i * 4..i * 4 + 4].copy_from_slice(&[c.red(), c.green(), c.blue(), c.alpha()]);
+#[cfg(test)]
+pub(crate) mod testing {
+    //! Drawing the picture as a panel does, for the tests: with resvg, and
+    //! with librsvg through GdkPixbuf, which is what GNOME Shell uses.
+
+    /// A picture as straight RGBA8 pixels.
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    pub struct Image {
+        pub width: u32,
+        pub height: u32,
+        pub rgba: Vec<u8>,
     }
-    Some(image)
+
+    impl Image {
+        pub fn at(&self, x: u32, y: u32) -> [u8; 4] {
+            let i = ((y * self.width + x) * 4) as usize;
+            [
+                self.rgba[i],
+                self.rgba[i + 1],
+                self.rgba[i + 2],
+                self.rgba[i + 3],
+            ]
+        }
+
+        pub fn region(&self, x: u32, y: u32, width: u32, height: u32) -> Vec<[u8; 4]> {
+            let mut out = Vec::new();
+            for row in y..y + height {
+                for column in x..x + width {
+                    out.push(self.at(column, row));
+                }
+            }
+            out
+        }
+
+        fn from_pixmap(pixmap: &resvg::tiny_skia::Pixmap) -> Image {
+            let mut rgba = Vec::with_capacity(pixmap.pixels().len() * 4);
+            for pixel in pixmap.pixels() {
+                let c = pixel.demultiply();
+                rgba.extend_from_slice(&[c.red(), c.green(), c.blue(), c.alpha()]);
+            }
+            Image {
+                width: pixmap.width(),
+                height: pixmap.height(),
+                rgba,
+            }
+        }
+    }
+
+    /// The document drawn with resvg at `scale` device pixels per logical
+    /// pixel.
+    pub fn render(svg: &str, scale: f32) -> Option<Image> {
+        let tree = usvg::Tree::from_data(svg.as_bytes(), &usvg::Options::default()).ok()?;
+        let size = tree.size();
+        let mut pixmap = resvg::tiny_skia::Pixmap::new(
+            (size.width() * scale).round() as u32,
+            (size.height() * scale).round() as u32,
+        )?;
+        resvg::render(
+            &tree,
+            resvg::tiny_skia::Transform::from_scale(scale, scale),
+            &mut pixmap.as_mut(),
+        );
+        Some(Image::from_pixmap(&pixmap))
+    }
+
+    /// The document drawn by librsvg through GdkPixbuf
+    /// (`gdk-pixbuf-thumbnailer`), as GNOME Shell's texture cache loads it,
+    /// `size` pixels on its longer side. `Err` with GdkPixbuf's words when it
+    /// cannot be drawn; `None` when the tool is missing.
+    pub fn render_with_librsvg(svg: &str, size: u32) -> Option<Result<Image, String>> {
+        let dir = tempfile::tempdir().ok()?;
+        let input = dir.path().join("picture.svg");
+        let output = dir.path().join("picture.png");
+        std::fs::write(&input, svg).ok()?;
+        let run = std::process::Command::new("gdk-pixbuf-thumbnailer")
+            .args(["-s", &size.to_string()])
+            .arg(&input)
+            .arg(&output)
+            .output()
+            .ok()?;
+        if !run.status.success() {
+            return Some(Err(String::from_utf8_lossy(&run.stderr).into_owned()));
+        }
+        let pixmap = resvg::tiny_skia::Pixmap::load_png(&output).ok()?;
+        Some(Ok(Image::from_pixmap(&pixmap)))
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::testing::{render, render_with_librsvg};
     use super::*;
+    use crate::icon::{self, IconStyle};
+    use crate::menu::{Reading, TrayReadings};
 
     const CIRCLE: &str = r##"<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg" width="16px" height="16px" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6" fill="#2e3436"/></svg>"##;
 
-    fn readings() -> Image {
-        let mut image = Image::empty(22, 22);
-        for y in 4..18 {
-            for x in 3..10 {
-                let i = ((y * 22 + x) * 4) as usize;
-                image.rgba[i..i + 4].copy_from_slice(&[0x4c, 0xb4, 0xf5, 255]);
-            }
+    fn readings() -> TrayReadings {
+        TrayReadings {
+            cpu: Some(0.25),
+            memory_used: Some(1.0),
+            memory_total: Some(2.0),
+            ..TrayReadings::default()
         }
-        image
+    }
+
+    fn grid(style: IconStyle) -> Pixmap {
+        icon::draw_on_grid(
+            &[Reading::Cpu, Reading::Memory],
+            style,
+            &readings(),
+            icon::GRID,
+        )
+    }
+
+    /// `gdk-pixbuf-thumbnailer` with GdkPixbuf's SVG loader, librsvg.
+    macro_rules! librsvg_or_skip {
+        ($svg:expr, $size:expr) => {
+            test_prerequisites::require!(
+                "gdk-pixbuf-thumbnailer and librsvg2-common",
+                render_with_librsvg($svg, $size).ok_or("gdk-pixbuf-thumbnailer is missing")
+            )
+        };
     }
 
     #[test]
     fn the_readings_are_the_same_pixels_with_and_without_the_mark_at_each_scale() {
-        let readings = readings();
-        let width = readings_width(&readings);
-        assert_eq!(width, 16);
-        let mark = mark(CIRCLE.as_bytes(), 0, HEIGHT, Panel::Dark.ink()).unwrap();
-        for scale in [1.0f32, 1.25, 1.5, 2.0] {
-            let alone = render(&compose(&readings, None), scale).unwrap();
-            let together = render(&compose(&readings, Some(&mark)), scale).unwrap();
-            let offset = ((HEIGHT + GAP) as f32 * scale).round() as u32;
-            assert_eq!(together.width, alone.width + offset, "{scale}");
-            assert_eq!(
-                together.region(offset, 0, alone.width, alone.height),
-                alone.region(0, 0, alone.width, alone.height),
-                "{scale}"
-            );
+        for style in [IconStyle::Bars, IconStyle::Numbers] {
+            let readings = grid(style);
+            let mark = mark(CIRCLE.as_bytes(), HEIGHT, Panel::Dark).unwrap();
+            for scale in [1.0f32, 1.25, 1.5, 2.0] {
+                let alone = render(&compose(&readings, None), scale).unwrap();
+                let together = render(&compose(&readings, Some(&mark)), scale).unwrap();
+                let offset = ((HEIGHT + GAP) as f32 * scale).round() as u32;
+                assert_eq!(together.width, alone.width + offset, "{scale}");
+                assert_eq!(
+                    together.region(offset, 0, alone.width, alone.height),
+                    alone.region(0, 0, alone.width, alone.height),
+                    "{style:?} {scale}"
+                );
+            }
         }
     }
 
     #[test]
-    fn the_readings_edges_stay_on_the_displays_pixels() {
-        // A bar's edge is never a half-covered pixel, at 100 % or 200 %.
-        for scale in [1.0f32, 2.0] {
-            let image = render(&compose(&readings(), None), scale).unwrap();
-            assert!(
-                image
-                    .rgba
-                    .as_chunks::<4>()
-                    .0
-                    .iter()
-                    .all(|p| p[3] == 0 || p[3] == 255),
-                "{scale}"
-            );
+    fn every_cell_of_the_readings_keeps_its_colour_at_each_scale() {
+        // Drawn on the 16 grid, no cell is dropped at any scale: each one
+        // still has a display pixel of its own colour.
+        for style in [IconStyle::Bars, IconStyle::Numbers] {
+            let readings = grid(style);
+            let (w, h, argb) = &readings;
+            let svg = compose(&readings, None);
+            for scale in [1.0f32, 1.25, 1.5, 2.0] {
+                let image = render(&svg, scale).unwrap();
+                for row in 0..*h as usize {
+                    for column in 0..*w as usize {
+                        let i = (row * *w as usize + column) * 4;
+                        if argb[i] != 255 {
+                            continue;
+                        }
+                        let want = [argb[i + 1], argb[i + 2], argb[i + 3], 255];
+                        let (x0, x1) = (
+                            (column as f32 * scale).floor() as u32,
+                            ((column + 1) as f32 * scale).ceil() as u32,
+                        );
+                        let (y0, y1) = (
+                            (row as f32 * scale).floor() as u32,
+                            ((row + 1) as f32 * scale).ceil() as u32,
+                        );
+                        let found = (y0..y1.min(image.height))
+                            .any(|y| (x0..x1.min(image.width)).any(|x| image.at(x, y) == want));
+                        assert!(found, "{style:?} at {scale}: cell {column},{row} vanished");
+                    }
+                }
+            }
         }
     }
 
@@ -420,100 +378,96 @@ mod tests {
         for (panel, ink) in [
             (Panel::Dark, [0xff, 0xff, 0xff]),
             (Panel::Light, [0x2e, 0x34, 0x36]),
+            (Panel::Unknown, [0xe8, 0xe8, 0xe8]),
         ] {
-            let mark = mark(CIRCLE.as_bytes(), 0, HEIGHT, panel.ink()).unwrap();
-            let image = render(&compose(&Image::empty(22, 22), Some(&mark)), 2.0).unwrap();
+            let mark = mark(CIRCLE.as_bytes(), HEIGHT, panel).unwrap();
+            let image = render(&compose(&grid(IconStyle::Bars), Some(&mark)), 2.0).unwrap();
             let centre = image.at(16, 16);
-            // The filter's arithmetic may round one step off.
             for (got, want) in centre[..3].iter().zip(ink) {
                 assert!(got.abs_diff(want) <= 1, "{panel:?}: {centre:?}");
             }
             assert_eq!(centre[3], 255);
-            assert_eq!(image.at(1, 16)[3], 0, "outside the circle is clear");
+            // Only the unknown panel gets a dark edge around the shape.
+            let edge = image.at(16, 3);
+            assert_eq!(edge[3] > 0, panel == Panel::Unknown, "{panel:?}: {edge:?}");
         }
-        assert_eq!(mark(b"not an svg", 0, HEIGHT, [0; 3]), None);
-        assert_eq!(Panel::from_color_scheme(Some(2)), Panel::Light);
-        assert_eq!(Panel::from_color_scheme(Some(1)), Panel::Dark);
-        assert_eq!(Panel::from_color_scheme(None), Panel::Dark);
+        assert_eq!(mark(b"not an svg", HEIGHT, Panel::Dark), None);
+    }
+
+    #[test]
+    fn the_panel_follows_the_shell_theme_then_the_gtk_theme_then_the_scheme() {
+        let hints = |shell: Option<&str>, gtk: Option<&str>, scheme: Option<u32>| PanelHints {
+            shell_theme: shell.map(String::from),
+            gtk_theme: gtk.map(String::from),
+            color_scheme: scheme,
+        };
+        // Zorin's light desktop: no colour scheme, a light theme.
+        assert_eq!(
+            Panel::from_hints(&hints(None, Some("ZorinBlue-Light"), Some(0))),
+            Panel::Light
+        );
+        assert_eq!(
+            Panel::from_hints(&hints(
+                Some("ZorinBlue-Dark"),
+                Some("ZorinBlue-Light"),
+                Some(2)
+            )),
+            Panel::Dark
+        );
+        assert_eq!(
+            Panel::from_hints(&hints(None, Some("Adwaita"), Some(2))),
+            Panel::Light
+        );
+        assert_eq!(
+            Panel::from_hints(&hints(None, Some("Adwaita-dark"), None)),
+            Panel::Dark
+        );
+        assert_eq!(
+            Panel::from_hints(&hints(None, Some("Yaru"), Some(0))),
+            Panel::Unknown
+        );
+        assert_eq!(Panel::from_hints(&PanelHints::default()), Panel::Unknown);
+    }
+
+    /// Icons as themes ship them, which pasting a file's text into the
+    /// picture used to break: Inkscape's namespaces, an entity, a comment
+    /// holding `<svg`, and a style that would have reached the readings.
+    const AWKWARD: [&str; 4] = [
+        r##"<svg xmlns="http://www.w3.org/2000/svg" xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" xmlns:xlink="http://www.w3.org/1999/xlink" width="16" height="16"><sodipodi:namedview inkscape:zoom="1"/><defs><circle id="c" cx="8" cy="8" r="6"/></defs><use xlink:href="#c" fill="#2e3436"/></svg>"##,
+        r##"<?xml version="1.0"?><!DOCTYPE svg [<!ENTITY c "#2e3436">]><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"><circle cx="8" cy="8" r="6" fill="&c;"/></svg>"##,
+        r##"<!-- an icon: <svg> --><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"><circle cx="8" cy="8" r="6"/></svg>"##,
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"><style>rect{fill:#ff0000 !important} circle{fill:#2e3436}</style><circle cx="8" cy="8" r="6"/></svg>"##,
+    ];
+
+    #[test]
+    fn a_themes_icon_however_it_is_written_composes_a_picture_librsvg_draws() {
+        let readings = grid(IconStyle::Bars);
+        // At 200 %: the readings alone are 16 logical pixels, the picture 36.
+        let alone = librsvg_or_skip!(&compose(&readings, None), 32).expect("the readings draw");
+        for icon in AWKWARD {
+            let mark = mark(icon.as_bytes(), HEIGHT, Panel::Dark).expect(icon);
+            let svg = compose(&readings, Some(&mark));
+            let drawn = librsvg_or_skip!(&svg, 72).unwrap_or_else(|error| panic!("{error}: {svg}"));
+            assert_eq!((drawn.width, drawn.height), (72, 32));
+            // The mark is drawn, white on a dark panel.
+            assert_eq!(drawn.at(16, 16), [255, 255, 255, 255], "{icon}");
+            // The readings are untouched by the icon's style.
+            assert_eq!(
+                drawn.region(40, 0, alone.width, alone.height),
+                alone.region(0, 0, alone.width, alone.height),
+                "{icon}"
+            );
+        }
     }
 
     #[test]
     fn the_picture_is_wide_enough_for_a_panel_to_draw_it_at_its_own_size() {
-        let mark = mark(CIRCLE.as_bytes(), 0, HEIGHT, Panel::Dark.ink()).unwrap();
-        let svg = compose(&readings(), Some(&mark));
-        let tree = resvg::usvg::Tree::from_data(svg.as_bytes(), &Default::default()).unwrap();
+        let mark = mark(CIRCLE.as_bytes(), HEIGHT, Panel::Dark).unwrap();
+        let svg = compose(&grid(IconStyle::Bars), Some(&mark));
+        let image = render(&svg, 1.0).unwrap();
         // GNOME's AppIndicator extension draws a file at its own size when
         // it is at least half again as wide as tall.
-        assert!(tree.size().width() >= tree.size().height() * 1.5);
-        assert_eq!(tree.size().height(), HEIGHT as f32);
-    }
-
-    fn theme(root: &Path, name: &str, index: &str, files: &[&str]) {
-        std::fs::create_dir_all(root.join(name)).unwrap();
-        std::fs::write(root.join(name).join("index.theme"), index).unwrap();
-        for file in files {
-            let path = root.join(name).join(file);
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            std::fs::write(path, CIRCLE).unwrap();
-        }
-    }
-
-    #[test]
-    fn the_icon_is_found_by_the_icon_theme_rules() {
-        let dir = tempfile::tempdir().unwrap();
-        let icons = dir.path().join("icons");
-        theme(
-            &icons,
-            "Parent",
-            "[Icon Theme]\nDirectories=16x16/status,symbolic/status\n\n[16x16/status]\nSize=16\nType=Fixed\n\n[symbolic/status]\nSize=16\nType=Scalable\n",
-            &[
-                "16x16/status/power-profile-balanced-symbolic.svg",
-                "symbolic/status/power-profile-balanced-symbolic.svg",
-            ],
-        );
-        theme(
-            &icons,
-            "Child",
-            "[Icon Theme]\nInherits=Parent\nDirectories=scalable/status\n\n[scalable/status]\nSize=16\nType=Scalable\n",
-            &["scalable/status/power-profile-performance-symbolic.svg"],
-        );
-        theme(&icons, "hicolor", "[Icon Theme]\nDirectories=\n", &[]);
-        let dirs = vec![icons.clone()];
-        assert_eq!(
-            find_icon(&dirs, "Child", "power-profile-performance-symbolic", 16),
-            Some(icons.join("Child/scalable/status/power-profile-performance-symbolic.svg"))
-        );
-        // Inherited, and the scalable directory wins.
-        assert_eq!(
-            find_icon(&dirs, "Child", "power-profile-balanced-symbolic", 16),
-            Some(icons.join("Parent/symbolic/status/power-profile-balanced-symbolic.svg"))
-        );
-        // No theme has it: no mark, never a made-up one.
-        assert_eq!(
-            find_icon(&dirs, "Child", "power-profile-power-saver-symbolic", 16),
-            None
-        );
-        assert_eq!(
-            find_icon(&dirs, "Missing", "power-profile-balanced-symbolic", 16),
-            None
-        );
-    }
-
-    #[test]
-    fn theme_directories_follow_the_specification() {
-        let dirs = theme_dirs(
-            Some(Path::new("/home/a")),
-            Some(Path::new("/home/a/.local/share")),
-            "/usr/local/share:/usr/share",
-        );
-        assert_eq!(
-            dirs,
-            vec![
-                PathBuf::from("/home/a/.icons"),
-                PathBuf::from("/home/a/.local/share/icons"),
-                PathBuf::from("/usr/local/share/icons"),
-                PathBuf::from("/usr/share/icons"),
-            ]
-        );
+        assert!(image.width * 2 >= image.height * 3);
+        assert_eq!(image.height, HEIGHT);
     }
 }

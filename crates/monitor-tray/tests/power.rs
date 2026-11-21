@@ -230,11 +230,11 @@ fn modes(active: &str) -> PowerFacts {
 /// A theme with the three power mode icons.
 fn theme() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
-    let base = dir.path().join("Test");
+    let base = dir.path().join("icons/Test");
     std::fs::create_dir_all(base.join("status")).unwrap();
     std::fs::write(
         base.join("index.theme"),
-        "[Icon Theme]\nDirectories=status\n\n[status]\nSize=16\nType=Scalable\n",
+        "[Icon Theme]\nDirectories=status\n\n[status]\nContext=Status\nSize=16\nType=Scalable\n",
     )
     .unwrap();
     for (mode, x) in [("power-saver", 1), ("balanced", 6), ("performance", 11)] {
@@ -313,16 +313,14 @@ async fn the_mark_is_in_the_one_items_picture_and_follows_the_mode() {
     // the file for a panel that cannot use it.
     assert_eq!(item.icon_pixmap().await.unwrap().len(), 2);
     let svg = std::fs::read_to_string(&first).unwrap();
-    let image = monitor_tray::picture::render(&svg, 1.0).unwrap();
     // Wider than tall by at least half, so GNOME's extension draws it at its
     // own size rather than fitting it into a square.
-    assert_eq!(image.height, monitor_tray::picture::HEIGHT);
-    assert!(
-        image.width * 2 >= image.height * 3,
-        "{}x{}",
-        image.width,
-        image.height
-    );
+    let size = |name: &str| -> u32 {
+        let at = svg.find(&format!(" {name}=\"")).unwrap() + name.len() + 3;
+        svg[at..at + svg[at..].find('"').unwrap()].parse().unwrap()
+    };
+    assert_eq!(size("height"), monitor_tray::picture::HEIGHT);
+    assert!(size("width") * 2 >= size("height") * 3, "{svg}");
     // GNOME's extension draws the pixmaps over the file, so for it they go.
     tray.state.lock().await.pixmaps_cover_file = true;
     assert!(item.icon_pixmap().await.unwrap().is_empty());
@@ -339,11 +337,16 @@ async fn the_mark_is_in_the_one_items_picture_and_follows_the_mode() {
     .await
     .expect("NewIcon arrives");
     let second = item.icon_name().await.unwrap();
-    assert_ne!(first, second);
-    assert!(
-        !std::path::Path::new(&first).exists(),
-        "the old picture is gone"
-    );
+    assert_ne!(first, second, "a new picture is a new name");
+    // Two names in turn: the shell keeps a file monitor per path it loaded.
+    let third = {
+        let changes = tray.state.lock().await.adopt_power(modes("balanced"));
+        tray.announce(changes).await;
+        item.icon_name().await.unwrap()
+    };
+    assert_eq!(third, first);
+    let changes = tray.state.lock().await.adopt_power(modes("power-saver"));
+    tray.announce(changes).await;
     assert_eq!(items.lock().unwrap().len(), 1, "registered once");
 
     // No mode: back to the square pixmaps, and no picture is left behind.

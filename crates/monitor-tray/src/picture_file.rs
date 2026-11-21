@@ -8,23 +8,42 @@
 //! is drawn at the file's own size instead (`appIndicator.js`,
 //! `_createIconByIconData` and `_loadCustomImage`), and an SVG there is
 //! rasterised at the display's scale (`better-os-evidence/295/
-//! scale2-png-vs-svg.png`). So the picture is written there as an SVG, under
-//! a new name each time, because a panel may keep a file it already loaded;
-//! the one before is removed once the new one is in place, and every one is
-//! removed when the item ends.
+//! scale2-png-vs-svg.png`).
+//!
+//! The picture is written under one of two fixed names in turn. `IconName`
+//! changes with every new picture, which is what makes the extension load
+//! it again, while GNOME Shell's texture cache, which keeps a file monitor
+//! for every path it ever loaded until the shell ends, holds two at most. A
+//! picture identical to the one on disk is not written again. Both files
+//! are removed when the item ends, and any left by a run that did not end
+//! cleanly are removed when the next one starts.
 
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
 
-const PREFIX: &str = "picture-";
+/// The two names, in turn.
+const NAMES: [&str; 2] = ["picture-a.svg", "picture-b.svg"];
 
-/// The directory the item writes its pictures to, and the last one written.
+/// Everything the item may leave in its directory: the pictures, and a
+/// half-written one (`.picture-a.svg.tmp`).
+fn is_ours(name: &str) -> bool {
+    name.starts_with("picture-") || name.starts_with(".picture-")
+}
+
+/// The last picture written: which name, and what it said.
+#[derive(Default)]
+struct Last {
+    name: Option<usize>,
+    svg: String,
+    /// The item is ending: nothing more is written.
+    closed: bool,
+}
+
+/// The directory the item writes its pictures to.
 pub struct Pictures {
     dir: PathBuf,
-    next: AtomicU64,
-    last: Mutex<Option<PathBuf>>,
+    last: Mutex<Last>,
 }
 
 impl Pictures {
@@ -47,47 +66,69 @@ impl Pictures {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
         }
-        for entry in std::fs::read_dir(&dir)?.flatten() {
-            if entry.file_name().to_string_lossy().starts_with(PREFIX) {
-                let _ = std::fs::remove_file(entry.path());
-            }
-        }
-        Ok(Self {
+        let pictures = Self {
             dir,
-            next: AtomicU64::new(0),
-            last: Mutex::new(None),
-        })
+            last: Mutex::new(Last::default()),
+        };
+        pictures.remove_all();
+        Ok(pictures)
     }
 
     pub fn dir(&self) -> &Path {
         &self.dir
     }
 
-    /// Writes `picture` under a new name and removes the one before.
-    /// How many pictures this item has written.
-    pub fn written(&self) -> u64 {
-        self.next.load(Ordering::Relaxed)
-    }
-
-    /// Writes `svg` under a new name and removes the one before.
+    /// Writes `svg` under the other name and returns its path, or returns
+    /// the current path when the picture is the one already there.
     pub fn write(&self, svg: &str) -> io::Result<PathBuf> {
-        let n = self.next.fetch_add(1, Ordering::Relaxed);
-        let path = self.dir.join(format!("{PREFIX}{n}.svg"));
-        let partial = self.dir.join(format!(".{PREFIX}{n}.svg.tmp"));
+        let mut last = self.last.lock().unwrap_or_else(|e| e.into_inner());
+        if last.closed {
+            return Err(io::Error::other("the taskbar item is ending"));
+        }
+        if let Some(name) = last.name
+            && last.svg == svg
+        {
+            return Ok(self.dir.join(NAMES[name]));
+        }
+        let name = last.name.map_or(0, |n| 1 - n);
+        let path = self.dir.join(NAMES[name]);
+        let partial = self.dir.join(format!(".{}.tmp", NAMES[name]));
         std::fs::write(&partial, svg)?;
         std::fs::rename(&partial, &path)?;
-        let mut last = self.last.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(before) = last.replace(path.clone()) {
-            let _ = std::fs::remove_file(before);
-        }
+        last.name = Some(name);
+        last.svg = svg.to_string();
         Ok(path)
     }
 
-    /// Removes the last picture written.
+    /// Removes the pictures; the next one written starts again.
     pub fn clear(&self) {
         let mut last = self.last.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(before) = last.take() {
-            let _ = std::fs::remove_file(before);
+        let closed = last.closed;
+        *last = Last {
+            closed,
+            ..Last::default()
+        };
+        self.remove_all();
+    }
+
+    /// Removes the pictures and writes none again: the item is ending, and
+    /// a redraw still on its way must not leave a file behind.
+    pub fn close(&self) {
+        let mut last = self.last.lock().unwrap_or_else(|e| e.into_inner());
+        *last = Last {
+            closed: true,
+            ..Last::default()
+        };
+        self.remove_all();
+    }
+
+    fn remove_all(&self) {
+        if let Ok(entries) = std::fs::read_dir(&self.dir) {
+            for entry in entries.flatten() {
+                if is_ours(&entry.file_name().to_string_lossy()) {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
         }
     }
 }
@@ -102,26 +143,47 @@ impl Drop for Pictures {
 mod tests {
     use super::*;
 
+    const ONE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="36" height="16"/>"#;
+    const TWO: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="16"/>"#;
+
     #[test]
-    fn each_picture_replaces_the_one_before_and_nothing_outlives_the_item() {
+    fn pictures_take_two_names_in_turn_and_nothing_outlives_the_item() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("pictures");
         std::fs::create_dir_all(&root).unwrap();
-        std::fs::write(root.join("picture-7.svg"), b"left over").unwrap();
+        // What an earlier run left: old names and a half-written file.
+        for left in ["picture-7.png", "picture-a.svg", ".picture-b.svg.tmp"] {
+            std::fs::write(root.join(left), b"left over").unwrap();
+        }
         let pictures = Pictures::at(root.clone()).unwrap();
-        assert!(
-            !root.join("picture-7.svg").exists(),
-            "a stale picture stays"
+        assert_eq!(
+            std::fs::read_dir(&root).unwrap().count(),
+            0,
+            "a stale file stays"
         );
-        let image = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"36\" height=\"16\"/>";
-        let first = pictures.write(image).unwrap();
-        let second = pictures.write(image).unwrap();
-        assert_eq!(pictures.written(), 2);
+
+        let first = pictures.write(ONE).unwrap();
+        let second = pictures.write(TWO).unwrap();
+        let third = pictures.write(ONE).unwrap();
         assert_ne!(first, second);
-        assert!(!first.exists());
-        assert!(second.exists());
-        assert!(std::fs::read(&second).unwrap().starts_with(b"<svg"));
-        drop(pictures);
+        assert_eq!(first, third, "two names, in turn");
+        assert_eq!(std::fs::read_to_string(&third).unwrap(), ONE);
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 2);
+
+        // The same picture again is not written again, and keeps its name.
+        let modified = std::fs::metadata(&third).unwrap().modified().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        assert_eq!(pictures.write(ONE).unwrap(), third);
+        assert_eq!(
+            std::fs::metadata(&third).unwrap().modified().unwrap(),
+            modified
+        );
+
+        // Ending: the files go, and a redraw on its way writes nothing.
+        pictures.close();
         assert_eq!(std::fs::read_dir(&root).unwrap().count(), 0);
+        assert!(pictures.write(TWO).is_err());
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 0);
+        drop(pictures);
     }
 }

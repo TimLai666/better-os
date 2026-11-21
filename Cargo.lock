@@ -4973,6 +4973,7 @@ dependencies = [
  "tempfile",
  "test-prerequisites",
  "tokio",
+ "usvg 0.46.0",
  "zbus",
 ]
 
