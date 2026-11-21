@@ -1,0 +1,19 @@
+#!/bin/sh
+# A dpkg-query that knows one package, for host_invocation.rs: the package
+# named in BETTER_OS_FAKE_DPKG_PACKAGE, installed at
+# BETTER_OS_FAKE_DPKG_VERSION, owning one systemd user unit.
+for last; do :; done
+case "$1" in
+-L)
+    [ "$last" = "$BETTER_OS_FAKE_DPKG_PACKAGE" ] || exit 1
+    printf "/usr\n/usr/lib\n/usr/lib/systemd\n/usr/lib/systemd/user\n/usr/lib/systemd/user/%s.service\n" "$last"
+    ;;
+-W)
+    [ "$last" = "$BETTER_OS_FAKE_DPKG_PACKAGE" ] || exit 1
+    case "$2" in
+    *Conffiles*) ;;
+    *) printf "installed %s" "$BETTER_OS_FAKE_DPKG_VERSION" ;;
+    esac
+    ;;
+*) exit 1 ;;
+esac

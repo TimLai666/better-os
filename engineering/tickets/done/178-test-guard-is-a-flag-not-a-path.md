@@ -46,6 +46,24 @@ Built on 2026-11-21.
   the gsettings runner, the before-removal runner, Better Monitor's
   `systemctl`, Better Manager's touchpad restore and the CLI's startup pass
   all read it.
+- The empty value changed meaning for two readers: Better Monitor's
+  `systemctl` and Better Manager's touchpad restore read it with `is_some()`,
+  so an empty value was on; through `is_on()` it is off, as it already was
+  for the other four. No test, script, CI step or document sets it empty
+  (searched on 2026-11-21).
+- Review follow-up: `crates/better-core/tests/one_guard_reading.rs` fails on
+  any Rust file that reads either variable from the environment outside
+  `test_guard.rs`. Pull request #26 (`tickets-171-129`) adds such a read in
+  `crates/manager-gui/src/app.rs` (`var_os(..).is_none()`); whoever merges it
+  changes that line to `better_core::test_guard::is_on()`.
+- The binary tests now hold a command back for real: a state that records
+  `better-git` installed and enabled, and a checked-in fake `dpkg-query`
+  (`crates/manager-cli/tests/fixtures/dpkg-query`, reached through a link)
+  that lists a user unit for it, so the startup pass asks `systemctl` and the
+  guard stops it. With the flag alone nothing is written where the command
+  started (the old reading wrote a file named `1` there); with the log
+  variable the log holds the `systemctl --user` line; a relative log is
+  refused with a message.
 - The one test that set the guard to a path (`manager-cli`
   `host_invocation.rs`) sets the flag and the log variable now. No script,
   CI step or spec set it to a path. AGENTS.md says which variable does what.

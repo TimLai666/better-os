@@ -188,15 +188,48 @@ fn adopting_an_unknown_component_is_refused_without_writing_state() {
     assert_eq!(run.systemctl, None);
 }
 
-/// The guard is a flag (ticket 178). Started with only the flag, from an empty
-/// folder, the command writes nothing there: `=1` used to leave a file named
-/// `1` in whatever folder Better Manager was started from.
-#[test]
-fn the_guard_flag_alone_writes_nothing_where_the_command_was_started() {
-    let directory = temporary("flag-alone");
-    let started_in = directory.path().join("started-here");
-    std::fs::create_dir(&started_in).unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_manager-cli"))
+/// The package the guard tests record as installed and enabled.
+const GUARDED_PACKAGE: &str = "better-git";
+
+/// The installed version a state file records for `package`.
+fn recorded_version(state: &Path, package: &str) -> String {
+    let text = std::fs::read_to_string(state).expect("the install wrote a state");
+    let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+    fn find(value: &serde_json::Value, package: &str, inside: bool) -> Option<String> {
+        match value {
+            serde_json::Value::Object(map) => {
+                if inside
+                    && let Some(serde_json::Value::String(version)) = map.get("installed_version")
+                {
+                    return Some(version.clone());
+                }
+                map.iter()
+                    .find_map(|(key, child)| find(child, package, inside || key == package))
+            }
+            serde_json::Value::Array(items) => {
+                items.iter().find_map(|child| find(child, package, inside))
+            }
+            _ => None,
+        }
+    }
+    find(&value, package, false).expect("the state records the package's version")
+}
+
+/// A state that records `GUARDED_PACKAGE` installed and enabled, and a
+/// folder holding a `dpkg-query` that says so and lists one user unit for
+/// it: the startup pass then has a unit to start, so the guard has a
+/// command to hold back. The fake is the checked-in fixture reached through
+/// a link, never a file this test wrote (AGENTS.md).
+struct Recorded {
+    directory: tempfile::TempDir,
+    bin: std::path::PathBuf,
+    version: String,
+}
+
+fn recorded(name: &str) -> Recorded {
+    let directory = temporary(name);
+    let install = Command::new(env!("CARGO_BIN_EXE_manager-cli"))
+        .args(["--execution", "mock"])
         .args([
             "--state-path",
             &directory.path().join("state.json").display().to_string(),
@@ -205,12 +238,95 @@ fn the_guard_flag_alone_writes_nothing_where_the_command_was_started() {
             "--catalog-path",
             &directory.path().join("catalog.json").display().to_string(),
         ])
-        .arg("status")
-        .current_dir(&started_in)
+        .args(["run", GUARDED_PACKAGE, "install"])
+        .env("HOME", directory.path())
         .env(better_core::test_guard::GUARD_VARIABLE, "1")
-        .env_remove(better_core::test_guard::LOG_VARIABLE)
         .output()
         .expect("the manager binary runs");
+    assert!(install.status.success(), "{install:?}");
+    let version = recorded_version(&directory.path().join("state.json"), GUARDED_PACKAGE);
+    let bin = directory.path().join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    std::os::unix::fs::symlink(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dpkg-query"),
+        bin.join("dpkg-query"),
+    )
+    .unwrap();
+    Recorded {
+        directory,
+        bin,
+        version,
+    }
+}
+
+/// Runs `status` in the real mode, so the startup pass runs, from
+/// `started_in`, with the guard flag and the log variable as given.
+fn guarded_status(
+    recorded: &Recorded,
+    started_in: &Path,
+    log: Option<&Path>,
+) -> std::process::Output {
+    let path = format!(
+        "{}:{}",
+        recorded.bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let mut command = Command::new(env!("CARGO_BIN_EXE_manager-cli"));
+    command
+        .args([
+            "--state-path",
+            &recorded
+                .directory
+                .path()
+                .join("state.json")
+                .display()
+                .to_string(),
+        ])
+        .args([
+            "--catalog-path",
+            &recorded
+                .directory
+                .path()
+                .join("catalog.json")
+                .display()
+                .to_string(),
+        ])
+        .arg("status")
+        .current_dir(started_in)
+        .env("PATH", path)
+        .env("HOME", recorded.directory.path())
+        .env("BETTER_OS_FAKE_DPKG_PACKAGE", GUARDED_PACKAGE)
+        .env("BETTER_OS_FAKE_DPKG_VERSION", &recorded.version)
+        .env(better_core::test_guard::GUARD_VARIABLE, "1");
+    match log {
+        Some(log) => command.env(better_core::test_guard::LOG_VARIABLE, log),
+        None => command.env_remove(better_core::test_guard::LOG_VARIABLE),
+    };
+    command.output().expect("the manager binary runs")
+}
+
+fn supported_host(output: &std::process::Output) -> bool {
+    !String::from_utf8_lossy(&output.stderr).contains("platform.error.unsupported_host")
+}
+
+/// The guard is a flag (ticket 178). With a component the startup pass
+/// would start, the command holds a `systemctl` call back. Started with only
+/// the flag, from an empty folder, it writes nothing there: `=1` used to be
+/// taken as a log path and left a file named `1` in whatever folder Better
+/// Manager was started from. The same command with the log variable too
+/// writes the call it held back where the variable names, which is what
+/// shows the first run had one to hold back (a held-back call prints
+/// nothing, because to the startup pass it is a session with no user
+/// manager).
+#[test]
+fn the_guard_flag_alone_writes_nothing_and_the_log_records_what_it_held_back() {
+    let recorded = recorded("flag-alone");
+    let started_in = recorded.directory.path().join("started-here");
+    std::fs::create_dir(&started_in).unwrap();
+
+    let output = guarded_status(&recorded, &started_in, None);
+
+    test_prerequisites::require_that!("a host this release supports", supported_host(&output));
     assert!(
         !String::from_utf8_lossy(&output.stderr).contains("panicked"),
         "{output:?}"
@@ -220,4 +336,33 @@ fn the_guard_flag_alone_writes_nothing_where_the_command_was_started() {
         .map(|entry| entry.unwrap().file_name())
         .collect();
     assert!(left.is_empty(), "the guard wrote {left:?}");
+
+    let log = recorded.directory.path().join("held-back.log");
+    let output = guarded_status(&recorded, &started_in, Some(&log));
+    let held = std::fs::read_to_string(&log).unwrap_or_default();
+    assert!(
+        held.lines()
+            .any(|line| line.starts_with("systemctl --user")),
+        "nothing was held back, so the first run proved nothing: {held:?}; stderr {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(std::fs::read_dir(&started_in).unwrap().count(), 0);
+}
+
+/// A relative log path is refused with a message and writes nothing.
+#[test]
+fn a_relative_guard_log_is_refused_and_writes_nothing() {
+    let recorded = recorded("relative-log");
+    let started_in = recorded.directory.path().join("started-here");
+    std::fs::create_dir(&started_in).unwrap();
+
+    let output = guarded_status(&recorded, &started_in, Some(Path::new("held-back.log")));
+
+    test_prerequisites::require_that!("a host this release supports", supported_host(&output));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(better_core::test_guard::LOG_VARIABLE) && stderr.contains("absolute"),
+        "{stderr}"
+    );
+    assert_eq!(std::fs::read_dir(&started_in).unwrap().count(), 0);
 }
