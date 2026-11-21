@@ -34,10 +34,7 @@ fn the_launcher_starts_the_target_the_package_ships() {
 #[test]
 fn the_target_binds_the_graphical_session_and_pulls_in_autostart() {
     let target = target();
-    assert_eq!(
-        values(&target, "BindsTo"),
-        vec!["graphical-session.target", session_launcher::GUARD_UNIT]
-    );
+    assert_eq!(values(&target, "BindsTo"), vec!["graphical-session.target"]);
     assert!(values(&target, "Before").contains(&"graphical-session.target".to_string()));
     let wants = values(&target, "Wants");
     for wanted in [
@@ -145,7 +142,7 @@ fn nothing_of_the_session_starts_outside_it() {
 #[test]
 fn the_guard_holds_the_target_and_puts_the_environment_back_however_it_stops() {
     let target = target();
-    assert!(values(&target, "BindsTo").contains(&session_launcher::GUARD_UNIT.to_string()));
+    assert!(values(&target, "Wants").contains(&session_launcher::GUARD_UNIT.to_string()));
     assert!(values(&target, "After").contains(&session_launcher::GUARD_UNIT.to_string()));
     let guard = unit_lines(&read(&format!(
         "packaging/session/{}",

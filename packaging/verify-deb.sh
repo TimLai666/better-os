@@ -1137,9 +1137,10 @@ if [[ "$RELEASE_TARGET" != ubuntu-22.04 ]]; then
                 }
                 continue
                 ;;
-            # Bound to by the target, so the target ends with the launcher.
+            # Wanted by the target; it stops the target when the launcher
+            # ends, and puts the environment back.
             better-os-session-guard.service)
-                grep -qxF 'BindsTo=better-os-session-guard.service' "$session_target" &&
+                grep -qxF 'Wants=better-os-session-guard.service' "$session_target" &&
                     grep -qxF 'ExecStopPost=/usr/libexec/better-os/session/start --restore' "$unit" || {
                     printf 'The guard does not hold the target or put the environment back\n' >&2
                     exit 1

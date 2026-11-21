@@ -10,10 +10,11 @@
 //! its own process id and start time, and the import with how to put it back.
 //! Three things act on it, and the first to [`take`] it does the work:
 //!
-//! - `better-os-session-guard.service` (`start --guard`), bound to the target,
-//!   watches the launcher and ends when it does, which stops the target; its
-//!   `ExecStopPost=` (`start --restore`) puts the environment back however the
-//!   unit stopped.
+//! - `better-os-session-guard.service` (`start --guard`), a unit of the target,
+//!   watches the launcher and stops the target when it ends; its
+//!   `ExecStopPost=` (`start --restore`) puts the environment back whenever
+//!   the session is over ([`session_over`]), and not when the guard is only
+//!   restarted.
 //! - The launcher's own end, after the units have stopped.
 //! - `better-os-session-leftovers.service` (`start --leftovers`), wanted by
 //!   `graphical-session-pre.target` in any session of the person, which puts
@@ -110,9 +111,27 @@ pub fn leader_alive(record: &Record, proc_root: &Path) -> bool {
     start_time(proc_root, record.leader) == Some(record.leader_start)
 }
 
+/// Whether the guard's `ExecStopPost=` puts the environment back: when the
+/// launcher is gone, or the target is on its way down. A guard stopped while
+/// the launcher runs and the target stays is being restarted (an update of
+/// the package restarts its running units, ticket 203's VM run took the
+/// whole session down that way while the target was bound to the guard) and
+/// changes nothing.
+pub fn session_over(leader_alive: bool, target_staying: bool) -> bool {
+    !leader_alive || !target_staying
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_restarted_guard_leaves_a_running_session_alone() {
+        assert!(!session_over(true, true), "an update restarts the guard");
+        assert!(session_over(true, false), "a logout stops the target");
+        assert!(session_over(false, true), "the launcher died");
+        assert!(session_over(false, false));
+    }
 
     fn record(leader: i32, leader_start: u64) -> Record {
         let mut import = Import::default();

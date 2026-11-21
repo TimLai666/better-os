@@ -213,7 +213,7 @@ running a `(deleted)` program.
 | `XDG_CURRENT_DESKTOP` | `BetterOS:COSMIC` | COSMIC's portal is `UseIn=COSMIC` and COSMIC's daemons look for it; `BetterOS` first so portal configuration and Better OS's own session matching pick the session's own rules (ADR 0038, "Portals") |
 | `XDG_SESSION_DESKTOP`, `DESKTOP_SESSION` | `better-os` | names the session; `better_core::desktop` reads `DESKTOP_SESSION` only as a fallback |
 | `XDG_SESSION_TYPE` | `wayland` | set by GDM; checked, not set |
-| `DCONF_PROFILE` | `betteros` | `/usr/share/dconf/profile/betteros` is `user-db:betteros` then `user-db:user`: every GSettings write in the session, `cosmic-settings-daemon`'s GTK theme and font syncing included, goes to `~/.config/dconf/betteros`, and GNOME's database is only read. This is COSMIC's own arrangement (`DCONF_PROFILE=cosmic`, ADR 0038) with Better OS's name |
+| `DCONF_PROFILE` | `betteros` | `/usr/share/dconf/profile/betteros` is `user-db:betteros` then `user-db:user`: every GSettings write in the session, `cosmic-settings-daemon`'s GTK theme and font syncing included, goes to `~/.config/dconf/betteros`, and GNOME's database is only read. This is COSMIC's own arrangement (`DCONF_PROFILE=cosmic`, ADR 0038) with Better OS's name. The session follows the machine's `user` profile: Zorin OS 18.1 (an installed system, its `/etc/dconf/profile/` holds only `ibus`) and Ubuntu 24.04 ship none, so dconf's default `user-db:user` applies and the shipped profile is exactly the session's; where an administrator's `user` profile adds `system-db` lines (defaults and locks), the launcher writes `user-db:betteros` over those lines to `$XDG_RUNTIME_DIR/better-os/session/dconf-profile` and `DCONF_PROFILE` names that path, so they apply in the session as in GNOME (`session_launcher::dconf`, ticket 203) |
 | `XDG_DATA_DIRS` | `/usr/share/better-os/session` prepended | the session's defaults for COSMIC's configuration are package data there. `cosmic-config` reads a key from `~/.config/cosmic/<id>/v<N>/` first; when the person has not set it, from the one default directory `cosmic/<id>/v<N>/` that `xdg`'s `find_data_file` finds first under `$XDG_DATA_HOME`, then each `XDG_DATA_DIRS` entry in order (libcosmic `cosmic-config` `Config::new`, `get_system_default`). The choice is per configuration and version, not per key: a configuration directory the session ships replaces COSMIC's `/usr/share/cosmic/` one for that configuration whole, so it must hold every key COSMIC's has, and every other configuration still comes from `/usr/share/cosmic/` (ticket 201, both bases: `cosmic-bg` traced with `strace` read `is_dark` from a probe directory placed first and `CosmicBackground.Light/v1/all` from `/usr/share/cosmic/`, two different configurations; `ubuntu/out/osd.strace`, `bg2.strace`; ticket 203 read the rule in the source) |
 | `QT_IM_MODULE`, `XMODIFIERS` | `fcitx`, `@im=fcitx` | Fcitx 5 for Qt and X11 clients (C4) |
 | `GTK_IM_MODULE` | **not set** | Wayland GTK 3 and 4 clients reach Fcitx 5 through text-input-v3 without it. Setting it to `fcitx` takes Chinese input away from every snap GTK application: the snap's `im-fcitx5.so` talks D-Bus to Fcitx 5 and AppArmor denies the call (`apparmor="DENIED" … interface="org.fcitx.Fcitx.InputMethod1" … label="snap.firefox.firefox"`), and Firefox then has no input context at all; with it unset, the same Firefox typed Zhuyin through text-input-v3 (ticket 201, Ubuntu, screenshots 19 to 22). GTK on XWayland (Electron's default) without it falls back to XIM through `XMODIFIERS`: ticket 203, Ubuntu, `GDK_BACKEND=x11 zenity --entry` with Fcitx 5 switched on by Ctrl+Space typed `su3cl3` to 你好, read back from its output (`/home/tim/Developer/better-os-evidence/203/`, screenshots 16 and 17) |
@@ -249,6 +249,62 @@ compositor (SIGTERM, SIGKILL after 5 s), and does not rely on logind. Its
 children start with no signal blocked: `std`'s `Command` keeps the parent's
 mask, and before that fix the compositor, XWayland, and the locker ignored
 SIGTERM and every logout took 5 s; after it, 0.25 s (ticket 203).
+
+**However the launcher ends** (ticket 203's review). A launcher killed by
+SIGKILL, the OOM killer, or a panic runs none of the above, and without more
+the compositor (which ignores its session socket closing), the locker, the
+target with COSMIC's daemons, and `DCONF_PROFILE=betteros` would stay in the
+user manager for the next GNOME login to read and write. So:
+
+- The compositor and the locker have `PR_SET_PDEATHSIG` (SIGTERM), set from
+  the launcher's main thread, which is the thread the kernel ties it to and
+  the one that re-executes after an update, so adopted children keep it.
+- Before it starts the target, the launcher writes a record of what it
+  changed, with its own process id and start time, to
+  `$XDG_RUNTIME_DIR/better-os/session/restore.json` (`session_launcher::record`).
+  `better-os-session-guard.service`, which the target wants, runs as long as
+  that process does and then stops the target; the guard's `ExecStopPost=`
+  puts the user manager's and D-Bus activation's environment back when the
+  session is over (the launcher gone, or the target stopping) and leaves a
+  running session alone when the guard is only restarted. The target is not
+  `BindsTo=` the guard: an update of the package restarts its running units,
+  and in ticket 203's VM a bound target went down with the guard's restart
+  and took the session's units and environment with it. The launcher's own
+  end does the same with whatever the guard left (the first to take the
+  record does the work).
+- `better-os-session-leftovers.service`, enabled for every person at install
+  and `WantedBy=graphical-session-pre.target`, runs at the start of any
+  session of the person, GNOME's included, and puts back a record whose
+  launcher is gone; the launcher does the same before a new Better OS
+  session reads what is "before".
+- A value only the session sets (`DCONF_PROFILE=betteros`,
+  `BetterOS:COSMIC`, `better-os`, `XDG_DATA_DIRS` starting with the
+  session's directory, and beside those `QT_IM_MODULE=fcitx` and
+  `XMODIFIERS=@im=fcitx`) is never taken as the person's own "before".
+- When the user manager's environment cannot be read, the session still
+  sets its variables and at the end takes back only what is provably its
+  own: the session-only values, the displays, and its entry in
+  `XDG_DATA_DIRS`.
+- The target and every unit of the session but the leftovers unit carry
+  `ConditionPathExists=%t/better-os/session/restore.json`, so a start
+  outside a session (by hand, or by a manager that enables every unit of a
+  package) does nothing; a record left by a dead launcher makes the guard end
+  at once and takes the target down with it.
+
+**D-Bus activation.** `dbus-daemon` cannot unset a variable, and GNOME starts
+its DBusActivatable applications (Settings, Files, Text Editor) through
+activation with no `SystemdService=`, so a `DCONF_PROFILE` left there would
+send their settings to the session's database while the session bus lives
+on (a quick login, linger, ssh). At the end each variable is set back there
+to its value before the session, and where it had none, `DCONF_PROFILE` to a
+value that behaves as unset and `XDG_DATA_DIRS` to the specification's
+default. dconf treats a set `DCONF_PROFILE` naming a missing profile as the
+null configuration and an empty one as the directory `/etc/dconf/profile/`
+(`engine/dconf-engine-profile.c`), so neither `user` nor the empty string
+will do on a machine without a `user` profile: the value is the absolute
+path of the runtime or `user` profile dconf would pick, else the shipped
+`/usr/share/dconf/profile/betteros-default` (`user-db:user`, dconf's own
+fallback) (`session_launcher::dconf::default_profile`).
 
 ### Every process the session runs, and who provides it
 
@@ -317,6 +373,10 @@ sessions:
 The session's own surfaces are units of their own packages, enabled by
 `manager-core` like any component unit (AGENTS.md), `PartOf=better-os-session.target`
 and `WantedBy=better-os-session.target`, so they never start under GNOME.
+
+Besides these, the guard (bound to by the target) and the leftovers unit
+(the one unit that runs in any session) are described under "However the
+launcher ends" above.
 
 The session package's own units (`better-os-session-settings-daemon`,
 `-osd`, `-idle`, `-background`, and `-input-method` for Fcitx 5) are

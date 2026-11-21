@@ -33,8 +33,9 @@ pub mod process;
 pub mod record;
 pub mod resume;
 
-/// The unit bound to the target that watches the launcher and puts the
-/// environment back when the target stops ([`record`]).
+/// The unit of the target that watches the launcher, stops the target when
+/// the launcher is gone, and puts the environment back when the session is
+/// over ([`record`]).
 pub const GUARD_UNIT: &str = "better-os-session-guard.service";
 
 /// The unit any session of the person starts, which puts back what a

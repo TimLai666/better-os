@@ -31,7 +31,7 @@ person sees, and the two acceptance flows that prove it.
 - **The session package's own units** (ticket 203): `better-os-session`
   ships six user units under `/usr/lib/systemd/user` that only
   `better-os-session.target` starts (no `[Install]`, named by the target's
-  `Wants=` or `BindsTo=`, each `ConditionPathExists=` on the session's
+  `Wants=`, each `ConditionPathExists=` on the session's
   record, so a start under GNOME does nothing), and one,
   `better-os-session-leftovers.service`, that its postinst enables for
   everyone and that runs in every session. `manager-core`'s unit pass takes

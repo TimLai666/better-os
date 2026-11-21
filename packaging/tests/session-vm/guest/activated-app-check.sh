@@ -21,7 +21,7 @@ pkill -u "$U" -x gnome-text-edit 2>/dev/null; sleep 1
 as_user busctl --user call org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus \
     StartServiceByName su org.gnome.TextEditor 0 >"$OUT/start.txt" 2>&1
 sleep 4
-pid="$(pgrep -u "$U" -n -f '^gnome-text-editor')"
+pid="$(pgrep -u "$U" -n -f 'gnome-text-editor')"
 {
     echo "== gnome-text-editor pid ${pid:-none}, unit $( [[ -n "$pid" ]] && ps -o unit= -p "$pid")"
     [[ -n "$pid" ]] && tr '\0' '\n' <"/proc/$pid/environ" | grep -E '^(DCONF_PROFILE|XDG_CURRENT_DESKTOP|XDG_DATA_DIRS|XDG_SESSION_DESKTOP)=' | sort

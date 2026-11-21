@@ -255,13 +255,8 @@ fn put_back_if_orphaned(bus: &Bus, runtime: &std::path::Path) {
         "the session of launcher {} ended without it; putting back what it left",
         found.leader
     ));
-    if bus.is_running(session_launcher::TARGET).unwrap_or(false)
-        && let Err(error) = bus.stop_unit(session_launcher::TARGET)
-    {
-        log(format!(
-            "stopping the left {}: {error}",
-            session_launcher::TARGET
-        ));
+    if bus.is_running(session_launcher::TARGET).unwrap_or(false) {
+        stop_orphaned_session(bus);
     }
     if let Some(taken) = record::take(runtime) {
         for problem in lifecycle::restore(bus, &taken.import, &taken.activation) {
@@ -289,17 +284,59 @@ fn guard_mode() -> ExitCode {
         "launcher {} has ended; the session's units stop",
         found.leader
     ));
+    // The guard stops the target itself rather than the target being bound
+    // to it: a restart of the guard (an update of the package restarts its
+    // running units) must not take the session down.
+    match Bus::connect() {
+        Ok(bus) => stop_orphaned_session(&bus),
+        Err(error) => log(format!("the session bus is not reachable: {error}")),
+    }
     ExitCode::SUCCESS
 }
 
-/// The guard's `ExecStopPost=`: puts the environment back when the target
-/// stops, however it stops.
+/// Stops the target of a session whose launcher is gone, and then
+/// `graphical-session.target` with every Better OS unit `PartOf=` it, when
+/// no other session's target holds it. A launcher's own end leaves it to
+/// `StopWhenUnneeded=`; after a launcher was killed, ticket 203's VM found
+/// `graphical-session.target` still active with nothing binding it, so the
+/// guard stops it itself, and never under a GNOME session that binds it.
+fn stop_orphaned_session(bus: &Bus) {
+    if let Err(error) = bus.stop_unit(session_launcher::TARGET) {
+        log(format!("stopping {}: {error}", session_launcher::TARGET));
+    }
+    for _ in 0..50 {
+        if !bus.is_running(session_launcher::TARGET).unwrap_or(false) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    match bus.held_by_another(
+        session_launcher::GRAPHICAL_SESSION_TARGET,
+        session_launcher::TARGET,
+    ) {
+        Ok(false) => {
+            if let Err(error) = bus.stop_unit(session_launcher::GRAPHICAL_SESSION_TARGET) {
+                log(format!(
+                    "stopping {}: {error}",
+                    session_launcher::GRAPHICAL_SESSION_TARGET
+                ));
+            }
+        }
+        Ok(true) => {}
+        Err(error) => log(format!(
+            "whether another session holds {} is unknown ({error}); it is left",
+            session_launcher::GRAPHICAL_SESSION_TARGET
+        )),
+    }
+}
+
+/// The guard's `ExecStopPost=`: puts the environment back when the session
+/// ends, however it ends: the launcher is gone, or the target is stopping.
+/// A guard stopped while both stay (an update restarting it, a failure
+/// `Restart=` recovers from) leaves everything as it is.
 fn restore_mode() -> ExitCode {
     let Some(runtime) = runtime_dir() else {
         return ExitCode::FAILURE;
-    };
-    let Some(taken) = record::take(&runtime) else {
-        return ExitCode::SUCCESS;
     };
     let bus = match Bus::connect() {
         Ok(bus) => bus,
@@ -310,8 +347,18 @@ fn restore_mode() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    for problem in lifecycle::restore(&bus, &taken.import, &taken.activation) {
-        log(problem);
+    let Some(found) = record::read(&runtime) else {
+        return ExitCode::SUCCESS;
+    };
+    let leader_alive = record::leader_alive(&found, std::path::Path::new("/proc"));
+    let target_staying = bus.is_staying(session_launcher::TARGET).unwrap_or(false);
+    if !record::session_over(leader_alive, target_staying) {
+        return ExitCode::SUCCESS;
+    }
+    if let Some(taken) = record::take(&runtime) {
+        for problem in lifecycle::restore(&bus, &taken.import, &taken.activation) {
+            log(problem);
+        }
     }
     ExitCode::SUCCESS
 }
@@ -900,6 +947,58 @@ struct Bus {
 impl Bus {
     fn connect() -> zbus::Result<Bus> {
         zbus::blocking::Connection::session().map(|connection| Bus { connection })
+    }
+
+    /// Whether a unit other than `except` that binds `unit` (`BoundBy=`, such
+    /// as GNOME's `gnome-session.target`) runs.
+    fn held_by_another(&self, unit: &str, except: &str) -> Result<bool, String> {
+        let path = self
+            .manager()?
+            .call::<_, _, OwnedObjectPath>("GetUnit", &(unit,))
+            .map_err(|error| error.to_string())?;
+        let bound_by: Vec<String> = zbus::blocking::Proxy::new(
+            &self.connection,
+            "org.freedesktop.systemd1",
+            path,
+            "org.freedesktop.systemd1.Unit",
+        )
+        .and_then(|proxy| proxy.get_property("BoundBy"))
+        .map_err(|error| error.to_string())?;
+        for other in bound_by.iter().filter(|other| other.as_str() != except) {
+            if self.is_running(other)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// Whether the unit is active with no job queued for it: a target being
+    /// stopped has a stop job before its state changes.
+    fn is_staying(&self, unit: &str) -> Result<bool, String> {
+        let path = match self
+            .manager()?
+            .call::<_, _, OwnedObjectPath>("GetUnit", &(unit,))
+        {
+            Ok(path) => path,
+            Err(zbus::Error::MethodError(name, _, _)) if name.as_str().ends_with("NoSuchUnit") => {
+                return Ok(false);
+            }
+            Err(error) => return Err(error.to_string()),
+        };
+        let proxy = zbus::blocking::Proxy::new(
+            &self.connection,
+            "org.freedesktop.systemd1",
+            path,
+            "org.freedesktop.systemd1.Unit",
+        )
+        .map_err(|error| error.to_string())?;
+        let state: String = proxy
+            .get_property("ActiveState")
+            .map_err(|error| error.to_string())?;
+        let (job, _): (u32, OwnedObjectPath) = proxy
+            .get_property("Job")
+            .map_err(|error| error.to_string())?;
+        Ok(state == "active" && job == 0)
     }
 
     fn manager(&self) -> Result<zbus::blocking::Proxy<'static>, String> {
