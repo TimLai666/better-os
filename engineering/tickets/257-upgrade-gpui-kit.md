@@ -87,3 +87,44 @@ the fork of ADR 0043 stays.
 - Every window builds and runs on the upgraded GPUI Kit, with the workspace
   gate and CI green, and before-and-after screenshots that show no window
   lost anything.
+
+## Notes
+
+**First part done (2026-11-21): the facts and the ADR.**
+[ADR 0045](/engineering/decisions/0045-gpui-kit-on-gpui-fast.md) records
+the owner's decision with what was measured on this machine. Nothing found
+rules GPUI Fast out. Evidence and logs:
+`/home/tim/Developer/better-os-evidence/257/`.
+
+- The API distance was sized on the branch
+  `scratch/257-gpui-kit-0.10-on-gpui-fast` (one commit, not for merging):
+  GPUI Kit 0.10 on GPUI Fast 0.1.17 from crates.io, the Zed patch section
+  gone. Every crate checks (`--workspace --all-targets`) except `git-gui`,
+  whose multi-line fields must become `TextareaState`. The edits to get
+  there are about twenty lines, listed in the ADR.
+- ADR 0043's viewport defect is in GPUI Fast 0.1.17 and was reproduced on
+  sway at scale 2; longbridge/gpui-fast#173's diff on the published
+  `gpui-fast-linux`, given as `[patch.crates-io]`, fixes it.
+- GPUI Fast clips to rounded corners (`overflow_hidden` with `rounded`),
+  paint only; removed outputs leave the display list in GPUI Fast and
+  `gpui-pre` alike.
+
+**What the upgrade part must do** (the ADR's plan, in order): screenshots of
+every window before (light, dark, zh-TW, English); the workspace manifest on
+the latest GPUI Kit with `gpui-fast`, exact versions, the Zed dependency and
+patch section removed, #173 as a `[patch.crates-io]` of `gpui-fast-linux`
+from the owner's fork unless a GPUI Fast release has it (the owner's call,
+ADR 0045's open questions), lockfile and `docs/third-party-licenses.md` in
+the same commit; `better-ui`, then the windows smallest first and `git-gui`'s
+text areas, each audited for render state read outside entities (retained
+views) and compared with `GPUI_VIEW_RETENTION=0` where anything looks stale;
+`session-layer-facts.sh` on `cosmic-comp` at 150 % and 200 % and the
+`outputs` case on sway; the copyleft review rewritten (no GPL crate from Zed
+is left; Decision 4 settled; Corresponding Source for crates.io sources and
+the patch); CI caches and `packaging/build-deb.sh` for all four targets;
+the workspace gate, CI green, both benchmark suites against ADR 0045's
+numbers, screenshots after compared one by one; ADR 0020, ADR 0043,
+`architecture.md` and AGENTS.md's toolkit follow-ups brought up to date
+(including the HTTP client note, which ADR 0045 found is a lockfile
+over-approximation: no HTTP client is linked into a Linux window today
+either).

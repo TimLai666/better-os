@@ -782,6 +782,7 @@ verification contract.
 - [ADR 0039: How Better OS keeps its patch to cosmic-comp](decisions/0039-compositor-fork-policy.md) (proposed)
 - [ADR 0040: What Better OS is, now that it has a session of its own](decisions/0040-what-better-os-is.md) (proposed)
 - [ADR 0043: Better OS builds GPUI from its own fork of Zed](decisions/0043-gpui-from-a-fork.md)
+- [ADR 0045: Better OS moves to GPUI Kit's current release, on GPUI Fast](decisions/0045-gpui-kit-on-gpui-fast.md) (the upgrade is ticket 257)
 - [ADR 0046: The USB-C recovery reloads one signed module and rebinds one controller, in helper units](decisions/0046-usb-c-recovery-through-the-daemon.md) (proposed)
 
 ## Per-package programs run as the person

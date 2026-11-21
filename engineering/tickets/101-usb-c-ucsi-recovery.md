@@ -6,12 +6,13 @@
 installed on the owner's machine and a real occurrence of either fault
 (see Notes).
 
-**Owner's decision (2026-11-21):** Secure Boot stays on and no Machine Owner
-Key is enrolled. Nothing may need a module the kernel would refuse: the
-recovery does the whole job with what the running kernel already has
-(reloading the distribution's own signed `ucsi_acpi` is allowed, ADR 0046),
-and part 2's driver module is withdrawn. Only the upstream report remains of
-part 2.
+**Owner's decision (2026-11-21):** no Machine Owner Key is enrolled and Secure
+Boot stays on (it is on: `mokutil --sb-state` reports enabled). So nothing in
+this ticket may need a module the kernel would refuse: part 2's DKMS module
+is withdrawn, and the recovery of part 1 has to do the whole job with what
+the running kernel already has. What is left of part 2 is the upstream
+report only (see its heading). Reloading the distribution's own
+signed `ucsi_acpi` stays allowed under Secure Boot (ADR 0046).
 
 ## Why
 
@@ -45,7 +46,15 @@ firmware is not a fix here: it would lose the ports' Linux-side state.
 - Undo: removing the entry removes the hook.
 - Measured on the owner's machine before and after.
 
-## Part 2 — a real fix in the driver
+## Part 2 — withdrawn as a local fix; the upstream report stays
+
+The owner decided on 2026-11-21 that no key is enrolled, so a patched
+`ucsi_acpi` cannot be loaded on this machine and the steps below that build
+and load one are not done. What remains: collect the traces part 1's
+detection already reads, and send them to linux-usb as a report on the
+existing M5506WA thread, without a patch that nobody could test here. The
+text below is kept as the record of what was planned.
+
 
 - Reproduce on the owner's machine with tracing (`ucsi` tracepoints, dynamic
   debug for `drivers/usb/typec/ucsi`) across suspend and plug events, and find

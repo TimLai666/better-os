@@ -1,6 +1,6 @@
-# Ticket 272 — Decide whether Better Monitor offers Force stop, and build the answer
+# Ticket 272 — Better Monitor offers Force stop
 
-**Blocked by:** the owner's answer
+**Blocked by:** none
 
 ## Why
 
@@ -11,15 +11,21 @@ ticket 23 lists it as delivered, but the window offers no way to use it: a
 program that ignores "End task" can only be killed from a terminal. Ticket
 81's list of what the window does leaves it out without saying why.
 
-## What to decide
+## Owner's decision (2026-11-21)
 
-- Offer it (in the row's menu, with its own confirmation that says unsaved
-  work is lost, going through `monitor-actions-linux` and its checks for a
-  reused process id, the person's own processes only), as Windows Task
-  Manager's "End process tree" and GNOME's "Kill" do; or leave it out and
-  record why in ticket 23.
+Offer it.
+
+## What to build
+
+- Force stop in the row's menu and beside End task, with its own
+  confirmation that says unsaved work is lost, going through
+  `monitor-actions-linux` and its checks (a reused process id is never
+  signalled; the person's own processes only; never Better Monitor itself or
+  the session's own processes), as Windows Task Manager's "End process tree"
+  and GNOME's "Kill" do. Both languages; refused while the view is paused, as
+  End task is.
 
 ## Done when
 
-- The owner's answer is recorded here and built: either the action with its
-  tests and both languages' wording, or the note.
+- Tests for the action, each refusal, and the confirmation's wording in both
+  languages; seen in a sandbox against a process the test itself started.
