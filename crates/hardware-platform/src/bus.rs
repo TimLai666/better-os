@@ -75,9 +75,18 @@ pub enum BusError {
 impl BusError {
     fn from_zbus(error: zbus::Error) -> BusError {
         let text = error.to_string();
+        // dbus-daemon passes systemd's own error on when a unit it was asked
+        // to activate cannot start (`dbus_activation_systemd_failure` in
+        // bus/activation.c hands the ActivationFailure code through; systemd
+        // names them in bus-common-errors.h): a masked or missing unit is a
+        // service that is not on this machine. dbus-broker answers the same
+        // failure with NameHasNoOwner (`driver_name_activation_failed`).
         let absent = [
             "ServiceUnknown",
             "NameHasNoOwner",
+            "org.freedesktop.systemd1.UnitMasked",
+            "org.freedesktop.systemd1.NoSuchUnit",
+            "org.freedesktop.systemd1.LoadFailed",
             "UnknownObject",
             "UnknownInterface",
             "UnknownProperty",
@@ -177,10 +186,37 @@ fn entry(dict: &HashMap<String, OwnedValue>, key: &str) -> Option<String> {
         .and_then(|v| String::try_from(v).ok())
 }
 
+/// Whether a name has an owner now, asked of the bus itself, which never
+/// starts anything.
+fn has_owner(system: &Connection, name: &str) -> Result<bool, BusError> {
+    let reply = system
+        .call_method(
+            Some("org.freedesktop.DBus"),
+            "/org/freedesktop/DBus",
+            Some("org.freedesktop.DBus"),
+            "NameHasOwner",
+            &(name,),
+        )
+        .map_err(BusError::from_zbus)?;
+    reply
+        .body()
+        .deserialize::<bool>()
+        .map_err(|error| BusError::Failed(error.to_string()))
+}
+
 /// The first power-profiles-daemon name that answers.
+///
+/// Only a daemon that is running is asked: a name with no owner is absent,
+/// never started through D-Bus activation. Better Monitor's taskbar item
+/// follows the daemon all day, and asking a stopped one would start it again
+/// the moment someone stopped it, or its package's removal stopped it
+/// (ticket 295 review).
 pub fn power_profiles_endpoint(system: &Connection) -> Result<Endpoint, BusError> {
     let mut last = BusError::Absent("power-profiles-daemon".into());
     for endpoint in POWER_PROFILES {
+        if !has_owner(system, endpoint.name)? {
+            continue;
+        }
         match get(system, &endpoint, "ActiveProfile") {
             Ok(_) => return Ok(endpoint),
             Err(error @ BusError::Failed(_)) => return Err(error),
@@ -227,11 +263,20 @@ pub fn power_profiles(system: &Connection) -> Presence<PowerProfilesFacts> {
 /// to `send` until it returns `false` or the bus closes. The watch is in
 /// place before the first read, so no change is missed. Better Monitor's
 /// taskbar item and its popup follow the mode in force with it (ticket 295).
+///
+/// When the watch ends because the bus closed, or could never be set up, a
+/// last `Unreadable` says so, so nothing goes on showing a stale mode.
 pub fn follow_power_profiles(
     system: &Connection,
     mut send: impl FnMut(Presence<PowerProfilesFacts>) -> bool,
 ) {
-    watch(system, &POWER_PROFILES, || send(power_profiles(system)));
+    let end = watch(system, &POWER_PROFILES, || send(power_profiles(system)));
+    let why = match end {
+        WatchEnd::Stopped => return,
+        WatchEnd::Closed => "the system bus connection closed",
+        WatchEnd::NotWatched => "power-profiles-daemon's changes cannot be watched",
+    };
+    send(Presence::Unreadable(why.to_string()));
 }
 
 /// Sets the active profile; no root (the daemon's own polkit action is
@@ -361,14 +406,33 @@ pub fn shell_major_version(session: &Connection) -> Option<String> {
 /// Calls `changed` whenever a `PropertiesChanged` arrives from any of
 /// `endpoints`, or one of their names gets or loses an owner. Runs until the
 /// connection closes or `changed` returns `false`.
-pub fn follow(connection: &Connection, endpoints: &[Endpoint], changed: impl FnMut() -> bool) {
+pub fn follow(
+    connection: &Connection,
+    endpoints: &[Endpoint],
+    changed: impl FnMut() -> bool,
+) -> WatchEnd {
     follow_after(connection, endpoints, false, changed)
+}
+
+/// Why a [`follow`] or a [`watch`] ended.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WatchEnd {
+    /// `changed` returned `false`.
+    Stopped,
+    /// The connection closed.
+    Closed,
+    /// Not one match rule could be added, so no change would ever arrive.
+    NotWatched,
 }
 
 /// [`follow`], calling `changed` once as soon as the watch is in place, so
 /// a reader that reads there misses no change between its first reading and
 /// the watch (the taskbar item's power mode, ticket 295).
-pub fn watch(connection: &Connection, endpoints: &[Endpoint], changed: impl FnMut() -> bool) {
+pub fn watch(
+    connection: &Connection,
+    endpoints: &[Endpoint],
+    changed: impl FnMut() -> bool,
+) -> WatchEnd {
     follow_after(connection, endpoints, true, changed)
 }
 
@@ -377,7 +441,7 @@ fn follow_after(
     endpoints: &[Endpoint],
     now: bool,
     mut changed: impl FnMut() -> bool,
-) {
+) -> WatchEnd {
     let (merged, events) = std::sync::mpsc::channel::<()>();
     let mut rules = Vec::new();
     for at in endpoints {
@@ -399,10 +463,12 @@ fn follow_after(
                 .map(|r| r.build()),
         );
     }
+    let mut watched = 0;
     for rule in rules.into_iter().flatten() {
         if let Ok(stream) =
             zbus::blocking::MessageIterator::for_match_rule(rule, connection, Some(16))
         {
+            watched += 1;
             let merged = merged.clone();
             std::thread::spawn(move || {
                 for message in stream {
@@ -415,11 +481,15 @@ fn follow_after(
     }
     drop(merged);
     if now && !changed() {
-        return;
+        return WatchEnd::Stopped;
+    }
+    if watched == 0 {
+        return WatchEnd::NotWatched;
     }
     while events.recv().is_ok() {
         if !changed() {
-            return;
+            return WatchEnd::Stopped;
         }
     }
+    WatchEnd::Closed
 }

@@ -30,7 +30,7 @@ use better_ui::icon_set::{self, Picture};
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use hardware_core::Presence;
-use hardware_core::power::{PowerProfilesFacts, power_mode_view};
+use hardware_core::power::{PowerProfilesFacts, mode_shown, unreadable_words};
 use monitor_core::{EntityKind, MetricId};
 use monitor_store::Sample;
 use monitor_views::ProcessFacts;
@@ -303,47 +303,40 @@ pub(crate) fn top_processes(
 /// What power-profiles-daemon says, absent on a machine without it.
 pub(crate) type PowerFacts = Presence<PowerProfilesFacts>;
 
-/// The popup's power mode block: the mode in force, and every mode the
-/// machine offers with whether it is the one in force.
+/// The popup's power mode block: the mode in force, every mode the machine
+/// offers with whether it is the one in force, and the System page's
+/// caution sentences.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct PowerBlock {
     pub(crate) figure: String,
     pub(crate) modes: Vec<(&'static str, bool)>,
+    pub(crate) cautions: Vec<String>,
 }
 
-/// The block for what the daemon says, or `None` on a machine with no
-/// modes: nothing is guessed. The names are the System page's
-/// (`Profile::name`).
+/// The block for what the daemon says, or `None` when there is no mode to
+/// show: the taskbar item's rule (`hardware_core::power::mode_shown`), so the
+/// two never disagree and nothing is guessed.
 pub(crate) fn power_block(power: &PowerFacts, locale: Locale) -> Option<PowerBlock> {
-    let c = copy(locale);
-    let facts = match power {
-        Presence::Absent => return None,
+    let language = i18n::language(locale);
+    let shown = match power {
         Presence::Unreadable(_) => {
             return Some(PowerBlock {
-                figure: c.popup_power_mode_unreadable.to_string(),
+                figure: unreadable_words(language).to_string(),
                 modes: Vec::new(),
+                cautions: Vec::new(),
             });
         }
-        Presence::Present(facts) => facts,
-    };
-    let view = power_mode_view(facts);
-    if view.options.is_empty() {
-        return None;
-    }
-    let language = i18n::language(locale);
-    let figure = match view.selected {
-        Some(mode) => mode.name(language).to_string(),
-        // A mode this version does not know, in the daemon's own word.
-        None if !facts.active.trim().is_empty() => facts.active.trim().to_string(),
-        None => c.not_available.to_string(),
+        Presence::Present(facts) => mode_shown(facts, language)?,
+        Presence::Absent => return None,
     };
     Some(PowerBlock {
-        figure,
-        modes: view
-            .options
-            .iter()
-            .map(|mode| (mode.name(language), view.selected == Some(*mode)))
+        figure: shown.name.to_string(),
+        modes: shown
+            .offered
+            .into_iter()
+            .map(|(_, name, current)| (name, current))
             .collect(),
+        cautions: shown.cautions,
     })
 }
 
@@ -780,6 +773,14 @@ impl PopupView {
                         }),
                     ))
                 })
+                // Held by an application or reduced by the daemon, in the
+                // System page's sentences.
+                .children(
+                    block
+                        .cautions
+                        .into_iter()
+                        .map(|line| label(line, CAPTION, p.caution).into_any_element()),
+                )
                 .into_any_element(),
         )
     }
@@ -1024,6 +1025,7 @@ mod tests {
                     ("Balanced", true),
                     ("Best performance", false)
                 ],
+                cautions: Vec::new(),
             })
         );
         assert_eq!(
@@ -1045,12 +1047,30 @@ mod tests {
     }
 
     #[test]
+    fn a_held_or_reduced_mode_says_so_in_the_popup() {
+        let mut facts = PowerProfilesFacts {
+            active: "performance".into(),
+            profiles: vec!["balanced".into(), "performance".into()],
+            ..PowerProfilesFacts::default()
+        };
+        facts.degraded = "lap-detected".into();
+        let block = power_block(&Presence::Present(facts), Locale::ZhTw).unwrap();
+        assert_eq!(
+            block.cautions,
+            vec!["電腦放在腿上時，效能模式會降低以免過熱。"]
+        );
+    }
+
+    #[test]
     fn a_machine_without_modes_has_no_power_block() {
         assert_eq!(power_block(&Presence::Absent, Locale::EnUs), None);
         assert_eq!(power_block(&modes(&[], ""), Locale::EnUs), None);
-        let unknown = power_block(&modes(&["balanced"], "turbo"), Locale::EnUs).unwrap();
-        assert_eq!(unknown.figure, "turbo");
-        assert_eq!(unknown.modes, vec![("Balanced", false)]);
+        // A mode this version does not know is not shown, as in the menu.
+        assert_eq!(
+            power_block(&modes(&["balanced"], "turbo"), Locale::EnUs),
+            None
+        );
+        assert_eq!(power_block(&modes(&["turbo"], "turbo"), Locale::ZhTw), None);
         let unreadable = power_block(&Presence::Unreadable("failed".into()), Locale::ZhTw).unwrap();
         assert_eq!(unreadable.figure, "無法讀取");
         assert!(unreadable.modes.is_empty());

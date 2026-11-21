@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 
 use hardware_core::Presence;
-use hardware_core::power::{PowerProfilesFacts, Profile, mode_in_force};
+use hardware_core::power::{ModeShown, PowerProfilesFacts, Profile, mode_shown, unreadable_words};
 use monitor_core::{CollectorReport, EntityKind, MetricId, MetricScalar, Observation};
 
 /// What power-profiles-daemon says, as `hardware_platform::bus::power_profiles`
@@ -13,6 +13,11 @@ use monitor_core::{CollectorReport, EntityKind, MetricId, MetricScalar, Observat
 pub type PowerFacts = Presence<PowerProfilesFacts>;
 
 /// A reading the icon can show.
+///
+/// The battery is not one (owner, 2026-11-22, ticket 295): the panel already
+/// has the desktop's own battery icon, and a second beside it is a
+/// duplicate. The battery stays in the menu and the tooltip as words
+/// ([`battery_line`]).
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum Reading {
     Cpu,
@@ -20,18 +25,16 @@ pub enum Reading {
     Gpu,
     Disk,
     Network,
-    Battery,
     Temperature,
 }
 
 impl Reading {
-    pub const ALL: [Reading; 7] = [
+    pub const ALL: [Reading; 6] = [
         Reading::Cpu,
         Reading::Memory,
         Reading::Gpu,
         Reading::Disk,
         Reading::Network,
-        Reading::Battery,
         Reading::Temperature,
     ];
 
@@ -43,7 +46,6 @@ impl Reading {
             Reading::Gpu => "gpu",
             Reading::Disk => "disk",
             Reading::Network => "network",
-            Reading::Battery => "battery",
             Reading::Temperature => "temperature",
         }
     }
@@ -270,7 +272,6 @@ impl TrayReadings {
             Reading::Gpu => self.gpu.is_some(),
             Reading::Disk => self.disk_total().is_some(),
             Reading::Network => self.network_total().is_some(),
-            Reading::Battery => self.battery.is_some(),
             Reading::Temperature => self.hottest.is_some(),
         }
     }
@@ -313,7 +314,6 @@ impl Locale {
             Reading::Gpu => self.pick("Graphics card", "顯示卡"),
             Reading::Disk => self.pick("Disk", "磁碟"),
             Reading::Network => self.pick("Network", "網路"),
-            Reading::Battery => self.pick("Battery", "電池"),
             Reading::Temperature => self.pick("Temperature", "溫度"),
         }
     }
@@ -339,24 +339,25 @@ impl Locale {
 /// The power mode in force, when the machine offers modes and the daemon's
 /// active one is among them (`hardware_core::power::mode_in_force`).
 pub fn power_mode(power: &PowerFacts) -> Option<Profile> {
+    shown(power, Locale::English).map(|shown| shown.mode)
+}
+
+/// The mode to show, by `hardware_core::power::mode_shown`, the one rule the
+/// popup follows too.
+fn shown(power: &PowerFacts, locale: Locale) -> Option<ModeShown> {
     match power {
-        Presence::Present(facts) => mode_in_force(facts),
+        Presence::Present(facts) => mode_shown(facts, locale.language()),
         _ => None,
     }
 }
 
-/// The menu's and the tooltip's power mode line: the mode's name, the
-/// daemon's own word for a mode this version does not know, or that it could
-/// not be read. `None` on a machine with no modes, so nothing is guessed.
+/// The menu's and the tooltip's power mode line: the mode's name, or that it
+/// could not be read. `None` when there is no mode to show, so nothing is
+/// guessed.
 pub fn power_line(power: &PowerFacts, locale: Locale) -> Option<String> {
     let text = match power {
-        Presence::Absent => return None,
-        Presence::Unreadable(_) => locale.pick("could not be read", "無法讀取").to_string(),
-        Presence::Present(facts) => match mode_in_force(facts) {
-            Some(mode) => mode.name(locale.language()).to_string(),
-            None if facts.profiles.is_empty() || facts.active.trim().is_empty() => return None,
-            None => facts.active.trim().to_string(),
-        },
+        Presence::Unreadable(_) => unreadable_words(locale.language()).to_string(),
+        _ => shown(power, locale)?.name.to_string(),
     };
     Some(if locale.zh() {
         format!("{}：{text}", locale.power_mode())
@@ -454,51 +455,63 @@ pub fn reading_line(reading: Reading, r: &TrayReadings, locale: Locale) -> Optio
                 bytes(r.network_send.unwrap_or(0.0))
             )
         }
-        Reading::Battery => {
-            use hardware_core::charge_state::{ChargeState, Language, battery_look};
-            let charge = percent(r.battery?);
-            // The words every battery icon in Better OS uses (ticket 170).
-            let look = r.battery_state.as_ref().map(|readings| {
-                battery_look(
-                    readings,
-                    if locale.zh() {
-                        Language::TraditionalChinese
-                    } else {
-                        Language::English
-                    },
-                )
-            });
-            let time = match (
-                look.as_ref().map(|look| look.state),
-                r.battery_seconds_left,
-                r.battery_seconds_to_full,
-            ) {
-                (Some(state), Some(left), _) if state.on_battery() == Some(true) => {
-                    Some(if locale.zh() {
-                        format!("剩下約 {}", hours_minutes(left, locale))
-                    } else {
-                        format!("about {} left", hours_minutes(left, locale))
-                    })
-                }
-                (Some(ChargeState::Charging), _, Some(full)) => Some(if locale.zh() {
-                    format!("約 {}後充滿", hours_minutes(full, locale))
-                } else {
-                    format!("full in about {}", hours_minutes(full, locale))
-                }),
-                _ => None,
-            };
-            let state = match look {
-                Some(look) => format!("{charge} · {}", look.words),
-                None => charge,
-            };
-            match time {
-                Some(time) if locale.zh() => format!("{state}，{time}"),
-                Some(time) => format!("{state}, {time}"),
-                None => state,
-            }
-        }
         Reading::Temperature => format!("{:.0} °C", r.hottest?),
     };
+    Some(if locale.zh() {
+        format!("{name}：{text}")
+    } else {
+        format!("{name}: {text}")
+    })
+}
+
+/// The battery's line: its charge and its state in the words every battery
+/// line in Better OS uses (`battery_look`, ticket 170), and the time left
+/// while the charge moves. `None` on a machine without a battery.
+pub fn battery_line(r: &TrayReadings, locale: Locale) -> Option<String> {
+    let text = {
+        use hardware_core::charge_state::{ChargeState, Language, battery_look};
+        let charge = percent(r.battery?);
+        // The words every battery icon in Better OS uses (ticket 170).
+        let look = r.battery_state.as_ref().map(|readings| {
+            battery_look(
+                readings,
+                if locale.zh() {
+                    Language::TraditionalChinese
+                } else {
+                    Language::English
+                },
+            )
+        });
+        let time = match (
+            look.as_ref().map(|look| look.state),
+            r.battery_seconds_left,
+            r.battery_seconds_to_full,
+        ) {
+            (Some(state), Some(left), _) if state.on_battery() == Some(true) => {
+                Some(if locale.zh() {
+                    format!("剩下約 {}", hours_minutes(left, locale))
+                } else {
+                    format!("about {} left", hours_minutes(left, locale))
+                })
+            }
+            (Some(ChargeState::Charging), _, Some(full)) => Some(if locale.zh() {
+                format!("約 {}後充滿", hours_minutes(full, locale))
+            } else {
+                format!("full in about {}", hours_minutes(full, locale))
+            }),
+            _ => None,
+        };
+        let state = match look {
+            Some(look) => format!("{charge} · {}", look.words),
+            None => charge,
+        };
+        match time {
+            Some(time) if locale.zh() => format!("{state}，{time}"),
+            Some(time) => format!("{state}, {time}"),
+            None => state,
+        }
+    };
+    let name = locale.pick("Battery", "電池");
     Some(if locale.zh() {
         format!("{name}：{text}")
     } else {
@@ -586,10 +599,25 @@ impl IconChoice {
         )
     }
 
+    /// The choice stored at `path`, or the default. A choice stored before
+    /// ticket 295 may name the battery, which the icon no longer shows: it
+    /// is dropped (a choice of the battery alone falls back to the default
+    /// readings, so the icon never goes empty) and the file is written again
+    /// without it, so nothing stale is left behind.
     pub fn load(path: &Path) -> Self {
-        std::fs::read_to_string(path)
-            .map(|text| Self::parse(&text))
-            .unwrap_or_default()
+        let Ok(text) = std::fs::read_to_string(path) else {
+            return Self::default();
+        };
+        let choice = Self::parse(&text);
+        if names_the_battery(&text)
+            && let Err(error) = choice.save(path)
+        {
+            eprintln!(
+                "better-monitor-tray: the icon choice could not be rewritten without the \
+                 battery: {error}"
+            );
+        }
+        choice
     }
 
     /// Written to a temporary file and renamed, so a crash never leaves half.
@@ -613,6 +641,16 @@ impl IconChoice {
             self.shown.sort();
         }
     }
+}
+
+/// Whether a stored choice still shows the battery, as one stored before
+/// ticket 295 may.
+fn names_the_battery(text: &str) -> bool {
+    text.lines().any(|line| {
+        line.split_once('=').is_some_and(|(key, value)| {
+            key.trim() == "show" && value.split(',').any(|word| word.trim() == "battery")
+        })
+    })
 }
 
 /// What a menu item does.
@@ -809,6 +847,9 @@ impl ServiceState {
 mod ids {
     /// The reading lines, one per [`super::Reading`] in its fixed order.
     pub const READING: i32 = 1;
+    /// The battery's line, after the readings' (ticket 295: no longer a
+    /// reading the icon shows, so no longer among them).
+    pub const BATTERY: i32 = 7;
     pub const FAN: i32 = 8;
     pub const SERVICE: i32 = 9;
     pub const AFTER_READINGS: i32 = 10;
@@ -856,6 +897,9 @@ pub fn build(
                             .with_id(ids::READING + reading_offset(reading)),
                     );
                 }
+            }
+            if let Some(line) = battery_line(r, locale) {
+                items.push(MenuItem::new(line, ItemKind::Info, None).with_id(ids::BATTERY));
             }
             if let Some(line) = fan_line(r, locale) {
                 items.push(MenuItem::new(line, ItemKind::Info, None).with_id(ids::FAN));
@@ -967,10 +1011,18 @@ pub fn tooltip(
         Some(r) => Reading::ALL
             .into_iter()
             .filter_map(|reading| reading_line(reading, r, locale))
+            .chain(battery_line(r, locale))
             .collect(),
         None => vec![service.sentence(locale).to_string()],
     };
     lines.extend(power_line(power, locale));
+    // A mode held by an application or reduced by the daemon says so, as
+    // the System page does.
+    lines.extend(
+        shown(power, locale)
+            .into_iter()
+            .flat_map(|shown| shown.cautions),
+    );
     (locale.app_name().to_string(), lines.join("\n"))
 }
 
@@ -1007,13 +1059,19 @@ impl PowerItem {
 }
 
 pub fn power_item(power: &PowerFacts, choice: &IconChoice, locale: Locale) -> PowerItem {
-    let mode = power_mode(power).filter(|_| choice.power_mode);
+    let shown = shown(power, locale).filter(|_| choice.power_mode);
     PowerItem {
-        mode,
+        mode: shown.as_ref().map(|shown| shown.mode),
         title: locale.power_mode().to_string(),
         tooltip: (
             locale.power_mode().to_string(),
-            mode.map(|m| m.name(locale.language()).to_string())
+            shown
+                .map(|shown| {
+                    std::iter::once(shown.name.to_string())
+                        .chain(shown.cautions)
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                })
                 .unwrap_or_default(),
         ),
     }
@@ -1176,12 +1234,66 @@ mod tests {
         let processor = &menu.find_by_label("Show in the taskbar").unwrap().children[0];
         assert_eq!(processor.kind, ItemKind::Checkmark { checked: true });
         assert!(!processor.enabled);
-        choice.toggle(Reading::Battery);
+        choice.toggle(Reading::Temperature);
         choice.toggle(Reading::Memory);
         assert_eq!(
             choice.shown,
-            vec![Reading::Cpu, Reading::Memory, Reading::Battery]
+            vec![Reading::Cpu, Reading::Memory, Reading::Temperature]
         );
+    }
+
+    #[test]
+    fn the_taskbar_offers_no_battery_and_the_menu_keeps_its_words() {
+        let menu = build(
+            Some(&readings()),
+            &Presence::Absent,
+            &IconChoice::default(),
+            Locale::English,
+            ServiceState::Answering,
+        );
+        let show = menu.find_by_label("Show in the taskbar").unwrap();
+        assert!(
+            !show.children.iter().any(|item| item.label == "Battery"),
+            "{:?}",
+            show.children
+        );
+        assert!(
+            menu.labels()
+                .contains(&"Battery: 83% · Charging, full in about 14 min")
+        );
+        let (_, body) = tooltip(
+            Some(&readings()),
+            &Presence::Absent,
+            Locale::TraditionalChinese,
+            ServiceState::Answering,
+        );
+        assert!(body.contains("電池：83% · 充電中"), "{body}");
+    }
+
+    #[test]
+    fn a_choice_that_showed_the_battery_is_migrated_in_its_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("tray");
+        std::fs::write(&path, "show=cpu,battery\nstyle=numbers\n").unwrap();
+        let choice = IconChoice::load(&path);
+        assert_eq!(choice.shown, vec![Reading::Cpu]);
+        assert_eq!(choice.style, IconStyle::Numbers);
+        let stored = std::fs::read_to_string(&path).unwrap();
+        assert!(!stored.contains("battery"), "{stored}");
+        assert_eq!(IconChoice::load(&path), choice);
+
+        // The battery alone: the icon falls back to the default readings
+        // rather than going empty, and keeps the person's style.
+        std::fs::write(&path, "show=battery\nstyle=numbers\n").unwrap();
+        let choice = IconChoice::load(&path);
+        assert_eq!(choice.shown, IconChoice::default().shown);
+        assert_eq!(choice.style, IconStyle::Numbers);
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("battery"));
+
+        // A choice that never named it is not written.
+        std::fs::write(&path, "show=gpu\n").unwrap();
+        IconChoice::load(&path);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "show=gpu\n");
     }
 
     #[test]
@@ -1339,18 +1451,18 @@ mod tests {
 
     #[test]
     fn a_mode_the_daemon_does_not_list_is_never_drawn_as_one_it_does() {
-        // An active mode this version does not know is said in the daemon's
-        // word and never drawn as a known mode's icon.
+        // An active mode this version does not know is not shown at all,
+        // never as the daemon's English word and never as a known mode.
         let facts = power(&["balanced", "turbo"], "turbo");
         let menu = build(
             Some(&readings()),
             &facts,
             &IconChoice::default(),
-            Locale::English,
+            Locale::TraditionalChinese,
             ServiceState::Answering,
         );
         assert!(
-            menu.labels().contains(&"Power mode: turbo"),
+            !menu.labels().iter().any(|l| l.starts_with("電源模式：")),
             "{:?}",
             menu.labels()
         );
@@ -1374,6 +1486,37 @@ mod tests {
         assert_eq!(
             power_item(&unreadable, &IconChoice::default(), Locale::English).status(),
             "Passive"
+        );
+    }
+
+    #[test]
+    fn a_held_or_reduced_mode_says_so_in_the_tooltips() {
+        let mut facts = PowerProfilesFacts {
+            active: "performance".into(),
+            profiles: ALL_MODES.iter().map(|p| p.to_string()).collect(),
+            ..PowerProfilesFacts::default()
+        };
+        facts.holds = vec![hardware_core::power::Hold {
+            application: "GNOME Boxes".into(),
+            profile: "performance".into(),
+        }];
+        let facts = Presence::Present(facts);
+        let (_, body) = tooltip(
+            Some(&readings()),
+            &facts,
+            Locale::English,
+            ServiceState::Answering,
+        );
+        assert!(
+            body.ends_with(
+                "Power mode: Best performance\nGNOME Boxes is asking for Best performance."
+            ),
+            "{body}"
+        );
+        let item = power_item(&facts, &IconChoice::default(), Locale::TraditionalChinese);
+        assert_eq!(
+            item.tooltip.1,
+            "最佳效能\nGNOME Boxes 正在要求「最佳效能」模式。"
         );
     }
 

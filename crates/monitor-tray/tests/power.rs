@@ -13,7 +13,7 @@ use hardware_core::power::{Profile, mode_in_force};
 use hardware_platform::bus;
 use hardware_platform::fakes::{self, FakeProfiles};
 use monitor_tray::menu::{IconChoice, Locale, PowerFacts, TrayReadings};
-use monitor_tray::{POWER_ITEM_PATH, Tray, TrayState};
+use monitor_tray::{Tray, TrayState};
 
 struct PrivateBus {
     child: Child,
@@ -176,9 +176,9 @@ fn a_daemon_that_offers_no_modes_shows_nothing() {
 
 #[zbus::proxy(
     interface = "org.kde.StatusNotifierItem",
-    default_path = "/PowerModeItem"
+    default_path = "/StatusNotifierItem"
 )]
-trait PowerItem {
+trait Item {
     #[zbus(property)]
     fn status(&self) -> zbus::Result<String>;
     #[zbus(property)]
@@ -188,64 +188,152 @@ trait PowerItem {
     #[zbus(property)]
     fn menu(&self) -> zbus::Result<zbus::zvariant::OwnedObjectPath>;
     #[zbus(signal)]
-    fn new_status(&self, status: String) -> zbus::Result<()>;
+    fn new_icon(&self) -> zbus::Result<()>;
 }
 
-#[tokio::test]
-async fn a_panel_reads_the_mode_item_and_hears_it_change() {
-    use zbus::export::futures_core::Stream;
-    let bus = bus_or_skip!();
-    let tray = Tray::new(TrayState::new(Locale::English, IconChoice::default(), None));
-    let connection = monitor_tray::serve(
-        zbus::connection::Builder::address(bus.address.as_str()).unwrap(),
-        tray.clone(),
-    )
-    .await
-    .unwrap();
-    let unique = connection.unique_name().unwrap().to_string();
-    let panel = zbus::connection::Builder::address(bus.address.as_str())
-        .unwrap()
-        .build()
-        .await
-        .unwrap();
-    let item = PowerItemProxy::builder(&panel)
-        .destination(unique.as_str())
-        .unwrap()
-        .path(POWER_ITEM_PATH)
-        .unwrap()
-        // A StatusNotifierItem says a change with its own signals, not
-        // PropertiesChanged, so a panel reads each property afresh.
-        .cache_properties(zbus::proxy::CacheProperties::No)
-        .build()
-        .await
-        .unwrap();
-    assert_eq!(item.status().await.unwrap(), "Passive");
-    assert_eq!(item.id().await.unwrap(), "better-monitor-power-mode");
-    assert_eq!(item.menu().await.unwrap().as_str(), monitor_tray::MENU_PATH);
-    let mut statuses = item.receive_new_status().await.unwrap();
+/// A watcher with a host, keeping what was registered.
+struct FakeWatcher {
+    items: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+}
 
-    let facts = Presence::Present(hardware_core::power::PowerProfilesFacts {
-        active: "performance".into(),
+#[zbus::interface(name = "org.kde.StatusNotifierWatcher")]
+impl FakeWatcher {
+    async fn register_status_notifier_item(&self, service: &str) {
+        self.items.lock().unwrap().push(service.to_string());
+    }
+
+    #[zbus(property)]
+    async fn registered_status_notifier_items(&self) -> Vec<String> {
+        self.items.lock().unwrap().clone()
+    }
+
+    #[zbus(property)]
+    async fn is_status_notifier_host_registered(&self) -> bool {
+        true
+    }
+}
+
+fn modes(active: &str) -> PowerFacts {
+    Presence::Present(hardware_core::power::PowerProfilesFacts {
+        active: active.into(),
         profiles: vec![
             "power-saver".into(),
             "balanced".into(),
             "performance".into(),
         ],
         ..Default::default()
-    });
-    let changes = tray.state.lock().await.adopt_power(facts);
-    tray.announce(changes).await;
-    let signal = tokio::time::timeout(
-        Duration::from_secs(5),
-        std::future::poll_fn(|context| std::pin::Pin::new(&mut statuses).poll_next(context)),
+    })
+}
+
+async fn has_owner(panel: &zbus::Connection, name: &str) -> bool {
+    zbus::fdo::DBusProxy::new(panel)
+        .await
+        .unwrap()
+        .name_has_owner(name.try_into().unwrap())
+        .await
+        .unwrap()
+}
+
+/// The power mode item is on the bus only while it has a mode to show: a
+/// panel that ignores a `Passive` status (COSMIC's status area) or keeps it
+/// in an overflow (KDE) would otherwise show an empty item. It has its own
+/// name, registers itself apart from the icon, and says when its mode
+/// changes.
+#[tokio::test]
+async fn the_mode_item_is_on_the_bus_only_while_it_has_a_mode() {
+    use zbus::export::futures_core::Stream;
+    let bus = bus_or_skip!();
+    let panel = zbus::connection::Builder::address(bus.address.as_str())
+        .unwrap()
+        .build()
+        .await
+        .unwrap();
+    let items = std::sync::Arc::<std::sync::Mutex<Vec<String>>>::default();
+    panel
+        .object_server()
+        .at(
+            "/StatusNotifierWatcher",
+            FakeWatcher {
+                items: items.clone(),
+            },
+        )
+        .await
+        .unwrap();
+    panel
+        .request_name("org.kde.StatusNotifierWatcher")
+        .await
+        .unwrap();
+
+    let tray = Tray::new(TrayState::new(Locale::English, IconChoice::default(), None));
+    tray.use_bus_address(&bus.address).await;
+    let connection = monitor_tray::serve(
+        zbus::connection::Builder::address(bus.address.as_str()).unwrap(),
+        tray.clone(),
     )
     .await
-    .expect("NewStatus arrives")
-    .expect("a signal");
-    assert_eq!(signal.args().unwrap().status, "Active");
+    .unwrap();
+    let main = connection.unique_name().unwrap().to_string();
+    assert!(tray.power_connection().await.is_none(), "no mode, no item");
+
+    let changes = tray.state.lock().await.adopt_power(modes("performance"));
+    tray.announce(changes).await;
+    let power = tray.power_connection().await.expect("the item came");
+    let name = power.unique_name().unwrap().to_string();
+    assert_ne!(name, main);
+    assert_eq!(items.lock().unwrap().as_slice(), [name.clone()]);
+    let item = ItemProxy::builder(&panel)
+        .destination(name.as_str())
+        .unwrap()
+        .cache_properties(zbus::proxy::CacheProperties::No)
+        .build()
+        .await
+        .unwrap();
     assert_eq!(item.status().await.unwrap(), "Active");
+    assert_eq!(item.id().await.unwrap(), "better-monitor-power-mode");
+    assert_eq!(item.menu().await.unwrap().as_str(), monitor_tray::MENU_PATH);
     assert_eq!(
         item.icon_name().await.unwrap(),
         "power-profile-performance-symbolic"
     );
+
+    // Another program changes the mode: the same item says so.
+    let mut icons = item.receive_new_icon().await.unwrap();
+    let changes = tray.state.lock().await.adopt_power(modes("power-saver"));
+    tray.announce(changes).await;
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        std::future::poll_fn(|context| std::pin::Pin::new(&mut icons).poll_next(context)),
+    )
+    .await
+    .expect("NewIcon arrives");
+    assert_eq!(
+        item.icon_name().await.unwrap(),
+        "power-profile-power-saver-symbolic"
+    );
+    assert!(tray.power_connection().await.is_some());
+
+    // The daemon went away: the item leaves the bus.
+    let changes = tray.state.lock().await.adopt_power(Presence::Absent);
+    tray.announce(changes).await;
+    assert!(tray.power_connection().await.is_none());
+    let mut gone = false;
+    for _ in 0..50 {
+        if !has_owner(&panel, &name).await {
+            gone = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(gone, "the item's name is still on the bus");
+    assert!(has_owner(&panel, &main).await, "the icon stays");
+}
+
+/// The icon's registration is judged by its own name, never by another
+/// entry that starts the same.
+#[test]
+fn a_watcher_entry_is_the_items_only_when_it_names_it() {
+    assert!(monitor_tray::lists(":1.4", ":1.4"));
+    assert!(monitor_tray::lists(":1.4/StatusNotifierItem", ":1.4"));
+    assert!(!monitor_tray::lists(":1.40", ":1.4"));
+    assert!(!monitor_tray::lists(":1.40/StatusNotifierItem", ":1.4"));
 }

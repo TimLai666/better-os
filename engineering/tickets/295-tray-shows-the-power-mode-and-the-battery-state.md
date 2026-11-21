@@ -41,72 +41,63 @@ the same there.
 
 ## Notes
 
-**Blocked:** the owner decides whether the menu also switches the power mode
-(the mock-up `better-os-evidence/295/mockup-power-mode.png` shows both
-menus), and the panel is checked on the owner's machine after the next
-release; everything else is built.
+**Blocked:** the owner: the power mode item's look is designed with the
+owner in an icon design round; the owner decides whether the menu also
+switches the mode; and the panel is seen on the owner's machine after a
+release.
 
-### Built (2026-11-22)
+### Decisions (owner, 2026-11-22)
 
-- The battery's picture in the icon is the battery rule's `BatteryIcon`
-  drawn in pixels (`monitor_tray::icon::battery_drawing`): a battery with a
-  cap, filled to the charge (amber when low), and a bolt, a plug, an amber
-  "!" or a "?" over it; in the numbers style the same mark, or a small
-  battery for a level, beside the charge. Spec: "The taskbar item" in
-  `engineering/specs/battery-charge-state.md`. The first sandbox look showed
-  a 5×7 mark on a 9-pixel battery is a blur once GNOME draws the icon at
-  16 px, so the battery takes a 14-pixel slot with the mark at double size
-  when it is shown with one other reading or alone.
-- The power mode is a second panel item beside the icon
-  (`monitor_tray::PowerModeItem`, `/PowerModeItem` on the tray's own
-  connection), drawn from the icon theme's `power-profile-*-symbolic`, so it
-  takes the panel's colour light and dark. The mock-up compared it with a
-  mark inside the readings icon, which at 16 px is 5 pixels over the memory
-  bar; the themed item reads at every size. It is `Passive` (hidden) on a
-  machine without modes, when the daemon's active mode is not one it lists,
-  or when the person unticks "Power mode" under "Show in the taskbar".
-- The menu (shared by both items) and the tooltip say "Power mode: …" /
-  「電源模式：…」 in the System page's words, now `Profile::name` in
-  `hardware-core` (the System page's copy calls it too); the popup has a
-  Power mode card listing every mode the machine offers with the one in
-  force marked.
-- The modes come from power-profiles-daemon, read by
-  `hardware_platform::bus::follow_power_profiles` (new; the watch is in place
-  before the first read), not from `/sys/firmware/acpi/platform_profile_choices`
-  as this ticket's text says: ADR 0017 keeps Better OS off `platform_profile`,
-  which the daemon drives, and on such a machine the daemon's list comes from
-  it. Likewise the System page sets the mode through the daemon directly, not
-  through `manager-daemon` (the ticket names ADR 0029, which is about root
-  writes); a menu switch, if the owner wants one, would call
-  `hardware_platform::bus::set_power_profile` the same way.
-- A debug build of `better-monitor-service` now reads `/sys` from
-  `BETTER_OS_DEBUG_SYS_ROOT` like the window (`ServiceConfig::for_session`,
-  one place for both), so a sandbox can show every battery state in the
-  taskbar.
+- The taskbar item draws **no battery**. The panel already has the
+  desktop's own battery icon, and a second beside it is a duplicate. This
+  replaces the first bullet of "What to build". The battery stays in the
+  menu, the tooltip and the popup as words (charge, state, limit, time) from
+  `battery_look`. The desktop's battery picture belongs to the top bar's
+  status area in the Better OS session (ticket 157, which designs every
+  state's picture with the owner); under GNOME it cannot be changed from
+  outside the shell (spec).
+- The pixel pictures the first branch drew were judged ugly and are gone,
+  not kept for later. The power mode item's look gets its own design round
+  with the owner.
+
+### Built
+
+- The readings icon offers no battery: `Reading` has no battery, "Show in
+  the taskbar" no battery check box, and a choice stored before this that
+  named the battery is rewritten without it when the item starts (the
+  battery alone falls back to processor and memory, so the icon is never
+  empty). The other bars have their widths from before ticket 295 back.
+- The power mode is a second panel item (`monitor_tray::PowerModeItem`) with
+  the icon theme's `power-profile-*-symbolic`, on a connection of its own
+  that exists only while there is a mode to show, so every watcher forgets
+  it when there is none (COSMIC's status area ignores `Passive`). It is
+  registered and reported apart from the icon. The menu (shared), the
+  tooltips and the popup name the mode and the System page's caution
+  sentences through one rule, `hardware_core::power::mode_shown`;
+  `Caution::words` and `Profile::name` are the System page's words, which it
+  now calls too.
+- The modes come from power-profiles-daemon (`hardware_platform::bus::
+  follow_power_profiles`), only from one that is running: a stopped or
+  masked daemon is absent and is never started through D-Bus activation, for
+  the System page too. A watch that ends says "could not be read" last.
+  Not from `/sys/firmware/acpi/platform_profile_choices` as this ticket's
+  text says: ADR 0017 keeps Better OS off `platform_profile`. The System page
+  sets the mode through the daemon directly, not through ADR 0029's path; a
+  menu switch would call `bus::set_power_profile` the same way.
+- A debug build of `better-monitor-service` reads `/sys` from
+  `BETTER_OS_DEBUG_SYS_ROOT` like the window (`ServiceConfig::for_session`).
 
 ### Checked
 
-- Tests: each state's picture and that no two of the six states look the
-  same in either style (`monitor-tray` `icon::tests`), each mode's line,
-  tooltip and themed icon, no modes, an unknown or unreadable mode
-  (`menu::tests`), a mode changed by another program reaching the item and
-  the menu without a layout change (`lib::tests`, and `tests/power.rs`
-  against a stand-in daemon on a private bus, including a daemon that starts
-  late and one with no modes), the popup's block (`monitor-gui`
-  `popup::tests`).
-- Screenshots in `/home/tim/Developer/better-os-evidence/295/`: every battery
-  state and every mode with the menu open, English and zh-TW, dark and light
-  (`battery-*-{en,zh-TW}-{dark,light}.png`, `mode-*-….png`), the icons alone
-  at panel size zoomed 4× in both styles and both panels
-  (`panel-icons-{bars,numbers}-{dark,light}.png`), the popup
-  (`popup-{en,zh-TW}-{dark,light}.png`), and a machine with no modes
-  (`no-power-modes-en-light.png`: the item is gone and the menu has no mode
-  line). Headless GNOME Shell 46 with the Zorin AppIndicator extension (the
-  light panel is GNOME's `light-style` extension), a stand-in
-  power-profiles-daemon on a private system bus whose mode was changed by
-  `gdbus` as another program would, a fixture `/sys`; never the machine's
-  own power mode or limit. The scripts are in `scripts/` beside them. The
-  processor, memory and network figures in the menus are the sandbox
-  machine's real ones; the battery is the fixture's.
-- Not checked: swaybar or waybar hiding a `Passive` item, and the owner's
-  desktop.
+- Tests in `monitor-tray` (`menu::tests`, `lib::tests`, `tests/power.rs`),
+  `hardware-core` (`power::tests`), `hardware-platform` (`tests/bus.rs`:
+  nothing activated on a bus that could start the daemon; a closed bus ends
+  unreadable), `monitor-gui` (`popup::tests`), `manager-gui`.
+- Screenshots in `/home/tim/Developer/better-os-evidence/295/`, headless
+  GNOME Shell 46 with the Zorin AppIndicator extension, a stand-in daemon on
+  a private system bus, a fixture `/sys`: each mode with the menu open,
+  English and zh-TW, dark and light; the popup; no modes. Never the
+  machine's own power mode.
+- Read from source only, not run: COSMIC's status area (ignores `Status`),
+  dbus-daemon's and dbus-broker's activation errors. Not checked: swaybar,
+  waybar, KDE, the owner's desktop.

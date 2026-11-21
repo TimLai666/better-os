@@ -110,8 +110,8 @@ and short. Its callers:
 
 - Better Monitor: the Overview's battery card (short words in its header, the
   time or the energy at its foot) and Performance list row (short words), the
-  Battery page, the taskbar popup, and the taskbar item's icon and menu line
-  (`monitor-tray`). The "what is using the battery" section and the popup's
+  Battery page, the taskbar popup, and the taskbar item's menu line and
+  tooltip (`monitor-tray`), which draws no battery picture (below). The "what is using the battery" section and the popup's
   battery list follow `ChargeState::on_battery`, not a metric of their own.
 - Better Manager: Home's device banner, the System page's battery card and
   charge limit card, and the Keep awake page's charge card.
@@ -132,35 +132,22 @@ off the UI thread, and read again when the service signals or UPower's
 POWER_SUPPLY_CHANGES`), rather than widen the service's protocol. Without a
 battery reading of their own, the rule gets only the charger the service saw.
 
-Better Monitor's taskbar icon draws the battery's picture too (ticket 295,
-owner 2026-11-21), from the same `BatteryIcon` the rule returns; see "The
-taskbar item" below.
-
 ## The taskbar item
 
-Better Monitor's taskbar icon is pixels it draws itself (22 and 44 pixels
-square), so the battery's picture there is pixel art of the rule's
-`BatteryIcon`, never a mapping of its own from the kernel's status:
+Better Monitor's taskbar icon draws no battery (owner, 2026-11-22, ticket
+295). The panel already has the desktop's own battery icon, and a second
+beside it is a duplicate. So the icon offers no battery reading in either
+style and "Show in the taskbar" has no battery check box; a choice stored
+before that which showed the battery is rewritten without it the next time
+the item starts (a choice of the battery alone falls back to the default
+readings, so the icon never goes empty). The battery stays in the item's
+menu and tooltip, and in the popup, as words: its charge and its state from
+`battery_look`, and the time while the charge moves.
 
-| `BatteryIcon` | In the bars | In the numbers |
-| --- | --- | --- |
-| Low, Medium, Full | a battery (a cap on top) filled to the charge; green, amber when low | a small battery filled to the level, then the charge |
-| Charging | filled to the charge, a bolt over it | a bolt, then the charge |
-| Plugged (held) | filled to the charge, a plug over it | a plug, then the charge |
-| FullPlugged | filled to the top, a plug over it | a green plug, then the charge |
-| PluggedCaution | a small amber mark where the charge would be, a "!" over it | a "!", then the charge |
-| Unknown | empty, a "?" over it | a "?", then the charge (or "-") |
-
-Every mark has a dark edge, so it reads on a light panel and on a dark one.
-GNOME's AppIndicator extension draws the 22-pixel icon at 16, so in the bars
-the battery takes a slot 14 pixels wide with its mark at double size while
-the other bars keep four pixels each (the battery and one other reading, or
-the battery alone), a slot of 7 with the mark at its own size while they keep
-two (up to five readings), and with six or seven only the fill and its
-colour remain; the menu line always carries the state in words. In the
-numbers a charge of three figures is drawn in the small font so the mark
-still fits. The screenshots of every state, at the panel's size, light and
-dark, are in `better-os-evidence/295/`.
+The desktop's battery is the one to change. Under GNOME it is the shell's,
+and nothing outside the shell's code can change its picture (below). In the
+Better OS session it is the top bar's status area (ticket 157), which draws
+this rule's states; their pictures are designed there with the owner.
 
 ### The power mode beside it
 
@@ -169,27 +156,40 @@ drawn by the desktop from its icon theme (`power-profile-power-saver-symbolic`,
 `power-profile-balanced-symbolic`, `power-profile-performance-symbolic`), so it
 takes the panel's own colour in light and dark and is drawn at the panel's
 own size. The mock-up that compared it with a mark inside the readings icon
-is `better-os-evidence/295/mockup-power-mode.png`: a mark of 7 pixels inside
-a 22-pixel icon shrinks to five at 16 pixels and collides with the bars and
-the charging bolt, and the themed icon does not.
+is `better-os-evidence/295/mockup-power-mode.png`. How it looks is still to be
+designed with the owner (ticket 295).
 
 - The modes are the ones power-profiles-daemon lists (`Profiles`), read the
-  way the System page reads them (`hardware_platform::bus::power_profiles`,
-  `hardware_core::power::power_mode_view`). Better OS never reads or writes
-  `platform_profile` itself (ADR 0017); on a machine with
-  `/sys/firmware/acpi/platform_profile_choices` the daemon's list is drawn
-  from it.
-- The item is there only while the daemon names an active mode it lists.
-  With no daemon, no modes, or an active mode it does not list, the item is
-  hidden (`Passive`) and nothing is guessed. A daemon that answers and cannot
-  be read is hidden too, and the menu says the mode could not be read.
-- The menu (both items share it) and the tooltip name the mode with the
-  System page's words (`Profile::name`), and the popup lists every mode the
-  machine offers with the one in force marked.
+  way the System page reads them (`hardware_platform::bus::power_profiles`).
+  Better OS never reads or writes `platform_profile` itself (ADR 0017); on a
+  machine with `/sys/firmware/acpi/platform_profile_choices` the daemon's
+  list is drawn from it.
+- Only a daemon that is running is read: a name with no owner is absent and
+  is never started through D-Bus activation, so a daemon someone stopped, or
+  its package's removal stopped, stays stopped. A masked daemon is absent
+  too.
+- What is shown is one rule, `hardware_core::power::mode_shown`: the mode in
+  force by name (`Profile::name`, the System page's words), the modes the
+  daemon lists that this version knows, and the System page's caution
+  sentences (`Caution::words`) when an application holds the mode or the
+  daemon reduces it. A mode this version does not know, or one the daemon
+  does not list, is not shown at all, never as the daemon's own word.
+- The item is on the bus only while there is a mode to show, on a
+  connection of its own: with no daemon, no mode to show, or the check box
+  under "Show in the taskbar" unticked, it leaves the bus, which every
+  watcher understands. A `Passive` status would not do: COSMIC's status area
+  ignores it (`cosmic-applet-status-area`, read from source at
+  `cb3ea91a`), and KDE keeps such an item in its overflow.
+- A daemon that answers and cannot be read hides the item, and the menu and
+  the popup say the mode could not be read. A watch on the daemon that ends
+  (the system bus closed) or never starts says the same, so a stale mode is
+  never left showing.
+- The menu (both items share it) and the tooltips name the mode and its
+  cautions; the popup lists every mode the machine offers with the one in
+  force marked, and the cautions under them.
 - It follows the daemon's `PropertiesChanged` and its name coming and going,
   so a mode set on the System page, by "Switch power mode with the charger",
   or by any other program shows at once.
-- "Show in the taskbar" has a check box for it, on by default.
 - Whether the menu also switches the mode is the owner's to decide (ticket
   295); until then the menu only names it.
 

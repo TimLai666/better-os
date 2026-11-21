@@ -12,6 +12,10 @@
 //! Beside it, a second item shows the power mode in force with the
 //! desktop's own icon for it (ticket 295), read from power-profiles-daemon
 //! the way the System page reads it ([`power`]). Both items share one menu.
+//! The second item has a connection of its own, opened while there is a
+//! mode to show and closed when there is none: a watcher forgets an item
+//! whose name leaves the bus, while a `Passive` status is ignored by
+//! COSMIC's status area and kept in KDE's overflow.
 //!
 //! The StatusNotifierItem and dbusmenu interfaces are written directly on
 //! zbus, the same way Better Awake's tray does (see its `sni` module for why
@@ -45,9 +49,6 @@ use crate::popup::PopupLauncher;
 pub const WATCHER_SERVICE: &str = "org.kde.StatusNotifierWatcher";
 pub const ITEM_PATH: &str = "/StatusNotifierItem";
 pub const MENU_PATH: &str = "/MenuBar";
-/// The power mode item beside the icon, on the same connection; a watcher
-/// is given this path and takes the bus name from the call.
-pub const POWER_ITEM_PATH: &str = "/PowerModeItem";
 
 /// Everything the item shows, behind one lock.
 pub struct TrayState {
@@ -387,14 +388,24 @@ pub struct Tray {
     pub state: Mutex<TrayState>,
     pub quit: tokio::sync::Notify,
     connection: Mutex<Option<zbus::Connection>>,
+    /// The power mode item's own connection while it shows a mode.
+    power_connection: Mutex<Option<zbus::Connection>>,
+    /// The bus the power mode item connects to: the session bus, or in a
+    /// test the private bus the item was served on.
+    bus_address: Mutex<Option<String>>,
+    /// Itself, for the power mode item's interfaces it serves later.
+    me: std::sync::Weak<Tray>,
 }
 
 impl Tray {
     pub fn new(state: TrayState) -> Arc<Self> {
-        Arc::new(Self {
+        Arc::new_cyclic(|me| Self {
+            me: me.clone(),
             state: Mutex::new(state),
             quit: tokio::sync::Notify::new(),
             connection: Mutex::new(None),
+            power_connection: Mutex::new(None),
+            bus_address: Mutex::new(None),
         })
     }
 
@@ -402,8 +413,75 @@ impl Tray {
         *self.connection.lock().await = Some(connection);
     }
 
+    /// The bus the power mode item's connection goes to, when it is not the
+    /// session bus (a test's private bus).
+    pub async fn use_bus_address(&self, address: &str) {
+        *self.bus_address.lock().await = Some(address.to_string());
+    }
+
+    /// The power mode item's connection, while it shows a mode.
+    pub async fn power_connection(&self) -> Option<zbus::Connection> {
+        self.power_connection.lock().await.clone()
+    }
+
+    /// Puts the power mode item on the bus when it has a mode to show and
+    /// it is not there, takes it off when it has none, and otherwise tells
+    /// the panel its icon and tooltip changed.
+    async fn sync_power_item(&self) {
+        let shown = self.state.lock().await.power_item.mode.is_some();
+        let mut slot = self.power_connection.lock().await;
+        match (shown, slot.take()) {
+            (true, Some(connection)) => {
+                if let Ok(emitter) = SignalEmitter::new(&connection, ITEM_PATH) {
+                    let _ = PowerModeItem::new_icon(&emitter).await;
+                    let _ = PowerModeItem::new_tool_tip(&emitter).await;
+                    let _ = PowerModeItem::new_title(&emitter).await;
+                }
+                *slot = Some(connection);
+            }
+            (true, None) => match self.open_power_item().await {
+                Ok(connection) => {
+                    let unique = connection
+                        .unique_name()
+                        .map(|name| name.to_string())
+                        .unwrap_or_default();
+                    report_power_item(register_and_verify(&connection, &unique).await);
+                    *slot = Some(connection);
+                }
+                Err(error) => eprintln!(
+                    "better-monitor-tray: the power mode item could not be shown: {error}"
+                ),
+            },
+            // Leaving the bus is what makes every watcher forget it.
+            (false, Some(connection)) => {
+                let _ = connection.close().await;
+            }
+            (false, None) => {}
+        }
+    }
+
+    async fn open_power_item(&self) -> zbus::Result<zbus::Connection> {
+        let tray = self
+            .me
+            .upgrade()
+            .ok_or_else(|| zbus::Error::Failure("the tray is gone".into()))?;
+        let address = self.bus_address.lock().await.clone();
+        let builder = match address {
+            Some(address) => zbus::connection::Builder::address(address.as_str())?,
+            None => zbus::connection::Builder::session()?,
+        };
+        builder
+            .serve_at(ITEM_PATH, PowerModeItem::new(tray.clone()))?
+            .serve_at(MENU_PATH, DbusMenu::new(tray))?
+            .build()
+            .await
+    }
+
     /// Announce what changed to the panel.
     pub async fn announce(&self, changes: Changes) {
+        if changes.power_item {
+            self.sync_power_item().await;
+        }
         let Some(connection) = self.connection.lock().await.clone() else {
             return;
         };
@@ -417,16 +495,16 @@ impl Tray {
                 let _ = StatusNotifierItem::new_tool_tip(&emitter).await;
             }
         }
-        if changes.power_item
-            && let Ok(emitter) = SignalEmitter::new(&connection, POWER_ITEM_PATH)
-        {
-            let status = self.state.lock().await.power_item.status();
-            let _ = PowerModeItem::new_icon(&emitter).await;
-            let _ = PowerModeItem::new_tool_tip(&emitter).await;
-            let _ = PowerModeItem::new_status(&emitter, status).await;
+        // Both items serve the menu, so both say when it changed.
+        let power = self.power_connection.lock().await.clone();
+        for connection in std::iter::once(connection).chain(power) {
+            self.announce_menu(&connection, &changes).await;
         }
+    }
+
+    async fn announce_menu(&self, connection: &zbus::Connection, changes: &Changes) {
         if (changes.layout || !changes.properties.is_empty())
-            && let Ok(emitter) = SignalEmitter::new(&connection, MENU_PATH)
+            && let Ok(emitter) = SignalEmitter::new(connection, MENU_PATH)
         {
             // Read under the lock together, so the values sent are the ones
             // a `GetLayout` at this revision would return.
@@ -477,6 +555,14 @@ impl Tray {
     pub async fn host_changed(&self) {
         let changes = self.state.lock().await.host_changed(Instant::now());
         self.announce(changes).await;
+        // A new watcher has never heard of the power mode item either.
+        if let Some(connection) = self.power_connection().await {
+            let unique = connection
+                .unique_name()
+                .map(|name| name.to_string())
+                .unwrap_or_default();
+            report_power_item(register_and_verify(&connection, &unique).await);
+        }
     }
 
     pub async fn activate_menu(&self, id: i32) {
@@ -520,7 +606,6 @@ pub async fn serve(
     let connection = builder
         .serve_at(ITEM_PATH, StatusNotifierItem::new(tray.clone()))?
         .serve_at(MENU_PATH, DbusMenu::new(tray.clone()))?
-        .serve_at(POWER_ITEM_PATH, PowerModeItem::new(tray.clone()))?
         .build()
         .await?;
     tray.attach(connection.clone()).await;
@@ -615,10 +700,10 @@ impl StatusNotifierItem {
 }
 
 /// The power mode beside the icon (ticket 295): `org.kde.StatusNotifierItem`
-/// at [`POWER_ITEM_PATH`]. The panel draws the icon theme's picture for the
-/// mode, so it takes the panel's colour and size; with no mode to show it
-/// is `Passive`, which a panel hides. A click does what the icon's does, and
-/// its menu is the icon's.
+/// at [`ITEM_PATH`] on a connection of its own. The panel draws the icon
+/// theme's picture for the mode, so it takes the panel's colour and size.
+/// It exists only while there is a mode to show, so it is always `Active`.
+/// A click does what the icon's does, and its menu is the icon's.
 pub struct PowerModeItem {
     tray: Arc<Tray>,
 }
@@ -662,7 +747,7 @@ impl PowerModeItem {
 
     #[zbus(property)]
     async fn status(&self) -> &str {
-        self.tray.state.lock().await.power_item.status()
+        "Active"
     }
 
     #[zbus(property)]
@@ -706,7 +791,7 @@ impl PowerModeItem {
     async fn new_tool_tip(emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
 
     #[zbus(signal)]
-    async fn new_status(emitter: &SignalEmitter<'_>, status: &str) -> zbus::Result<()>;
+    async fn new_title(emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
 }
 
 /// `(ia{sv}av)`: an id, its properties, and its children as variants.
@@ -988,16 +1073,8 @@ pub async fn register_and_verify(connection: &zbus::Connection, name: &str) -> T
     if let Err(error) = watcher.register_status_notifier_item(name).await {
         return TrayAvailability::RegistrationFailed(error.to_string());
     }
-    // The power mode item is registered by its path; the watcher takes the
-    // bus name from the call. It is registered while it has nothing to show
-    // too: `Passive` keeps it hidden until it has.
-    if let Err(error) = watcher.register_status_notifier_item(POWER_ITEM_PATH).await {
-        return TrayAvailability::RegistrationFailed(format!("the power mode item: {error}"));
-    }
     match watcher.registered_status_notifier_items().await {
-        Ok(items)
-            if items.iter().any(|item| item.starts_with(name))
-                && items.iter().any(|item| item.ends_with(POWER_ITEM_PATH)) => {}
+        Ok(items) if items.iter().any(|item| lists(item, name)) => {}
         Ok(_) => return TrayAvailability::NotListed,
         Err(error) => return TrayAvailability::RegistrationFailed(error.to_string()),
     }
@@ -1005,6 +1082,28 @@ pub async fn register_and_verify(connection: &zbus::Connection, name: &str) -> T
         Ok(true) => TrayAvailability::Registered,
         Ok(false) => TrayAvailability::NoHost,
         Err(error) => TrayAvailability::RegistrationFailed(error.to_string()),
+    }
+}
+
+/// Whether a watcher's entry is the item registered under `name`: the name
+/// itself, or the name followed by the item's path, as GNOME's AppIndicator
+/// extension and KDE's watcher write it. Never a longer name that starts the
+/// same (`:1.1` is not `:1.10`).
+pub fn lists(entry: &str, name: &str) -> bool {
+    entry == name
+        || entry
+            .strip_prefix(name)
+            .is_some_and(|path| path.starts_with('/'))
+}
+
+/// Say what happened to the power mode item's registration, apart from the
+/// icon's.
+fn report_power_item(availability: TrayAvailability) {
+    match availability {
+        TrayAvailability::Registered | TrayAvailability::NoWatcher => {}
+        other => eprintln!(
+            "better-monitor-tray: the taskbar did not take the power mode item ({other:?})"
+        ),
     }
 }
 

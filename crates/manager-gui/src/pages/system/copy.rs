@@ -17,12 +17,8 @@ pub(crate) struct Copy {
     /// The modes' names are `hardware_core::power::Profile::name` in this
     /// language, the words the taskbar item and its popup use too.
     pub(crate) language: hardware_core::charge_state::Language,
-    pub(crate) degraded_lap: &'static str,
-    pub(crate) degraded_hot: &'static str,
-    /// Not in the spec: a reason this version does not know. `{reason}`.
-    pub(crate) degraded_other: &'static str,
-    /// `{application}` and `{mode}`.
-    pub(crate) held: &'static str,
+    // The caution sentences under Power mode are `hardware_core::power::
+    // Caution::words`, which Better Monitor's taskbar item shows too.
 
     // The charger switch (owner, 2026-11-13).
     pub(crate) follow_header: &'static str,
@@ -116,10 +112,6 @@ static EN: Copy = Copy {
     power_mode: "Power mode",
     power_mode_description: "Balance battery life against performance.",
     language: hardware_core::charge_state::Language::English,
-    degraded_lap: "Performance is reduced while the PC is on your lap, to keep it cool.",
-    degraded_hot: "It's running hot, so performance is reduced for now.",
-    degraded_other: "Performance is reduced for now ({reason}).",
-    held: "{application} is asking for {mode}.",
     follow_header: "Switch power mode with the charger",
     follow_description: "Uses one mode when plugged in and another on battery. A mode you pick by hand stays until the next time you plug in or unplug.",
     follow_plugged_in: "When plugged in",
@@ -185,10 +177,6 @@ static ZH_TW: Copy = Copy {
     power_mode: "電源模式",
     power_mode_description: "在電池續航力和效能之間取捨。",
     language: hardware_core::charge_state::Language::TraditionalChinese,
-    degraded_lap: "電腦放在腿上時，效能模式會降低以免過熱。",
-    degraded_hot: "溫度太高，效能模式暫時降低。",
-    degraded_other: "效能模式暫時降低（{reason}）。",
-    held: "{application} 正在要求「{mode}」模式。",
     follow_header: "依充電狀態自動切換電源模式",
     follow_description: "接上電源和使用電池時各用一種模式。你自己選的模式會維持到下次插拔電源。",
     follow_plugged_in: "接上電源時",

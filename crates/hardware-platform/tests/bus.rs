@@ -227,3 +227,109 @@ fn upower_reports_a_charge_threshold_only_when_its_device_has_the_property() {
         Some(true)
     );
 }
+
+/// A bus that can start power-profiles-daemon on demand, as the system bus
+/// can: its only service directory holds activation files for both of the
+/// daemon's names, whose program leaves a mark when it runs.
+fn activatable_bus(dir: &std::path::Path) -> Option<(Child, String, std::path::PathBuf)> {
+    let services = dir.join("services");
+    std::fs::create_dir_all(&services).ok()?;
+    let mark = dir.join("started");
+    for name in [
+        "org.freedesktop.UPower.PowerProfiles",
+        "net.hadess.PowerProfiles",
+    ] {
+        std::fs::write(
+            services.join(format!("{name}.service")),
+            format!(
+                "[D-BUS Service]\nName={name}\nExec=/bin/sh -c 'touch {}'\n",
+                mark.display()
+            ),
+        )
+        .ok()?;
+    }
+    let config = dir.join("bus.conf");
+    std::fs::write(
+        &config,
+        format!(
+            "<!DOCTYPE busconfig PUBLIC \"-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN\" \
+             \"http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd\">\n\
+             <busconfig><type>session</type><listen>unix:dir={}</listen>\
+             <servicedir>{}</servicedir><policy context=\"default\">\
+             <allow send_destination=\"*\"/><allow receive_type=\"*\"/><allow own=\"*\"/></policy></busconfig>\n",
+            dir.display(),
+            services.display()
+        ),
+    )
+    .ok()?;
+    let mut child = Command::new("dbus-daemon")
+        .arg(format!("--config-file={}", config.display()))
+        .args(["--nofork", "--print-address"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    use std::io::{BufRead, BufReader};
+    let mut address = String::new();
+    BufReader::new(child.stdout.take()?)
+        .read_line(&mut address)
+        .ok()?;
+    Some((child, address.trim().to_string(), mark))
+}
+
+/// Following the daemon never starts it (ticket 295 review): a stopped
+/// daemon, or one its package's removal just stopped, stays stopped and
+/// reads as absent, for the System page and the taskbar item alike.
+#[test]
+fn reading_and_following_the_daemon_never_start_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut child, address, mark) = test_prerequisites::require!(
+        "dbus-daemon",
+        activatable_bus(dir.path()).ok_or("a private dbus-daemon did not start")
+    );
+    let client = zbus::blocking::connection::Builder::address(address.as_str())
+        .unwrap()
+        .build()
+        .unwrap();
+    assert_eq!(bus::power_profiles(&client), Presence::Absent);
+    assert!(bus::set_power_profile(&client, Profile::Balanced).is_err());
+    let mut readings = Vec::new();
+    let end = bus::watch(&client, &bus::POWER_PROFILES, || {
+        readings.push(bus::power_profiles(&client));
+        false
+    });
+    assert_eq!(end, bus::WatchEnd::Stopped);
+    assert_eq!(readings, vec![Presence::Absent]);
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert!(!mark.exists(), "power-profiles-daemon was started");
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// A follow whose bus goes away says so last, so nothing keeps showing the
+/// mode it read before.
+#[test]
+fn a_follow_whose_bus_closes_ends_unreadable() {
+    let bus = bus_or_skip!();
+    let _services =
+        fakes::serve_system(bus.builder(), FakeProfiles::owners_machine(), false, false).unwrap();
+    let client = bus.connect();
+    let (sender, readings) = std::sync::mpsc::channel();
+    let follower = std::thread::spawn(move || {
+        bus::follow_power_profiles(&client, |facts| sender.send(facts).is_ok())
+    });
+    let first = readings
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .unwrap();
+    assert!(matches!(first, Presence::Present(_)), "{first:?}");
+    drop(bus);
+    let last = loop {
+        match readings.recv_timeout(std::time::Duration::from_secs(10)) {
+            Ok(Presence::Unreadable(why)) => break why,
+            Ok(_) => continue,
+            Err(error) => panic!("no last word: {error}"),
+        }
+    };
+    assert!(last.contains("closed"), "{last}");
+    follower.join().unwrap();
+}

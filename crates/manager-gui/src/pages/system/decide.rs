@@ -9,7 +9,7 @@ use hardware_core::battery::BatteryFacts;
 use hardware_core::charge::ChargeChoice;
 use hardware_core::display::KeyboardLevels;
 use hardware_core::fan::FanMode;
-use hardware_core::power::{Caution, Degradation, Profile};
+use hardware_core::power::{Caution, Profile};
 use hardware_core::sensors::{SensorLabel, SensorRow, SensorSummary};
 use hardware_core::write::WriteOutcome;
 
@@ -38,26 +38,10 @@ pub(crate) fn profile_label(profile: Profile, c: &Copy) -> &'static str {
     profile.name(c.language)
 }
 
-/// A profile as the daemon names it, in words when this version knows it.
-fn profile_name(name: &str, c: &Copy) -> String {
-    Profile::from_wire(name)
-        .map(|p| profile_label(p, c).to_string())
-        .unwrap_or_else(|| name.to_string())
-}
-
-/// The caution lines under Power mode.
+/// The caution lines under Power mode, in the words every place that shows
+/// the mode uses.
 pub(crate) fn caution_line(caution: &Caution, c: &Copy) -> String {
-    match caution {
-        Caution::Held(hold) => c
-            .held
-            .replace("{application}", &hold.application)
-            .replace("{mode}", &profile_name(&hold.profile, c)),
-        Caution::Degraded(Degradation::LapDetected) => c.degraded_lap.to_string(),
-        Caution::Degraded(Degradation::HighTemperature) => c.degraded_hot.to_string(),
-        Caution::Degraded(Degradation::Other(reason)) => {
-            c.degraded_other.replace("{reason}", reason)
-        }
-    }
+    caution.words(c.language)
 }
 
 pub(crate) fn charge_label(choice: ChargeChoice, c: &Copy) -> String {
