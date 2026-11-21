@@ -1,0 +1,43 @@
+[package]
+name = "screenshot-gui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Better Screenshot: the screenshot and screen recording interface of the Better OS session, its D-Bus names, and its Screenshot portal backend (engineering/specs/screenshot.md)."
+
+[lib]
+name = "screenshot_gui"
+path = "src/lib.rs"
+
+[[bin]]
+name = "better-screenshot"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+better-core.workspace = true
+better-ui.workspace = true
+# The one reader of `xdg-user-dirs` (ticket 253: Pictures and Videos).
+files-platform.workspace = true
+files-core.workspace = true
+gpui.workspace = true
+gpui-component.workspace = true
+gpui-component-assets.workspace = true
+gpui-platform.workspace = true
+screenshot-capture.workspace = true
+screenshot-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+zbus.workspace = true
+# Already in the graph through gpui and better-ui, at these versions.
+image = { version = "0.25", default-features = false }
+smol = "2"
+uuid = { version = "1", features = ["v5"] }
+# The shutter sound, through the same GStreamer the recording uses.
+gstreamer = "0.25"
+
+[dev-dependencies]
+tempfile.workspace = true

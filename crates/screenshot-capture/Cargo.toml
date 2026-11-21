@@ -1,0 +1,36 @@
+[package]
+name = "screenshot-capture"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Better Screenshot's pixels: the outputs, the windows, the clipboard, and recording, over cosmic-comp's capture protocols on a Wayland connection of its own, behind a trait with a fake (engineering/specs/screenshot.md)."
+
+[[example]]
+name = "capture-probe"
+path = "examples/capture_probe.rs"
+
+[dependencies]
+screenshot-core.workspace = true
+libc.workspace = true
+thiserror.workspace = true
+# Already in the graph through gpui_linux and layer-check, at these versions.
+wayland-client = "0.31"
+wayland-backend = "0.3"
+wayland-protocols = { version = "0.32", features = ["client", "staging", "unstable"] }
+wayland-scanner = "0.31"
+image = { version = "0.25", default-features = false, features = ["png"] }
+# Already in the graph through files-preview: the recording's encoder.
+gstreamer = "0.25"
+gstreamer-app = "0.25"
+
+[[example]]
+name = "pointer-drag"
+path = "examples/pointer_drag.rs"
+
+[dev-dependencies]
+tempfile.workspace = true
+# The drag tool for the nested compositor's outer sway; already in the graph
+# through layer-check.
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }

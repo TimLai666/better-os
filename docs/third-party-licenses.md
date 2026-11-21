@@ -10,11 +10,11 @@ It does not replace the license text supplied by each upstream project.
 ## Review summary
 
 - Root project license: `GPL-3.0-or-later`.
-- Resolved Cargo packages: 984.
-- Packages with an SPDX license expression: 982.
+- Resolved Cargo packages: 987.
+- Packages with an SPDX license expression: 985.
 - Packages with only a license-file field: 0.
 - Packages without package-level license metadata: 2.
-- `Cargo.lock` SHA-256: `85e6cb21fff96617a31d15870c7b8494ca75d3eeba70c59be4a15d827f709650`.
+- `Cargo.lock` SHA-256: `66bd8f4b2ea8c29564bd60b10a545422f001503b7525bd1ff7e919b8213c83ac`.
 
 The 2 package(s) without package-level license metadata are
 listed separately below. Their pinned upstream checkout contains both
@@ -28,7 +28,7 @@ source of truth for those packages.
 | `MIT OR Apache-2.0` | 424 |
 | `MIT` | 203 |
 | `Apache-2.0 OR MIT` | 79 |
-| `GPL-3.0-or-later` | 72 |
+| `GPL-3.0-or-later` | 75 |
 | `MIT/Apache-2.0` | 41 |
 | `Apache-2.0` | 32 |
 | `Unicode-3.0` | 18 |
@@ -136,6 +136,9 @@ Better OS does not relicense or silently select a different expression.
 | `patch-platform` | `0.2.16` | `GPL-3.0-or-later` | workspace |
 | `r-efi` | `5.3.0` | `MIT OR Apache-2.0 OR LGPL-2.1-or-later` | [crates.io](https://crates.io/crates/r-efi/5.3.0) |
 | `r-efi` | `6.0.0` | `MIT OR Apache-2.0 OR LGPL-2.1-or-later` | [crates.io](https://crates.io/crates/r-efi/6.0.0) |
+| `screenshot-capture` | `0.2.16` | `GPL-3.0-or-later` | workspace |
+| `screenshot-core` | `0.2.16` | `GPL-3.0-or-later` | workspace |
+| `screenshot-gui` | `0.2.16` | `GPL-3.0-or-later` | workspace |
 | `self_cell` | `1.3.0` | `Apache-2.0 OR GPL-2.0-only` | [crates.io](https://crates.io/crates/self_cell/1.3.0) |
 | `storage-core` | `0.2.16` | `GPL-3.0-or-later` | workspace |
 | `storage-platform` | `0.2.16` | `GPL-3.0-or-later` | workspace |
@@ -821,6 +824,9 @@ keeps its own license.
 | `scopeguard` | `1.2.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/scopeguard/1.2.0) |
 | `screencapturekit` | `0.2.8` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/screencapturekit/0.2.8) |
 | `screencapturekit-sys` | `0.2.8` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/screencapturekit-sys/0.2.8) |
+| `screenshot-capture` | `0.2.16` | `GPL-3.0-or-later` | workspace |
+| `screenshot-core` | `0.2.16` | `GPL-3.0-or-later` | workspace |
+| `screenshot-gui` | `0.2.16` | `GPL-3.0-or-later` | workspace |
 | `seahash` | `4.1.0` | `MIT` | [crates.io](https://crates.io/crates/seahash/4.1.0) |
 | `security-framework` | `3.7.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/security-framework/3.7.0) |
 | `security-framework-sys` | `2.17.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/security-framework-sys/2.17.0) |
