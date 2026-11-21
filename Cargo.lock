@@ -2271,6 +2271,7 @@ name = "files-preview"
 version = "0.2.16"
 dependencies = [
  "app-catalog-core",
+ "better-core",
  "flate2",
  "gstreamer",
  "gstreamer-app",
@@ -2740,6 +2741,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "test-prerequisites",
  "unicode-width",
  "zbus",
 ]
@@ -4529,6 +4531,7 @@ dependencies = [
  "manager-store",
  "serde_json",
  "tempfile",
+ "test-prerequisites",
  "touchpad-platform",
  "uuid",
 ]

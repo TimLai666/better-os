@@ -126,7 +126,7 @@ strings! {
     repository_settings: "Remotes…", "遠端設定…";
     view_on_github: "View on GitHub", "在 GitHub 上檢視";
     open_in_terminal: "Open in terminal", "在終端機開啟";
-    show_in_files: "Show in Better Files", "在 Better Files 顯示";
+    show_in_files: "Show in file manager", "在檔案管理員中顯示";
     open_in_editor: "Open in external editor", "在外部編輯器開啟";
     create_issue: "Create issue on GitHub…", "在 GitHub 建立議題…";
     new_branch: "New branch…", "新增分支…";
@@ -183,7 +183,7 @@ strings! {
     ignore_extension: "Ignore all {ext} files", "忽略所有 {ext} 檔案";
     copy_path: "Copy file path", "複製檔案路徑";
     copy_relative: "Copy relative file path", "複製相對檔案路徑";
-    show_in_folder: "Show in Better Files", "在 Better Files 顯示";
+    show_in_folder: "Show in file manager", "在檔案管理員中顯示";
     open_file_in_editor: "Open in external editor", "在外部編輯器開啟";
     // Diff
     select_file: "Select a file to see its changes", "選一個檔案來查看它的變更";
@@ -756,6 +756,15 @@ impl Copy {
                 self.t(
                     "The program couldn't be started. Choose another one in Settings.",
                     "無法啟動程式，請在設定裡選擇其他程式。",
+                )
+                .to_string(),
+                text.clone(),
+            ),
+            Problem::FileManager(text) => (
+                self.error_title.to_string(),
+                self.t(
+                    "The file manager couldn't show it.",
+                    "檔案管理員無法顯示這個項目。",
                 )
                 .to_string(),
                 text.clone(),

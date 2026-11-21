@@ -165,19 +165,10 @@ impl ThumbnailCache {
 }
 
 /// `file://` and the path, with every byte outside the unreserved set and
-/// `/` escaped, as the standard's examples are.
+/// `/` escaped, as the standard's examples are: `better_core::uri`'s
+/// spelling, which the file manager calls share.
 pub fn file_uri(path: &Path) -> String {
-    use std::os::unix::ffi::OsStrExt;
-    let mut uri = String::from("file://");
-    for byte in path.as_os_str().as_bytes() {
-        let keep = byte.is_ascii_alphanumeric() || b"-._~/".contains(byte);
-        if keep {
-            uri.push(*byte as char);
-        } else {
-            uri.push_str(&format!("%{byte:02X}"));
-        }
-    }
-    uri
+    better_core::uri::file_uri(path)
 }
 
 /// The MD5 of the URI, in lowercase hexadecimal.

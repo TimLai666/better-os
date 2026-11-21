@@ -1071,16 +1071,25 @@ impl GitApp {
         }
     }
 
-    pub(crate) fn show_in_files(&mut self, path: Option<PathBuf>) {
-        let folder = path.or_else(|| self.session.repo.as_ref().map(|r| r.root.clone()));
-        if let Some(folder) = folder {
-            let better_files =
-                better_core::companion::locate(&better_core::companion::FILES_WINDOW).ok();
-            self.launch(Some(settings::files_launch(
-                &folder,
-                better_files.as_deref(),
-            )));
-        }
+    /// The folder (or the file, selected) in the person's file manager,
+    /// asked over `org.freedesktop.FileManager1` off the window's thread.
+    pub(crate) fn show_in_files(&mut self, path: Option<PathBuf>, cx: &mut Context<Self>) {
+        let Some(target) = path.or_else(|| self.session.repo.as_ref().map(|r| r.root.clone()))
+        else {
+            return;
+        };
+        let task =
+            cx.background_spawn(async move { crate::file_manager::show_in_session(&target) });
+        cx.spawn(async move |this, cx| {
+            if let Err(error) = task.await {
+                this.update(cx, |app, cx| {
+                    app.session.file_manager_failed(error);
+                    cx.notify();
+                })
+                .ok();
+            }
+        })
+        .detach();
     }
 
     pub(crate) fn open_url(&mut self, url: &str) {
@@ -1227,7 +1236,7 @@ impl GitApp {
                 }
             }
             Action::OpenInTerminal => self.open_terminal(),
-            Action::ShowInFiles => self.show_in_files(None),
+            Action::ShowInFiles => self.show_in_files(None, cx),
             Action::OpenInEditor => self.open_in_editor(None),
             Action::CreateIssue if has_repo => self.session.dialog = Some(Dialog::CreateIssue),
             Action::NewWorktree if has_repo => {

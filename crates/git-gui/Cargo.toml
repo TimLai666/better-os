@@ -35,3 +35,4 @@ unicode-width.workspace = true
 [dev-dependencies]
 better-core.workspace = true
 tempfile.workspace = true
+test-prerequisites.workspace = true

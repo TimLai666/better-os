@@ -98,7 +98,10 @@ contract.
   the real runner can never reach the person's own user manager, and a test
   that wants the commands it held back names an absolute file in
   `BETTER_OS_TEST_GUARD_LOG`. Both are read only through
-  `better_core::test_guard`. User units need no privilege, so this never crosses
+  `better_core::test_guard` (`crates/better-core/tests/one_guard_reading.rs`
+  fails on any other reader). An empty value is off; Better Monitor's
+  `systemctl` and Better Manager's touchpad restore used to take it as on,
+  and nothing in the repository sets it empty. User units need no privilege, so this never crosses
   `manager-daemon`; system units are out of scope.
 - After any update of a Better OS package, however it was installed (Better
   Manager, `apt upgrade`, Software Updater, unattended upgrades), every Better
@@ -222,6 +225,9 @@ contract.
   `<servicedir>` holds the activation files that test needs, so the
   system's installed Better OS services can never be activated there;
   `busctl --user list` inside the sandbox shows none of them (ticket 179).
+  Its dconf reads only the sandbox's database (`DCONF_PROFILE` naming a
+  profile of `user-db:user`), and a window under test browses a fixture tree
+  in the sandbox, never the person's folders or `/`.
 - A test module inside a file that does `use gpui::*` imports what it needs
   by name, never `use super::*`: the glob brings gpui's own `#[test]` macro
   in, which shadows the standard one and fails to compile with a recursion

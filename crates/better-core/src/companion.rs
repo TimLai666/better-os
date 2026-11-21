@@ -10,10 +10,16 @@
 //!   An installed program finds an installed companion in its own directory
 //!   under the name the package installs it as.
 //! * **The packaged location otherwise**, and only for a program that is
-//!   itself installed (its executable lives under `/usr`). A program run from
-//!   a build directory with no sibling of that name refuses: it never starts
-//!   the installed one, which is another version and would talk to the
-//!   window under test with another version's words.
+//!   itself installed. A program run from a build directory with no sibling
+//!   of that name refuses: it never starts the installed one, which is
+//!   another version and would talk to the window under test with another
+//!   version's words.
+//! * **Installed means one of the packaged directories**
+//!   ([`PACKAGED_DIRECTORIES`]: `/usr/bin`, `/usr/libexec`,
+//!   `/usr/lib/better-os`), the only places `packaging/build-deb.sh` puts a
+//!   program. A program run from anywhere else, `/usr/local/bin` and a
+//!   `cargo install` directory included, is treated as a build and starts
+//!   only a sibling of the name cargo gives it.
 //! * **Never a bare name resolved through `PATH`.** On the owner's machine
 //!   `PATH` leads to `/usr/bin`, which is how a debug window in a sandbox
 //!   started the installed `better-monitor-tray` against the sandbox's bus.
@@ -90,27 +96,25 @@ pub const FILES_PREVIEW: Companion = Companion {
     installed: "/usr/bin/better-files-preview",
 };
 
-/// Better Files' window, opened by Better Git on a folder.
-pub const FILES_WINDOW: Companion = Companion {
-    built: "better-files",
-    installed: "/usr/bin/better-files",
-};
-
 /// Every companion a Better OS program starts by path. A test holds the
 /// table to `packaging/build-deb.sh`.
-pub const COMPANIONS: [Companion; 7] = [
+pub const COMPANIONS: [Companion; 6] = [
     MONITOR_TRAY,
     MONITOR_WINDOW,
     AWAKE_TRAY,
     AWAKE_WINDOW,
     MANAGER_WINDOW,
     FILES_PREVIEW,
-    FILES_WINDOW,
 ];
 
-/// Where a package installs programs. A program whose executable is under it
-/// is an installed one.
+/// The prefix the packaged directories and every companion's installed path
+/// share. A test stands a scratch directory in for it.
 pub const INSTALLED_ROOT: &str = "/usr";
+
+/// Where a package installs programs, under [`INSTALLED_ROOT`]. A program
+/// whose executable is in one of them (or below `lib/better-os`) is an
+/// installed one; anywhere else it is a build.
+pub const PACKAGED_DIRECTORIES: [&str; 3] = ["bin", "libexec", "lib/better-os"];
 
 /// Why no companion was found, in words a log or a toast can show.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -199,7 +203,14 @@ impl Finder {
     pub fn running_installed(&self) -> Option<bool> {
         self.own_executable
             .as_deref()
-            .map(|own| own.starts_with(&self.installed_root))
+            .map(|own| self.is_packaged(own))
+    }
+
+    /// Whether `own` is in one of the packaged directories.
+    fn is_packaged(&self, own: &Path) -> bool {
+        PACKAGED_DIRECTORIES
+            .iter()
+            .any(|directory| own.starts_with(self.installed_root.join(directory)))
     }
 
     /// The companion's packaged path, under [`Self`]'s installed root.
@@ -223,7 +234,7 @@ impl Finder {
             .as_deref()
             .ok_or(Refusal::NoOwnExecutable)?;
         let directory = own.parent().ok_or(Refusal::NoOwnExecutable)?;
-        if own.starts_with(&self.installed_root) {
+        if self.is_packaged(own) {
             if let Some(refusal) = self.guarded(companion) {
                 return Err(refusal);
             }
@@ -422,6 +433,37 @@ mod tests {
             finder.plan(&MONITOR_TRAY),
             StartPlan::Path(layout.build.join("better-monitor-tray"))
         );
+    }
+
+    /// Review of ticket 179: `/usr/local/bin` is not a packaged directory.
+    /// A program there is a build, so it never takes `/usr/bin`'s companion
+    /// and looks beside itself under cargo's name.
+    #[test]
+    fn a_program_outside_the_packaged_directories_is_a_build() {
+        let layout = layout();
+        let local = layout.usr.join("local/bin");
+        std::fs::create_dir_all(&local).unwrap();
+        let finder = Finder::new(Some(local.join("better-monitor-tray")), &layout.usr, None);
+
+        assert_eq!(finder.running_installed(), Some(false));
+        assert_eq!(
+            finder.locate(&MONITOR_WINDOW),
+            Err(Refusal::NotBeside {
+                program: "monitor-gui".to_string(),
+                directory: local.clone(),
+            })
+        );
+        // `better-monitor` beside it is cargo's command line, never taken
+        // for the window.
+        std::fs::write(local.join("better-monitor"), "").unwrap();
+        assert!(finder.locate(&MONITOR_WINDOW).is_err());
+        // The packaged directories are installed, including below
+        // `lib/better-os`.
+        for directory in ["bin", "libexec", "lib/better-os/before-removal"] {
+            let own = layout.usr.join(directory).join("program");
+            let finder = Finder::new(Some(own), &layout.usr, None);
+            assert_eq!(finder.running_installed(), Some(true), "{directory}");
+        }
     }
 
     #[test]

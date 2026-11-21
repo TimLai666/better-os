@@ -42,7 +42,10 @@ Built on 2026-11-21.
   program that is itself under `/usr`. A build with no sibling refuses and
   says so. Nothing is looked up through `PATH`. `Finder::plan` says whether a
   companion that is also started by bus or unit name may be asked for by
-  name: only by an installed program with the test guard off. `COMPANIONS`
+  name: only by an installed program with the test guard off. Installed
+  means one of the packaged directories (`/usr/bin`, `/usr/libexec`,
+  `/usr/lib/better-os`); a program anywhere else, `/usr/local/bin`
+  included, is a build and starts only a sibling. `COMPANIONS`
   names each program as cargo builds it and as `packaging/build-deb.sh`
   installs it, and a test holds the two together.
 - Under the test guard (ticket 178) an installed program starts no companion
@@ -66,9 +69,17 @@ Built on 2026-11-21.
     `better-monitor`, which in a build directory is the command line.
   - Better Files' large preview (`files-gui` `session::preview_program`),
     which fell back to `better-files-preview` through `PATH`.
-  - Better Git's "Show in Files" (`git-gui` `settings::files_launch`), which
-    looked `better-files` up on `PATH`; without one it still opens the
-    folder with `xdg-open`.
+  - Better Git's "Show in Files", which looked `better-files` up on `PATH`
+    and fell back to `xdg-open`. Review follow-up: it is no longer a
+    companion at all. It asks `org.freedesktop.FileManager1`
+    (`ShowFolders` for a folder, `ShowItems` for a file;
+    `git-gui/src/file_manager.rs`), which is what GNOME calls for "Show in
+    folder" and what ticket 129 makes Better Files answer when it is the
+    default, so the person's chosen file manager opens and no program is
+    started by path or through `PATH`. Under the guard nothing is asked and
+    the window says why; with no file manager on the bus the window shows
+    the bus's error. The menu entries read "Show in file manager". Tested
+    against a fake on a private bus with no service directory.
 - Left as they are, with the reason:
   - A program restarting itself after an update (`better_core::self_update`)
     and the daemon's hardware and lamp helpers run their own executable, not
@@ -104,7 +115,8 @@ Built on 2026-11-21.
 - Checks: `better-core` `companion::tests` (a build starts its sibling and
   refuses without one, an installed program finds beside then packaged, the
   guard starts nothing installed, the table matches `build-deb.sh`),
-  `awake-gui` `tray::tests`, `files-gui`
+  `companion::tests::a_program_outside_the_packaged_directories_is_a_build`,
+  `awake-gui` `tray::tests`, `git-gui` `file_manager::tests`, `files-gui`
   `with_no_preview_program_beside_a_build_nothing_is_started_and_the_pane_opens`.
   A headless GNOME Shell on a bus whose only service directory held dconf's
   activation file ran Better Files and Better Manager from the build

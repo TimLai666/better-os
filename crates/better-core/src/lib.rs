@@ -11,6 +11,7 @@ pub mod package_health;
 pub mod private_dir;
 pub mod self_update;
 pub mod test_guard;
+pub mod uri;
 
 pub use defaults::{
     AdapterId, DconfDatabase, DefaultIntegration, DefaultsValue, HealthPrerequisite,
