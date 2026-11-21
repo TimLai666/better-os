@@ -34,6 +34,10 @@ pub enum LinkState {
     Failed { reason: Reason, detail: String },
     /// The person cancelled: "Not connected to {server}" with Connect.
     Cancelled,
+    /// The connection dropped and this computer is on another network now
+    /// (or which one cannot be told): nothing is sent there by itself, and
+    /// the page offers Connect.
+    OtherNetwork,
     /// A folder under GVfs's folder whose mount name is not understood: its
     /// address has to be typed once.
     NeedsAddress,
@@ -74,13 +78,17 @@ pub struct TabLink {
     /// began: a reading that completes after that ends the wait.
     readings: u64,
     /// The connection dropped while the folder was open: it is tried again
-    /// by itself, within [`RemoteSide::retry_limit`], while the network is
-    /// the one it dropped on.
+    /// by itself, for [`RemoteSide::retry_limit`] of time with a network,
+    /// while the network is the one the folder was open on.
     dropped: bool,
-    /// The host was looked at once since the drop.
-    checked_once: bool,
-    /// The network (`remote::network_id`) when it dropped.
-    network: String,
+    /// The network the folder was open on.
+    network: crate::remote::Network,
+    /// Since when there has been no network: that time does not count
+    /// against the retry limit.
+    paused_at: Option<Instant>,
+    /// When GVfs itself is next asked to connect while a look at the host
+    /// cannot tell whether it is there.
+    gvfs_try_at: Option<Instant>,
 }
 
 /// A paste whose connection came: it goes in once the folder is listed,
@@ -139,8 +147,10 @@ pub(crate) struct RemoteSide {
     pub(crate) typed_for: Option<(Location, PathBuf)>,
     /// Looks at a host before a dropped connection is tried again.
     pub(crate) reach: Arc<crate::remote::HostCheck>,
-    /// Names the network this computer is on.
-    pub(crate) network_id: Arc<dyn Fn() -> String + Send + Sync>,
+    /// The network this computer is on, read off the window's thread.
+    pub(crate) network: crate::remote::NetworkWatch,
+    /// The network each tab's server folder was last listed on.
+    pub(crate) open_on: Vec<(TabId, crate::remote::Network)>,
     /// How long after a drop it is tried again by itself.
     pub(crate) retry_limit: Duration,
     /// Looks at hosts running, by tab.
@@ -169,7 +179,8 @@ impl RemoteSide {
             scroll_now: 0.0,
             typed_for: None,
             reach: Arc::new(crate::remote::host_state),
-            network_id: Arc::new(crate::remote::network_id),
+            network: crate::remote::NetworkWatch::new(),
+            open_on: Vec::new(),
             retry_limit: RETRY_LIMIT,
             reach_checks: Vec::new(),
             pending_pastes: Vec::new(),
@@ -181,9 +192,16 @@ impl RemoteSide {
 /// says why, while it goes on trying.
 const DROPPED_LIMIT: Duration = crate::network::MOUNT_TIMEOUT;
 
-/// How long after a drop it is tried again by itself; after that, only a
-/// click connects.
-pub const RETRY_LIMIT: Duration = Duration::from_secs(120);
+/// How long after a drop it is tried again by itself, counting only time
+/// with a network (a computer asleep or off Wi-Fi waits as long as it
+/// takes); after that, only a click connects. Long enough for a NAS or a
+/// server to restart.
+pub const RETRY_LIMIT: Duration = Duration::from_secs(600);
+
+/// How often GVfs itself is asked to connect a dropped server while a look
+/// at the host cannot tell whether it is there (an `ssh_config` alias, a
+/// jump host, a NetBIOS name).
+const GVFS_RETRY_EVERY: Duration = Duration::from_secs(30);
 
 /// How soon a folder that was slow to answer is listed again the first time.
 const FIRST_RELIST: Duration = Duration::from_secs(1);
@@ -283,13 +301,12 @@ impl FilesSession {
 
     /// Says how a host looks, before a retry and after a failure. For tests.
     pub fn set_host_check(&mut self, check: Arc<crate::remote::HostCheck>) {
-        self.remote.reach = Arc::clone(&check);
-        self.remote.attempts.set_host_check(check);
+        self.remote.reach = check;
     }
 
     /// Says which network this computer is on. For tests.
-    pub fn set_network_id(&mut self, id: Arc<dyn Fn() -> String + Send + Sync>) {
-        self.remote.network_id = id;
+    pub fn set_network(&mut self, network: Arc<dyn Fn() -> crate::remote::Network + Send + Sync>) {
+        self.remote.network = crate::remote::NetworkWatch::direct(network);
     }
 
     /// How long after a drop it is tried again by itself. For tests.
@@ -353,18 +370,37 @@ impl FilesSession {
     /// Every tab waiting on `key`'s server is left "Not connected": no
     /// retry, and a paste it held is said not to be done.
     fn leave_not_connected(&mut self, key: &str) {
-        let mut dropped = Vec::new();
-        for link in &mut self.remote.links {
-            if link.key().as_deref() == Some(key) {
-                link.state = LinkState::Cancelled;
-                link.retry_at = None;
-                link.dropped = false;
-                if link.paste.take().is_some() {
-                    dropped.push(link.location.clone());
-                }
-            }
+        let tabs: Vec<TabId> = self
+            .remote
+            .links
+            .iter()
+            .filter(|link| link.key().as_deref() == Some(key))
+            .map(|link| link.tab)
+            .collect();
+        for tab in tabs {
+            self.leave_tab(tab, LinkState::Cancelled);
         }
-        for location in dropped {
+    }
+
+    /// One tab left in `state` (not connected, or on another network): no
+    /// retry, and a paste it held or that waited for its listing is said
+    /// not to be done, now, never run later by surprise.
+    fn leave_tab(&mut self, tab: TabId, state: LinkState) {
+        let Some(link) = self.remote.links.iter_mut().find(|link| link.tab == tab) else {
+            return;
+        };
+        link.state = state;
+        link.retry_at = None;
+        link.dropped = false;
+        let mut lost = link.paste.take().map(|_| link.location.clone());
+        let (theirs, others): (Vec<_>, Vec<_>) = std::mem::take(&mut self.remote.pending_pastes)
+            .into_iter()
+            .partition(|paste| paste.tab == tab);
+        self.remote.pending_pastes = others;
+        if let Some(paste) = theirs.into_iter().next() {
+            lost = lost.or(Some(paste.location));
+        }
+        if let Some(location) = lost {
             self.paste_not_done(&location, PasteWhy::Cancelled);
         }
     }
@@ -385,9 +421,11 @@ impl FilesSession {
     /// Try again, or Connect after a cancel.
     pub fn retry_connecting(&mut self) {
         let tab = self.active_tab();
-        // A click: connected now, and not tried again by itself after.
+        // A click: connected now, on whatever network this is, and not
+        // tried again by itself after.
         if let Some(link) = self.remote.links.iter_mut().find(|link| link.tab == tab) {
             link.dropped = false;
+            link.paused_at = None;
             link.since = Instant::now();
         }
         self.reconnect(tab);
@@ -483,10 +521,28 @@ impl FilesSession {
             .take()
             .filter(|(typed, _)| *typed == location)
             .map(|(_, mount)| mount);
-        self.remote
-            .links
-            .retain(|link| link.tab != tab || link.location == location);
-        if self.remote.links.iter().any(|link| link.tab == tab) {
+        // Leaving a folder that held a paste: the paste is said not to be
+        // done, now, and never runs later by surprise.
+        let mut left = Vec::new();
+        self.remote.links.retain(|link| {
+            let keep = link.tab != tab || link.location == location;
+            if !keep && link.paste.is_some() {
+                left.push(link.location.clone());
+            }
+            keep
+        });
+        for folder in left {
+            self.paste_not_done(&folder, PasteWhy::Left);
+        }
+        if let Some(link) = self.remote.links.iter().find(|link| link.tab == tab) {
+            // Opening the folder again (its favourite, the address) while it
+            // is not connected is a click on Connect.
+            if matches!(
+                link.state,
+                LinkState::Cancelled | LinkState::OtherNetwork | LinkState::Failed { .. }
+            ) {
+                self.retry_connecting();
+            }
             return;
         }
         match crate::remote::need(
@@ -495,6 +551,17 @@ impl FilesSession {
             &self.remote.watch.current(),
         ) {
             Need::At(local) => {
+                // The address typed on the Address-needed page is of a server
+                // already mounted: its favourites take it now.
+                if let (Some(replaced), Some(remote)) = (
+                    &replaces,
+                    crate::remote::remote_of(&location, self.remote.gvfs_root.as_deref()),
+                ) {
+                    let mount = remote.at(None);
+                    self.edit_bookmarks(|file| {
+                        (crate::remote::migrate_under(file, replaced, &mount), ())
+                    });
+                }
                 let reader = self.reader.clone();
                 self.pane_mut()
                     .replace_current(Location::Local(local), reader.as_ref());
@@ -536,20 +603,34 @@ impl FilesSession {
             replaces,
             readings,
             dropped: false,
-            checked_once: false,
-            network: String::new(),
+            network: crate::remote::Network::default(),
+            paused_at: None,
+            gvfs_try_at: None,
         });
         if let Some(remote) = remote {
             self.remote.attempts.connect(&remote);
         }
     }
 
+    /// The network `tab`'s folder was last listed on, or the one this
+    /// computer is on now when it has one.
+    fn network_of(&self, tab: TabId) -> crate::remote::Network {
+        self.remote
+            .open_on
+            .iter()
+            .find(|(id, network)| *id == tab && !network.is_none())
+            .map(|(_, network)| network.clone())
+            .unwrap_or_else(|| self.remote.network.current())
+    }
+
     /// A connection that went while its folder was open: the tab says it is
-    /// connecting again, and the host is looked at first (ticket 310's
-    /// review). A server that answers at once was let go on purpose
-    /// (unmounted elsewhere): the tab is left "Not connected", and nothing
-    /// is mounted again without a click. One that does not answer is tried
-    /// again by itself, within the retry limit, on the same network.
+    /// connecting again and comes back by itself (ticket 310's second
+    /// review). GVfs says nothing that tells a mount let go elsewhere from
+    /// a server that went away (both are the tracker's `Unmounted` after
+    /// the backend's `UnregisterMount`; the unmount request itself goes
+    /// over GVfs's private connection), and Better Files unmounts no server
+    /// itself, so every one is a drop: the owner asked for the folder to
+    /// come back after sleep, a Wi-Fi drop or a restarted server.
     fn begin_drop(&mut self, tab: TabId, location: &Location) {
         let remote = crate::remote::remote_of(location, self.remote.gvfs_root.as_deref());
         let saved = self.saved_view(tab, location);
@@ -560,6 +641,7 @@ impl FilesSession {
             .iter()
             .find(|link| link.tab == tab)
             .and_then(|link| link.paste.clone());
+        let network = self.network_of(tab);
         self.remote.links.retain(|link| link.tab != tab);
         self.remote.links.push(TabLink {
             tab,
@@ -574,10 +656,59 @@ impl FilesSession {
             replaces: None,
             readings,
             dropped: true,
-            checked_once: false,
-            network: (self.remote.network_id)(),
+            network,
+            paused_at: None,
+            gvfs_try_at: None,
         });
-        self.look_at_host(tab);
+        self.try_dropped(tab);
+    }
+
+    /// One try of a dropped connection. With no network at the moment it
+    /// waits, and that time does not count; on the network the folder was
+    /// open on, the host is looked at and the connection made; on another
+    /// network, or one that cannot be told apart from another, the page
+    /// says so and offers Connect.
+    fn try_dropped(&mut self, tab: TabId) {
+        let network = self.remote.network.current();
+        let known = self.remote.network.known();
+        let limit = self.remote.retry_limit;
+        let Some(link) = self.remote.links.iter_mut().find(|link| link.tab == tab) else {
+            return;
+        };
+        if !known {
+            link.retry_at = Some(Instant::now() + FIRST_RELIST);
+            return;
+        }
+        if network.is_none() {
+            let paused = *link.paused_at.get_or_insert_with(Instant::now);
+            link.retry_at = Some(Instant::now() + RETRY_EVERY);
+            // Past its first 30 s the page says why, while it waits on.
+            if paused.elapsed() >= DROPPED_LIMIT
+                && matches!(link.state, LinkState::Connecting { .. })
+            {
+                link.state = LinkState::Failed {
+                    reason: Reason::NoNetwork,
+                    detail: String::new(),
+                };
+            }
+            return;
+        }
+        if let Some(paused) = link.paused_at.take() {
+            link.since += paused.elapsed();
+        }
+        if !link.network.same_as(&network) {
+            self.leave_tab(tab, LinkState::OtherNetwork);
+            return;
+        }
+        if waited(link) >= limit {
+            // Past the limit: only a click tries again.
+            schedule_retry(link, limit);
+        } else if link.answering_only {
+            // The mount is there: listed again, nothing is sent but that.
+            self.reconnect(tab);
+        } else {
+            self.look_at_host(tab);
+        }
     }
 
     /// Looks at the tab's host on a thread of its own.
@@ -606,7 +737,11 @@ impl FilesSession {
         }
     }
 
-    /// What the looks at hosts found: connect, wait and look again, or stop.
+    /// What the looks at hosts found. A host that answers is connected to
+    /// at once (a restarted server). One the look cannot reach is not taken
+    /// for gone: a look from here does not see an `ssh_config` alias, a
+    /// jump host or a NetBIOS name, so GVfs itself is asked every
+    /// [`GVFS_RETRY_EVERY`]; in between the host is looked at again.
     fn finish_host_looks(&mut self) -> bool {
         let mut found = Vec::new();
         self.remote
@@ -620,45 +755,33 @@ impl FilesSession {
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => false,
             });
         let changed = !found.is_empty();
-        let network = (self.remote.network_id)();
+        let limit = self.remote.retry_limit;
         for (tab, state) in found {
-            let Some(link) = self.remote.links.iter_mut().find(|link| link.tab == tab) else {
+            let Some(link) = self
+                .remote
+                .links
+                .iter_mut()
+                .find(|link| link.tab == tab && link.dropped)
+            else {
                 continue;
             };
-            let first = !link.checked_once;
-            link.checked_once = true;
-            let Some(key) = link.key() else {
+            let Some(remote) = link.remote.clone() else {
                 continue;
             };
-            if link.network != network || (first && state == HostState::Reachable) {
-                // Another network, or a server that let the mount go while
-                // answering: only a click connects.
-                self.leave_tab_not_connected(tab);
-            } else if state == HostState::Reachable {
-                if let Some(remote) = link.remote.clone()
-                    && !self.remote.attempts.is_connecting(&key)
-                {
-                    self.remote.attempts.connect(&remote);
+            let now = Instant::now();
+            let ask_gvfs =
+                state == HostState::Reachable || link.gvfs_try_at.is_none_or(|at| now >= at);
+            if ask_gvfs && !self.remote.attempts.is_connecting(&remote.mount_key()) {
+                if state != HostState::Reachable {
+                    link.gvfs_try_at = Some(now + GVFS_RETRY_EVERY);
                 }
-            } else {
-                schedule_retry(link, self.remote.retry_limit);
+                self.remote.attempts.connect(&remote);
+            }
+            if let Some(link) = self.remote.links.iter_mut().find(|link| link.tab == tab) {
+                schedule_retry(link, limit);
             }
         }
         changed
-    }
-
-    /// One tab left "Not connected", its held paste said not done.
-    fn leave_tab_not_connected(&mut self, tab: TabId) {
-        let Some(link) = self.remote.links.iter_mut().find(|link| link.tab == tab) else {
-            return;
-        };
-        link.state = LinkState::Cancelled;
-        link.retry_at = None;
-        link.dropped = false;
-        if link.paste.take().is_some() {
-            let location = link.location.clone();
-            self.paste_not_done(&location, PasteWhy::Cancelled);
-        }
     }
 
     /// The paste a tab's wait for `location` holds, carried into the wait
@@ -766,6 +889,7 @@ impl FilesSession {
                 .iter()
                 .any(|(id, pane)| id == tab && pane.location() == at)
         });
+        let mut listed_now: Vec<TabId> = Vec::new();
         for (tab, pane) in &self.panes {
             let location = pane.location();
             if !crate::remote::is_remote(location, root.as_deref()) {
@@ -773,6 +897,7 @@ impl FilesSession {
             }
             match pane.model().status() {
                 ListingStatus::Complete => {
+                    listed_now.push(*tab);
                     let view = view_of(pane.model());
                     match self.remote.good.iter_mut().find(|(id, _, _)| id == tab) {
                         Some(entry) => {
@@ -786,6 +911,21 @@ impl FilesSession {
                     needing.push((*tab, location.clone(), error.clone()));
                 }
                 _ => {}
+            }
+        }
+        // The network each open server folder is on, to tell after a drop
+        // whether this is still it. A reading with no network says nothing.
+        if !listed_now.is_empty() {
+            let network = self.remote.network.current();
+            let panes = &self.panes;
+            self.remote
+                .open_on
+                .retain(|(tab, _)| panes.iter().any(|(id, _)| id == tab));
+            if !network.is_none() {
+                for tab in listed_now {
+                    self.remote.open_on.retain(|(id, _)| *id != tab);
+                    self.remote.open_on.push((tab, network.clone()));
+                }
             }
         }
         // A listing begun after the wait that came back ends it, and so does
@@ -927,6 +1067,7 @@ impl FilesSession {
         let saved = self.saved_view(tab, location);
         let readings = self.readings_of(tab);
         let held = self.held_paste(tab, location);
+        let network = self.network_of(tab);
         self.remote.links.retain(|link| link.tab != tab);
         self.remote.links.push(TabLink {
             tab,
@@ -945,8 +1086,9 @@ impl FilesSession {
             replaces: None,
             readings,
             dropped: true,
-            checked_once: false,
-            network: (self.remote.network_id)(),
+            network,
+            paused_at: None,
+            gvfs_try_at: None,
         });
     }
 
@@ -1123,7 +1265,9 @@ impl FilesSession {
             .links
             .iter()
             .filter(|link| link.key().as_deref() == Some(key))
-            .filter(|link| matches!(link.state, LinkState::Connecting { .. }))
+            // A dropped connection that shows why while it tries again
+            // behind the page lands too.
+            .filter(|link| matches!(link.state, LinkState::Connecting { .. }) || link.dropped)
             .cloned()
             .collect();
         if let Some(remote) = waiting.first().and_then(|link| link.remote.clone()) {
@@ -1235,8 +1379,10 @@ impl FilesSession {
         let network_up = (self.remote.network_up)();
         let limit = self.remote.retry_limit;
         for link in &mut self.remote.links {
+            // A dropped connection past its first 30 s shows why while it
+            // goes on trying: its tries are still its own.
             if link.key().as_deref() != Some(key)
-                || !matches!(link.state, LinkState::Connecting { .. })
+                || !(matches!(link.state, LinkState::Connecting { .. }) || link.dropped)
             {
                 continue;
             }
@@ -1284,28 +1430,17 @@ impl FilesSession {
             .map(|link| link.tab)
             .collect();
         let changed = !due.is_empty();
-        let network = (self.remote.network_id)();
         for tab in due {
             let Some(link) = self.remote.links.iter_mut().find(|link| link.tab == tab) else {
                 continue;
             };
             let failed = link.state.clone();
             link.retry_at = None;
-            // On another network nothing is tried by itself: the name may
-            // now be someone else's.
-            if link.network != network {
-                self.leave_tab_not_connected(tab);
-                continue;
-            }
-            if link.answering_only {
-                self.reconnect(tab);
-            } else {
-                // The host is looked at before any connection is made.
-                self.look_at_host(tab);
-            }
+            self.try_dropped(tab);
             // A failure page stays up while it tries again behind it.
             if let LinkState::Failed { reason, detail } = failed
                 && let Some(link) = self.remote.links.iter_mut().find(|link| link.tab == tab)
+                && matches!(link.state, LinkState::Connecting { .. })
             {
                 link.state = LinkState::Failed { reason, detail };
             }
@@ -1405,6 +1540,22 @@ impl FilesSession {
 
     /// Makes the mount shown at `mount_folder` look like one whose last
     /// probe has not come back.
+    /// A paste whose connection came, waiting for `location`'s listing in
+    /// the front tab. For tests.
+    #[cfg(test)]
+    pub(crate) fn pend_paste_for_tests(
+        &mut self,
+        location: &Location,
+        clipboard: crate::commands::Clipboard,
+    ) {
+        let tab = self.active_tab();
+        self.remote.pending_pastes.push(PendingPaste {
+            tab,
+            location: location.clone(),
+            clipboard,
+        });
+    }
+
     pub(crate) fn hold_probe_for_tests(&self, mount_folder: &Path) {
         self.reader.hold_probe_for_tests(mount_folder);
     }
@@ -1444,7 +1595,7 @@ fn schedule_retry(link: &mut TabLink, limit: Duration) {
         reason: Reason::NoAnswer,
         detail: String::new(),
     };
-    if link.since.elapsed() >= limit {
+    if waited(link) >= limit {
         link.retry_at = None;
         link.dropped = false;
         if matches!(link.state, LinkState::Connecting { .. }) {
@@ -1453,8 +1604,18 @@ fn schedule_retry(link: &mut TabLink, limit: Duration) {
         return;
     }
     link.retry_at = Some(Instant::now() + RETRY_EVERY);
-    if link.since.elapsed() >= DROPPED_LIMIT && matches!(link.state, LinkState::Connecting { .. }) {
+    if waited(link) >= DROPPED_LIMIT && matches!(link.state, LinkState::Connecting { .. }) {
         link.state = no_answer;
+    }
+}
+
+/// How long a dropped connection has been tried with a network: the time
+/// with none (asleep, off Wi-Fi) does not count.
+fn waited(link: &TabLink) -> Duration {
+    let all = link.since.elapsed();
+    match link.paused_at {
+        Some(paused) => all.saturating_sub(paused.elapsed()),
+        None => all,
     }
 }
 

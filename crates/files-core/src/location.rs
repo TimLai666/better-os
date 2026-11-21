@@ -248,10 +248,16 @@ impl NetworkLocation {
 /// asks for it instead.
 fn without_password(authority: &str) -> String {
     match authority.rsplit_once('@') {
-        Some((userinfo, host)) => match userinfo.split_once(':') {
-            Some((user, _password)) => format!("{user}@{host}"),
-            None => authority.to_string(),
-        },
+        Some((userinfo, host)) => {
+            let user = userinfo.split_once(':').map_or(userinfo, |(user, _)| user);
+            // An empty user (`sftp://@nas`, `sftp://:secret@nas`) is no
+            // user: the `@` goes with it (ticket 310's second review).
+            if user.is_empty() {
+                host.to_string()
+            } else {
+                format!("{user}@{host}")
+            }
+        }
         None => authority.to_string(),
     }
 }

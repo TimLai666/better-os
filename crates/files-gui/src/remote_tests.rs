@@ -47,7 +47,26 @@ struct World {
     /// Whether the servers' hosts answer (a look at the host).
     up: std::sync::atomic::AtomicBool,
     /// Which network this computer is on.
-    network: Mutex<String>,
+    network: Mutex<crate::remote::Network>,
+}
+
+/// The network the tests start on.
+fn home_network() -> crate::remote::Network {
+    crate::remote::Network {
+        routes: "wlan0>0101A8C0".into(),
+        connection: Some("home-wifi-uuid".into()),
+        gateway_hardware: Some("wlan0>aa:bb:cc:00:00:01".into()),
+    }
+}
+
+/// Another network with the same interface and gateway address (a café's
+/// router at 192.168.1.1 too): another profile, another router.
+fn cafe_network() -> crate::remote::Network {
+    crate::remote::Network {
+        routes: "wlan0>0101A8C0".into(),
+        connection: Some("cafe-wifi-uuid".into()),
+        gateway_hardware: Some("wlan0>aa:bb:cc:00:00:99".into()),
+    }
 }
 
 impl World {
@@ -121,6 +140,11 @@ impl World {
         self.up.store(true, std::sync::atomic::Ordering::Release);
     }
 
+    /// This computer is on `network` now (`Network::default()`: none).
+    fn join(&self, network: crate::remote::Network) {
+        *self.network.lock().unwrap() = network;
+    }
+
     fn release(&self) {
         *self.released.0.lock().unwrap() = true;
         self.released.1.notify_all();
@@ -149,7 +173,13 @@ impl Mounter for Fake {
         let world = &self.0;
         world.calls.lock().unwrap().push(address.to_string());
         let step = world.script.lock().unwrap().pop().unwrap_or(Script::Mount);
+        let up = world.up.load(std::sync::atomic::Ordering::Acquire);
         match step {
+            // A server that is away refuses, as a stopped sshd does.
+            Script::Mount if !up => Err(MountError::new(
+                MountFailure::Refused,
+                "Connection refused by server",
+            )),
             Script::Mount => Ok(world.mount(address)),
             Script::Fail(failure, detail) => Err(MountError::new(failure, detail)),
             Script::Hold => {
@@ -210,7 +240,7 @@ fn world() -> Arc<World> {
         script: Mutex::new(Vec::new()),
         released: (Mutex::new(false), Condvar::new()),
         up: std::sync::atomic::AtomicBool::new(true),
-        network: Mutex::new("wlan0>0101A8C0".into()),
+        network: Mutex::new(home_network()),
     })
 }
 
@@ -266,7 +296,7 @@ fn session_at(world: &Arc<World>, start: Location) -> FilesSession {
         }
     }));
     let network = Arc::clone(world);
-    session.set_network_id(Arc::new(move || network.network.lock().unwrap().clone()));
+    session.set_network(Arc::new(move || network.network.lock().unwrap().clone()));
     session
 }
 
@@ -390,6 +420,38 @@ fn a_gvfs_favourite_whose_mount_is_not_understood_asks_for_its_address_once() {
         fs::read_to_string(bookmarks_path(&world)).unwrap(),
         "sftp://nas/data Data\n",
         "the favourite keeps the address typed for it"
+    );
+}
+
+/// Ticket 310's second review: the address typed on the Address-needed page
+/// is of a server already mounted; the favourite still takes it.
+#[test]
+fn an_address_typed_for_a_server_already_mounted_still_rewrites_the_favourite() {
+    let world = world();
+    let odd = world.gvfs.join("dav+sd:host=Cloud._webdav._tcp.local/data");
+    fs::create_dir_all(bookmarks_path(&world).parent().unwrap()).unwrap();
+    fs::write(
+        bookmarks_path(&world),
+        format!("file://{} Data\n", odd.display()),
+    )
+    .unwrap();
+    let shown = world.server(NAS, &["data"]);
+    world.mount(NAS);
+    let mut session = session(&world);
+    session.navigate_to(Location::local(&odd).unwrap());
+    assert!(pump_until(&mut session, |s| s
+        .link()
+        .is_some_and(|link| link.state == LinkState::NeedsAddress)));
+    session.submit_path(
+        "sftp://nas/data",
+        None,
+        &crate::toolbar::FilesystemValidator,
+    );
+    assert!(pump_until(&mut session, |s| shows(s, &shown.join("data"))));
+    assert_eq!(world.calls(), 0, "it was mounted already");
+    assert_eq!(
+        fs::read_to_string(bookmarks_path(&world)).unwrap(),
+        "sftp://nas/data Data\n"
     );
 }
 
@@ -889,54 +951,130 @@ fn a_dropped_connection_keeps_trying_until_the_server_is_back() {
     session.mount_server("sftp://nas/srv".into());
     assert!(pump_until(&mut session, |s| shows(s, &shown.join("srv"))));
     world.go_down(NAS);
-    // While the host does not answer nothing is sent to it.
+    // A look from here that does not reach the host cannot tell it is gone
+    // (an alias, a jump host): GVfs itself is asked, once per 30 s.
     pump_for(&mut session, Duration::from_secs(7), |_| false);
     assert_eq!(
         world.calls(),
-        1,
-        "no connection is tried at a host that is away"
+        2,
+        "GVfs is asked once, not on every look at the host"
     );
     assert!(matches!(
         session.link().map(|link| &link.state),
         Some(LinkState::Connecting { again: true })
     ));
-    world.then(&[Script::Fail(MountFailure::TimedOut, ""), Script::Mount]);
     world.come_back();
     assert!(
-        pump_for(&mut session, RETRY_WAIT * 2, |s| shows(
-            s,
-            &shown.join("srv")
-        )),
+        pump_for(&mut session, RETRY_WAIT, |s| shows(s, &shown.join("srv"))),
         "it never came back: {:?}",
         session.link()
     );
     assert_eq!(world.calls(), 3);
 }
 
-/// Ticket 310's review: a server the person unmounted elsewhere, while it
-/// answers, is not mounted again by an open tab.
+/// Ticket 310's second review: GVfs says nothing that tells a mount let go
+/// elsewhere from a server that went away, and Better Files unmounts no
+/// server itself, so an open folder whose mount left comes back by itself,
+/// as the owner asked.
 #[test]
-fn a_mount_let_go_while_its_server_answers_is_not_mounted_again() {
+fn a_mount_let_go_elsewhere_comes_back_by_itself() {
     let world = world();
     let shown = world.server(NAS, &["srv"]);
     let mut session = session(&world);
     session.mount_server("sftp://nas/srv".into());
     assert!(pump_until(&mut session, |s| shows(s, &shown.join("srv"))));
+    // `gio mount -u` elsewhere: the mount leaves, the server still answers.
     world.drop_connection(NAS);
-    assert!(pump_until(&mut session, |s| s
+    assert!(pump_until(&mut session, |s| s.link().is_some()));
+    assert!(pump_until(&mut session, |s| s.link().is_none()
+        && shows(s, &shown.join("srv"))));
+    assert_eq!(world.calls(), 2);
+}
+
+/// Ticket 310's second review: a Wi-Fi drop. The network goes (no default
+/// route), the connection drops, and the same network comes back: the
+/// folder comes back by itself, and the time with no network does not
+/// count against the retry limit.
+#[test]
+fn a_network_that_goes_and_comes_back_reconnects_by_itself() {
+    let world = world();
+    let shown = world.server(NAS, &["srv"]);
+    let mut session = session(&world);
+    session.set_retry_limit(Duration::from_secs(1));
+    session.mount_server("sftp://nas/srv".into());
+    assert!(pump_until(&mut session, |s| shows(s, &shown.join("srv"))));
+    world.join(crate::remote::Network::default());
+    world.drop_connection(NAS);
+    // Longer than the limit, with no network: nothing is tried, nothing
+    // gives up.
+    pump_for(&mut session, Duration::from_secs(3), |_| false);
+    assert_eq!(world.calls(), 1, "nothing is sent with no network");
+    assert!(matches!(
+        session.link().map(|link| &link.state),
+        Some(LinkState::Connecting { again: true })
+    ));
+    world.join(home_network());
+    assert!(
+        pump_for(&mut session, RETRY_WAIT, |s| shows(s, &shown.join("srv"))),
+        "the same network came back and the folder did not: {:?}",
+        session.link()
+    );
+    assert_eq!(world.calls(), 2);
+}
+
+/// Ticket 310's second review: a computer that slept. The network went
+/// before the drop was noticed, and the server is there all along: when the
+/// network the folder was open on is back, so is the folder.
+#[test]
+fn a_folder_comes_back_after_sleep_on_the_same_network() {
+    let world = world();
+    let shown = world.server(NAS, &["srv"]);
+    let mut session = session(&world);
+    session.mount_server("sftp://nas/srv".into());
+    assert!(pump_until(&mut session, |s| shows(s, &shown.join("srv"))));
+    // Asleep: no network, and the mount is gone when it wakes.
+    world.join(crate::remote::Network::default());
+    pump_for(&mut session, Duration::from_secs(1), |_| false);
+    world.drop_connection(NAS);
+    assert!(pump_until(&mut session, |s| s.link().is_some()));
+    pump_for(&mut session, Duration::from_secs(1), |_| false);
+    assert_eq!(world.calls(), 1);
+    // Awake: the same Wi-Fi again.
+    world.join(home_network());
+    assert!(pump_for(&mut session, RETRY_WAIT, |s| s.link().is_none()
+        && shows(s, &shown.join("srv"))));
+}
+
+/// Ticket 310's second review: after a drop this computer is on another
+/// network, here one with the same interface and gateway address but
+/// another NetworkManager profile and router. Nothing is sent there by
+/// itself; the page says why, and a click connects.
+#[test]
+fn a_drop_onto_another_network_waits_for_a_click() {
+    let world = world();
+    let shown = world.server(NAS, &["srv"]);
+    let mut session = session(&world);
+    session.mount_server("sftp://nas/srv".into());
+    assert!(pump_until(&mut session, |s| shows(s, &shown.join("srv"))));
+    world.join(crate::remote::Network::default());
+    world.drop_connection(NAS);
+    assert!(pump_until(&mut session, |s| s.link().is_some()));
+    world.join(cafe_network());
+    assert!(pump_for(&mut session, RETRY_WAIT, |s| s
         .link()
-        .is_some_and(|link| link.state == LinkState::Cancelled)));
-    pump_for(&mut session, RETRY_WAIT, |_| false);
-    assert_eq!(world.calls(), 1, "only a click mounts it again");
+        .is_some_and(|link| link.state == LinkState::OtherNetwork)));
+    pump_for(&mut session, Duration::from_secs(6), |_| false);
+    assert_eq!(world.calls(), 1, "nothing is tried on another network");
+    // The favourite clicked, or Connect on the page: it connects.
     session.retry_connecting();
     assert!(pump_until(&mut session, |s| shows(s, &shown.join("srv"))));
     assert_eq!(world.calls(), 2);
 }
 
-/// Ticket 310's review: retries stop at their limit, and stop at once on
-/// another network.
+/// Ticket 310's review: retries stop at their limit (time with a network),
+/// and then only a click tries again.
 #[test]
-fn retries_stop_at_their_limit_and_on_another_network() {
+fn retries_stop_at_their_limit() {
     let world = world();
     let shown = world.server(NAS, &["srv"]);
     let mut session = session(&world);
@@ -944,36 +1082,27 @@ fn retries_stop_at_their_limit_and_on_another_network() {
     session.mount_server("sftp://nas/srv".into());
     assert!(pump_until(&mut session, |s| shows(s, &shown.join("srv"))));
     world.go_down(NAS);
-    assert!(pump_for(&mut session, RETRY_WAIT, |s| matches!(
-        s.link().map(|link| &link.state),
-        Some(LinkState::Failed {
-            reason: Reason::NoAnswer,
-            ..
-        })
-    )));
-    // The first look at the host is over: it was away.
-    pump_for(&mut session, Duration::from_secs(1), |_| false);
+    assert!(pump_for(&mut session, RETRY_WAIT, |s| s
+        .link()
+        .is_some_and(|link| matches!(
+            link.state,
+            LinkState::Failed {
+                reason: Reason::NoAnswer,
+                ..
+            }
+        ))));
+    // One more interval: the limit is past, and it stops.
+    pump_for(&mut session, RETRY_WAIT, |_| false);
+    let calls = world.calls();
     world.come_back();
     pump_for(&mut session, RETRY_WAIT, |_| false);
-    assert_eq!(world.calls(), 1, "past its limit only a click tries again");
-
-    let other = self::world();
-    let shown = other.server(NAS, &["srv"]);
-    let mut again = self::session(&other);
-    again.mount_server("sftp://nas/srv".into());
-    assert!(pump_until(&mut again, |s| shows(s, &shown.join("srv"))));
-    other.go_down(NAS);
-    assert!(pump_until(&mut again, |s| s.link().is_some()));
-    *other.network.lock().unwrap() = "eth0>0100000A".into();
-    other.come_back();
-    assert!(pump_for(&mut again, RETRY_WAIT, |s| s
-        .link()
-        .is_some_and(|link| link.state == LinkState::Cancelled)));
     assert_eq!(
-        other.calls(),
-        1,
-        "nothing is tried on another network by itself"
+        world.calls(),
+        calls,
+        "past its limit only a click tries again"
     );
+    session.retry_connecting();
+    assert!(pump_until(&mut session, |s| shows(s, &shown.join("srv"))));
 }
 
 /// Ticket 310's review: a dropped connection whose server shows another host
@@ -985,15 +1114,13 @@ fn a_changed_host_key_after_a_drop_is_said_at_once_and_not_retried() {
     let mut session = session(&world);
     session.mount_server("sftp://nas/srv".into());
     assert!(pump_until(&mut session, |s| shows(s, &shown.join("srv"))));
-    world.go_down(NAS);
-    assert!(pump_until(&mut session, |s| s.link().is_some()));
     world.then(&[Script::Fail(
         MountFailure::HostKeyChanged,
         "Host key verification failed",
     )]);
-    // The first look at the host is over: it was away.
-    pump_for(&mut session, Duration::from_secs(1), |_| false);
-    world.come_back();
+    // A restarted server with another key: it answers, and its key is not
+    // the one known.
+    world.drop_connection(NAS);
     assert!(pump_for(&mut session, RETRY_WAIT, |s| matches!(
         s.link().map(|link| &link.state),
         Some(LinkState::Failed {
@@ -1230,6 +1357,77 @@ fn a_held_paste_into_a_folder_deleted_meanwhile_is_not_done_and_says_so() {
             why: crate::session::PasteWhy::Gone,
         })
     );
+}
+
+/// Ticket 310's second review: a paste held for a folder the tab then
+/// leaves says so at once, and is never run later by surprise.
+#[test]
+fn a_held_paste_whose_tab_goes_elsewhere_says_so_and_never_runs() {
+    let world = world();
+    let shown = world.server(NAS, &["srv/drop"]);
+    let source = world.home.join("Documents/report.txt");
+    fs::write(&source, "q3").unwrap();
+    let mut session = session(&world);
+    world.then(&[Script::Hold]);
+    session.mount_server("sftp://nas/srv/drop".into());
+    session.clipboard = copy_of(&source);
+    session.paste();
+    session.navigate_to(Location::local(world.home.join("Documents")).unwrap());
+    session.pump();
+    assert_eq!(
+        session.notice,
+        Some(Notice::PasteNotDone {
+            folder: "drop".into(),
+            server: "nas".into(),
+            why: crate::session::PasteWhy::Left,
+        })
+    );
+    world.release();
+    session.mount_server("sftp://nas/srv/drop".into());
+    assert!(pump_until(&mut session, |s| shows(
+        s,
+        &shown.join("srv/drop")
+    )));
+    pump_for(&mut session, Duration::from_millis(500), |_| false);
+    assert!(session.jobs.is_empty(), "nothing was pasted later");
+}
+
+/// Ticket 310's second review: a paste whose connection came and whose
+/// folder was not listed yet, when the connection is then cancelled, says
+/// so and never runs on a later Connect.
+#[test]
+fn a_paste_waiting_for_its_listing_is_said_not_done_when_the_connection_is_cancelled() {
+    let world = world();
+    let shown = world.server(NAS, &["srv"]);
+    let source = world.home.join("Documents/report.txt");
+    fs::write(&source, "q3").unwrap();
+    let mut session = session(&world);
+    session.mount_server("sftp://nas/srv".into());
+    assert!(pump_until(&mut session, |s| shows(s, &shown.join("srv"))));
+    // The folder stops answering, and a paste whose connection had come is
+    // waiting for its listing (the state between landing and the listing,
+    // set directly: its timing is GVfs's).
+    session.hold_probe_for_tests(&shown);
+    session.reload();
+    assert!(pump_until(&mut session, |s| s.link().is_some()));
+    let folder = session.location().clone();
+    session.pend_paste_for_tests(&folder, copy_of(&source));
+    assert!(session.jobs.is_empty());
+    session.cancel_connecting();
+    assert_eq!(
+        session.notice,
+        Some(Notice::PasteNotDone {
+            folder: "srv".into(),
+            server: "nas".into(),
+            why: crate::session::PasteWhy::Cancelled,
+        })
+    );
+    session.release_probe_for_tests(&shown);
+    session.retry_connecting();
+    assert!(pump_until(&mut session, |s| shows(s, &shown.join("srv"))
+        && s.link().is_none()));
+    pump_for(&mut session, Duration::from_millis(500), |_| false);
+    assert!(session.jobs.is_empty(), "nothing was pasted later");
 }
 
 /// Ticket 310's review: a held cut that lands leaves a newer clipboard alone.

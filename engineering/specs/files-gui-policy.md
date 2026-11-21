@@ -80,7 +80,9 @@ pointer reorder gesture inside the sidebar is not wired yet.
 
 Owner, 2026-11-22: a folder on a server (SFTP, SMB and the others GVfs
 opens) opens again by itself after its connection has gone — after sleep,
-another network, a restarted server or a new login. Before this ticket a
+another network, a restarted server or a new login. (On another network
+"by itself" is the click on the favourite: nothing is sent there unasked;
+see the drop rule below.) Before this ticket a
 pinned server folder was stored as the folder GVfs showed it under
 (`file:///run/user/<uid>/gvfs/sftp:host=…/path`); once the mount had gone,
 the sidebar's availability probe (`path.is_dir()` on the window's thread,
@@ -106,7 +108,11 @@ location needs its connection and whether it is there:
   is never asked an address for, and its favourite is never rewritten.
 
 A mount is a favourite's only when it has the same identity: the same
-scheme, host (in any case), port, user, domain and share. A missing port is
+scheme, host (in any case, an IPv6 host with or without its brackets), port,
+user, domain and share (an SMB share in any case: `gvfsd` mounts
+`smb://NAS/Photos` as `smb-share:server=nas,share=photos`, and writes
+`sftp://[::1]:22/` as `sftp:host=%3A%3A1`, both seen in the sandbox, so the
+same share written another way is never a second mount). A missing port is
 the scheme's own (22, 21, 445, 80, 443, 548, 2049), never "any port"; a
 missing user is "no user given", never "any user". A mount on the same host
 with another port, user or share is another server's or another account's,
@@ -137,18 +143,28 @@ included.
 (`sftp://ann:secret@nas/srv`) is dropped where the address becomes a
 location, as GIO drops it, so it reaches no bookmark, no history entry, no
 restart hand-off, no page and no mount request; the server asks for it in
-the sign-in form.
+the sign-in form. An empty user (`sftp://@nas/srv`, `sftp://:secret@nas/srv`)
+is no user: it goes with its `@` from the stored address, the identity and
+the mount spec.
 
 **The old form.** A line an earlier version wrote as a GVfs folder is read
 back as the same address by its mount's name, whether that mount is there
 or not. The file is written in the new form once a process, when the first
-window starts, and only if it still holds what was read; it keeps its mode.
+window starts, and only if it still holds what was read; it keeps its mode,
+and its new text is written to a temporary file made with that mode, then
+renamed over it. One race is left and accepted: a line another program
+writes between that check and the rename (milliseconds, once a process) is
+lost, because the file has no lock its other writers take.
 Nothing else rewrites the shared file without the person doing something to
 it: a line another program writes later is read as an address and left as
 written. A server mount whose name does not give its address keeps its line
 and shows the Address-needed page; only an address typed on that page, for
 that favourite, becomes the favourite's (with the folder it named inside
-that mount). Leaving the page, or connecting elsewhere, rewrites nothing.
+that mount), whether that server still has to be connected or is mounted
+already. Leaving the page, or connecting elsewhere, rewrites nothing. The
+page names the folder by GVfs's mount name and the path in it
+(`dav+sd:host=Cloud._webdav._tcp.local/data`), not by the runtime folder
+before it.
 
 **Credentials** are where the first connection put them: GVfs and the
 keyring (through Better Files' own mount operation, ticket 117), an SSH agent
@@ -173,40 +189,77 @@ and for the C library's sentence a backend puts after its own ("Failed to
 mount Windows share: No such file or directory", in zh-TW "無法掛載 Windows
 檔案共用：沒有此一檔案或目錄") through the C library's own text for that error
 in the desktop's language.
-After a failure the host is looked at (its name resolved, one TCP connection
-to its port, closed at once, nothing sent): a name that does not resolve is
-"not found" whatever GVfs said (`gvfsd-smb` says "Invalid argument" for it),
-and "the share is not there" is said only for a server that answered (a
-stopped `smbd` gives "Connection refused", a missing share "No such file or
-directory", both seen in the sandbox). A mount with no share (SFTP) never
-names one: it says the folder is not there. A folder that is gone on a server
-that did connect opens the nearest folder above it that is there, and says
-so.
+The page says what GVfs said and nothing it did not: "No computer called
+{server} was found" only when GVfs's own failure says the name was not
+found. Better Files does not overrule GVfs with a look of its own, because a
+look from here cannot see what ssh and libsmbclient can: an `ssh_config`
+alias (`Host`, `HostName`, `Port`, `ProxyJump`) or a NetBIOS name. So
+`gvfsd-smb`'s "Invalid argument" for a name that resolves nowhere is "could
+not connect" with GVfs's words underneath; a stopped `smbd` gives
+"Connection refused" and a missing share "No such file or directory" (all
+three seen in the sandbox), and "the share is not there" therefore only comes
+from a server that answered. A mount with no share (SFTP) never names one:
+it says the folder is not there. A folder that is gone on a server that did
+connect opens the nearest folder above it that is there, and says so.
 
-**A connection that drops while a folder is open** (GVfs's tracker stops
-listing the mount, the watch hub reports the folder gone, or the folder
-stops answering) shows "Connecting to {server} again…" in place. GVfs sends
-the same `Unmounted` signal for a mount the person ejected elsewhere and for
-one whose server went away (seen on the sandbox's bus), so the host is
-looked at first: one that answers at once let the mount go on purpose, and
-the tab is left "Not connected to {server}"; nothing is mounted again without
-a click. One that does not answer is looked at again every 5 s, and
-connected to only once it answers; for 30 s the page says "connecting
-again", then why, while it goes on; 2 minutes after the drop it stops, and
-only a click tries again. On another network (the default routes changed)
-it stops at once. A refused sign-in and a changed host key are never tried
-again by themselves, and their page is shown at once. When the connection is
-back the tab returns to the same folder, selection and scroll. A job writing
-there follows `files-operations`' rules for a destination that disappears,
-unchanged.
+**A connection that drops while a folder is open comes back by itself.**
+This is the owner's line above, and the one rule for retries (decided
+2026-11-22, replacing the first review round's "stop on another network,
+and a server that answers let the mount go on purpose"). A drop is GVfs's
+tracker no longer listing the mount, the watch hub reporting the folder
+gone, or the folder no longer answering; the tab shows "Connecting to
+{server} again…" in place.
+
+- *Let go on purpose, or dropped.* GVfs gives no fact that tells them apart:
+  for a `gio mount -u` and for an `sshd` that stopped, the backend calls the
+  tracker's `UnregisterMount` and the tracker sends the same `Unmounted`
+  (recorded with `dbus-monitor` on the sandbox's bus); the unmount request
+  itself travels over GVfs's private peer connection, which no other
+  program sees. Better Files unmounts no server itself. So every drop is
+  treated as one, and the folder comes back, as the owner asked.
+- *No network at the moment* (no default route: a Wi-Fi drop, or a computer
+  waking) is waited out with no time limit, and nothing is sent. After 30 s
+  of it the page says the computer is not connected to a network, while it
+  goes on waiting.
+- *The same network back* (the one the folder was last listed on): the host
+  is looked at every 5 s (its name resolved, one TCP connection to its port,
+  closed at once, nothing sent). A host that answers is connected to at
+  once. A look that cannot resolve or reach it cannot tell (an alias, a jump
+  host, a NetBIOS name), so GVfs itself is asked to connect every 30 s. For
+  30 s the page says "connecting again", then why, while it goes on. After
+  10 minutes of trying with a network (long enough for a NAS to restart;
+  time without one does not count) it stops, and only a click tries again.
+- *Another network*: nothing is sent by itself, because the same name may be
+  another computer there and a keyring's password would go to it. The page
+  says the connection was lost and this computer is on another network now,
+  with Connect; Connect, the favourite, or the address opens it on this
+  network, the owner's request for a clicked favourite. Networks are told
+  apart by their default routes (interface and gateway), NetworkManager's
+  primary connection profile (its UUID, read over the system bus: each Wi-Fi
+  network is a profile of its own, so two networks with the same gateway
+  address differ), and the gateway's hardware address from the kernel's
+  neighbour table (two routers with the same address differ; a wired profile
+  shared between networks is told apart by it). They are the same network
+  only when that is known: the same routes and profile, and the same router
+  where both readings have it; with no NetworkManager the router must be
+  known on both sides. What cannot be told is another network.
+- A refused sign-in and a changed host key are never tried again by
+  themselves, and their page is shown at once.
+
+When the connection is back the tab returns to the same folder, selection
+and scroll. A job writing there follows `files-operations`' rules for a
+destination that disappears, unchanged.
 
 **A paste that waits.** A paste into a folder that is not connected is held
 by the tab and goes in once the folder is connected and listed, whether the
 wait ended by a connection or by the folder answering again. It is never
 lost without a word: if the folder is gone on the server meanwhile, nothing
-is pasted (no folder is made again) and the page says so; if the tab leaves
-the folder, the connection is cancelled or stops being tried, or the folder
-cannot be listed, the page says nothing was pasted and why. A held cut
+is pasted (no folder is made again) and the page says so; if the tab goes
+elsewhere (the sidebar, the address bar, back), the connection is cancelled
+or left not connected (including a paste whose connection came and whose
+folder was not listed yet), stops being tried, or the folder cannot be
+listed, the page says at once that nothing was pasted and why, and the
+paste never runs later on a Connect. A held cut
 empties the clipboard only if the clipboard still holds that cut.
 
 **No waiting on the window's thread.** A dead mount can block a `stat` for
@@ -237,7 +290,12 @@ server that is away, a wrong password and a deleted folder each show their
 page, and with the server's processes stopped (holding the connection) the
 slowest frame of the window's own work (pump, sidebar rows, a click on the
 favourite) measured 1.5 ms over 15 s; it also reads `gvfsd-smb`'s answers for
-an unknown host, a stopped server and a missing share. CI runs both
+an unknown host, a stopped server and a missing share, opens the SFTP server
+by an alias in the sandbox's own `ssh_config` (opened, dropped and back by
+itself, and its failure GVfs's own), and opens a mounted share written in
+capitals and an `[::1]` address without a second mount. The network cases
+(no network then the same one, sleep, another network) are the fake
+connector's, with the network said by the test. CI runs both
 real-server tests on its Ubuntu 24.04 runner (FUSE and an unprivileged
 `smbd` work there), with `CI` set so a missing program fails rather than
 skips. A debug build in a sandbox whose private
@@ -252,6 +310,7 @@ never reads it.
 | Connecting | Connecting to {server}… — The folder opens as soon as the connection is made. | 正在連線到 {server}… — 連上後就會打開這個資料夾。 |
 | Dropped | Connecting to {server} again… — The connection was lost. You'll be back in this folder when it returns. | 正在重新連線到 {server}… — 連線中斷了，恢復後會回到這個資料夾。 |
 | Cancelled | Not connected to {server} — This folder is on {server}. Connect to open it. | 尚未連線到 {server} — 這個資料夾在 {server} 上，連線後就能打開。 |
+| Dropped, another network | Not connected to {server} — The connection was lost and this computer is on another network now, so it wasn't connected again by itself. Connect to open the folder on {server}. | 尚未連線到 {server} — 連線中斷了，而這台電腦現在連上的是另一個網路，所以沒有自動重新連線。按「連線」就能打開 {server} 上的這個資料夾。 |
 | Page title on a failure | Couldn't connect to {server} | 無法連線到 {server} |
 | Did not answer | {server} didn't answer. Check that it's turned on and on the network, then try again. | {server} 沒有回應。請確認它已開機並連上網路，再試一次。 |
 | Refused | {server} is on the network but didn't accept the connection. Check that its file sharing is turned on. | {server} 在網路上，但沒有接受連線。請確認它的檔案分享已開啟。 |

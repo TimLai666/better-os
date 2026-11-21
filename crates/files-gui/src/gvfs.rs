@@ -152,6 +152,8 @@ pub fn mount_spec(address: &str) -> Result<MountSpec, MountError> {
     // A password in the address is never part of the spec: GIO drops it,
     // and the server asks (ticket 310).
     let userinfo = userinfo.map(|userinfo| userinfo.split(':').next().unwrap_or_default());
+    // An empty user is no user, never `user=""` (ticket 310's second review).
+    let userinfo = userinfo.filter(|user| !user.is_empty());
     let (mut user, mut domain) = (userinfo.map(percent_decode), None);
     if scheme == "smb"
         && let Some(both) = &user

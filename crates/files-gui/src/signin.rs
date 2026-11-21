@@ -408,6 +408,12 @@ impl FilesApp {
                 false,
                 false,
             ),
+            LinkState::OtherNetwork => (
+                fill(c.remote_cancelled_title),
+                fill(c.remote_other_network_body),
+                false,
+                false,
+            ),
             LinkState::NeedsAddress => (
                 c.remote_address_title.to_string(),
                 c.remote_address_body.to_string(),
@@ -464,8 +470,9 @@ impl FilesApp {
                         },
                     ));
             }
-            LinkState::Cancelled | LinkState::Failed { .. } => {
-                let label = if link.state == LinkState::Cancelled {
+            LinkState::Cancelled | LinkState::OtherNetwork | LinkState::Failed { .. } => {
+                let label = if matches!(link.state, LinkState::Cancelled | LinkState::OtherNetwork)
+                {
                     c.remote_connect
                 } else {
                     c.remote_try_again
@@ -514,10 +521,21 @@ impl FilesApp {
         } else {
             Picture::Network.into()
         };
+        // A folder under GVfs's folder whose address is not known is named
+        // by GVfs's mount name and the path under it: the runtime folder
+        // before it (the user's id) says nothing to the person.
         let address = link
             .remote
             .as_ref()
             .map(crate::remote::Remote::address)
+            .or_else(|| match (&link.location, self.session.gvfs_root()) {
+                (files_core::Location::Local(path), Some(root)) => {
+                    crate::remote::split_gvfs_path(path.as_path(), root)
+                        .map(|(name, rest)| std::path::Path::new(&name).join(rest))
+                        .map(|shown| shown.display().to_string())
+                }
+                _ => None,
+            })
             .unwrap_or_else(|| link.location.to_uri());
         Some(
             div()

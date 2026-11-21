@@ -30,6 +30,9 @@ use crate::session::{FilesSession, LinkState, Notice, SessionSetup};
 
 const SMB_PASSWORD: &str = "fixture-pass";
 
+/// The fixture SFTP server's name in the sandbox's `ssh_config` only.
+const SSH_ALIAS: &str = "fixture-nas";
+
 fn program(path: &str) -> Result<PathBuf, String> {
     let path = PathBuf::from(path);
     if path.is_file() {
@@ -280,6 +283,20 @@ impl Sandbox {
             smbd_port: free_port(),
             user,
         };
+        // A server known only by an alias in the sandbox's own ssh
+        // configuration (ticket 310's second review): its name resolves
+        // nowhere but in ssh.
+        fs::OpenOptions::new()
+            .append(true)
+            .open(sandbox.root.join("ssh/config"))
+            .and_then(|mut config| {
+                write!(
+                    config,
+                    "Host {SSH_ALIAS}\n  HostName 127.0.0.1\n  Port {}\n",
+                    sandbox.sshd_port
+                )
+            })
+            .map_err(|error| error.to_string())?;
         sandbox.write_sshd("sshd", sandbox.sshd_port, false);
         sandbox.write_sshd("sshd-password", sandbox.password_port, true);
         sandbox.write_smb()?;
@@ -300,7 +317,7 @@ impl Sandbox {
         fs::write(
             root.join(format!("ssh/{name}_config")),
             format!(
-                "ListenAddress 127.0.0.1\nPort {port}\nHostKey {0}/ssh/host\nPidFile none\n\
+                "ListenAddress 127.0.0.1\nListenAddress ::1\nPort {port}\nHostKey {0}/ssh/host\nPidFile none\n\
                  AuthorizedKeysFile {0}/ssh/authorized_keys\nUsePAM no\nStrictModes no\n\
                  KbdInteractiveAuthentication no\n{auth}Subsystem sftp internal-sftp\n",
                 root.display()
@@ -512,6 +529,14 @@ impl Sandbox {
         format!("smb://127.0.0.1:{}/data{inside}", self.smbd_port)
     }
 
+    /// The folder GVfs shows `path` under when the server is opened by its
+    /// `ssh_config` alias.
+    fn alias_folder(&self, path: &Path) -> PathBuf {
+        self.gvfs
+            .join(format!("sftp:host={SSH_ALIAS}"))
+            .join(path.strip_prefix("/").unwrap())
+    }
+
     /// The folder GVfs shows `path` on the SFTP server under.
     fn sftp_folder(&self, path: &Path) -> PathBuf {
         self.gvfs
@@ -718,6 +743,92 @@ fn real_sftp_and_smb_servers_connect_again_when_their_folder_is_opened() {
         Some(&EntryId::Name("plan.txt".into()))
     );
 
+    // --- A server known only by its `ssh_config` alias (ticket 310's second
+    // review): a look at the host from here cannot resolve it, so that look
+    // never decides. Opened, stopped (the page keeps GVfs's own failure,
+    // never "no computer called"), dropped while open, and back by itself.
+    let by_alias = format!("sftp://{SSH_ALIAS}{}", projects.display());
+    session.mount_server(by_alias.clone());
+    assert!(
+        pump_until(&mut session, OPEN, |s| shows(
+            s,
+            &sandbox.alias_folder(&projects)
+        )),
+        "the alias opens: {:?} at {:?}",
+        state(&session),
+        session.location()
+    );
+    sandbox.sshd.stop();
+    assert!(
+        pump_until(&mut session, OPEN, |s| matches!(
+            state(s),
+            Some(LinkState::Connecting { again: true })
+        )),
+        "the alias dropped: {:?}",
+        state(&session)
+    );
+    // Long enough for GVfs itself to be asked while the server is away.
+    let away = Instant::now() + Duration::from_secs(8);
+    while Instant::now() < away {
+        session.pump();
+        assert!(
+            !matches!(
+                state(&session),
+                Some(LinkState::Failed {
+                    reason: Reason::NameNotFound,
+                    ..
+                })
+            ),
+            "an alias is never \"no computer called\": {:?}",
+            state(&session)
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    eprintln!(
+        "ticket-310: alias dropped, server away -> {:?}",
+        state(&session)
+    );
+    sandbox.start_sshd().unwrap();
+    assert!(
+        pump_until(&mut session, OPEN + Duration::from_secs(35), |s| shows(
+            s,
+            &sandbox.alias_folder(&projects)
+        )),
+        "the alias came back by itself: {:?}",
+        state(&session)
+    );
+    // Opened while its server is away: GVfs's own reason.
+    session.navigate_to(Location::local(sandbox.home.join("Documents")).unwrap());
+    sandbox.sshd.stop();
+    assert!(pump_until(&mut session, OPEN, |s| s
+        .connected(&Location::parse_uri(&by_alias))
+        == Some(false)));
+    session.mount_server(by_alias.clone());
+    assert!(
+        pump_until(&mut session, OPEN, |s| matches!(
+            state(s),
+            Some(LinkState::Failed { .. })
+        )),
+        "the alias away: {:?}",
+        state(&session)
+    );
+    eprintln!(
+        "ticket-310: alias opened, server away -> {:?}",
+        state(&session)
+    );
+    assert!(
+        matches!(
+            state(&session),
+            Some(LinkState::Failed {
+                reason: Reason::Refused | Reason::NoAnswer,
+                ..
+            })
+        ),
+        "{:?}",
+        state(&session)
+    );
+    sandbox.start_sshd().unwrap();
+
     // --- A folder deleted on a server that connects: the nearest above.
     let deep = projects.join("2026");
     session.mount_server(sandbox.sftp(&deep));
@@ -875,15 +986,71 @@ fn real_sftp_and_smb_servers_connect_again_when_their_folder_is_opened() {
         Some(&EntryId::Name("q3.txt".into()))
     );
 
+    // --- The same share written another way is the same mount (ticket
+    // 310's second review): gvfsd folds an SMB share to lower case and
+    // writes an IPv6 host without brackets; neither makes a second mount.
+    let mounts_now = |prefix: &str| {
+        fs::read_dir(&sandbox.gvfs)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .filter(|entry| entry.file_name().to_string_lossy().starts_with(prefix))
+                    .count()
+            })
+            .unwrap_or(0)
+    };
+    let shares = mounts_now("smb-share:");
+    session.mount_server(format!(
+        "smb://127.0.0.1:{}/DATA/reports",
+        sandbox.smbd_port
+    ));
+    assert!(
+        pump_until(&mut session, OPEN, |s| shows(
+            s,
+            &sandbox.smb_folder("/reports")
+        )),
+        "the share in capitals is the mounted one: {:?} at {:?}",
+        state(&session),
+        session.location()
+    );
+    assert_eq!(mounts_now("smb-share:"), shares, "no second SMB mount");
+    let six = format!("sftp://[::1]:{}{}", sandbox.sshd_port, projects.display());
+    session.mount_server(six.clone());
+    let six_folder = sandbox
+        .gvfs
+        .join(format!("sftp:host=%3A%3A1,port={}", sandbox.sshd_port))
+        .join(projects.strip_prefix("/").unwrap());
+    if pump_until(&mut session, OPEN, |s| shows(s, &six_folder)) {
+        let sftp_mounts = mounts_now("sftp:");
+        session.navigate_to(Location::local(sandbox.home.join("Documents")).unwrap());
+        session.mount_server(six);
+        assert!(pump_until(&mut session, OPEN, |s| shows(s, &six_folder)));
+        assert_eq!(mounts_now("sftp:"), sftp_mounts, "no second IPv6 mount");
+        eprintln!("ticket-310: [::1] mounted once as {}", six_folder.display());
+    } else {
+        // A runner with no IPv6 loopback: said, not hidden.
+        eprintln!(
+            "ticket-310: [::1] not reachable here: {:?}",
+            state(&session)
+        );
+        assert!(
+            std::net::TcpStream::connect(("::1", sandbox.sshd_port)).is_err(),
+            "[::1] answers but did not open: {:?}",
+            state(&session)
+        );
+    }
+
     // --- What gvfsd-smb says for a name that does not resolve, a port
     // nothing listens on, and a share the server does not have (ticket 310's
-    // review): each its own reason, and "the share is gone" only for a
-    // server that answered.
+    // reviews): GVfs's own failure, read as it says it. For a name it says
+    // only "Invalid argument", so the page says it could not connect rather
+    // than guess "no computer called" from a look that cannot see NetBIOS
+    // names; "the share is gone" only comes from a server that answered.
     let closed = free_port();
     for (address, expected) in [
         (
             "smb://no-such-host.invalid/data".to_string(),
-            Reason::NameNotFound,
+            Reason::Mount(crate::network::MountFailure::Failed),
         ),
         (format!("smb://127.0.0.1:{closed}/data"), Reason::Refused),
         (

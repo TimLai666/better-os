@@ -467,11 +467,32 @@ impl BookmarkStore {
             std::process::id(),
             WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
-        fs::write(&temporary, file.render().as_bytes())?;
-        // The shared file keeps the mode it had (ticket 310's review): a
-        // file someone made private stays private.
-        if let Ok(metadata) = fs::metadata(&target) {
-            let _ = fs::set_permissions(&temporary, metadata.permissions());
+        // The shared file keeps the mode it had (ticket 310's reviews), and
+        // its new text is never readable more widely than the file was, not
+        // even for a moment: the temporary file is made with that mode. A
+        // file that is new gets 0644, what GLib's `g_file_set_contents`
+        // gives it under the usual umask.
+        {
+            use std::io::Write;
+            use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+            let mode = fs::metadata(&target)
+                .map_or(0o644, |metadata| metadata.permissions().mode() & 0o7777);
+            let written = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(mode)
+                .open(&temporary)
+                .and_then(|mut out| {
+                    out.write_all(file.render().as_bytes())?;
+                    // The umask may have narrowed it; the mode is the
+                    // target's exactly.
+                    out.set_permissions(fs::Permissions::from_mode(mode))?;
+                    out.sync_all()
+                });
+            if let Err(error) = written {
+                let _ = fs::remove_file(&temporary);
+                return Err(error);
+            }
         }
         fs::rename(&temporary, &target).inspect_err(|_| {
             let _ = fs::remove_file(&temporary);

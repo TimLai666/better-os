@@ -214,8 +214,16 @@ impl Remote {
             .iter()
             .filter(|(key, value)| !(key == "port" && Some(value.as_str()) == default))
             .map(|(key, value)| {
-                let value = if key == host_key {
-                    value.to_ascii_lowercase()
+                // GVfs writes an IPv6 host without its brackets
+                // (`sftp:host=%3A%3A1`), and folds an SMB server and share
+                // to lower case (`smb://NAS/Photos` is mounted as
+                // `server=nas,share=photos`; seen in ticket 310's sandbox).
+                let folded = key == host_key || (self.kind().starts_with("smb-") && key == "share");
+                let value = if folded {
+                    value
+                        .trim_start_matches('[')
+                        .trim_end_matches(']')
+                        .to_lowercase()
                 } else {
                     value.clone()
                 };
@@ -968,7 +976,10 @@ pub fn network_settings(installed: &dyn Fn(&str) -> bool) -> Option<(String, Vec
     .map(|(program, page)| (program.to_string(), vec![page.to_string()]))
 }
 
-/// What a look at a server's host found, after a failure or before a retry.
+/// What a look at a server's host found before a dropped connection is
+/// tried again. Only `Reachable` decides anything (connect now): the other
+/// two cannot tell, since a look from here does not see an `ssh_config`
+/// alias, a jump host or a NetBIOS name.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HostState {
     /// Its name does not resolve.
@@ -1010,43 +1021,69 @@ pub fn host_state(remote: &Remote) -> HostState {
     }
 }
 
-/// A failure GVfs reported, made exact by a look at the host (ticket 310's
-/// review): `gvfsd-smb` says "Invalid argument" for a name that does not
-/// resolve, and a share that is "not there" on a server nothing answers for
-/// was never reached. A refused sign-in, a changed key and a cancel are
-/// never second-guessed.
-fn refine(error: MountError, remote: &Remote, check: &HostCheck) -> MountError {
-    if matches!(
-        error.failure,
-        MountFailure::Cancelled
-            | MountFailure::PermissionDenied
-            | MountFailure::HostKeyChanged
-            | MountFailure::UntrustedGvfs
-            | MountFailure::NoGvfs
-            | MountFailure::HostNotFound
-    ) {
-        return error;
+/// Which network this computer is on (ticket 310's second review). A
+/// dropped connection comes back by itself on the network it was open on;
+/// on another one only a click connects, so no sign-in is sent by itself to
+/// whatever answers that name there.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Network {
+    /// Each default route, `interface>gateway`, sorted: empty when there is
+    /// none, which is what a Wi-Fi drop or a resume looks like for a while.
+    pub routes: String,
+    /// NetworkManager's primary connection (its profile's UUID): each Wi-Fi
+    /// network is a profile of its own, so two networks with the same
+    /// interface and gateway address still differ.
+    pub connection: Option<String>,
+    /// The IPv4 gateways' hardware addresses, from the kernel's neighbour
+    /// table: two routers with the same address are still two. `None` when
+    /// any gateway has no complete entry.
+    pub gateway_hardware: Option<String>,
+}
+
+impl Network {
+    /// No default route: no network at the moment.
+    pub fn is_none(&self) -> bool {
+        self.routes.is_empty()
     }
-    match check(remote) {
-        HostState::Unknown => MountError::new(MountFailure::HostNotFound, error.detail),
-        HostState::Unreachable if error.failure == MountFailure::ShareGone => {
-            MountError::new(MountFailure::TimedOut, error.detail)
+
+    /// Whether `other` is known to be this network. What cannot be told is
+    /// another network: the same routes and NetworkManager profile, and the
+    /// same gateway hardware where both readings have it; without a profile
+    /// on either side, the gateway hardware must be known and the same.
+    pub fn same_as(&self, other: &Network) -> bool {
+        if self.is_none() || other.is_none() || self.routes != other.routes {
+            return false;
         }
-        _ => error,
+        if let (Some(mine), Some(theirs)) = (&self.connection, &other.connection)
+            && mine != theirs
+        {
+            return false;
+        }
+        match (&self.gateway_hardware, &other.gateway_hardware) {
+            (Some(mine), Some(theirs)) => mine == theirs,
+            _ => self.connection.is_some() && self.connection == other.connection,
+        }
     }
 }
 
-/// Which network this computer is on, as the kernel's routing tables say:
-/// each default route's interface and gateway. A dropped connection is
-/// tried again by itself only while this stays the same (ticket 310's
-/// review); after a change, only a click connects.
-pub fn network_id() -> String {
-    let mut parts: Vec<String> = Vec::new();
+/// The network as this computer says it now: the routing tables and the
+/// neighbour table (file reads), and NetworkManager's primary connection
+/// over the system bus. Called on a worker thread, never the window's.
+pub fn read_network() -> Network {
+    let mut routes: Vec<String> = Vec::new();
+    let mut gateways: Vec<(String, std::net::Ipv4Addr)> = Vec::new();
     let ipv4 = std::fs::read_to_string("/proc/net/route").unwrap_or_default();
     for line in ipv4.lines().skip(1) {
         let fields: Vec<&str> = line.split_whitespace().collect();
         if fields.len() > 2 && fields[1] == "00000000" && fields[0] != "lo" {
-            parts.push(format!("{}>{}", fields[0], fields[2]));
+            routes.push(format!("{}>{}", fields[0], fields[2]));
+            if let Ok(raw) = u32::from_str_radix(fields[2], 16) {
+                // The kernel writes the address in the machine's own order.
+                gateways.push((
+                    fields[0].to_string(),
+                    std::net::Ipv4Addr::from(raw.to_ne_bytes()),
+                ));
+            }
         }
     }
     let ipv6 = std::fs::read_to_string("/proc/net/ipv6_route").unwrap_or_default();
@@ -1057,11 +1094,165 @@ pub fn network_id() -> String {
             && fields[1] == "00"
             && fields[9] != "lo"
         {
-            parts.push(format!("{}>{}", fields[9], fields[4]));
+            routes.push(format!("{}>{}", fields[9], fields[4]));
         }
     }
-    parts.sort();
-    parts.join(",")
+    routes.sort();
+    let neighbours = std::fs::read_to_string("/proc/net/arp").unwrap_or_default();
+    Network {
+        routes: routes.join(","),
+        connection: network_manager_connection(),
+        gateway_hardware: gateway_hardware(&gateways, &neighbours),
+    }
+}
+
+/// The gateways' hardware addresses from `/proc/net/arp`'s text, sorted;
+/// `None` when there is no IPv4 gateway or one has no complete entry.
+pub fn gateway_hardware(
+    gateways: &[(String, std::net::Ipv4Addr)],
+    neighbours: &str,
+) -> Option<String> {
+    if gateways.is_empty() {
+        return None;
+    }
+    let mut found = Vec::new();
+    for (interface, address) in gateways {
+        let entry = neighbours.lines().skip(1).find_map(|line| {
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            // IP address, HW type, Flags, HW address, Mask, Device; flag
+            // 0x2 is a complete entry.
+            (fields.len() >= 6
+                && fields[0] == address.to_string()
+                && fields[5] == interface
+                && u32::from_str_radix(fields[2].trim_start_matches("0x"), 16)
+                    .is_ok_and(|flags| flags & 0x2 != 0)
+                && fields[3] != "00:00:00:00:00:00")
+                .then(|| format!("{interface}>{}", fields[3].to_lowercase()))
+        });
+        found.push(entry?);
+    }
+    found.sort();
+    Some(found.join(","))
+}
+
+/// NetworkManager's primary connection's profile UUID, when NetworkManager
+/// runs and says; asked with a 2 s limit.
+fn network_manager_connection() -> Option<String> {
+    // One connection to the system bus for the process, made on the first
+    // reading's thread.
+    static SYSTEM: std::sync::OnceLock<Option<zbus::blocking::Connection>> =
+        std::sync::OnceLock::new();
+    let connection = SYSTEM
+        .get_or_init(|| {
+            zbus::blocking::connection::Builder::system()
+                .ok()?
+                .method_timeout(Duration::from_secs(2))
+                .build()
+                .ok()
+        })
+        .as_ref()?;
+    let manager = zbus::blocking::Proxy::new(
+        connection,
+        "org.freedesktop.NetworkManager",
+        "/org/freedesktop/NetworkManager",
+        "org.freedesktop.NetworkManager",
+    )
+    .ok()?;
+    let primary: zbus::zvariant::OwnedObjectPath =
+        manager.get_property("PrimaryConnection").ok()?;
+    if primary.as_str() == "/" {
+        return None;
+    }
+    let active = zbus::blocking::Proxy::new(
+        connection,
+        "org.freedesktop.NetworkManager",
+        primary.as_str(),
+        "org.freedesktop.NetworkManager.Connection.Active",
+    )
+    .ok()?;
+    let uuid: String = active.get_property("Uuid").ok()?;
+    (!uuid.is_empty()).then_some(uuid)
+}
+
+/// How old the network reading may be before it is read again.
+pub const NETWORK_AGE: Duration = Duration::from_secs(2);
+
+/// The network as last read, read again on a thread of its own: the
+/// window's thread only takes the last reading.
+#[derive(Clone)]
+pub struct NetworkWatch {
+    source: Arc<dyn Fn() -> Network + Send + Sync>,
+    /// A test's source is asked directly, every time.
+    direct: bool,
+    current: Arc<Mutex<(Network, Option<Instant>)>>,
+    reading: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl NetworkWatch {
+    /// The real network, read off the caller's thread.
+    pub fn new() -> Self {
+        Self {
+            source: Arc::new(read_network),
+            direct: false,
+            current: Arc::new(Mutex::new((Network::default(), None))),
+            reading: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        }
+    }
+
+    /// A network a test says, asked every time.
+    pub fn direct(source: Arc<dyn Fn() -> Network + Send + Sync>) -> Self {
+        Self {
+            source,
+            direct: true,
+            ..Self::new()
+        }
+    }
+
+    /// The network as last read (a test's, as it says now). Never waits.
+    pub fn current(&self) -> Network {
+        if self.direct {
+            return (self.source)();
+        }
+        self.refresh_if_older(NETWORK_AGE);
+        self.current.lock().expect("network").0.clone()
+    }
+
+    /// Whether a reading has come back yet.
+    pub fn known(&self) -> bool {
+        self.direct || self.current.lock().expect("network").1.is_some()
+    }
+
+    fn refresh_if_older(&self, age: Duration) {
+        use std::sync::atomic::Ordering;
+        let stale = self
+            .current
+            .lock()
+            .expect("network")
+            .1
+            .is_none_or(|at| at.elapsed() >= age);
+        if !stale || self.reading.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let source = Arc::clone(&self.source);
+        let current = Arc::clone(&self.current);
+        let reading = Arc::clone(&self.reading);
+        let spawned = std::thread::Builder::new()
+            .name("files-network".to_string())
+            .spawn(move || {
+                let network = source();
+                *current.lock().expect("network") = (network, Some(Instant::now()));
+                reading.store(false, Ordering::Release);
+            });
+        if spawned.is_err() {
+            self.reading.store(false, Ordering::Release);
+        }
+    }
+}
+
+impl Default for NetworkWatch {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// One connection being made.
@@ -1078,8 +1269,6 @@ pub struct Attempts {
     mounter: Arc<dyn Mounter>,
     live: Vec<Attempt>,
     asks: (Sender<Ask>, Receiver<Ask>),
-    /// What a failed attempt asks of the host to say why it failed.
-    host_check: Arc<HostCheck>,
 }
 
 impl Attempts {
@@ -1088,13 +1277,7 @@ impl Attempts {
             mounter,
             live: Vec::new(),
             asks: channel(),
-            host_check: Arc::new(host_state),
         }
-    }
-
-    /// Uses another way of looking at a host after a failure. For tests.
-    pub fn set_host_check(&mut self, check: Arc<HostCheck>) {
-        self.host_check = check;
     }
 
     pub fn set_mounter(&mut self, mounter: Arc<dyn Mounter>) {
@@ -1113,14 +1296,13 @@ impl Attempts {
         let mounter = Arc::clone(&self.mounter);
         let asker = Asker::new(&address, self.asks.0.clone());
         let asked = address.clone();
-        let check = Arc::clone(&self.host_check);
-        let server = remote.clone();
+        // GVfs's own failure is what the page says: a look at the host from
+        // here cannot see an `ssh_config` alias, a jump host or a NetBIOS
+        // name, so it may not overrule GVfs (ticket 310's second review).
         let spawned = std::thread::Builder::new()
             .name("files-server-mount".to_string())
             .spawn(move || {
-                let result = mounter
-                    .connect(&asked, &asker)
-                    .map_err(|error| refine(error, &server, check.as_ref()));
+                let result = mounter.connect(&asked, &asker);
                 let _ = sender.send(result);
             });
         if spawned.is_err() {
@@ -1513,6 +1695,87 @@ mod tests {
         ));
     }
 
+    /// Ticket 310's second review, with the folder names `gvfsd` 1.54 made
+    /// in the sandbox: `smb://127.0.0.1:42245/DATA` and `smb://LOCALHOST…/Data`
+    /// are mounted as `share=data`, `server=localhost`; `sftp://[::1]:42210/`
+    /// as `host=%3A%3A1`. Each address is its mount, so no second mount is
+    /// ever asked for the same share.
+    #[test]
+    fn an_address_matches_the_mount_name_gvfs_folds_it_to() {
+        let mount = |name: &str| Remote::from_gvfs_path(&root().join(name), &root()).unwrap();
+        let address = |text: &str| Remote::from_address(text).unwrap();
+        assert!(
+            address("smb://127.0.0.1:42245/DATA")
+                .is_mounted_as(&mount("smb-share:port=42245,server=127.0.0.1,share=data"))
+        );
+        assert!(
+            address("smb://LOCALHOST:42245/Data")
+                .is_mounted_as(&mount("smb-share:port=42245,server=localhost,share=data"))
+        );
+        assert!(
+            address("sftp://[::1]:42210/").is_mounted_as(&mount("sftp:host=%3A%3A1,port=42210"))
+        );
+        // Folding is for what GVfs folds: an SFTP user keeps its case.
+        assert!(!address("sftp://Ann@nas/").is_mounted_as(&mount("sftp:host=nas,user=ann")));
+        // A mount of the IPv6 host is opened by an address with brackets.
+        let six = mount("sftp:host=%3A%3A1,port=42210");
+        assert_eq!(
+            Remote::from_address(&six.address()).map(|remote| remote.is_mounted_as(&six)),
+            Some(true)
+        );
+    }
+
+    /// Ticket 310's second review: two networks are the same only when that
+    /// is known; what cannot be told is another network.
+    #[test]
+    fn networks_are_the_same_only_when_that_is_known() {
+        let network = |connection: Option<&str>, hardware: Option<&str>| Network {
+            routes: "wlp2s0>0101A8C0".into(),
+            connection: connection.map(str::to_string),
+            gateway_hardware: hardware.map(str::to_string),
+        };
+        let home = network(Some("home"), Some("wlp2s0>aa:00:00:00:00:01"));
+        assert!(home.same_as(&home.clone()));
+        // The same gateway address on another Wi-Fi (another profile), or
+        // behind another router.
+        assert!(!home.same_as(&network(Some("cafe"), Some("wlp2s0>aa:00:00:00:00:01"))));
+        assert!(!home.same_as(&network(Some("home"), Some("wlp2s0>aa:00:00:00:00:99"))));
+        // Right after a resume the neighbour table may not have the router
+        // yet: the profile tells.
+        assert!(home.same_as(&network(Some("home"), None)));
+        // With no NetworkManager the router must be known on both sides.
+        assert!(
+            network(None, Some("wlp2s0>aa:00:00:00:00:01"))
+                .same_as(&network(None, Some("wlp2s0>aa:00:00:00:00:01")))
+        );
+        assert!(!network(None, None).same_as(&network(None, None)));
+        assert!(!network(None, Some("wlp2s0>aa:00:00:00:00:01")).same_as(&network(None, None)));
+        // No network is never "the same network".
+        assert!(!Network::default().same_as(&Network::default()));
+        assert!(!home.same_as(&Network::default()));
+    }
+
+    #[test]
+    fn a_gateway_s_hardware_address_is_read_from_the_neighbour_table() {
+        let table = "IP address       HW type     Flags       HW address            Mask     Device\n\
+                     192.168.1.1      0x1         0x2         AA:BB:CC:00:00:01     *        wlp2s0\n\
+                     192.168.1.7      0x1         0x0         00:00:00:00:00:00     *        wlp2s0\n";
+        let gateway = |address: &str| {
+            vec![(
+                "wlp2s0".to_string(),
+                address.parse::<std::net::Ipv4Addr>().unwrap(),
+            )]
+        };
+        assert_eq!(
+            gateway_hardware(&gateway("192.168.1.1"), table),
+            Some("wlp2s0>aa:bb:cc:00:00:01".into())
+        );
+        // An incomplete entry, or none: not known.
+        assert_eq!(gateway_hardware(&gateway("192.168.1.7"), table), None);
+        assert_eq!(gateway_hardware(&gateway("10.0.0.1"), table), None);
+        assert_eq!(gateway_hardware(&[], table), None);
+    }
+
     /// Ticket 310's review: a password typed in an address is never kept.
     #[test]
     fn a_password_in_an_address_never_reaches_the_location_or_the_spec() {
@@ -1521,6 +1784,23 @@ mod tests {
         let remote = address_of("ftp://ann:secret@host/pub");
         assert!(!remote.address().contains("secret"));
         assert_eq!(remote.address(), "ftp://ann@host/pub");
+        // An empty user goes with its `@`: in the stored address, the
+        // identity and the spec GVfs is sent.
+        for typed in ["sftp://:secret@nas/srv", "sftp://@nas/srv"] {
+            let location = Location::parse_uri(typed);
+            assert_eq!(location.to_uri(), "sftp://nas/srv", "{typed}");
+            let remote = Remote::from_location(match &location {
+                Location::Network(network) => network,
+                other => panic!("{other:?}"),
+            })
+            .unwrap();
+            assert_eq!(remote.address(), "sftp://nas/srv");
+            assert!(remote.is_mounted_as(
+                &Remote::from_gvfs_path(&root().join("sftp:host=nas"), &root()).unwrap()
+            ));
+            let spec = crate::gvfs::mount_spec(typed).unwrap();
+            assert!(spec.keys.iter().all(|(key, _)| key != "user"), "{typed}");
+        }
     }
 
     fn address_of(text: &str) -> Remote {
