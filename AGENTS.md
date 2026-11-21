@@ -228,6 +228,17 @@ contract.
   a fact.
 - A container check runs without network: anything APT needs at test time is
   installed into the image when it is built.
+- A sandbox desktop's private bus is started with the sandbox's own `HOME`
+  and settings backend, or with `GTK_THEME` set. A bus from
+  `dbus-run-session` starts the host's services (the portal, `dconf-service`,
+  Better OS's own services) with the environment it was launched with, so
+  they read the person's real settings, and a screenshot then shows the
+  person's theme and accent, not the sandbox's. When the sandbox ends, every
+  process on that bus is found by the bus address in its environment and
+  ended by PID.
+- Run the whole workspace's tests with `--no-fail-fast`. Without it
+  `cargo test --workspace` stops at the first crate that fails and the
+  failures after it are never seen.
 
 ## Handoff
 
