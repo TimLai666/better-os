@@ -1015,18 +1015,41 @@ if [[ "$RELEASE_TARGET" != ubuntu-22.04 ]]; then
         cosmic-idle cosmic-osd cosmic-randr cosmic-settings cosmic-settings-daemon \
         cosmic-theme-bundles pop-sound-theme xdg-desktop-portal-cosmic \
         fcitx5 fcitx5-chewing fcitx5-frontend-gtk3 fcitx5-frontend-gtk4 fcitx5-frontend-qt5 \
-        fcitx5-config-qt xdg-desktop-portal-gtk gnome-keyring playerctl better-launcher; do
+        fcitx5-config-qt xdg-desktop-portal-gtk gnome-keyring playerctl better-launcher \
+        gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
+        libfontconfig1 libwayland-client0 libwayland-egl1 libwayland-cursor0; do
         if ! printf '%s\n' "$session_depends" | grep -Eq "(^|,)[[:space:]]*${required_dependency}([[:space:]]|,|$)"; then
             printf 'Missing runtime dependency for %s: %s\n' "$session_name" "$required_dependency" >&2
             exit 1
         fi
     done
-    if printf '%s\n' "$session_depends" | grep -Eq 'libwayland|libfontconfig|libxkbcommon'; then
-        printf 'Graphics dependency leaked into a package with no window: %s\n' "$session_depends" >&2
-        exit 1
-    fi
     dpkg-deb --extract "$session_path" "$session_extract"
     session_shortcuts="usr/share/better-os/session/cosmic/com.system76.CosmicSettings.Shortcuts/v1"
+    # Better Screenshot (ticket 253): the program, its portal backend, its
+    # D-Bus activation file, and its desktop entry.
+    [[ -x "$session_extract/usr/bin/better-screenshot" ]] || {
+        printf 'better-screenshot is missing or not executable in %s\n' "$session_name" >&2
+        exit 1
+    }
+    if ldd "$session_extract/usr/bin/better-screenshot" | grep -q 'not found'; then
+        printf 'Unresolved dynamic library in better-screenshot\n' >&2
+        exit 1
+    fi
+    grep -qxF 'Exec=/usr/bin/better-screenshot --portal' \
+        "$session_extract/usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.betteros.Screenshot.service" &&
+        grep -qxF 'DBusName=org.freedesktop.impl.portal.desktop.betteros.Screenshot' \
+            "$session_extract/usr/share/xdg-desktop-portal/portals/betteros-screenshot.portal" &&
+        grep -qxF 'org.freedesktop.impl.portal.Screenshot=betteros-screenshot;' \
+            "$session_extract/usr/share/xdg-desktop-portal/betteros-portals.conf" || {
+        printf 'The Screenshot portal is not wired to Better Screenshot\n' >&2
+        exit 1
+    }
+    if ((DESKTOP_VALIDATE)); then
+        desktop-file-validate "$session_extract/usr/share/applications/io.betteros.Screenshot.desktop" || {
+            printf 'Invalid desktop entry for Better Screenshot\n' >&2
+            exit 1
+        }
+    fi
     for required_file in \
         usr/libexec/better-os/session/start \
         usr/share/wayland-sessions/better-os.desktop \

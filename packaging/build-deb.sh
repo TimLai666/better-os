@@ -133,7 +133,8 @@ cargo build --release \
     -p storage-service \
     -p storage-platform \
     -p window-attention-service \
-    -p session-launcher
+    -p session-launcher \
+    -p screenshot-gui
 
 TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT_DIR/target}"
 BUILD_DIR="$TARGET_DIR/release"
@@ -1223,7 +1224,12 @@ make_package better-storage \
 # session's keys run are Depends too (crates/session-launcher/tests/shortcuts.rs).
 if [[ "$RELEASE_TARGET" != ubuntu-22.04 ]]; then
     SESSION_SHORTCUTS="cosmic/com.system76.CosmicSettings.Shortcuts/v1"
-    PACKAGE_BINARIES=("better-os-session:usr/libexec/better-os/session/start")
+    PACKAGE_BINARIES=(
+        "better-os-session:usr/libexec/better-os/session/start"
+        # Better Screenshot (ticket 253): Print Screen and the Screenshot
+        # portal in the session.
+        "better-screenshot:usr/bin/better-screenshot"
+    )
     PACKAGE_DATA=(
         "packaging/session/better-os.desktop:usr/share/wayland-sessions/better-os.desktop"
         "packaging/session/better-os-session.target:usr/lib/systemd/user/better-os-session.target"
@@ -1240,11 +1246,14 @@ if [[ "$RELEASE_TARGET" != ubuntu-22.04 ]]; then
         "packaging/session/betteros-portals.conf:usr/share/xdg-desktop-portal/betteros-portals.conf"
         "packaging/session/$SESSION_SHORTCUTS/defaults:usr/share/better-os/session/$SESSION_SHORTCUTS/defaults"
         "packaging/session/$SESSION_SHORTCUTS/system_actions:usr/share/better-os/session/$SESSION_SHORTCUTS/system_actions"
+        "packaging/screenshot/betteros-screenshot.portal:usr/share/xdg-desktop-portal/portals/betteros-screenshot.portal"
+        "packaging/screenshot/org.freedesktop.impl.portal.desktop.betteros.Screenshot.service:usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.betteros.Screenshot.service"
+        "packaging/screenshot/io.betteros.Screenshot.desktop:usr/share/applications/io.betteros.Screenshot.desktop"
     )
-    # Ticket 253 adds Better Screenshot here: its binary, its three files
-    # under packaging/screenshot/, and gstreamer1.0-plugins-base and
-    # gstreamer1.0-plugins-good to the Depends.
     PACKAGE_DEPENDS=(
+        # Better Screenshot is a window, and records through GStreamer:
+        # appsrc, videoconvert, playbin (base); vp8enc, webmmux (good).
+        "$GRAPHICS_DEPENDS" "gstreamer1.0-plugins-base" "gstreamer1.0-plugins-good"
         "adw-gtk3" "cosmic-bg" "cosmic-comp" "cosmic-greeter" "cosmic-greeter-daemon"
         "cosmic-icons" "cosmic-idle" "cosmic-osd" "cosmic-randr" "cosmic-settings"
         "cosmic-settings-daemon" "cosmic-theme-bundles" "pop-sound-theme"

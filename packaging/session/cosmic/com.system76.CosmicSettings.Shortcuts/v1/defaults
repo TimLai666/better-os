@@ -9,7 +9,11 @@
 //   to the focused window instead of doing nothing: Super+A (AppLibrary, the
 //   owner's decision S3, ticket 210), Alt+Tab, Alt+Shift+Tab, Super+Tab,
 //   Super+Shift+Tab (window switcher, ticket 211), Super+W and XF86LaunchA
-//   (overview, ticket 212), Print (screenshot, ticket 253).
+//   (overview, ticket 212).
+// - GNOME's screenshot keys for Better Screenshot (ticket 253): Print opens
+//   the interface (System(Screenshot)), Shift+Print takes the whole screen,
+//   Alt+Print the focused window, Ctrl+Shift+Alt+R starts and stops a
+//   recording.
 //
 // A person's own changes go to ~/.config/cosmic/com.system76.CosmicSettings.Shortcuts/v1/custom,
 // which cosmic-comp lays over this file.
@@ -119,6 +123,11 @@
     (modifiers: [Super], key: "space"): System(Launcher),
     (modifiers: [Super], key: "slash"): System(Launcher),
     (modifiers: [Super]): System(Launcher),
+
+    (modifiers: [], key: "Print"): System(Screenshot),
+    (modifiers: [Shift], key: "Print"): Spawn("better-screenshot --screen"),
+    (modifiers: [Alt], key: "Print"): Spawn("better-screenshot --window"),
+    (modifiers: [Ctrl, Shift, Alt], key: "r"): Spawn("better-screenshot --record"),
 
     (modifiers: [], key: "XF86AudioRaiseVolume"): System(VolumeRaise),
     (modifiers: [], key: "XF86AudioLowerVolume"): System(VolumeLower),

@@ -23,6 +23,7 @@ pub mod applications;
 pub mod bus_activation;
 pub mod dconf;
 pub mod dconf_profile;
+pub mod dconf_stack;
 #[cfg(feature = "dconf-write")]
 pub mod dconf_writer;
 pub mod gsettings;

@@ -89,7 +89,18 @@ pub fn programs_by_package() -> Vec<(String, String)> {
     let mut rest = script.as_str();
     while let Some(start) = rest.find("PACKAGE_BINARIES=(") {
         let block = &rest[start..];
-        let end = block.find(')').expect("the list ends");
+        // The list ends at a ')' that closes it: at the end of its first line
+        // (a one-line list) or alone on a line; a ')' in a comment does not.
+        let first_line = block.lines().next().unwrap();
+        let end = if first_line.trim_end().ends_with(')') {
+            first_line.trim_end().len() - 1
+        } else {
+            block
+                .find("\n    )")
+                .or_else(|| block.find("\n)"))
+                .expect("the list ends")
+                + 1
+        };
         let list = &block[..end];
         let after = &block[end..];
         let package = after

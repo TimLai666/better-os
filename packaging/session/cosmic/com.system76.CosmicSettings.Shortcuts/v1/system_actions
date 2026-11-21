@@ -13,9 +13,8 @@
 //
 // Actions with no Better OS program yet are left out, and no key binds them:
 // AppLibrary (Super+A, the owner's decision S3, ticket 210), WindowSwitcher
-// and WindowSwitcherPrevious (Alt+Tab, ticket 211), WorkspaceOverview
-// (Super+W, ticket 212), and Screenshot (Print, ticket 253, which adds
-// `Screenshot: "better-screenshot"` here).
+// and WindowSwitcherPrevious (Alt+Tab, ticket 211), and WorkspaceOverview
+// (Super+W, ticket 212).
 {
     BrightnessDown: "busctl --user call com.system76.CosmicSettingsDaemon /com/system76/CosmicSettingsDaemon com.system76.CosmicSettingsDaemon DecreaseDisplayBrightness",
     BrightnessUp: "busctl --user call com.system76.CosmicSettingsDaemon /com/system76/CosmicSettingsDaemon com.system76.CosmicSettingsDaemon IncreaseDisplayBrightness",
@@ -33,6 +32,8 @@
     PlayNext: "playerctl next",
     PlayPrev: "playerctl previous",
     PowerOff: "cosmic-osd shutdown",
+    // Better Screenshot (ticket 253): Print opens its interface.
+    Screenshot: "better-screenshot",
     Suspend: "systemctl suspend",
     ScreenReader: "busctl --user call com.system76.CosmicSettingsDaemon /com/system76/CosmicSettingsDaemon com.system76.CosmicSettingsDaemon ScreenReader",
     // The machine's default terminal (Debian's alternative), since COSMIC's

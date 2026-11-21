@@ -347,8 +347,9 @@ both allow, and the package's `copyright` is the GPL-3.0 text. Each file
 says at its top what it derives from and what changed;
 `packaging/session/cosmic/upstream.tsv` records the upstream files, their
 versions, licenses, and hashes, and `packaging/generate-third-party-notices.sh`
-lists them in the shipped `THIRD-PARTY-LICENSES.md` ("Data files derived from
-other projects"). No obligation beyond keeping those notices.
+lists them in the shipped `THIRD-PARTY-LICENSES.md` ("Files copied into the
+source tree", beside ticket 253's vendored protocol files). No obligation
+beyond keeping those notices.
 
 ## Libraries loaded at run time
 

@@ -32,7 +32,6 @@ const WAITING: &[(&str, &str)] = &[
     ("WindowSwitcher", "ticket 211"),
     ("WindowSwitcherPrevious", "ticket 211"),
     ("WorkspaceOverview", "ticket 212"),
-    ("Screenshot", "ticket 253"),
 ];
 
 /// The programs COSMIC's own defaults name that the closure does not install
@@ -124,7 +123,12 @@ fn every_command_runs_a_program_the_session_installs() {
     // depends on the package that does: any other package may be missing.
     let better_os = programs_by_package();
     let depends = session_depends();
-    for (name, command) in system_actions() {
+    // The system actions' commands, and the keys that spawn a command.
+    let spawned = bindings().into_iter().filter_map(|(binding, action)| {
+        let command = action.strip_prefix("Spawn(\"")?.strip_suffix("\")")?;
+        Some((binding, command.to_string()))
+    });
+    for (name, command) in system_actions().into_iter().chain(spawned) {
         let program = command.split_whitespace().next().unwrap();
         assert!(
             !NOT_INSTALLED.contains(&program),
@@ -239,6 +243,46 @@ fn logging_out_goes_through_the_launcher() {
         Some("cosmic-osd log-out")
     );
     assert!(session_launcher::callers::COSMIC_EXIT_CALLERS.contains(&"/usr/bin/cosmic-osd"));
+}
+
+#[test]
+fn gnomes_screenshot_keys_reach_better_screenshot() {
+    // Ticket 253: Print opens the interface, Shift+Print the whole screen,
+    // Alt+Print the focused window, Ctrl+Shift+Alt+R a recording.
+    assert_eq!(
+        system_actions().get("Screenshot").map(String::as_str),
+        Some("better-screenshot")
+    );
+    let bindings = bindings();
+    for (binding, action) in [
+        ("(modifiers: [], key: \"Print\")", "System(Screenshot)"),
+        (
+            "(modifiers: [Shift], key: \"Print\")",
+            "Spawn(\"better-screenshot --screen\")",
+        ),
+        (
+            "(modifiers: [Alt], key: \"Print\")",
+            "Spawn(\"better-screenshot --window\")",
+        ),
+        (
+            "(modifiers: [Ctrl, Shift, Alt], key: \"r\")",
+            "Spawn(\"better-screenshot --record\")",
+        ),
+    ] {
+        assert!(
+            bindings
+                .iter()
+                .any(|(bound, act)| bound == binding && act == action),
+            "{binding} runs {action}"
+        );
+    }
+    let portals = read("packaging/session/betteros-portals.conf");
+    assert!(
+        portals
+            .lines()
+            .any(|line| line == "org.freedesktop.impl.portal.Screenshot=betteros-screenshot;"),
+        "the Screenshot portal is Better Screenshot's"
+    );
 }
 
 #[test]

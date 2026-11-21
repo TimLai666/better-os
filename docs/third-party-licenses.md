@@ -10,11 +10,11 @@ It does not replace the license text supplied by each upstream project.
 ## Review summary
 
 - Root project license: `GPL-3.0-or-later`.
-- Resolved Cargo packages: 985.
-- Packages with an SPDX license expression: 983.
+- Resolved Cargo packages: 988.
+- Packages with an SPDX license expression: 986.
 - Packages with only a license-file field: 0.
 - Packages without package-level license metadata: 2.
-- `Cargo.lock` SHA-256: `fde5bef2ae4b3306d6171ff268e972d380c49ffd58713c3376d741f559b56be7`.
+- `Cargo.lock` SHA-256: `a36e1f3f09f80b3ef766de7dc88a1e09d0a765fdf17fee89a9c3b7129bfbf161`.
 
 The 2 package(s) without package-level license metadata are
 listed separately below. Their pinned upstream checkout contains both
@@ -28,7 +28,7 @@ source of truth for those packages.
 | `MIT OR Apache-2.0` | 424 |
 | `MIT` | 203 |
 | `Apache-2.0 OR MIT` | 79 |
-| `GPL-3.0-or-later` | 73 |
+| `GPL-3.0-or-later` | 76 |
 | `MIT/Apache-2.0` | 41 |
 | `Apache-2.0` | 32 |
 | `Unicode-3.0` | 18 |
@@ -136,6 +136,9 @@ Better OS does not relicense or silently select a different expression.
 | `patch-platform` | `0.2.16` | `GPL-3.0-or-later` | workspace |
 | `r-efi` | `5.3.0` | `MIT OR Apache-2.0 OR LGPL-2.1-or-later` | [crates.io](https://crates.io/crates/r-efi/5.3.0) |
 | `r-efi` | `6.0.0` | `MIT OR Apache-2.0 OR LGPL-2.1-or-later` | [crates.io](https://crates.io/crates/r-efi/6.0.0) |
+| `screenshot-capture` | `0.2.16` | `GPL-3.0-or-later` | workspace |
+| `screenshot-core` | `0.2.16` | `GPL-3.0-or-later` | workspace |
+| `screenshot-gui` | `0.2.16` | `GPL-3.0-or-later` | workspace |
 | `self_cell` | `1.3.0` | `Apache-2.0 OR GPL-2.0-only` | [crates.io](https://crates.io/crates/self_cell/1.3.0) |
 | `session-launcher` | `0.2.16` | `GPL-3.0-or-later` | workspace |
 | `storage-core` | `0.2.16` | `GPL-3.0-or-later` | workspace |
@@ -165,23 +168,13 @@ keeps its own license.
 
 | Library | Distribution packages | License | Used by |
 | --- | --- | --- | --- |
-| GStreamer core, base and app/video libraries | `libgstreamer1.0-0`, `libgstreamer-plugins-base1.0-0` | `LGPL-2.1-or-later` | `better-files-preview`: audio and video playback, through the `gstreamer`, `gstreamer-app` and `gstreamer-video` bindings (`MIT OR Apache-2.0`) |
-| GStreamer base plugins | `gstreamer1.0-plugins-base` | `LGPL-2.1-or-later` | `better-files-preview`: `playbin` and the format converters, loaded at run time |
+| GStreamer core, base and app/video libraries | `libgstreamer1.0-0`, `libgstreamer-plugins-base1.0-0` | `LGPL-2.1-or-later` | `better-files-preview`: audio and video playback; `better-screenshot`: screen recording and the shutter sound; both through the `gstreamer`, `gstreamer-app` and `gstreamer-video` bindings (`MIT OR Apache-2.0`) |
+| GStreamer base plugins | `gstreamer1.0-plugins-base` | `LGPL-2.1-or-later` | `better-files-preview` and `better-screenshot`: `playbin`, `appsrc`, and the format converters, loaded at run time |
+| GStreamer good plugins | `gstreamer1.0-plugins-good` | `LGPL-2.1-or-later` | `better-screenshot`: `vp8enc` and `webmmux` for screen recordings, loaded at run time |
 | GLib and GObject | `libglib2.0-0` (`libglib2.0-0t64` on Ubuntu 24.04) | `LGPL-2.1-or-later` | the GStreamer bindings above, and GTK 4 below |
 | GTK 4 | `libgtk-4-1` (recommended) | `LGPL-2.1-or-later` | every window (`better-ui`): loaded at run time with `dlopen`, never linked, to draw the window frame, shadow, and window buttons from the desktop theme; without it the window draws Adwaita's frame itself |
 | libadwaita | `libadwaita-1-0` (recommended) | `LGPL-2.1-or-later` | every window (`better-ui`): loaded at run time with `dlopen` when installed, so the frame matches GNOME's own applications |
 | Cairo | `libcairo2`, through GTK 4 | `LGPL-2.1-only OR MPL-1.1` | every window (`better-ui`): the image surfaces GTK draws the frame into, reached through the loaded GTK 4 |
-
-## Data files derived from other projects
-
-These are configuration files, not code, shipped in the package named.
-Each is a changed copy of another project's file and keeps that file's
-license; the changes are listed at the top of each file.
-
-| Shipped file | Package | Derived from | License |
-| --- | --- | --- | --- |
-| `/usr/share/better-os/session/cosmic/com.system76.CosmicSettings.Shortcuts/v1/defaults` | `better-os-session` | [/usr/share/cosmic/com.system76.CosmicSettings.Shortcuts/v1/defaults](https://github.com/pop-os/cosmic-comp/blob/6968c5d81901f110911aaa526af1a46fc9f360ed/data/keybindings.ron), the `cosmic-comp` package at `0.1~1795167359~24.04~6968c5d` | `GPL-3.0-only` |
-| `/usr/share/better-os/session/cosmic/com.system76.CosmicSettings.Shortcuts/v1/system_actions` | `better-os-session` | [/usr/share/cosmic/com.system76.CosmicSettings.Shortcuts/v1/system_actions](https://github.com/pop-os/cosmic-settings-daemon/blob/a8d9d84cd1c13af510a20dc0f4ab1156c5726515/data/system_actions.ron), the `cosmic-settings-daemon` package at `1.11.0~1794421662~24.04~a8d9d84` | `GPL-3.0-or-later` |
 
 ## Package inventory
 
@@ -833,6 +826,9 @@ license; the changes are listed at the top of each file.
 | `scopeguard` | `1.2.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/scopeguard/1.2.0) |
 | `screencapturekit` | `0.2.8` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/screencapturekit/0.2.8) |
 | `screencapturekit-sys` | `0.2.8` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/screencapturekit-sys/0.2.8) |
+| `screenshot-capture` | `0.2.16` | `GPL-3.0-or-later` | workspace |
+| `screenshot-core` | `0.2.16` | `GPL-3.0-or-later` | workspace |
+| `screenshot-gui` | `0.2.16` | `GPL-3.0-or-later` | workspace |
 | `seahash` | `4.1.0` | `MIT` | [crates.io](https://crates.io/crates/seahash/4.1.0) |
 | `security-framework` | `3.7.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/security-framework/3.7.0) |
 | `security-framework-sys` | `2.17.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/security-framework-sys/2.17.0) |
@@ -1179,3 +1175,80 @@ license; the changes are listed at the top of each file.
 | --- | --- | --- | --- |
 | `gpui_shared_string` | `0.1.0` | `git+https://github.com/TimLai666/zed?rev=f05b2a9790aefeca74b4df38489d568d08ab3b4d#f05b2a9790aefeca74b4df38489d568d08ab3b4d` | Pinned upstream Zed workspace package has no package-level license metadata; retain the upstream GPL/APACHE notices and review file-level markings. |
 | `gpui_util` | `0.1.0` | `git+https://github.com/TimLai666/zed?rev=f05b2a9790aefeca74b4df38489d568d08ab3b4d#f05b2a9790aefeca74b4df38489d568d08ab3b4d` | Pinned upstream Zed workspace package has no package-level license metadata; retain the upstream GPL/APACHE notices and review file-level markings. |
+
+## Files copied into the source tree
+
+These files are copied from other projects: verbatim and compiled into the
+programs named, or changed and shipped as data in the package named. Each
+keeps its own license; the notice each carries is reproduced here as that
+license requires.
+
+### `crates/screenshot-capture/protocols/cosmic-toplevel-info-unstable-v1.xml`
+
+From `cosmic-protocols` (https://github.com/pop-os/cosmic-protocols), compiled into `better-screenshot`.
+
+```text
+Copyright © 2018 Ilia Bozhinov
+Copyright © 2020 Isaac Freund
+Copyright © 2024 Victoria Brekenfeld
+
+Permission to use, copy, modify, distribute, and sell this
+software and its documentation for any purpose is hereby granted
+without fee, provided that the above copyright notice appear in
+all copies and that both that copyright notice and this permission
+notice appear in supporting documentation, and that the name of
+the copyright holders not be used in advertising or publicity
+pertaining to distribution of the software without specific,
+written prior permission.  The copyright holders make no
+representations about the suitability of this software for any
+purpose.  It is provided "as is" without express or implied
+warranty.
+
+THE COPYRIGHT HOLDERS DISCLAIM ALL WARRANTIES WITH REGARD TO THIS
+SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND
+FITNESS, IN NO EVENT SHALL THE COPYRIGHT HOLDERS BE LIABLE FOR ANY
+SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
+AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION,
+ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
+THIS SOFTWARE.
+```
+
+### `crates/screenshot-capture/protocols/cosmic-workspace-unstable-v1.xml`
+
+From `cosmic-protocols` (https://github.com/pop-os/cosmic-protocols), compiled into `better-screenshot`.
+
+```text
+Copyright © 2019 Christopher Billington
+Copyright © 2020 Ilia Bozhinov
+Copyright © 2022 Victoria Brekenfeld
+
+Permission to use, copy, modify, distribute, and sell this
+software and its documentation for any purpose is hereby granted
+without fee, provided that the above copyright notice appear in
+all copies and that both that copyright notice and this permission
+notice appear in supporting documentation, and that the name of
+the copyright holders not be used in advertising or publicity
+pertaining to distribution of the software without specific,
+written prior permission.  The copyright holders make no
+representations about the suitability of this software for any
+purpose.  It is provided "as is" without express or implied
+warranty.
+
+THE COPYRIGHT HOLDERS DISCLAIM ALL WARRANTIES WITH REGARD TO THIS
+SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND
+FITNESS, IN NO EVENT SHALL THE COPYRIGHT HOLDERS BE LIABLE FOR ANY
+SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
+AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION,
+ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
+THIS SOFTWARE.
+```
+
+### `packaging/session/cosmic/com.system76.CosmicSettings.Shortcuts/v1/defaults`
+
+A changed copy of [`data/keybindings.ron`](https://github.com/pop-os/cosmic-comp/blob/6968c5d81901f110911aaa526af1a46fc9f360ed/data/keybindings.ron) (System76, `GPL-3.0-only`), as the `cosmic-comp` package 0.1~1795167359~24.04~6968c5d installs it at `/usr/share/cosmic/com.system76.CosmicSettings.Shortcuts/v1/defaults`; shipped as data in `better-os-session` at `/usr/share/better-os/session/cosmic/com.system76.CosmicSettings.Shortcuts/v1/defaults`. The upstream file carries no notice of its own; the changes are listed at the top of the shipped file.
+
+### `packaging/session/cosmic/com.system76.CosmicSettings.Shortcuts/v1/system_actions`
+
+A changed copy of [`data/system_actions.ron`](https://github.com/pop-os/cosmic-settings-daemon/blob/a8d9d84cd1c13af510a20dc0f4ab1156c5726515/data/system_actions.ron) (System76, `GPL-3.0-or-later`), as the `cosmic-settings-daemon` package 1.11.0~1794421662~24.04~a8d9d84 installs it at `/usr/share/cosmic/com.system76.CosmicSettings.Shortcuts/v1/system_actions`; shipped as data in `better-os-session` at `/usr/share/better-os/session/cosmic/com.system76.CosmicSettings.Shortcuts/v1/system_actions`. The upstream file carries no notice of its own; the changes are listed at the top of the shipped file.
