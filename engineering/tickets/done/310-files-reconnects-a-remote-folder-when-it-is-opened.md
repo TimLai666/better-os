@@ -220,9 +220,20 @@ open comes back by itself".
   network refusal would have shown `OtherNetwork`). Cause: right after the
   remount GVfs's FUSE folder can answer "not found" for a moment, and the
   tab opened the folder above at once. The climb now looks at the folder
-  again three times, 0.5 s apart, first
+  again every 0.5 s for up to 5 s first
   (`a_folder_that_is_not_found_for_a_moment_is_not_left`). The network rule
   was changed too, as decided: unreadable facts are no change. The
-  real-server test prints the network reading before and after the drop.
+  real-server test prints the network reading before and after the drop;
+  CI's runner reads `routes "enp39s0>0180000A", connection None,
+  gateway_hardware Some(…)`, the same before and after.
+- CI on `90a42a38`: one `rust` run failed one step earlier, "the favourite
+  opens after the server is back: None", the same signature; not
+  reproduced here in four whole-suite runs and a one-core run. Reading the
+  paths that end with no wait and the folder not shown: a climb that found
+  nothing (not even the mount's own folder) did nothing, leaving the tab on
+  "not found" with nothing waiting; it now connects again
+  (`a_climb_that_finds_nothing_connects_again`), and the re-check lasts
+  5 s. Every message of the real-server test now says the wait, location,
+  listing, notice and GVfs's folders, so another failure names its cause.
 - Not seen: the "another network" page on screen (the sandbox cannot change
   the network), NetworkManager's UUID on a real Wi-Fi change.

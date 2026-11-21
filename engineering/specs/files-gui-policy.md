@@ -200,7 +200,11 @@ not connect" with GVfs's words underneath; a stopped `smbd` gives
 three seen in the sandbox), and "the share is not there" therefore only comes
 from a server that answered. A mount with no share (SFTP) never names one:
 it says the folder is not there. A folder that is gone on a server that did
-connect opens the nearest folder above it that is there, and says so.
+connect opens the nearest folder above it that is there, and says so; it is
+looked at again every 0.5 s for up to 5 s first, because GVfs's FUSE folder
+can say "not found" for a moment right after a mount is made again (seen in
+CI). When not even the mount's own folder is there, that is the connection:
+the tab connects again.
 
 **A connection that drops while a folder is open comes back by itself.**
 This is the owner's line above, and the one rule for retries (decided

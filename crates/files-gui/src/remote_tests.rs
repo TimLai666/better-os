@@ -1008,6 +1008,30 @@ fn a_folder_that_is_not_found_for_a_moment_is_not_left() {
     );
 }
 
+/// When not even the mount's own folder answers while the nearest folder
+/// above is looked for, that is the connection: the tab connects again and
+/// comes back, never stays on "not found" with nothing waiting (a CI run of
+/// ticket 310's second round ended there).
+#[test]
+fn a_climb_that_finds_nothing_connects_again() {
+    let world = world();
+    let shown = world.server(NAS, &["srv"]);
+    let mut session = session(&world);
+    session.mount_server("sftp://nas/srv".into());
+    assert!(pump_until(&mut session, |s| shows(s, &shown.join("srv"))));
+    // The mount's folder read as missing for a moment (the mount list
+    // still names it, so nothing else would start a wait).
+    session.climb_found_nothing_for_tests();
+    assert!(
+        pump_for(&mut session, RETRY_WAIT, |s| s.link().is_none()
+            && shows(s, &shown.join("srv"))),
+        "{:?} at {:?}",
+        session.link().map(|link| &link.state),
+        session.location()
+    );
+    assert_eq!(world.calls(), 2, "it connected again");
+}
+
 /// Ticket 310's second review: GVfs says nothing that tells a mount let go
 /// elsewhere from a server that went away, and Better Files unmounts no
 /// server itself, so an open folder whose mount left comes back by itself,

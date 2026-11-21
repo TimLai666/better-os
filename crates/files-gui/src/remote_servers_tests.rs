@@ -631,6 +631,27 @@ fn shows(session: &FilesSession, folder: &Path) -> bool {
         )
 }
 
+/// Where the tab is, for a failure's message: its wait, its location, its
+/// listing, the notice, and GVfs's folders.
+fn where_(session: &FilesSession) -> String {
+    format!(
+        "wait {:?}, at {:?}, listing {:?}, notice {:?}, mounts {:?}",
+        state(session),
+        session.location(),
+        session.pane().model().status(),
+        session.notice,
+        session
+            .remote
+            .gvfs_root
+            .as_ref()
+            .and_then(|root| fs::read_dir(root).ok())
+            .map(|entries| entries
+                .flatten()
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .collect::<Vec<_>>())
+    )
+}
+
 fn names(session: &FilesSession) -> Vec<String> {
     let mut names: Vec<String> = session
         .pane()
@@ -700,7 +721,7 @@ fn real_sftp_and_smb_servers_connect_again_when_their_folder_is_opened() {
             })
         )),
         "a server that is away: {:?}",
-        state(&session)
+        where_(&session)
     );
     eprintln!("ticket-310: server away -> {:?}", state(&session));
     session.navigate_to(Location::local(sandbox.home.join("Documents")).unwrap());
@@ -713,7 +734,7 @@ fn real_sftp_and_smb_servers_connect_again_when_their_folder_is_opened() {
             &sandbox.sftp_folder(&projects)
         )),
         "the favourite opens after the server is back: {:?}",
-        state(&session)
+        where_(&session)
     );
 
     // --- A connection that drops while the folder is open comes back to the
@@ -733,7 +754,7 @@ fn real_sftp_and_smb_servers_connect_again_when_their_folder_is_opened() {
             Some(LinkState::Connecting { again: true })
         )),
         "it says it is connecting again: {:?}",
-        state(&session)
+        where_(&session)
     );
     sandbox.start_sshd().unwrap();
     assert!(
@@ -778,7 +799,7 @@ fn real_sftp_and_smb_servers_connect_again_when_their_folder_is_opened() {
             Some(LinkState::Connecting { again: true })
         )),
         "the alias dropped: {:?}",
-        state(&session)
+        where_(&session)
     );
     // Long enough for GVfs itself to be asked while the server is away.
     let away = Instant::now() + Duration::from_secs(8);
@@ -799,7 +820,7 @@ fn real_sftp_and_smb_servers_connect_again_when_their_folder_is_opened() {
     }
     eprintln!(
         "ticket-310: alias dropped, server away -> {:?}",
-        state(&session)
+        where_(&session)
     );
     sandbox.start_sshd().unwrap();
     assert!(
@@ -808,7 +829,7 @@ fn real_sftp_and_smb_servers_connect_again_when_their_folder_is_opened() {
             &sandbox.alias_folder(&projects)
         )),
         "the alias came back by itself: {:?}",
-        state(&session)
+        where_(&session)
     );
     // Opened while its server is away: GVfs's own reason.
     session.navigate_to(Location::local(sandbox.home.join("Documents")).unwrap());
@@ -823,11 +844,11 @@ fn real_sftp_and_smb_servers_connect_again_when_their_folder_is_opened() {
             Some(LinkState::Failed { .. })
         )),
         "the alias away: {:?}",
-        state(&session)
+        where_(&session)
     );
     eprintln!(
         "ticket-310: alias opened, server away -> {:?}",
-        state(&session)
+        where_(&session)
     );
     assert!(
         matches!(
@@ -838,7 +859,7 @@ fn real_sftp_and_smb_servers_connect_again_when_their_folder_is_opened() {
             })
         ),
         "{:?}",
-        state(&session)
+        where_(&session)
     );
     sandbox.start_sshd().unwrap();
 
@@ -908,11 +929,11 @@ fn real_sftp_and_smb_servers_connect_again_when_their_folder_is_opened() {
             })
         ),
         "wrong password: {:?}",
-        state(&session)
+        where_(&session)
     );
     eprintln!(
         "ticket-310: wrong SFTP password asked {asked} times -> {:?}",
-        state(&session)
+        where_(&session)
     );
 
     // --- SMB: sign in (a wrong password first), pin, the server stopped and
@@ -971,7 +992,7 @@ fn real_sftp_and_smb_servers_connect_again_when_their_folder_is_opened() {
             &sandbox.smb_folder("/reports")
         )),
         "the SMB favourite opens after its server is back: {:?}",
-        state(&session)
+        where_(&session)
     );
     session.select_by_name("q3.txt");
     session.pump();
@@ -983,7 +1004,7 @@ fn real_sftp_and_smb_servers_connect_again_when_their_folder_is_opened() {
             Some(LinkState::Connecting { again: true })
         )),
         "SMB away while open: {:?}",
-        state(&session)
+        where_(&session)
     );
     sandbox.start_smbd().unwrap();
     assert!(
@@ -992,7 +1013,7 @@ fn real_sftp_and_smb_servers_connect_again_when_their_folder_is_opened() {
             &sandbox.smb_folder("/reports")
         )),
         "SMB came back by itself: {:?}",
-        state(&session)
+        where_(&session)
     );
     assert_eq!(
         session.pane().model().selection().cursor(),
@@ -1154,7 +1175,7 @@ fn a_server_that_stops_answering_never_holds_the_window_up() {
     eprintln!(
         "ticket-310: slowest frame of work with a server that does not answer: {slowest:?}; \
          the tab shows {:?}",
-        state(&session)
+        where_(&session)
     );
     assert!(
         slowest < Duration::from_millis(100),
@@ -1166,7 +1187,7 @@ fn a_server_that_stops_answering_never_holds_the_window_up() {
             Some(LinkState::Connecting { .. } | LinkState::Failed { .. })
         ),
         "{:?}",
-        state(&session)
+        where_(&session)
     );
     end(&frozen, libc::SIGCONT);
 }

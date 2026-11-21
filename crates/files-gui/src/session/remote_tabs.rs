@@ -205,7 +205,7 @@ const GVFS_RETRY_EVERY: Duration = Duration::from_secs(30);
 
 /// How many times, and how often, a folder a server says is not there is
 /// looked at again before the nearest folder above it is opened.
-const CLIMB_RECHECKS: u32 = 3;
+const CLIMB_RECHECKS: u32 = 10;
 const CLIMB_RECHECK_EVERY: Duration = Duration::from_millis(500);
 
 /// How soon a folder that was slow to answer is listed again the first time.
@@ -1535,6 +1535,12 @@ impl FilesSession {
             };
             let gone = pane.location().clone();
             let Some(folder) = folder.and_then(|folder| Location::local(folder).ok()) else {
+                // Not even the mount's own folder is there: that is the
+                // connection, not the folder. The tab connects again rather
+                // than stay on "not found" with nothing waiting.
+                if !self.remote.links.iter().any(|link| link.tab == tab) {
+                    self.begin_link(tab, &gone, false, None);
+                }
                 continue;
             };
             let reader = self.reader.clone();
@@ -1573,6 +1579,16 @@ impl FilesSession {
 
     /// Makes the mount shown at `mount_folder` look like one whose last
     /// probe has not come back.
+    /// A search for the nearest folder above the front tab's that found
+    /// nothing (not even the mount's own folder answered). For tests.
+    #[cfg(test)]
+    pub(crate) fn climb_found_nothing_for_tests(&mut self) {
+        let tab = self.active_tab();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let _ = sender.send(None);
+        self.remote.climbing.push((tab, receiver));
+    }
+
     /// A paste whose connection came, waiting for `location`'s listing in
     /// the front tab. For tests.
     #[cfg(test)]
