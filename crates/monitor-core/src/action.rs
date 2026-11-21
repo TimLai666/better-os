@@ -172,12 +172,23 @@ pub enum ActionRefusal {
     /// The current nice value is unreadable, so no bounded change can be
     /// proven safe.
     CurrentPriorityUnknown,
-    /// Ending this process tree would end something the session stands on:
-    /// an ancestor of Better Monitor itself, the user's service manager
-    /// (`systemd --user`), or a session leader such as the login shell or
-    /// the desktop session. Ending one of those ends far more than the
-    /// person pointed at, so the tree is refused whole.
-    ProtectedTree { pid: u32, name: String },
+    /// A process this tree reaches below its root is one the session stands
+    /// on ([`crate::session::session_role`]), so the tree is refused whole.
+    /// When the root itself is one, the refusal is
+    /// [`ActionRefusal::SessionProcess`] instead.
+    ProtectedTree {
+        pid: u32,
+        name: String,
+        role: crate::session::SessionRole,
+    },
+    /// Ending this (End task, End process tree, or Force stop) would end the
+    /// desktop session itself, or the window that asked: what it is, is
+    /// [`crate::session::SessionRole`] (owner, 2026-11-22).
+    SessionProcess {
+        pid: u32,
+        name: String,
+        role: crate::session::SessionRole,
+    },
 }
 
 /// Whether an action can be offered for a target.
@@ -333,37 +344,6 @@ pub fn unprivileged_availability(
     ActionAvailability::Available
 }
 
-/// One process of a tree an "end process tree" would reach, with what the
-/// kernel says about it.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct TreeMember {
-    pub pid: u32,
-    pub name: String,
-    /// The process leads its session (`sid == pid`): a login shell, a
-    /// terminal's shell, or the desktop session itself.
-    pub session_leader: bool,
-}
-
-/// Whether a process tree may be ended, decided over every member.
-///
-/// `monitor_ancestors` are the processes above Better Monitor, from its
-/// parent up; ending any of them ends the window that asked. A process named
-/// `systemd` that is not PID 1 is the user's service manager. A session
-/// leader is the root of a login. Any of the three refuses the whole tree.
-pub fn tree_refusal(members: &[TreeMember], monitor_ancestors: &[u32]) -> Option<ActionRefusal> {
-    members
-        .iter()
-        .find(|member| {
-            monitor_ancestors.contains(&member.pid)
-                || (member.name == "systemd" && member.pid != 1)
-                || member.session_leader
-        })
-        .map(|member| ActionRefusal::ProtectedTree {
-            pid: member.pid,
-            name: member.name.clone(),
-        })
-}
-
 /// Controllers that exist so tests can drive every path without a real
 /// process.
 pub mod testing {
@@ -446,44 +426,6 @@ pub mod testing {
 mod tests {
     use super::testing::RecordingController;
     use super::*;
-
-    fn member(pid: u32, name: &str, session_leader: bool) -> TreeMember {
-        TreeMember {
-            pid,
-            name: name.into(),
-            session_leader,
-        }
-    }
-
-    #[test]
-    fn a_tree_holding_the_session_or_the_monitor_is_refused_whole() {
-        let plain = [member(40, "bash-child", false), member(41, "make", false)];
-        assert_eq!(tree_refusal(&plain, &[30, 1]), None);
-        // An ancestor of the monitor.
-        let above = [
-            member(41, "make", false),
-            member(30, "gnome-terminal", false),
-        ];
-        assert_eq!(
-            tree_refusal(&above, &[30, 1]),
-            Some(ActionRefusal::ProtectedTree {
-                pid: 30,
-                name: "gnome-terminal".into()
-            })
-        );
-        // The user's service manager.
-        let manager = [member(2200, "systemd", false)];
-        assert!(tree_refusal(&manager, &[]).is_some());
-        // A session leader.
-        let login = [member(41, "make", false), member(39, "bash", true)];
-        assert_eq!(
-            tree_refusal(&login, &[]),
-            Some(ActionRefusal::ProtectedTree {
-                pid: 39,
-                name: "bash".into()
-            })
-        );
-    }
 
     fn target() -> ProcessTarget {
         ProcessTarget::new(4242, "gedit")
