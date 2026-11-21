@@ -57,24 +57,39 @@ fn write_avi(path: &Path) {
     pipeline.set_state(gst::State::Null).unwrap();
 }
 
+/// Three seconds of 160x120 VP8 at ten frames a second with one key frame,
+/// at the start: a seek to the nearest key frame would land back at zero.
+fn write_sparse_webm(path: &Path) {
+    gst::init().unwrap();
+    let pipeline = gst::parse::launch(&format!(
+        "videotestsrc num-buffers=30 ! video/x-raw,width=160,height=120,framerate=10/1 \
+         ! vp8enc keyframe-max-dist=1000 deadline=1 ! webmmux ! filesink location={}",
+        path.display()
+    ))
+    .expect("GStreamer's good plugins (vpx, matroska) are installed");
+    pipeline.set_state(gst::State::Playing).unwrap();
+    for message in pipeline
+        .bus()
+        .unwrap()
+        .iter_timed(gst::ClockTime::from_seconds(20))
+    {
+        match message.view() {
+            gst::MessageView::Eos(_) => break,
+            gst::MessageView::Error(error) => panic!("encoding failed: {}", error.error()),
+            _ => {}
+        }
+    }
+    pipeline.set_state(gst::State::Null).unwrap();
+}
+
 /// Polls until `done` says so or ten seconds pass; returns every event.
 fn run_until(
     player: &mut Player,
-    done: impl FnMut(&Player, &[MediaEvent]) -> bool,
-) -> Vec<MediaEvent> {
-    run_until_within(player, Duration::from_secs(10), done)
-}
-
-/// `run_until` with its own deadline, for work whose cost grows with the
-/// machine's speed rather than with the file.
-fn run_until_within(
-    player: &mut Player,
-    deadline: Duration,
     mut done: impl FnMut(&Player, &[MediaEvent]) -> bool,
 ) -> Vec<MediaEvent> {
     let started = Instant::now();
     let mut events = Vec::new();
-    while started.elapsed() < deadline {
+    while started.elapsed() < Duration::from_secs(10) {
         events.extend(player.poll());
         if done(player, &events) {
             break;
@@ -161,15 +176,14 @@ fn pause_holds_the_position_and_seek_moves_it() {
     run_until(&mut player, |player, _| player.duration().is_some());
 
     player.seek(Duration::from_millis(2_000));
-    // One key frame for the whole file, so an exact seek decodes every frame
-    // before the target; on a two-core CI runner that took longer than the
-    // ordinary ten seconds. The assertion below is what the test is about.
-    run_until_within(&mut player, Duration::from_secs(60), |player, _| {
+    let events = run_until(&mut player, |player, _| {
         player
             .position()
             .is_some_and(|at| at >= Duration::from_millis(1_900))
     });
-    let at = player.position().unwrap();
+    let at = player
+        .position()
+        .unwrap_or_else(|| panic!("no position after the seek; events {events:?}"));
     assert!(
         (1_900..=2_100).contains(&at.as_millis()),
         "seek landed at {at:?}"
@@ -256,47 +270,48 @@ fn a_video_shows_its_first_frame_paused_and_new_frames_while_playing() {
     assert!(player.is_playing());
 }
 
+/// The length is known from the file's header before the pipeline has
+/// finished opening (GStreamer is still linking the decoder to the sinks), so
+/// waiting for it is the same as a person dragging the seek bar the moment it
+/// is enabled. A seek GStreamer was sent then was dropped and the file stayed
+/// at zero, or never finished opening (ticket 258).
 #[test]
 fn a_seek_lands_where_asked_even_between_key_frames() {
-    // Three seconds of VP8 with one key frame, at the start: a seek to the
-    // nearest key frame would land back at zero.
     let (_folder, webm) = scratch("sparse.webm");
-    gst::init().unwrap();
-    let pipeline = gst::parse::launch(&format!(
-        "videotestsrc num-buffers=30 ! video/x-raw,width=160,height=120,framerate=10/1 \
-         ! vp8enc keyframe-max-dist=1000 deadline=1 ! webmmux ! filesink location={}",
-        webm.display()
-    ))
-    .expect("GStreamer's good plugins (vpx, matroska) are installed");
-    pipeline.set_state(gst::State::Playing).unwrap();
-    for message in pipeline
-        .bus()
-        .unwrap()
-        .iter_timed(gst::ClockTime::from_seconds(20))
-    {
-        match message.view() {
-            gst::MessageView::Eos(_) => break,
-            gst::MessageView::Error(error) => panic!("encoding failed: {}", error.error()),
-            _ => {}
-        }
-    }
-    pipeline.set_state(gst::State::Null).unwrap();
-
+    write_sparse_webm(&webm);
     let mut player = Player::open(&webm, AudioOut::Discard, (1920, 1080)).unwrap();
     run_until(&mut player, |player, _| player.duration().is_some());
     player.seek(Duration::from_millis(2_000));
-    // One key frame for the whole file, so an exact seek decodes every frame
-    // before the target; on a two-core CI runner that took longer than the
-    // ordinary ten seconds. The assertion below is what the test is about.
-    run_until_within(&mut player, Duration::from_secs(60), |player, _| {
+    assert_lands_at_two_seconds(&mut player);
+}
+
+/// A seek asked for straight after opening, before GStreamer has linked
+/// anything, is kept and made once the file is open.
+#[test]
+fn a_seek_asked_before_the_file_has_opened_is_made_once_it_has() {
+    let (_folder, webm) = scratch("sparse.webm");
+    write_sparse_webm(&webm);
+    let mut player = Player::open(&webm, AudioOut::Discard, (1920, 1080)).unwrap();
+    player.seek(Duration::from_millis(2_000));
+    assert_lands_at_two_seconds(&mut player);
+}
+
+/// The clip runs at ten frames a second, so a frame lasts 100 ms. An
+/// accurate seek reports the asked-for time itself; a seek to the nearest key
+/// frame would report zero, the clip's only key frame. Within one frame of
+/// the target either side is what "where asked" can mean for a video.
+fn assert_lands_at_two_seconds(player: &mut Player) {
+    let events = run_until(player, |player, _| {
         player
             .position()
             .is_some_and(|at| at >= Duration::from_millis(1_500))
     });
-    let at = player.position().unwrap();
+    let at = player
+        .position()
+        .unwrap_or_else(|| panic!("no position after the seek; events {events:?}"));
     assert!(
         (1_900..=2_100).contains(&at.as_millis()),
-        "seek landed at {at:?}"
+        "seek landed at {at:?}; events {events:?}"
     );
 }
 
