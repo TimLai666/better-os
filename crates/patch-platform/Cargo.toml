@@ -9,6 +9,10 @@ license.workspace = true
 # The session's desktop, read the one way the suite reads it.
 better-core.workspace = true
 patch-core.workspace = true
+# The USB-C entries (ticket 101): the decisions, and the sysfs reader the
+# daemon reads through too.
+hardware-core.workspace = true
+hardware-platform = { workspace = true, default-features = false }
 serde.workspace = true
 serde_json.workspace = true
 # The display scale comes from Mutter over the session bus. Blocking API on

@@ -1,0 +1,8 @@
+ucsi_acpi USBC000:00: ucsi_handle_connector_change: GET_CONNECTOR_STATUS failed (-110)
+PM: suspend entry (s2idle)
+Freezing user space processes
+Freezing user space processes completed (elapsed 0.006 seconds)
+Freezing remaining freezable tasks
+Freezing remaining freezable tasks completed (elapsed 0.001 seconds)
+PM: suspend exit
+ucsi_acpi USBC000:00: failed to re-enable notifications (-110)

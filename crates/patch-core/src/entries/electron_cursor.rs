@@ -375,7 +375,7 @@ impl Entry for ElectronCursor {
                 app: app.clone(),
                 name: match &finding.detail {
                     FindingDetail::ElectronCursor { name, .. } => name.clone(),
-                    FindingDetail::FontCache { .. } => Default::default(),
+                    _ => Default::default(),
                 },
                 created_file: before.is_none(),
                 created_groups,
@@ -391,7 +391,7 @@ impl Entry for ElectronCursor {
                 Read::Command(Command::ShowFlatpakOverride(app.clone())),
                 Read::FlatpakApps,
             ],
-            Recorded::RebuiltFontCache => Vec::new(),
+            Recorded::RebuiltFontCache | Recorded::UsbRecovery { .. } => Vec::new(),
         }
     }
 
@@ -448,7 +448,7 @@ impl Entry for ElectronCursor {
     fn undo_reads(&self, record: &AppliedRecord) -> Vec<Read> {
         match &record.change {
             Recorded::OverrideKeys { app, .. } => vec![Read::UserOverride(app.clone())],
-            Recorded::RebuiltFontCache => Vec::new(),
+            Recorded::RebuiltFontCache | Recorded::UsbRecovery { .. } => Vec::new(),
         }
     }
 
@@ -608,6 +608,7 @@ sockets=x11;wayland;fallback-x11;
         match ElectronCursor.detect(answers) {
             Detection::Checked(findings) => findings.into_iter().map(|f| f.subject).collect(),
             Detection::CannotCheck(reason) => panic!("cannot check: {reason:?}"),
+            Detection::DoesNotApply => panic!("does not apply"),
         }
     }
 

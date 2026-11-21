@@ -1,0 +1,15 @@
+PM: suspend entry (s2idle)
+Freezing remaining freezable tasks failed after 20.004 seconds (0 tasks refusing to freeze, wq_busy=1):
+workqueue usb_hub_wq: flags=0x104
+PM: suspend exit
+PM: suspend entry (s2idle)
+Freezing remaining freezable tasks failed after 20.000 seconds (0 tasks refusing to freeze, wq_busy=1):
+workqueue usb_hub_wq: flags=0x104
+PM: suspend exit
+PM: suspend entry (s2idle)
+PM: Some devices failed to suspend, or early wake event detected
+PM: suspend exit
+PM: suspend entry (s2idle)
+Freezing remaining freezable tasks failed after 20.000 seconds (0 tasks refusing to freeze, wq_busy=1):
+workqueue usb_hub_wq: flags=0x104
+PM: suspend exit

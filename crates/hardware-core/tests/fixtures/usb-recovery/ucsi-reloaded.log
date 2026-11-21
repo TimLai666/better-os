@@ -1,0 +1,5 @@
+ucsi_acpi USBC000:00: ucsi_handle_connector_change: GET_CONNECTOR_STATUS failed (-110)
+PM: suspend entry (s2idle)
+PM: suspend exit
+ucsi_acpi USBC000:00: failed to re-enable notifications (-110)
+usb-recovery: ucsi_acpi reloaded
