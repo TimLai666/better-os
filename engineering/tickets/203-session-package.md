@@ -243,3 +243,55 @@ and screenshots 20 to 32 beside NOTES.md.
   entry's `OnlyShowIn=BetterOS;` was dropped: `desktop-file-validate`
   refuses an unregistered desktop name, and `NoDisplay=true` already keeps
   it out of every list. VM results are in ticket 253's notes.
+
+### The second review of 2026-11-22
+
+Review: `/home/tim/Developer/better-os-evidence/203/review-2-2026-11-22.md`.
+VM records: `/home/tim/Developer/better-os-evidence/203/review-2/` (its
+NOTES.md) and screenshots 44 and 45.
+
+- **P2, leftovers under GNOME.** The VM run the review asked for (guard
+  stopped, launcher killed, linger, GNOME login) found that the leftovers
+  unit never ran: the dead session left `graphical-session-pre.target`
+  active, so GNOME Shell started with `DCONF_PROFILE=betteros`. The unit is
+  now also wanted by and before GNOME's `gnome-session-pre.target`. It
+  touches only what is still the session's
+  (`environment::leftover_restore`, `lifecycle::put_back_leftovers`, tests):
+  the session-only values, the session's entry anywhere in `XDG_DATA_DIRS`
+  (GNOME's login had put its own in front), and the input method values
+  beside the leftover `DCONF_PROFILE`; never a display. It sets activation
+  before it unsets, because `dbus-daemon --systemd-activation` passes the
+  activation update on to the user manager (seen in the VM; the fake now
+  does the same). Run 3, from the rebuilt package: the user manager and
+  GNOME Shell had GNOME's values only, `graphical-session.target` and
+  Tracker stayed.
+- **`held_by_another`** counts a binding unit with a queued start job
+  (`lifecycle::holds`, test). In run 3 the leftovers unit ran two seconds
+  before `gnome-session.target` was reached and left
+  `graphical-session.target` running.
+- **The activation `DCONF_PROFILE` file** ships in `better-manager`, which
+  the session depends on: activation keeps the path after the session
+  package goes, and a missing named profile is dconf's null configuration.
+- **dconf's runtime profile** is `$XDG_RUNTIME_DIR/dconf/profile` (dconf
+  0.40.0 `engine/dconf-engine-profile.c` line 33, used at lines 243-258);
+  `dconf::RUNTIME_PROFILE`, test.
+- **Autostart and Tracker under GNOME.** A condition skips only its own
+  unit, so they moved to `better-os-session-autostart.target`, which only
+  the launcher starts (unit tests, `verify-deb.sh`). VM: autostart entries
+  ran in the session with no ordering cycle; `systemctl --user start
+  better-os-session.target` under GNOME skipped every unit and never loaded
+  the autostart target. Tickets 203 and 205 say so now.
+- **P3s.** The leftovers unit has `TimeoutStartSec=15s`. An unreadable unit
+  state during the guard's restart counts as a session still running. The
+  guard exits with failure when it could not stop the target. Stop signals
+  are watched through a polled `signalfd` and never consumed, so one that
+  comes during the restart in place stays pending across the exec
+  (`process::pending_stop_signal`; tests: a watched signal stays pending,
+  a pending SIGTERM crosses `Command`'s exec). A record keeps only the
+  session's names when read (test). `install-session.sh` runs
+  `check-shortcut-upstream.sh` against the installed closure and an altered
+  copy (VM: `same` twice, the altered copy refused). Ticket 253's two key
+  defects are open items there; their cause is Better Screenshot's focus
+  handling, not the session's data. Ticket 205's exclusion names the guard
+  and the leftovers unit.
+- **Not rerun:** Zorin OS 18.1 (its ISO was deleted for disk space).

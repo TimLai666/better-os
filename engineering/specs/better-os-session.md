@@ -275,17 +275,29 @@ user manager for the next GNOME login to read and write. So:
   end does the same with whatever the guard left (the first to take the
   record does the work).
 - `better-os-session-leftovers.service`, enabled for every person at install
-  and `WantedBy=graphical-session-pre.target`, runs at the start of any
-  session of the person, GNOME's included, and puts back a record whose
-  launcher is gone; the launcher does the same before a new Better OS
-  session reads what is "before". By then GNOME's login may have imported
-  its own values, so it touches only a variable whose value is still one
-  only the session sets (the list below), and leaves every other, a
-  `DISPLAY=:0` or `XMODIFIERS=@im=fcitx` equal to the session's included;
-  in D-Bus activation it sets only `DCONF_PROFILE`
-  (`session_launcher::environment::leftover_restore`). When the user
-  manager's environment cannot be read it touches nothing there. It may
-  hold a GNOME login up at most 15 s (`TimeoutStartSec=`).
+  and wanted by and ordered before both `graphical-session-pre.target` and
+  GNOME's `gnome-session-pre.target`, runs at the start of any session of
+  the person, GNOME's included, and puts back a record whose launcher is
+  gone; the launcher does the same before a new Better OS session reads
+  what is "before". GNOME's own early target is needed: when the launcher
+  and its guard both died, `graphical-session-pre.target` stays active and
+  a GNOME login starts nothing through it (ticket 203's VM: GNOME Shell then
+  ran with `DCONF_PROFILE=betteros`). `gnome-session-pre.target` runs before
+  GNOME's session manager and GNOME Shell, which then read the environment
+  as it was put back. By then GNOME's login has imported its own values, so
+  it touches only a variable whose value is still the session's: one only
+  the session sets (the list below), and `QT_IM_MODULE` and `XMODIFIERS`
+  while they hold the session's value beside its leftover `DCONF_PROFILE`
+  (GNOME's login sets neither). It leaves every other, a `DISPLAY=:0` equal
+  to the session's included, and takes only the session's entry out of an
+  `XDG_DATA_DIRS` GNOME's login has put its own entries in front of. In
+  D-Bus activation it sets only `DCONF_PROFILE`, before it unsets in the
+  user manager, because `dbus-daemon --systemd-activation` passes each
+  activation update on to the user manager
+  (`session_launcher::environment::leftover_restore`,
+  `lifecycle::put_back_leftovers`). When the user manager's environment
+  cannot be read it sets and unsets nothing there. It may hold a login up
+  at most 15 s (`TimeoutStartSec=`).
 - `graphical-session.target` is stopped after a dead launcher only when no
   other unit that binds it is active or has a start job queued: a GNOME
   login's `gnome-session.target` waits inactive with a start job while its
@@ -300,8 +312,8 @@ user manager for the next GNOME login to read and write. So:
   stays pending across the exec and ends the new program's session
   (`session_launcher::process::pending_stop_signal`).
 - A value only the session sets (`DCONF_PROFILE=betteros`,
-  `BetterOS:COSMIC`, `better-os`, `XDG_DATA_DIRS` starting with the
-  session's directory, and beside those `QT_IM_MODULE=fcitx` and
+  `BetterOS:COSMIC`, `better-os`, `XDG_DATA_DIRS` holding the session's
+  directory anywhere, and beside those `QT_IM_MODULE=fcitx` and
   `XMODIFIERS=@im=fcitx`) is never taken as the person's own "before".
 - When the user manager's environment cannot be read, the session still
   sets its variables and at the end takes back only what is provably its
