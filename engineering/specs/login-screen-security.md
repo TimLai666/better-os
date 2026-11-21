@@ -101,8 +101,8 @@ OS code running as root. So the review has to establish, in this order:
 
 | Process | Account | Started by | Holds |
 | --- | --- | --- | --- |
-| `better-os-login-supervisor` | root | `display-manager.service` (its alias), `Type=notify`, `WatchdogSec=10`, `Restart=always`, `StartLimitBurst=5` in 60 s, `OnFailure=better-os-login-backstop.service` | start and stop of exactly `better-os-greeter.service`, `better-os-gnome-unlock.service`, `better-os-login-fallback@tty1.service` and `@tty2.service` through systemd's bus; `plymouth` commands and a kill of `plymouthd`; `KDSETMODE` and `VT_SETMODE` on `/dev/tty1`, `chvt`; reads logind, `/sys/class/drm`, the greeter's heartbeat, greetd's cgroup; writes `/var/lib/better-os/boot-watch/` and `/run/better-os/` |
-| `better-os-login-backstop` (a unit, no program of Better OS's) | root | the supervisor's `OnFailure=` and a 90 s timer | `plymouth quit`, `systemctl start better-os-login-fallback@tty2.service`, `chvt 2`, only when the greeter never reported `ready` and no fall back runs |
+| `better-os-login-supervisor` | root | `display-manager.service` (its alias), `Type=notify`, `WatchdogSec=10`, `Restart=always`, `StartLimitBurst=5` in 60 s, `OnFailure=better-os-login-backstop.service` | start and stop of exactly `better-os-greeter.service`, `better-os-login-fallback@tty1.service` and `@tty2.service`, by `systemctl --no-block` (`better-os-gnome-unlock.service` only through its unit's `Wants=`); `plymouth` commands and a kill of `plymouthd`; `KDSETMODE`, `VT_SETMODE` and `VT_ACTIVATE` on `/dev/tty1` and `/dev/tty2`; reads logind (a `busctl` probe and `/run/systemd/sessions/`), `/sys/class/drm`, `/etc/passwd`, the greeter's heartbeat, greetd's cgroup and its processes in `/proc`; writes `/var/lib/better-os/boot-watch/` and `/run/better-os/` |
+| `better-os-login-backstop` (a unit, no program of Better OS's) | root | the supervisor's `OnFailure=` and a 90 s timer | `timeout 5 plymouth quit`, `pkill -KILL -x plymouthd`, `cp --no-clobber` of a shipped message file into `/run/better-os/`, `touch /run/better-os/login-fallback.active`, `systemctl --no-block start better-os-login-fallback@tty2.service`, `chvt 2`, only when the greeter never reported `ready`, no fall back runs and the supervisor never saw the property hold |
 | `greetd` 0.9.0 | root | `better-os-greeter.service`, started only by the supervisor | PAM for `greetd` and `greetd-greeter`, the VT, the socket it gives to the greeter (`greetd/src/server.rs` line 182) |
 | `better-os-gnome-unlock` | root | `better-os-gnome-unlock.service` (`Type=dbus`, `Conflicts=gdm.service`) | the bus name `org.gnome.DisplayManager` (under its own bus policy file); PAM for the services `better-os-gnome-unlock`, `-fingerprint`, `-smartcard`; `/run/better-os-gnome-unlock/` |
 | `/usr/sbin/better-os-greeter`, `cosmic-comp`, `better-greeter` | `_better-greeter` | greetd's greeter session | the seat's devices through logind (class `greeter`); greetd's socket; the system bus as an unprivileged client; `/var/lib/better-os-greeter/` and `/run/better-os-greeter/` |
@@ -147,7 +147,27 @@ text login when every other program has failed. What limits it:
 
 - It runs no PAM, reads no password, and has no D-Bus interface that changes
   anything (`org.betteros.LoginSupervisor1` offers only the last record,
-  read-only, for `better-os-login-status`).
+  read-only, for `better-os-login-status`: one method, `LastRecord`, with no
+  argument, returning the state file and the newest event as JSON; its bus
+  policy lets root own the name and anyone call it). The bus is served from
+  its own thread: a system bus that is down or hung never holds up a stage.
+- What it reads from others is untrusted and bounded: the greeter's
+  heartbeat is opened with `O_NOFOLLOW | O_NONBLOCK`, must be a regular file
+  of at most 64 bytes and is compared, never interpreted beyond the words
+  `starting` and `ready`; logind's session files, `/etc/passwd` and `/proc`
+  entries are read with size limits and only the fields it uses (class, PAM
+  service, seat, uid; parent and uid) are parsed. Nothing it reads names a
+  program, a path or a unit for it to act on.
+- Every program it runs is a fixed absolute path with fixed arguments
+  (`/usr/bin/systemctl`, `/usr/bin/busctl`, `/usr/bin/plymouth`), with an
+  empty environment and a time limit after which the child is killed: 2 s
+  for `systemctl` and `busctl`, 5 s for `plymouth`. `plymouthd` is killed
+  only when a `plymouth` command did not return, and only a process whose
+  name is `plymouthd`.
+- A test hook, `BETTER_OS_TEST_SUPERVISOR_ABORT=<stage>`, read from the
+  unit's environment, makes it abort on reaching that stage, for ticket
+  281's crash loop. Only root can set a unit's environment, and the hook
+  can only end the supervisor, which the backstop covers.
 - The units it acts on are a fixed list compiled in (above); a test feeds it
   every stage outcome against a fake systemd and checks it never names
   another unit. It is not `PartOf=`, `BindsTo=` or `Requires=` any of them,
@@ -164,7 +184,12 @@ text login when every other program has failed. What limits it:
   open a udev monitor, so it needs no `AF_NETLINK`); `NoNewPrivileges=yes`;
   `MemoryDenyWriteExecute=yes`; `SystemCallFilter=@system-service` plus the
   `ioctl`s on `/dev/tty1` it needs (`DeviceAllow=/dev/tty1 rw`,
-  `/dev/tty2 rw`).
+  `/dev/tty2 rw`). Its two directories are `RuntimeDirectory=better-os`
+  (preserved, so its state outlives its restarts) and
+  `StateDirectory=better-os/boot-watch`, so no `ReadWritePaths=` can name a
+  directory that does not exist yet and keep it from starting;
+  `TimeoutStartSec=10`, so a hang before it is ready is killed like one
+  after.
 - It does not repair accounts. `/etc` stays read-only to it; a missing or
   locked `_better-greeter` is a failed stage 5 and a text login, and Better
   Manager's health check repairs it from the person's next session.
@@ -176,8 +201,9 @@ text login when every other program has failed. What limits it:
 
 ### The backstop
 
-`better-os-login-backstop.service` runs only `plymouth`, `systemctl` and
-`chvt`, with `ExecCondition=` on two files in `/run`; it exists so that a
+`better-os-login-backstop.service` runs only `test`, `timeout`,
+`plymouth`, `pkill`, `cp`, `touch`, `systemctl` and `chvt`, with `ExecCondition=` on three files
+in `/run`; it exists so that a
 bug in the supervisor (a crash loop, a binary that will not start, a sandbox
 that refuses it) still ends in a text login. It is started by the
 supervisor's `OnFailure=` (after five starts in 60 s) and by a timer 90
@@ -454,8 +480,13 @@ screen back rather than the session unlocked.
 
 ## Not proven
 
-- Only the password buffer's tests exist (ticket 260); the others named
-  above are for tickets 261 to 268, 280 and 281.
+- The password buffer's tests exist (ticket 260), and the supervisor's
+  (ticket 267): every stage, deadline, retry and the fall back against a
+  fake world (`crates/login-supervisor/tests/property.rs`), the fixed unit
+  list and the unit files (`tests/units.rs`), and, on a real systemd in CI's
+  container, the fall back, a restart mid-attempt and the backstop
+  (`packaging/boot-watch/login-path.sh`). The others named above are for
+  tickets 261 to 266, 268, 280 and 281.
 - That GNOME Shell 46 locks and unlocks through the unlock service as it
   does through GDM, that GDM's session worker does nothing more on
   reauthentication that the shell relies on, how `pam_gnome_keyring`

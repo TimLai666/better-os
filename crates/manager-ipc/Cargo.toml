@@ -7,6 +7,9 @@ license.workspace = true
 
 [dependencies]
 better-core.workspace = true
+# The records' writer (`boot_watch::write_record`): O_NOFOLLOW, the adm
+# group, lchown. Both writers of the records directory share it.
+libc.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

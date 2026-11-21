@@ -75,3 +75,51 @@ one.
       start, and passes in CI: the fall back in the first case, the
       backstop in the second.
 - [ ] The VM proof is ticket 281's.
+
+## Notes
+
+2026-11-22, built:
+
+- `crates/login-supervisor`: `better-os-login-supervisor` and
+  `better-os-login-status`, no GPUI. The rules are `rules.rs` with no I/O
+  (stages 1 to 3 in 12 s with `plymouth deactivate` inside them, three
+  attempts of 15 s with the third in safe mode, stops of at most 6 s, the
+  fall back, stage 1a, no screen, stage 9 from logind and greetd's tree,
+  automatic login, the unreadable state file); the edges are `read.rs`
+  (each from a path a test points at a fixture) and `system.rs`; the loop is
+  `world.rs`; `/run/better-os/login-path.json` is `state.rs`;
+  `org.betteros.LoginSupervisor1` (`LastRecord`, read-only) is `bus.rs`.
+- The units, bus policy and the backstop's message in `packaging/greeter/`.
+- Records: `manager_ipc::boot_watch` gained `LoginStage` and the outcomes
+  `login_screen_restarted` and `text_login_used`, and now holds the records'
+  writer both the watch and the supervisor call (moved from
+  `manager-daemon`); Home, Health and `doctor` show them with section 6's
+  copy (`crates/manager-gui/src/login_watch.rs`,
+  `crates/manager-cli/src/main.rs`).
+- The spec (section 5.10's units table, stages 1, 4, 5, 6, 9 and F, the
+  records and the status command's copy, section 6's "twice" row) and the
+  security review were updated first with what building it settled: T0
+  from `InactiveExitTimestampMonotonic`, the heartbeat judged by change,
+  `/run/better-os/greeter-mode`, the backstop's third condition
+  (`/run/better-os/login-held`, without which it would take an automatic
+  login's screen at 90 s) and `AccuracySec=1s`, and no `Conflicts=` on the
+  supervisor (GDM's `Conflicts=plymouth-quit.service` would let the
+  greeter's own `OnFailure=` stop it).
+
+Checked: `tests/property.rs` runs the supervisor's real loop over a fake
+world for every row of the spec's stage table and injection table, with
+the property asserted on the fake clock, including restarts mid-attempt,
+mid-stop and mid-fall back, a stop that never completes (tty2), a refused
+tty1, and the worst case with every stop at its limit; `rules/tests.rs`
+each rule alone; `tests/units.rs` the unit files; seven deliberate breaks
+of the rules (resume ignored, no tty2, a stop with a person possible,
+stage 5 late, no safe mode, logind trusted over greetd's tree, no
+Plymouth kill) each failed the tests. `packaging/boot-watch/login-path.sh`
+is the container check (stand-in greeter that never becomes ready, the
+supervisor killed mid-attempt, a supervisor that cannot start); this
+machine has no Docker, so its first run is CI's.
+
+Left: the container check's first CI run on this branch. What needs
+greetd, the real greeter, the package or the VM is in the notes of
+tickets 264, 265 and 281.
+

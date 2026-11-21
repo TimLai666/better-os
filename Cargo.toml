@@ -31,6 +31,7 @@ members = [
     "crates/launcher-gui",
     "crates/layer-check",
     "crates/login-screen-core",
+    "crates/login-supervisor",
     "crates/defaults-core",
     "crates/drive-mounts",
     "crates/defaults-platform",

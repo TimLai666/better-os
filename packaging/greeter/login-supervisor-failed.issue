@@ -1,0 +1,5 @@
+The Better OS login screen couldn't be shown (the login supervisor couldn't run, \d \t).
+Sign in below with your user name and password to use text mode.
+After signing in, type better-os-login-status to see why.
+To go back to the GNOME login screen, type sudo dpkg-reconfigure gdm3 and choose gdm3.
+

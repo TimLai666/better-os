@@ -405,12 +405,34 @@ fn login_watch_lines(
             RestartOutcome::Pending => {
                 "Better OS asked for a restart and its outcome was never recorded".to_string()
             }
+            RestartOutcome::TextLoginUsed { stage, tty, .. } => format!(
+                "The login screen couldn't be shown last time you started up ({}), so a text sign-in was used ({tty})",
+                stage.english()
+            ),
+            RestartOutcome::LoginScreenRestarted {
+                stage, restarts, ..
+            } => format!(
+                "The login screen had to be restarted {} last time you started up ({})",
+                if *restarts >= 2 { "twice" } else { "once" },
+                stage.english()
+            ),
         };
-        lines.push(format!(
-            "  {}: the login screen didn't appear {} s after GDM started; {outcome}",
-            calendar_time(event.detected_at_unix_seconds, zone),
-            event.waited_seconds
-        ));
+        lines.push(
+            if event.display_manager == manager_core::login_watch::LOGIN_SUPERVISOR_UNIT {
+                // The Better OS login supervisor's record: its own words.
+                format!(
+                    "  {}: {outcome}, {} s after the login supervisor started",
+                    calendar_time(event.detected_at_unix_seconds, zone),
+                    event.waited_seconds
+                )
+            } else {
+                format!(
+                    "  {}: the login screen didn't appear {} s after GDM started; {outcome}",
+                    calendar_time(event.detected_at_unix_seconds, zone),
+                    event.waited_seconds
+                )
+            },
+        );
         if !report.evidence_readable {
             continue;
         }
@@ -1781,6 +1803,40 @@ mod tests {
                 "login screen watch: off (turned off in Better Manager)",
                 "  no startup without a login screen is recorded"
             ]
+        );
+    }
+
+    #[test]
+    fn doctor_prints_the_login_supervisors_records_in_its_own_words() {
+        use manager_core::login_watch::{
+            Event, Evidence, LOGIN_SUPERVISOR_UNIT, LoginStage, Report, RestartOutcome, Setting,
+        };
+        let event = Event {
+            version: 1,
+            boot_id: "0123456789abcdef0123456789abcdef".to_string(),
+            detected_at_unix_seconds: 1_794_832_980,
+            display_manager: LOGIN_SUPERVISOR_UNIT.to_string(),
+            waited_seconds: 74,
+            evidence: Evidence::default(),
+            restart: RestartOutcome::TextLoginUsed {
+                stage: LoginStage::DisplayServer,
+                tty: "tty1".to_string(),
+                after_seconds: 74,
+            },
+        };
+        let report = Report {
+            setting: Setting::OnByDefault,
+            last_boot: None,
+            events: vec![event],
+            evidence_readable: false,
+            current_boot: None,
+        };
+        let lines = login_watch_lines(&report, better_core::local_time::TimeZone::UTC);
+        assert_eq!(
+            lines[1],
+            "  2026-11-16 12:43: The login screen couldn't be shown last time you started up \
+             (the display server didn't start), so a text sign-in was used (tty1), \
+             74 s after the login supervisor started"
         );
     }
 }

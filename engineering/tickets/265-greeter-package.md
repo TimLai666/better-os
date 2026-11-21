@@ -73,3 +73,34 @@ switch or upgrade stops the wrong thing.
       leaves the session running and unlockable.
 - [ ] Removing `gdm3` on Ubuntu leaves the unlock service owning its name.
 - [ ] A greeter that cannot start ends in the text login, never in GDM.
+
+## Notes
+
+From ticket 267 (2026-11-22): what it built for this package, and left to it.
+
+- The units are written and tested: `packaging/greeter/`
+  (`better-os-login-supervisor.service`, `better-os-greeter.service`,
+  `better-os-login-fallback@.service`, `better-os-login-backstop.service`
+  and `.timer`), with the bus policy `org.betteros.LoginSupervisor1.conf`
+  and the backstop's fixed message `login-supervisor-failed.issue`.
+  `crates/login-supervisor/tests/units.rs` holds them to the spec; the
+  package should install them as they are, not copies, so that test keeps
+  covering what ships.
+- Install paths the units and programs name: `/usr/sbin/better-os-login-supervisor`
+  and `/usr/bin/better-os-login-status` (both from `cargo build -p
+  login-supervisor`), `/usr/sbin/greetd`, the policy into
+  `/usr/share/dbus-1/system.d/`, the message into
+  `/usr/share/better-os/login-supervisor-failed.issue`.
+- The supervisor's unit has no `[Install]` section: the display manager
+  alias is the debconf registration's to make, so installing the package
+  must not link it (no `dh_installsystemd` enabling of it).
+- The supervisor's unit deliberately has no `Conflicts=` (not even GDM's
+  `Conflicts=plymouth-quit.service getty@tty1.service`): the greeter's
+  `OnFailure=plymouth-quit.service` and a getty on tty1 would then stop the
+  supervisor. `verify-deb.sh` should check that, as `tests/units.rs` does.
+- Depends: `procps` (`pkill`), `kbd` (`chvt`), `util-linux` (`agetty`),
+  `coreutils`, which the backstop and the fall back run; `plymouth` is not
+  a dependency (every `plymouth` call tolerates its absence).
+- The fall back's agetty has never run on a real terminal: the container
+  check replaces it with a stand-in (no terminal there). Its `ExecStart=`
+  and `TTY*=` settings are getty@.service's, with `Type=simple`.

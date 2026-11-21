@@ -1,0 +1,27 @@
+[Unit]
+Description=Better OS login backstop
+Documentation=https://github.com/TimLai666/better-os/blob/main/design/login-screen-spec.md
+# The last guard of the login path (design/login-screen-spec.md section
+# 5.10): when the supervisor cannot run (five starts in a minute, its
+# OnFailure=) or has not made the property hold 90 s after its first start
+# (better-os-login-backstop.timer), a text login on tty2. It runs no Better
+# OS code, only standard programs, so no bug of the supervisor's can stop it.
+
+[Service]
+Type=oneshot
+# Only when the greeter never reported ready this boot, no fall back runs,
+# and the supervisor never saw the property hold (an automatic login has no
+# greeter; a machine with no screen has a greeter waiting for one).
+ExecCondition=/usr/bin/test ! -e /run/better-os-greeter/ready-seen
+ExecCondition=/usr/bin/test ! -e /run/better-os/login-fallback.active
+ExecCondition=/usr/bin/test ! -e /run/better-os/login-held
+ExecStart=-/usr/bin/timeout 5 /usr/bin/plymouth quit
+ExecStart=-/usr/bin/pkill -KILL -x plymouthd
+ExecStart=-/usr/bin/cp --no-clobber /usr/share/better-os/login-supervisor-failed.issue /run/better-os/login-fallback.issue
+ExecStart=/usr/bin/touch /run/better-os/login-fallback.active
+ExecStart=/usr/bin/systemctl --no-block start better-os-login-fallback@tty2.service
+ExecStart=-/usr/bin/chvt 2
+TimeoutStartSec=30
+RuntimeDirectory=better-os
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes

@@ -1,0 +1,11 @@
+[Unit]
+Description=Better OS login backstop, 90 s after the login supervisor's first start
+Documentation=https://github.com/TimLai666/better-os/blob/main/design/login-screen-spec.md
+# Wanted by better-os-login-supervisor.service: it becomes active with the
+# supervisor's first start, and a restart of the supervisor does not move it.
+
+[Timer]
+OnActiveSec=90
+# The default accuracy is a minute; the backstop's promise is 90 s.
+AccuracySec=1s
+Unit=better-os-login-backstop.service

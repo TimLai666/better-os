@@ -51,7 +51,9 @@ contract.
   else. `better-os-login-supervisor` is the display manager while the Better
   OS login screen is chosen; it may start and stop only the units its
   compiled-in list names, run `plymouth`, reset `/dev/tty1` and `/dev/tty2`
-  to text, read logind, `/sys/class/drm` and greetd's cgroup, and write only
+  to text and switch to them, read logind (its bus and its session files),
+  `/sys/class/drm`, greetd's cgroup and the processes under it, and the
+  greeter's account in `/etc/passwd`, and write only
   `/var/lib/better-os/boot-watch/` and `/run/better-os/`; it runs no PAM and
   serves no method that changes anything. `better-os-gnome-unlock` owns
   `org.gnome.DisplayManager` only while that login screen is chosen and
@@ -778,6 +780,19 @@ GUI or dependency compiles when the relevant command was not executed.
   watched a real boot or restarted a real GDM, and the greeter-seen path is
   proved by fakes only. It treats ticket 139's symptom; the cause is still
   ticket 139's.
+- The Better OS login supervisor (ticket 267, `crates/login-supervisor`) has
+  its rules in `login_supervisor::rules`, with no I/O, and every edge behind
+  `world::World`; `tests/property.rs` runs the real loop over a fake world
+  for every injected outcome, restarts of the supervisor included, and
+  `tests/units.rs` holds the units in `packaging/greeter/` to the spec. Its
+  units, policy file and fixed messages live there until ticket 265
+  packages them. Against a real systemd it has run only in CI's container
+  check (`packaging/boot-watch/login-path.sh`, a stand-in greeter that
+  never becomes ready, `/dev/null` for every terminal and a fixture DRM
+  card): never with greetd, Plymouth, a real terminal, a real card or a
+  boot, which are tickets 264, 265 and 281's. The records it writes share
+  `manager_ipc::boot_watch`'s writer with ADR 0033's watch; `last-boot.json`
+  stays the watch's.
 - Which drives mount automatically (ticket 127, ADR 0032) lives only in the
   system's files: Better OS's marked block in `/etc/fstab` and
   `/etc/udev/rules.d/90-better-os-drives.rules`, written only by

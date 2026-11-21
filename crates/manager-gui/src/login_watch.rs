@@ -4,7 +4,8 @@
 //! only draws what this says.
 
 use manager_core::login_watch::{
-    Event, LastBootOutcome, Records, Report, RestartOutcome, Setting, Severity as WatchSeverity,
+    Event, LastBootOutcome, LoginStage, Records, Report, RestartOutcome, Setting,
+    Severity as WatchSeverity,
 };
 
 use crate::attention::{AttentionAction, AttentionItem, Severity, Snapshot, row};
@@ -93,6 +94,11 @@ pub(crate) struct Copy {
     pub(crate) write_refused: &'static str,
     pub(crate) write_failed: &'static str,
     pub(crate) switch_unknown: &'static str,
+    /// The Better OS login supervisor's two outcomes (design/login-screen-spec.md
+    /// section 6, ticket 267).
+    pub(crate) text_login_used: &'static str,
+    pub(crate) restarted_once: &'static str,
+    pub(crate) restarted_twice: &'static str,
 }
 
 pub(crate) fn copy(locale: Locale) -> &'static Copy {
@@ -142,6 +148,9 @@ const ZH_TW: Copy = Copy {
     write_refused: "沒有權限變更這項設定。",
     write_failed: "Better OS 的系統服務沒有完成這項變更。",
     switch_unknown: "讀不到這項設定，守護目前不會動作。切換開關可以重新寫入。",
+    text_login_used: "上次開機時登入畫面無法顯示（{stage}），已改用文字模式登入。",
+    restarted_once: "上次開機時登入畫面重新啟動了一次（{stage}）。",
+    restarted_twice: "上次開機時登入畫面重新啟動了兩次（{stage}）。",
 };
 
 const EN_US: Copy = Copy {
@@ -184,6 +193,9 @@ const EN_US: Copy = Copy {
     write_refused: "You're not allowed to change this setting.",
     write_failed: "The Better OS system service didn't finish the change.",
     switch_unknown: "The setting couldn't be read, so the watch won't act. Flip the switch to write it again.",
+    text_login_used: "The login screen couldn't be shown last time you started up ({stage}), so a text sign-in was used.",
+    restarted_once: "The login screen had to be restarted once last time you started up ({stage}).",
+    restarted_twice: "The login screen had to be restarted twice last time you started up ({stage}).",
 };
 
 /// "The login screen didn't appear at startup on {date}".
@@ -225,6 +237,28 @@ pub(crate) fn outcome(locale: Locale, restart: &RestartOutcome, interrupted: boo
         RestartOutcome::Pending => c.pending.to_string(),
         RestartOutcome::PersonAppeared => c.person_appeared.to_string(),
         RestartOutcome::AppearedBeforeRestart => c.appeared_before_restart.to_string(),
+        RestartOutcome::TextLoginUsed { stage, .. } => c
+            .text_login_used
+            .replace("{stage}", stage_name(locale, *stage)),
+        RestartOutcome::LoginScreenRestarted {
+            stage, restarts, ..
+        } => {
+            let words = if *restarts >= 2 {
+                c.restarted_twice
+            } else {
+                c.restarted_once
+            };
+            words.replace("{stage}", stage_name(locale, *stage))
+        }
+    }
+}
+
+/// A login path stage's name, from the one list both the supervisor and the
+/// window read (`manager_ipc::boot_watch::LoginStage`).
+pub(crate) fn stage_name(locale: Locale, stage: LoginStage) -> &'static str {
+    match locale.resolved() {
+        Locale::ZhTw => stage.zh_tw(),
+        Locale::EnUs | Locale::System => stage.english(),
     }
 }
 
@@ -389,6 +423,16 @@ mod tests {
             RestartOutcome::PersonAppeared,
             RestartOutcome::AppearedBeforeRestart,
             RestartOutcome::LoginInProgress,
+            RestartOutcome::LoginScreenRestarted {
+                stage: LoginStage::DisplayServer,
+                restarts: 1,
+                after_seconds: 30,
+            },
+            RestartOutcome::TextLoginUsed {
+                stage: LoginStage::Supervisor,
+                tty: "tty2".to_string(),
+                after_seconds: 90,
+            },
         ] {
             for locale in [Locale::ZhTw, Locale::EnUs] {
                 for interrupted in [false, true] {
@@ -397,6 +441,51 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn the_supervisor_outcomes_use_the_specs_section_6_copy() {
+        let text = RestartOutcome::TextLoginUsed {
+            stage: LoginStage::DisplayServer,
+            tty: "tty1".to_string(),
+            after_seconds: 75,
+        };
+        assert_eq!(
+            outcome(Locale::ZhTw, &text, false),
+            "上次開機時登入畫面無法顯示（顯示伺服器無法啟動），已改用文字模式登入。"
+        );
+        assert_eq!(
+            outcome(Locale::EnUs, &text, false),
+            "The login screen couldn't be shown last time you started up (the display server didn't start), so a text sign-in was used."
+        );
+        let once = RestartOutcome::LoginScreenRestarted {
+            stage: LoginStage::LoginScreenProgram,
+            restarts: 1,
+            after_seconds: 30,
+        };
+        assert_eq!(
+            outcome(Locale::ZhTw, &once, false),
+            "上次開機時登入畫面重新啟動了一次（登入畫面程式沒有回應）。"
+        );
+        let twice = RestartOutcome::LoginScreenRestarted {
+            stage: LoginStage::SignInService,
+            restarts: 2,
+            after_seconds: 45,
+        };
+        assert_eq!(
+            outcome(Locale::EnUs, &twice, false),
+            "The login screen had to be restarted twice last time you started up (the sign-in service didn't start)."
+        );
+        let mut late = event(text);
+        assert_eq!(attention_severity(&late), Severity::Error);
+        late.restart = once;
+        assert_eq!(attention_severity(&late), Severity::Warning);
+    }
+
+    fn attention_severity(event: &Event) -> Severity {
+        let mut snapshot = Snapshot::empty(Locale::EnUs);
+        snapshot.login_screen_late = Some((event.clone(), false));
+        attention(&snapshot)[0].severity
     }
 
     #[test]

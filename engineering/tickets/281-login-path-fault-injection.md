@@ -41,3 +41,30 @@ the screen a person would see.
       5.10 or its "What it cannot promise".
 - [ ] The spec's section 7 and the security review's "Not proven" lose the
       deadlines this proves.
+
+## Notes
+
+From ticket 267 (2026-11-22): what the VM runs against.
+
+- `BETTER_OS_TEST_SUPERVISOR_ABORT=<stage code>` (`6` for the compositor)
+  is implemented in `better-os-login-supervisor`: set it in a drop-in of
+  the supervisor's unit for the "crashing repeatedly" row.
+- Proven on fakes only (`crates/login-supervisor/tests/property.rs`): every
+  row of the spec's injection table as an outcome the fake world produces,
+  the property asserted on the fake clock. Proven on a real systemd in a
+  container (`packaging/boot-watch/login-path.sh`, CI): a stand-in greeter
+  that never becomes ready ending in the text login within 80 s, the
+  supervisor killed mid-attempt continuing with the same T0, and a
+  supervisor that cannot start ending in the backstop's text login on tty2
+  within 90 s. Not run against the real thing anywhere: greetd, Plymouth, a real terminal's
+  `KDSETMODE`/`VT_SETMODE`/`VT_ACTIVATE`, a real DRM card, logind hanging or
+  crashing, the watchdog of a hung supervisor (`SIGSTOP`), and the
+  backstop's 90 s timer firing (the container check runs the `OnFailure=`
+  path only). Those are this ticket's.
+- The stage 9 sign the supervisor uses is greetd's tree: the processes in
+  `better-os-greeter.service`'s cgroup and their descendants (through
+  `/proc/<pid>/task/*/children`), a person's session being one of them
+  running as an account other than root and `_better-greeter`. Whether a
+  session's processes stay greetd's descendants when `pam_systemd` moves
+  them into the session's scope is what this ticket checks with logind
+  killed at logout.

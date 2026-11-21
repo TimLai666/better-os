@@ -1,0 +1,26 @@
+[Unit]
+Description=Better OS login screen (greetd)
+Documentation=https://github.com/TimLai666/better-os/blob/main/design/login-screen-spec.md
+# Started only by better-os-login-supervisor.service, after stages 1 to 3
+# (design/login-screen-spec.md section 5.10); never enabled, so no [Install].
+# Written for Better OS rather than copied from Debian's greetd.service:
+# no After=plymouth-quit-wait.service (it waits for a splash only the
+# supervisor quits), no Restart= (the supervisor owns every retry), and no
+# OnFailure= to a text login (it would race the supervisor's attempts on
+# tty1). Nothing here names the supervisor: stopping or restarting this unit
+# never reaches it.
+Conflicts=getty@tty1.service
+After=getty@tty1.service systemd-user-sessions.service better-os-gnome-unlock.service
+OnFailure=plymouth-quit.service
+# Three starts in a minute must never be refused.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/greetd --config /etc/greetd/better-os-greeter.toml
+Restart=no
+# SIGTERM, 4 s, SIGKILL: the supervisor's 6 s stop.
+TimeoutStopSec=4
+SendSIGKILL=yes
+KeyringMode=shared
+IgnoreSIGPIPE=no
