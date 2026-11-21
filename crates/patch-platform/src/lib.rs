@@ -21,6 +21,7 @@ pub mod host;
 pub mod paths;
 pub mod removal;
 pub mod store;
+pub mod usb;
 
 pub use host::LinuxHost;
 pub use paths::Paths;

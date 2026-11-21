@@ -18,9 +18,11 @@ pub const FC_MATCH: &str = "/usr/bin/fc-match";
 pub const FC_CACHE: &str = "/usr/bin/fc-cache";
 /// Flatpak's command line.
 pub const FLATPAK: &str = "/usr/bin/flatpak";
+/// The journal's reader.
+pub const JOURNALCTL: &str = "/usr/bin/journalctl";
 
 /// Every program a [`Command`] can name.
-pub const PROGRAMS: [&str; 3] = [FC_MATCH, FC_CACHE, FLATPAK];
+pub const PROGRAMS: [&str; 4] = [FC_MATCH, FC_CACHE, FLATPAK, JOURNALCTL];
 
 /// What `fc-match` prints for one answer: the file, a tab, and the first
 /// style name. `\t` and `\n` are fontconfig's own format escapes.
@@ -72,6 +74,12 @@ pub enum Command {
     /// `flatpak override --user --show -- APP`: the person's override for
     /// one application as Flatpak itself reads it.
     ShowFlatpakOverride(AppId),
+    /// `journalctl --boot=0 ... --grep=...`: this boot's kernel lines the
+    /// USB-C recovery classifies (`hardware_core::usb_recovery::
+    /// kernel_log_args`), as the person, who can read them when in `adm` or
+    /// `systemd-journal`. `grep` false is the same query for a journal built
+    /// without PCRE2.
+    KernelUsbLog { grep: bool },
 }
 
 impl Command {
@@ -81,6 +89,7 @@ impl Command {
             Command::MatchFont(_) => FC_MATCH,
             Command::RebuildFontCache => FC_CACHE,
             Command::ShowFlatpakOverride(_) => FLATPAK,
+            Command::KernelUsbLog { .. } => JOURNALCTL,
         }
     }
 
@@ -100,6 +109,7 @@ impl Command {
                 "--".to_string(),
                 app.as_str().to_string(),
             ],
+            Command::KernelUsbLog { grep } => hardware_core::usb_recovery::kernel_log_args(*grep),
         }
     }
 
@@ -113,6 +123,8 @@ impl Command {
     pub fn timeout(&self) -> Duration {
         match self {
             Command::MatchFont(_) | Command::ShowFlatpakOverride(_) => Duration::from_secs(15),
+            // A long boot's journal is read whole, then grepped.
+            Command::KernelUsbLog { .. } => Duration::from_secs(30),
             // A first build over many font directories takes a while.
             Command::RebuildFontCache => Duration::from_secs(300),
         }
@@ -130,6 +142,7 @@ mod tests {
             Command::MatchFont(FontQuery::Serif),
             Command::RebuildFontCache,
             Command::ShowFlatpakOverride(app),
+            Command::KernelUsbLog { grep: true },
         ];
         for command in &commands {
             assert!(command.program().starts_with('/'));
@@ -157,6 +170,7 @@ mod tests {
         assert!(!Command::MatchFont(FontQuery::Serif).changes_the_machine());
         let app = AppId::parse("io.example.Editor").unwrap();
         assert!(!Command::ShowFlatpakOverride(app).changes_the_machine());
+        assert!(!Command::KernelUsbLog { grep: true }.changes_the_machine());
     }
 
     #[test]

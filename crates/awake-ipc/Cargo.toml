@@ -7,6 +7,9 @@ license.workspace = true
 
 [dependencies]
 awake-core.workspace = true
+# The notification language rule, shared with the USB-C recovery's
+# notification (better_core::locale).
+better-core.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

@@ -586,8 +586,19 @@ collection is explicitly configured to include them.
   and makes the changes: it edits the person's own Flatpak override file only
   while it still holds what was read, asks Mutter's `DisplayConfig` for the
   scale, and runs `fc-match`, `fc-cache -f`, and `flatpak override --show`
-  from a closed list with fixed arguments, in one module. No entry needs
-  root; one that does will add a typed daemon change, never a command.
+  from a closed list with fixed arguments, in one module. The two USB-C
+  entries (ticket 101, ADR 0046) are the first that need root: their changes
+  are `Change::Privileged`, typed methods of `manager-daemon`'s
+  `org.betteros.UsbRecovery1` (`ReloadUcsi`, `RebindController`,
+  `SetChoice`), each behind its own polkit action, and their fix is kept by
+  the machine (`/var/lib/better-os/usb-recovery.json`), not the person's
+  record. The kernel log is read as the person with `journalctl` when their
+  account may read the system journal, and otherwise through the daemon's
+  `Findings`, which returns only `hardware_core::usb_recovery`'s classified
+  findings. The reload of `ucsi_acpi` and the rebind of one xHCI function
+  each run in a transient helper unit built on `hardware::helper_sandbox()`;
+  the package's `systemd-sleep` hook only calls the daemon's program, which
+  queues one after-sleep unit when the person turned a fix on.
 - The login screen watch (ticket 140, ADR 0033) is the daemon binary's
   `--watch-login-screen` mode, run once per boot by
   `better-greeter-watch.service`, which nothing in the boot waits for. It
@@ -779,6 +790,7 @@ verification contract.
 - [ADR 0040: What Better OS is, now that it has a session of its own](decisions/0040-what-better-os-is.md) (proposed)
 - [ADR 0043: Better OS builds GPUI from its own fork of Zed](decisions/0043-gpui-from-a-fork.md)
 - [ADR 0045: Better OS moves to GPUI Kit's current release, on GPUI Fast](decisions/0045-gpui-kit-on-gpui-fast.md) (the upgrade is ticket 257)
+- [ADR 0046: The USB-C recovery reloads one signed module and rebinds one controller, in helper units](decisions/0046-usb-c-recovery-through-the-daemon.md) (proposed)
 
 ## Per-package programs run as the person
 

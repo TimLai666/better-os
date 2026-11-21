@@ -1,0 +1,150 @@
+To: linux-usb@vger.kernel.org
+Cc: Heikki Krogerus <heikki.krogerus@linux.intel.com>, Mathias Nyman <mathias.nyman@linux.intel.com>
+Subject: ucsi_acpi -110 after resume and xHCI host death on resume on ASUS Vivobook S 14 M5406WA (same CPMUCSI as M5506WA)
+In-Reply-To: <CAAF7Zqye8YCxpCXcVPbAQzsAiF7upRySyFP959Wio+07rRS5nA@mail.gmail.com>
+
+[Draft for the owner to send. Written 2026-11-22 for Better OS ticket 101.
+Nothing here has been sent. Fill in the sender line; check the Cc list
+against scripts/get_maintainer.pl for drivers/usb/typec/ucsi/ucsi_acpi.c and
+drivers/usb/host/xhci-pci.c on the tree you send against.]
+
+Hello,
+
+This adds a second machine, and a second fault, to the report of
+2026-06-23 about the ASUS Vivobook S 15 M5506WA ("the second port stops
+charging, the errors repeat after every suspend, and reloading ucsi_acpi
+restores both ports until the next suspend"):
+
+  https://lore.kernel.org/linux-usb/CAAF7Zqye8YCxpCXcVPbAQzsAiF7upRySyFP959Wio+07rRS5nA@mail.gmail.com/
+
+Machine
+-------
+
+  ASUSTeK COMPUTER INC. ASUS Vivobook S 14 M5406WA_M5406WA
+  BIOS M5406WA.314 (no newer BIOS addresses it)
+  AMD, the same CPMUCSI SSDT as the M5506WA
+  Zorin OS 18 (Ubuntu 24.04 base), kernels 7.0.0-42-generic and 7.0.0-43-generic
+  Secure Boot on (lockdown=integrity), no out-of-tree modules
+  USB-C ports: /sys/class/typec/port0 and port1,
+  supplies ucsi-source-psy-USBC000:001 and :002
+  xHCI functions: 0000:63:00.4 (1022:151e), 0000:65:00.0 (1022:151f),
+                  0000:65:00.3 (1022:151a), 0000:65:00.4 (1022:151b)
+
+1. UCSI: GET_CONNECTOR_STATUS and notification re-enable time out
+------------------------------------------------------------------
+
+Every boot kept in this machine's journal (five, between 2026-11-12 and
+2026-11-21) logs, 20 to 36 seconds after boot:
+
+  ucsi_acpi USBC000:00: ucsi_handle_connector_change: GET_CONNECTOR_STATUS failed (-110)
+
+and about ten seconds after every resume from s2idle:
+
+  PM: suspend exit
+  ucsi_acpi USBC000:00: failed to re-enable notifications (-110)
+
+(seen at [15930.86] -> [15940.77], [19129.93] -> [19139.73],
+[48187.31] -> [48197.07] in one boot). Afterwards the faster USB-C port
+sometimes stops charging. The same machine never shows it under Windows.
+As on the M5506WA, "modprobe -r ucsi_acpi; modprobe ucsi_acpi" brings both
+ports back until the next suspend.
+
+A May 2026 patch that disables ucsi_acpi on some Lenovo models with broken
+firmware would not help here: it loses the ports' Linux-side state, which
+works once the driver is reloaded.
+
+2. xHCI 0000:63:00.4 dies on resume, and its hub work never finishes
+----------------------------------------------------------------------
+
+On resume from s2idle (first seen on 2026-11-13),
+the host for one USB-C side failed:
+
+  xhci_hcd 0000:63:00.4: AMD-Vi: Event logged [IO_PAGE_FAULT domain=0x0014 address=0x0 flags=0x0000]
+  xhci_hcd 0000:63:00.4: WARN: xHC restore state timeout
+  xhci_hcd 0000:63:00.4: PCI post-resume error -110!
+  xhci_hcd 0000:63:00.4: HC died; cleaning up
+  xhci_hcd 0000:63:00.4: PM: dpm_run_callback(): pci_pm_resume returns -110
+  xhci_hcd 0000:63:00.4: PM: failed to resume async: error -110
+  usb 1-1: USB disconnect, device number 2
+
+From then on the hub work item that disconnects 1-1 never completes. The
+hung-task detector reports it every two minutes:
+
+  INFO: task kworker/12:2:1115178 blocked for more than 122 seconds.
+        Not tainted 7.0.0-42-generic #42~24.04.1-Ubuntu
+  task:kworker/12:2    state:D stack:0     pid:1115178 tgid:1115178 ppid:2      task_flags:0x4208060 flags:0x00080000
+  Workqueue: usb_hub_wq hub_event
+  Call Trace:
+   <TASK>
+   __schedule+0x2b5/0x640
+   schedule+0x27/0xb0
+   schedule_timeout+0x104/0x110
+   __wait_for_common+0x98/0x1a0
+   wait_for_completion+0x24/0x40
+   xhci_configure_endpoint+0x107/0x740
+   xhci_check_bandwidth.part.0+0x149/0x440
+   xhci_check_bandwidth+0x37/0x50
+   usb_hcd_alloc_bandwidth+0x244/0x420
+   usb_disable_device_endpoints+0x74/0xd0
+   usb_disable_device+0x18f/0x2a0
+   usb_disconnect+0xe6/0x2f0
+   hub_quiesce+0x65/0xe0
+   hub_event+0x281/0x4c0
+   process_one_work+0x1af/0x430
+   worker_thread+0x1bf/0x350
+   kthread+0xfb/0x140
+   ret_from_fork+0x1f8/0x2b0
+   ret_from_fork_asm+0x1a/0x30
+   </TASK>
+
+So after "HC died", usb_disconnect() of the device that was on it reaches
+xhci_configure_endpoint(), which queues a Configure Endpoint command and
+waits for its completion without a timeout; the host is dead and nothing
+completes the command. (Whether the command should have been refused
+because the host is already marked dead, or completed by the cleanup of
+the dead host's command queue, is the question for the xHCI side.)
+
+Reading /sys/bus/usb/devices/usb1/product afterwards blocked too.
+
+Because the work item never ends, every later suspend fails to freeze:
+
+  Freezing remaining freezable tasks failed after 20.004 seconds (0 tasks refusing to freeze, wq_busy=1):
+  Showing freezable workqueues that are still busy:
+  workqueue events_freezable: flags=0x104
+    pwq 2: cpus=0 node=0 flags=0x0 nice=0 active=0 refcnt=2
+      inactive: pci_pme_list_scan
+  workqueue usb_hub_wq: flags=0x104
+    pwq 50: cpus=12 node=0 flags=0x0 nice=0 active=1 refcnt=2
+      in-flight: 1115178:hub_event for 48s
+
+and systemd-sleep reports "Failed to put system to sleep. System resumed
+again: Device or resource busy". With the lid closed logind retried about
+every 40 seconds: 1,672 suspend entries in 11 hours on the night of
+2026-11-13, 88 failed freezes in the later boot. Each attempt took the
+Wi-Fi down. Only a reboot clears it.
+
+The resume failure itself starts with an IOMMU page fault at address 0 on
+the host (domain 0x0014) and an xHC restore-state timeout, i.e. the
+controller did not come back from xhci_resume()'s restore.
+
+What would help
+---------------
+
+- For UCSI on these two ASUS models: why the PPM stops completing commands
+  across s2idle (resume ordering, a PPM reset, or the EC's response time),
+  and whether a DMI quirk (a PPM reset on resume, or a longer wait for the
+  EC) is the right fix. I can run tracing (the ucsi tracepoints, dynamic
+  debug for drivers/usb/typec/ucsi) across suspend and plug events on
+  request; I cannot load a rebuilt module (Secure Boot stays on and no
+  Machine Owner Key is enrolled), so a test would need a kernel build.
+- For xHCI: whether a command queued on a host already marked dead should
+  fail at once, so usb_disconnect() can finish and suspend works again, and
+  what the IO_PAGE_FAULT at address 0 during restore suggests about the
+  resume path of 1022:151e on this platform.
+
+Meanwhile, a userspace workaround on this machine reloads ucsi_acpi after a
+resume when the -110 appears, and unbinds and binds 0000:63:00.4 from
+xhci_hcd after it dies, when no hub work is stuck; with stuck hub work it
+can only say a reboot is needed.
+
+Thank you.

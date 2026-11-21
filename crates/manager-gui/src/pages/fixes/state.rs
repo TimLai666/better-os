@@ -114,6 +114,8 @@ fn keep_location(choice: &HostChoice, host: &LinuxHost) -> Result<(), String> {
 pub(crate) enum Work {
     Fixing(RowKey),
     Undoing(RowKey),
+    /// Reset USB-C, or the power-off choice, on a USB-C row.
+    Resetting(RowKey),
 }
 
 /// A failure the page shows in an error bar.
@@ -126,6 +128,8 @@ pub(crate) struct Failure {
 /// What one check read.
 struct Checked {
     reports: Vec<Report>,
+    /// The daemon's USB-C choices, for the controller card.
+    usb: hardware_core::usb_recovery::UsbRecoverySettings,
     records: Result<Records, StoreError>,
     /// A removal of Better Manager that did not finish, and how many fixes
     /// it undid (`patch_platform::removal::interrupted_removal`).
@@ -175,6 +179,8 @@ pub(crate) struct FixesState {
     pub(crate) open: BTreeSet<RowKey>,
     /// The "All known problems" expanders that are open.
     pub(crate) known_open: BTreeSet<patch_core::EntryId>,
+    /// The daemon's USB-C choices at the last check.
+    pub(crate) usb: hardware_core::usb_recovery::UsbRecoverySettings,
     /// Subjects undone in this window, which read "Undone" until the next
     /// Check again.
     just_undone: Vec<RowKey>,
@@ -263,6 +269,7 @@ fn read(choice: &HostChoice, undone: &[RowKey]) -> Result<Checked, Unavailable> 
         undone,
     );
     Ok(Checked {
+        usb: host.usb_settings(),
         reports,
         records,
         interrupted,
@@ -304,11 +311,28 @@ enum Done {
         saved: Result<(), StoreError>,
     },
     Failed(Failure),
+    /// Reset USB-C ran; what it restored.
+    Reset {
+        key: RowKey,
+        reply: hardware_core::usb_recovery::RecoveryReply,
+    },
+    /// A USB-C choice was changed.
+    Chosen,
 }
 
 fn failure(locale: crate::i18n::Locale, fixing: bool, error: &FixError) -> Failure {
     let c = super::copy::copy(locale);
     let summary = match error {
+        // The daemon's own refusal (a USB-C entry): said as itself.
+        FixError::Change {
+            error:
+                error @ (ChangeError::Refused(_) | ChangeError::NotInstalled("better-manager-daemon")),
+            ..
+        } if error.to_string().contains("daemon.error.")
+            || matches!(error, ChangeError::NotInstalled(_)) =>
+        {
+            super::model::usb_refusal(locale, error)
+        }
         FixError::Change {
             error: ChangeError::ChangedSinceRead,
             ..
@@ -362,6 +386,7 @@ impl ManagerApp {
                         app.fixes.removal = checked.removal;
                         app.fixes.record_error = checked.records.err().map(|e| e.to_string());
                         app.fixes.reports = Some(checked.reports);
+                        app.fixes.usb = checked.usb;
                         app.fixes.checked_at = Some(now_unix_seconds());
                     }
                 }
@@ -478,6 +503,13 @@ impl ManagerApp {
         }
         let choice = host_choice(self.is_demo());
         let locale = self.locale;
+        let machine_record = self
+            .fixes
+            .reports
+            .as_ref()
+            .and_then(|reports| reports.iter().find(|r| r.entry == key.entry))
+            .and_then(|report| report.instances.iter().find(|i| i.subject == key.subject))
+            .and_then(|instance| instance.record.clone());
         self.fixes.work = Some(Work::Undoing(key.clone()));
         self.fixes.failure = None;
         self.fixes.results.remove(&key);
@@ -507,7 +539,14 @@ impl ManagerApp {
                             });
                         }
                     };
-                    let Some(record) = records.find(key.entry, &key.subject).cloned() else {
+                    let entry: &dyn Entry = entry::by_id(key.entry);
+                    // A fix the machine keeps has its record in the
+                    // machine's own setting, which the last check read.
+                    let record = records
+                        .find(key.entry, &key.subject)
+                        .cloned()
+                        .or_else(|| machine_record.clone().filter(|_| entry.kept_by_machine()));
+                    let Some(record) = record else {
                         // Nothing recorded: nothing this page may take back.
                         return Done::Undone {
                             key,
@@ -515,7 +554,6 @@ impl ManagerApp {
                             saved: Ok(()),
                         };
                     };
-                    let entry: &dyn Entry = entry::by_id(key.entry);
                     match engine::undo(entry, &record, &mut host, all) {
                         Ok(outcome) => {
                             records.after_undo(key.entry, &key.subject, outcome.remaining);
@@ -526,6 +564,52 @@ impl ManagerApp {
                             }
                         }
                         Err(error) => Done::Failed(failure(locale, false, &error)),
+                    }
+                })
+                .await;
+            let _ = this.update(cx, |app, cx| app.fixes_done(done, cx));
+        }));
+        cx.notify();
+    }
+
+    /// Reset USB-C on a USB-C row, or the power-off choice on the
+    /// controller's, through the daemon, off the UI thread; the row then
+    /// says what came back, and the page checks again.
+    pub(crate) fn usb_action(
+        &mut self,
+        key: RowKey,
+        action: patch_core::Privileged,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.fixes.can_change() || self.update_restart.program_removed() {
+            return;
+        }
+        let choice = host_choice(self.is_demo());
+        let locale = self.locale;
+        self.fixes.work = Some(Work::Resetting(key.clone()));
+        self.fixes.failure = None;
+        self.fixes.results.remove(&key);
+        let task_key = key.clone();
+        self.fixes.work_task = Some(cx.spawn(async move |this, cx| {
+            let done = cx
+                .background_spawn(async move {
+                    let c = super::copy::copy(locale);
+                    let Some((mut host, _)) = open(&choice) else {
+                        return Done::Failed(Failure {
+                            summary: c.host_unavailable,
+                            details: String::new(),
+                        });
+                    };
+                    match host.usb_act(action) {
+                        Ok(Some(reply)) => Done::Reset {
+                            key: task_key,
+                            reply,
+                        },
+                        Ok(None) => Done::Chosen,
+                        Err(error) => Done::Failed(Failure {
+                            summary: super::model::usb_refusal(locale, &error),
+                            details: error.to_string(),
+                        }),
                     }
                 })
                 .await;
@@ -565,6 +649,10 @@ impl ManagerApp {
                 self.fixes.failure = saved.err().map(unsaved);
             }
             Done::Failed(failure) => self.fixes.failure = Some(failure),
+            Done::Reset { key, reply } => {
+                self.fixes.results.insert(key, RowResult::Reset(reply));
+            }
+            Done::Chosen => {}
         }
         // What the page shows next comes from a fresh check, not from what
         // the fix believed it did; the result line stays until Check again.

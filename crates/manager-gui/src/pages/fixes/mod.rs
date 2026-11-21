@@ -32,6 +32,8 @@ pub(crate) mod card {
     pub(crate) const APPLIED: &str = "fixes-applied";
     pub(crate) const FONT_CACHE: &str = "fixes-known-fontconfig-cache";
     pub(crate) const ELECTRON_CURSOR: &str = "fixes-known-electron-cursor";
+    pub(crate) const USB_C_INTERFACE: &str = "fixes-known-usb-c-interface";
+    pub(crate) const USB_CONTROLLER: &str = "fixes-known-usb-controller";
 }
 
 pub(crate) const PAGE: PageModule = PageModule {
@@ -71,6 +73,24 @@ fn search_entries(locale: Locale) -> Vec<SearchEntry> {
             c.electron_cause,
             Some(c.group_all),
             card::ELECTRON_CURSOR,
+        ),
+        entry(
+            c.usb_header,
+            c.usb_cause,
+            Some(c.group_all),
+            card::USB_C_INTERFACE,
+        ),
+        entry(
+            c.controller_header,
+            c.controller_cause,
+            Some(c.group_all),
+            card::USB_CONTROLLER,
+        ),
+        entry(
+            c.reset_usb_c,
+            c.usb_cause,
+            Some(c.group_all),
+            card::USB_C_INTERFACE,
         ),
     ]
 }

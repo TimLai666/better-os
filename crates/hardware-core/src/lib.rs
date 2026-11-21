@@ -20,6 +20,7 @@ pub mod lighting;
 pub mod page;
 pub mod power;
 pub mod sensors;
+pub mod usb_recovery;
 pub mod write;
 
 /// The variable a debug build of a window reads a fixture sysfs tree from,

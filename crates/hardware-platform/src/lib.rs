@@ -18,6 +18,7 @@ pub mod fakes;
 pub mod follow_store;
 pub mod privileged;
 pub mod sysfs;
+pub mod usb;
 
 /// Reads everything the System page shows, at once, blocking. A bus that
 /// could not be reached is `None`, and what lives on it reads as absent,

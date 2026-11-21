@@ -61,6 +61,73 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("{out}");
         return Ok(());
     }
+    // The USB-C recovery's helpers and after-sleep run (ticket 101, ADR
+    // 0046). Each takes exactly what is listed and nothing from a caller.
+    match arguments.first().map(String::as_str) {
+        // In a transient unit that may load modules: unload and load
+        // ucsi_acpi, the distribution's own signed file.
+        Some("--reload-ucsi") => {
+            if arguments.len() > 1 {
+                return Err("--reload-ucsi takes no value".into());
+            }
+            println!("{}", manager_daemon::usb_recovery::reload_ucsi_main()?);
+            return Ok(());
+        }
+        // In a transient unit whose /sys holds xhci_hcd's unbind and bind:
+        // the one function the daemon decided on.
+        Some("--rebind-xhci") => {
+            let (Some(address), None) = (arguments.get(1), arguments.get(2)) else {
+                return Err("--rebind-xhci takes one PCI address".into());
+            };
+            println!(
+                "{}",
+                manager_daemon::usb_recovery::rebind_xhci_main(std::path::Path::new("/"), address)?
+            );
+            return Ok(());
+        }
+        // The systemd-sleep hook: queue the after-sleep run when anything
+        // is on, and return at once. Never fails the sleep.
+        Some("--after-sleep") => {
+            if let (Some(phase), Some(operation), None) =
+                (arguments.get(1), arguments.get(2), arguments.get(3))
+            {
+                manager_daemon::usb_recovery::after_sleep_hook(
+                    &std::env::current_exe()?,
+                    std::path::Path::new(manager_daemon::usb_recovery::SETTINGS),
+                    phase,
+                    operation,
+                );
+            }
+            return Ok(());
+        }
+        // The after-sleep run itself, in the unit the hook queued.
+        Some("--usb-after-sleep") => {
+            if arguments.len() > 1 {
+                return Err("--usb-after-sleep takes no value".into());
+            }
+            let program = std::env::current_exe()?;
+            let machine = manager_daemon::usb_recovery::SystemUsbMachine::new(program.clone());
+            let world = manager_daemon::usb_recovery::LogindWorld::new(program);
+            let done = manager_daemon::usb_recovery::after_sleep(
+                &machine,
+                &world,
+                std::path::Path::new(manager_daemon::usb_recovery::SETTINGS),
+                std::path::Path::new(manager_daemon::usb_recovery::RUN_STATE),
+                manager_daemon::usb_recovery::Timings::REAL,
+            );
+            eprintln!("usb-recovery: after sleep: {done:?}");
+            return Ok(());
+        }
+        // As the person, from the after-sleep run: one notification.
+        Some("--notify-sleep-blocked") => {
+            let (Some(language), None) = (arguments.get(1), arguments.get(2)) else {
+                return Err("--notify-sleep-blocked takes zh-TW or en".into());
+            };
+            manager_daemon::usb_recovery::notify_main(language)?;
+            return Ok(());
+        }
+        _ => {}
+    }
     // The prerm on removal of this package and of better-manager (ADR
     // 0034): a keyboard Better OS took over goes back to its firmware, the
     // battery gets back the charge limit it had before Better OS, and both
@@ -81,6 +148,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             &manager_daemon::keyboard_lighting::LightingPaths::system(),
         ) {
             eprintln!("better-manager-daemon: keyboard lighting: {problem}");
+        }
+        // The USB-C recovery's choices (ADR 0046): with them gone the sleep
+        // hook does nothing, so no recovery outlives the page that set it.
+        for problem in manager_daemon::usb_recovery::release(
+            std::path::Path::new(manager_daemon::usb_recovery::SETTINGS),
+            std::path::Path::new(manager_daemon::usb_recovery::RUN_STATE),
+        ) {
+            eprintln!("better-manager-daemon: usb recovery: {problem}");
         }
         let writer = manager_daemon::hardware::SandboxedWriter { program };
         for line in manager_daemon::hardware::release_charge_limit(
@@ -109,9 +184,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             {
                 manager_daemon::keyboard_lighting::lamp_helper_properties(node)
             }
+            (Some("ucsi-reload"), None, None) => {
+                manager_daemon::usb_recovery::ucsi_helper_properties()
+            }
+            (Some("xhci-rebind"), Some(address), None) => {
+                let Some(address) = hardware_core::usb_recovery::PciAddress::parse(address) else {
+                    return Err("--helper-properties xhci-rebind takes a PCI address".into());
+                };
+                manager_daemon::usb_recovery::xhci_helper_properties(&address)
+            }
+            (Some("after-sleep"), None, None) => {
+                manager_daemon::usb_recovery::after_sleep_properties()
+            }
             _ => {
                 return Err(
-                    "--helper-properties takes attribute PATH or lamp-array hidrawN".into(),
+                    "--helper-properties takes attribute PATH, lamp-array hidrawN, ucsi-reload, xhci-rebind ADDRESS, or after-sleep".into(),
                 );
             }
         };
@@ -247,7 +334,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
         }
         return Err(format!(
-            "better-manager-daemon takes no argument but --restore-hardware, --watch-login-screen, --remove-drive-entries, --release-hardware, --helper-properties, --write-attribute, --lamp-array, --lamp-array-via-helper, or --write-via-helper; got {argument:?}"
+            "better-manager-daemon takes no argument but --restore-hardware, --watch-login-screen, --remove-drive-entries, --release-hardware, --helper-properties, --write-attribute, --lamp-array, --lamp-array-via-helper, --write-via-helper, --reload-ucsi, --rebind-xhci, --after-sleep, --usb-after-sleep, or --notify-sleep-blocked; got {argument:?}"
         )
         .into());
     }
@@ -314,6 +401,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         manager_ipc::boot_watch::Records::system(),
         gate.clone(),
     );
+    let usb_recovery = manager_daemon::usb_recovery::UsbRecoveryService::new(
+        PolkitAuthorizer::new(zbus::connection::Builder::system()?.build().await?),
+        Arc::new(manager_daemon::usb_recovery::SystemUsbMachine::new(
+            std::env::current_exe()?,
+        )),
+        manager_daemon::usb_recovery::SETTINGS,
+        gate.clone(),
+    );
     let connection = serve(
         zbus::connection::Builder::system()?,
         BUS_NAME,
@@ -321,6 +416,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         hardware,
         drives,
         boot_watch,
+        usb_recovery,
     )
     .await?;
 
