@@ -11,24 +11,58 @@ closure, so Print Screen does nothing in the session. Under GNOME the shell
 takes screenshots. `xdg-desktop-portal-cosmic` serves the Screenshot portal
 (its non-interactive path), but a person pressing Print Screen gets nothing.
 
+## Owner's decision (2026-11-21)
+
+Better OS writes its own screenshot program in Rust, and it does everything
+GNOME 46's screenshot interface does. Adding `cosmic-screenshot` is not taken,
+so C2's closure stays at 14 packages.
+
 ## What to build
 
-- **Decide the provider with the owner first** (a choice C2 bounds): (a) add
-  `cosmic-screenshot` to the closure, which changes the compiled-in pin list
-  (ticket 204) and needs the owner's answer because C2 names 14 packages;
-  (b) a Better OS screenshot program in Rust that asks the Screenshot portal
-  (interactive) and saves to `~/Pictures/Screenshots` as GNOME does, with a
-  notification through ticket 215's service; (c) bind the key to
-  `xdg-desktop-portal`'s Screenshot call through a one-line helper with no
-  dialog. Recommendation: (b), it keeps the closure as decided and gives the
-  owner's familiar save place.
-- The session's `system_actions` default (ticket 203's package data) names
-  the chosen program; ticket 203's test that every action names a shipped
-  program covers it.
+A Better OS screenshot program (GPUI, opened through `better_ui::layer` over
+every output), with every feature of GNOME Shell 46's screenshot interface
+(`js/ui/screenshot.js`, read at that version before building):
+
+- Three ways to choose what is captured: an area (drawn by dragging, then moved
+  and resized by its edges and corners, with its size remembered for next
+  time), a whole screen (one of several outputs picked by pointing), and one
+  window (picked from the open windows).
+- A switch for whether the pointer is in the picture.
+- A still picture or a recording of the screen: the same interface switches
+  between the two, a recording covers an area or a screen, shows that it is
+  running and how long, and is stopped from the top bar or the tray and by
+  pressing the key again.
+- A picture is copied to the clipboard and saved as
+  `~/Pictures/Screenshots/Screenshot from <date> <time>.png` (the person's
+  translated Pictures folder from `xdg-user-dirs`), a recording under
+  `~/Videos/Screencasts`; a notification shows it and opens it or its folder.
+- The keys GNOME gives: Print Screen opens the interface, Shift+Print takes the
+  whole screen at once, Alt+Print the focused window at once,
+  Ctrl+Shift+Alt+R starts and stops a recording; in the interface Enter,
+  Space, and Ctrl+C capture, Escape leaves, S, C, and W pick the screen,
+  area (selection), and window, V switches picture and recording, P the
+  pointer.
+- The Screenshot portal's interactive call shows the same interface, so an
+  application asking for a screenshot gets it and the image.
+- Any feature of GNOME 46's interface found in its source and not listed here
+  is built too; one that the compositor cannot serve is named in the notes
+  with the protocol that is missing, and the ticket stays open for it.
+
+The pixels come from the compositor's capture protocols
+(`ext-image-copy-capture-v1` with `ext-image-capture-source-v1`, or what
+`cosmic-comp` at the pinned version serves; a recording through the
+ScreenCast portal and PipeWire), never from a helper of another desktop.
+The session's `system_actions` default (ticket 203's package data) names the
+program; ticket 203's test that every action names a shipped program covers
+it. The program ships in the session's package and follows AGENTS.md's rules
+for a window (restart on update, command line, `app_id`).
 
 ## Done when
 
-- [ ] The owner's answer is recorded in this ticket.
+- [x] The owner's answer is recorded in this ticket.
+- [ ] Every feature in "What to build" works in the nested `cosmic-comp`
+      (`packaging/tests/cosmic-nested.sh`) with fixture windows, in zh-TW and
+      English, light and dark, at 100 % and 150 %.
 - [ ] In ticket 201's VM (`packaging/tests/session-vm/`), Print Screen in the
       session saves an image of the screen where the person expects it, and an
       application asking the Screenshot portal interactively gets a dialog

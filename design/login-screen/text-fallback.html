@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-Hant-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>文字模式登入（後備）</title>
+<style>
+body{margin:0;background:#888;padding:24px;font:400 14px/20px system-ui,"Noto Sans CJK TC",sans-serif;color:#fff}
+.screen{width:1440px;height:900px;background:#000;border-radius:2px;box-shadow:0 2px 12px rgba(0,0,0,.3);padding:24px 28px;box-sizing:border-box;font:400 18px/26px "Ubuntu Mono","DejaVu Sans Mono","Noto Sans Mono CJK TC",monospace;color:#d0d0d0;white-space:pre}
+.b{color:#fff}
+.legend{max-width:1440px;margin-top:16px;font-size:12px;line-height:16px}
+</style>
+</head>
+<body>
+<div class="screen" role="img" aria-label="文字模式登入畫面">Ubuntu 24.04.3 LTS better-laptop tty1
+
+<span class="b">The Better OS login screen couldn't be shown (the display server didn't start, 09:41:27).</span>
+Sign in below with your user name and password to use text mode.
+After signing in, type better-os-login-status to see why.
+To go back to the GNOME login screen, type sudo dpkg-reconfigure gdm3 and choose gdm3.
+
+better-laptop login: <span class="b">▌</span></div>
+<p class="legend">設計稿：登入路徑的最後後備（規格 5.10、L8 (a)）。開機畫面已結束，第一個虛擬終端機上的文字登入接受輸入；第一行是系統自己的 /etc/issue，接著是登入監督程式寫的說明，填入失敗的階段和時間。說明固定用英文：Linux 的文字主控台字型最多 512 個字形，畫不出中文字；中文說明出現在 Better Manager 的通知裡。文字主控台沒有淺色或深色之分，所以只有這一個檔案。主機名稱與時間是示意。</p>
+</body>
+</html>

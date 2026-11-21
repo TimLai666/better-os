@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="zh-Hant-TW" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>鎖定畫面：不顯示通知（淺色）</title>
+<style>
+:root{--font:system-ui,"Inter","Segoe UI","Noto Sans CJK TC","Noto Sans TC",sans-serif}
+html[data-theme=light]{--card:rgba(249,249,249,.86);--cardsolid:#f9f9f9;--ctl:rgba(255,255,255,.7);--ctlhover:rgba(249,249,249,.5);--text:rgba(0,0,0,.894);--text2:rgba(0,0,0,.62);--text3:rgba(0,0,0,.36);--accent:#005fb8;--on-accent:#fff;--subtle:rgba(0,0,0,.037);--subtle2:rgba(0,0,0,.06);--stroke:rgba(0,0,0,.06);--strong:rgba(0,0,0,.45);--crit:#c42b1c;--info:#005fb8;--flyout:#f9f9f9;--elev:rgba(0,0,0,.18);--divider:rgba(0,0,0,.08)}
+html[data-theme=dark]{--card:rgba(44,44,44,.86);--cardsolid:#2c2c2c;--ctl:rgba(255,255,255,.06);--ctlhover:rgba(255,255,255,.08);--text:#fff;--text2:rgba(255,255,255,.77);--text3:rgba(255,255,255,.36);--accent:#60cdff;--on-accent:#000;--subtle:rgba(255,255,255,.06);--subtle2:rgba(255,255,255,.09);--stroke:rgba(255,255,255,.07);--strong:rgba(255,255,255,.55);--crit:#ff99a4;--info:#60cdff;--flyout:#2c2c2c;--elev:rgba(0,0,0,.5);--divider:rgba(255,255,255,.08)}
+
+*{box-sizing:border-box}
+body{margin:0;background:#888;color:var(--text);font:400 14px/20px var(--font);-webkit-font-smoothing:antialiased;padding:24px}
+.screen{position:relative;width:var(--w);height:var(--h);overflow:hidden;border-radius:2px;box-shadow:0 2px 12px rgba(0,0,0,.3)}
+.wall{position:absolute;inset:0}
+/* Stand-in for Better OS's own login artwork (ticket 279): gradients only. */
+html[data-theme=light] .wall.login{background:
+ radial-gradient(ellipse 60% 70% at 78% 20%,rgba(255,255,255,.55),transparent 60%),
+ radial-gradient(ellipse 55% 60% at 20% 85%,#5aa7d8 0%,transparent 70%),
+ linear-gradient(150deg,#cfe6f5 0%,#8cc0e4 45%,#3f86c2 100%)}
+html[data-theme=dark] .wall.login{background:
+ radial-gradient(ellipse 60% 70% at 78% 20%,rgba(76,140,200,.35),transparent 60%),
+ radial-gradient(ellipse 55% 60% at 20% 85%,#123a63 0%,transparent 70%),
+ linear-gradient(150deg,#14263b 0%,#0d1a2a 55%,#060c14 100%)}
+.wall.login::after{content:"";position:absolute;left:30%;top:-10%;width:70vh;height:70vh;max-width:640px;max-height:640px;transform:rotate(45deg);border-radius:24px;background:linear-gradient(135deg,rgba(255,255,255,.18),rgba(255,255,255,0));}
+/* Stand-in for the person's own wallpaper on the lock screen. */
+html[data-theme=light] .wall.own{background:
+ radial-gradient(ellipse 70% 60% at 70% 30%,#f6d9a8 0%,transparent 65%),
+ radial-gradient(ellipse 60% 60% at 15% 80%,#7fae8a 0%,transparent 70%),
+ linear-gradient(170deg,#e9dcc6 0%,#a9c3a0 55%,#5f8f6f 100%)}
+html[data-theme=dark] .wall.own{background:
+ radial-gradient(ellipse 70% 60% at 70% 30%,#5a4a32 0%,transparent 65%),
+ radial-gradient(ellipse 60% 60% at 15% 80%,#203f2d 0%,transparent 70%),
+ linear-gradient(170deg,#2a2620 0%,#1b2a22 55%,#0e1612 100%)}
+.scrim{position:absolute;inset:0;background:radial-gradient(ellipse 70% 75% at 0% 100%,rgba(0,0,0,.45),rgba(0,0,0,0) 70%)}
+.clock{position:absolute;left:64px;bottom:56px;color:#fff;text-shadow:0 2px 24px rgba(0,0,0,.25)}
+.clock .wd{font:600 120px/120px var(--font);letter-spacing:-.02em}
+.clock .row{display:flex;align-items:center;gap:16px;margin-top:16px}
+.clock .t{font:300 56px/64px var(--font);font-variant-numeric:tabular-nums;letter-spacing:-.02em;display:flex;align-items:baseline;gap:8px}
+.clock .p{font:600 18px/24px var(--font);color:rgba(255,255,255,.75)}
+.clock .div{width:1px;height:32px;background:rgba(255,255,255,.35)}
+.clock .d{font:400 20px/28px var(--font);color:rgba(255,255,255,.9)}
+.clock.compact .wd{font-size:88px;line-height:88px}
+.clock.compact .t{font-size:44px;line-height:52px}
+.hint{position:absolute;left:0;right:0;bottom:40px;text-align:center;color:#fff;text-shadow:0 2px 24px rgba(0,0,0,.35)}
+.card{position:absolute;top:20px;right:20px;bottom:20px;width:var(--cw);background:var(--card);backdrop-filter:blur(32px);-webkit-backdrop-filter:blur(32px);border:1px solid var(--stroke);border-radius:8px;box-shadow:0 8px 32px var(--elev);padding:24px;display:flex;flex-direction:column}
+.status{display:flex;justify-content:flex-end;align-items:center;gap:4px;height:32px}
+.sb{height:32px;min-width:32px;padding:0 6px;border-radius:4px;display:inline-flex;align-items:center;justify-content:center;gap:4px;color:var(--text)}
+.sb.kb{font:600 12px/16px var(--font)}
+.sb .pct{font-size:12px;line-height:16px;color:var(--text2)}
+.vdiv{width:1px;height:16px;background:var(--divider);margin:0 4px}
+.mid{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center}
+.avatar{width:96px;height:96px;border-radius:48px;display:grid;place-items:center;color:#fff;font:600 28px/36px var(--font)}
+.name{margin-top:16px;font:600 28px/36px var(--font)}
+.cap{margin-top:4px;font-size:12px;line-height:16px;color:var(--text2);min-height:16px}
+.field{margin-top:24px;width:320px;height:36px;border-radius:4px;background:var(--ctl);border:1px solid var(--stroke);border-bottom:1px solid var(--strong);display:flex;align-items:center;padding:0 4px 0 11px;gap:4px;position:relative}
+.field.focus{border-bottom:2px solid var(--accent);background:var(--cardsolid)}
+.field.dis{opacity:.55}
+.field .ph{flex:1;color:var(--text2)}
+.field .val{flex:1;display:flex;align-items:center;gap:4px}
+.field .val i{width:7px;height:7px;border-radius:4px;background:var(--text);display:inline-block}
+.field .caret{display:inline-block;width:1px;height:18px;background:var(--text);vertical-align:middle;margin-left:1px}
+.ib{width:28px;height:28px;border-radius:4px;display:grid;place-items:center;color:var(--text2)}
+.ib.go{background:var(--accent);color:var(--on-accent)}
+.ib.go.dis{background:var(--subtle2);color:var(--text3)}
+.msg{margin-top:8px;min-height:20px;font-size:12px;line-height:16px;display:flex;align-items:center;justify-content:center;gap:6px;text-align:center;max-width:320px}
+.msg.crit{color:var(--crit)}
+.msg.note{color:var(--text2)}
+.msg svg{flex:none}
+.reserved{height:20px;margin-top:4px}
+.bottom{display:flex;justify-content:space-between;align-items:center;height:32px}
+.btn{height:32px;padding:0 10px;border-radius:4px;display:inline-flex;align-items:center;gap:8px;color:var(--text);white-space:nowrap}
+.btn.std{background:var(--ctl);border:1px solid var(--stroke)}
+.btn .chev{color:var(--text2)}
+.btn.open{background:var(--subtle2)}
+.fly{position:absolute;background:var(--flyout);border:1px solid var(--stroke);border-radius:8px;box-shadow:0 8px 16px var(--elev);padding:4px;z-index:5}
+.mi{min-height:32px;display:flex;align-items:center;gap:12px;padding:6px 12px 6px 8px;border-radius:4px;min-width:280px}
+.mi .slot{width:16px;display:grid;place-items:center;flex:none}
+.mi .lab small{display:block;font-size:12px;line-height:16px;color:var(--text2)}
+.mi.sel{background:var(--subtle2)}
+.chooser{width:100%;flex:1;display:flex;flex-direction:column;justify-content:center}
+.chooser h2{font:600 20px/28px var(--font);margin:0 0 12px 8px}
+.acc{height:48px;display:flex;align-items:center;gap:12px;padding:0 8px;border-radius:4px;position:relative}
+.acc.sel{background:var(--subtle2)}
+.acc.sel::before{content:"";position:absolute;left:0;top:16px;width:3px;height:16px;border-radius:2px;background:var(--accent)}
+.acc .a{width:32px;height:32px;border-radius:16px;display:grid;place-items:center;color:#fff;font:600 14px/20px var(--font);flex:none}
+.acc .n{font-weight:600}
+.acc .c{font-size:12px;line-height:16px;color:var(--text2)}
+.acc.other .a{background:var(--subtle2);color:var(--text)}
+.away{margin-top:12px}
+.away .h{font-size:12px;line-height:16px;color:var(--text2);margin:0 0 4px 4px}
+.nrow{display:flex;gap:12px;align-items:flex-start;padding:8px 4px;border-top:1px solid var(--divider)}
+.nrow:first-of-type{border-top:0}
+.nrow .ico{width:32px;height:32px;border-radius:6px;flex:none;display:grid;place-items:center;color:#fff;font:700 13px/1 var(--font)}
+.nrow .b{flex:1;min-width:0}
+.nrow .tt{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.nrow .s{font-size:12px;line-height:16px;color:var(--text2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.nrow .tm{font-size:12px;line-height:16px;color:var(--text2);font-variant-numeric:tabular-nums;flex:none}
+.more{font-size:12px;line-height:16px;color:var(--text2);padding:4px 4px 0}
+.media{display:flex;align-items:center;gap:12px;padding:8px 4px;border-radius:4px;background:var(--subtle)}
+.media .cover{width:40px;height:40px;border-radius:4px;background:linear-gradient(135deg,#e2774b,#8a3d7a);flex:none}
+.media .b{flex:1;min-width:0}
+.media .tt{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.media .s{font-size:12px;line-height:16px;color:var(--text2)}
+.nrow .b,.media .b,.nrow .tt,.nrow .s,.media .tt,.media .s{display:block}
+.legend{max-width:1440px;margin-top:16px;font-size:12px;line-height:16px;color:#fff}
+</style>
+</head>
+<body>
+<div class="screen" style="--w:1440px;--h:900px">
+<div class="wall own"></div><div class="scrim"></div><div class="clock" aria-label="2026年11月21日 星期六 下午3:42"><div class="wd">星期六</div><div class="row"><span class="t"><span class="p">下午</span>3:42</span><span class="div"></span><span class="d">11月21日</span></div></div><div class="card" style="--cw:480px" role="dialog" aria-label="登入"><div class="status" role="toolbar" aria-label="狀態"><span class="sb kb" title="鍵盤配置：英文（美式）">US</span><span class="sb" title="協助工具"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="4.5" r="1.5"/><path d="M5 8h14M12 8v6m0 0-3 7m3-7 3 7"/></svg></span><span class="sb" title="網路：已連線到 HomeNet"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><path d="M12 20h.01"/></svg></span><span class="sb" title="電池 87%"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="7" width="16" height="10" rx="2"/><path d="M22 11v2"/><rect x="4" y="9" width="11" height="6" rx="1" fill="currentColor" stroke="none"/></svg><span class="pct">87%</span></span><span class="vdiv"></span><span class="sb" title="電源"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.77.04"/></svg></span></div><div class="mid"><div class="avatar" style="background:#2f6fb0" aria-hidden="true">明</div><div class="name">林小明</div><div class="cap">已鎖定</div><div class="field focus" role="group" aria-label="林小明 的密碼"><span class="ph"><span class="caret" style="margin:0 2px 0 0"></span>密碼</span><span class="ib" title="顯示密碼"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg></span><span class="ib go" title="解鎖"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></svg></span></div><div class="msg note" role="status"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="7" fill="var(--info)"/><path d="M8 7v4.2" stroke="var(--cardsolid)" stroke-width="1.6" stroke-linecap="round"/><circle cx="8" cy="4.8" r="1" fill="var(--cardsolid)"/></svg><span>注音在這裡暫停，請用英文鍵盤輸入密碼。</span></div><div class="reserved"></div></div><div class="media" role="group" aria-label="正在播放"><span class="cover" aria-hidden="true"></span><span class="b"><span class="tt">午後散步</span><span class="s">示意樂團</span></span><span class="ib" title="上一首"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 20 9 12l10-8z" fill="currentColor"/><path d="M5 19V5"/></svg></span><span class="ib" title="暫停" style="color:var(--text)"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="6" y="4" width="4" height="16" rx="1" fill="currentColor" stroke="none"/><rect x="14" y="4" width="4" height="16" rx="1" fill="currentColor" stroke="none"/></svg></span><span class="ib" title="下一首"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 4l10 8-10 8z" fill="currentColor"/><path d="M19 5v14"/></svg></span></div></div>
+</div>
+<p class="legend">設計稿：Better OS 登入畫面與鎖定畫面，1440 × 900 邏輯像素，縮放 1。排列依 Luma 的登入與鎖定畫面（時間組在左下、卡片在右側），外觀依 DESIGN.md 與 better_ui::fluent，文案與行為依 design/login-screen-spec.md。背景是代替 Better OS 自己插圖（票 279）的漸層；人名、通知與歌曲是示意。同一個鎖定畫面，L4 (b) 或在通知頁關掉「在鎖定畫面上顯示通知」時：卡片底部只剩媒體控制。鎖定前正在用注音時，訊息列提醒密碼用英文鍵盤輸入（每次鎖定一次）。 另一個外觀：lock-private-dark.html。</p>
+</body>
+</html>
