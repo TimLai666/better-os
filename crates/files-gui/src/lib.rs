@@ -50,6 +50,7 @@ pub mod policy;
 pub mod prefs;
 pub mod preview;
 pub mod reader;
+pub mod remote;
 pub mod restart;
 pub mod search;
 pub mod secret;
@@ -77,6 +78,10 @@ mod drives_bus_tests;
 mod gvfs_bus_tests;
 #[cfg(test)]
 mod integration_tests;
+#[cfg(test)]
+mod remote_servers_tests;
+#[cfg(test)]
+mod remote_tests;
 #[cfg(test)]
 mod tests;
 

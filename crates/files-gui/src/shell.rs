@@ -30,8 +30,8 @@ use crate::i18n::{Copy, Locale, copy};
 use crate::keys::Focus;
 use crate::prefs::{ItemScale, ViewMode};
 use crate::sidebar::{
-    FilesystemProbe, NavGroup, NoDeviceStates, RowPlace, SidebarInputs, SidebarRow, SidebarSection,
-    build_rows, highlighted_row, shown_rows,
+    NavGroup, NoDeviceStates, RowPlace, SidebarInputs, SidebarRow, SidebarSection, build_rows,
+    highlighted_row, shown_rows,
 };
 use crate::toolbar::toolbar_state;
 
@@ -74,6 +74,16 @@ impl NavTarget {
                 .location
                 .as_local_path()
                 .map(|path| RowPlace::Mount(path.as_path().to_path_buf())),
+            // A server favourite lights while its folder is open, under the
+            // folder GVfs shows it at (ticket 310).
+            NavTarget::Row(row) if matches!(row.location, files_core::Location::Network(_)) => {
+                match session.shown_at(&row.location) {
+                    Some(folder) => Some(RowPlace::Exact(folder)),
+                    None => crate::remote::remote_of(&row.location, None)
+                        .filter(|remote| remote.path().is_none())
+                        .and_then(|remote| server(&remote.mount_address())),
+                }
+            }
             NavTarget::Row(row) => Some(RowPlace::Exact(row.location.clone())),
             NavTarget::Device(device) => device.mount_point.clone().map(RowPlace::Mount),
             NavTarget::Drive(key) => drives
@@ -841,7 +851,8 @@ impl FilesApp {
                 mounts: &self.session.mounts,
                 bookmarks: &self.session.bookmarks,
                 states: &NoDeviceStates,
-                probe: &FilesystemProbe,
+                probe: &self.session.probes,
+                remote: &self.session,
             };
             shown_rows(build_rows(&inputs, c))
         };
@@ -856,6 +867,9 @@ impl FilesApp {
             }
             if !row.availability.is_available() {
                 item = item.caption(c.unavailable);
+            } else if row.connected == Some(false) {
+                // Still opened by a click, which connects (ticket 310).
+                item = item.caption(c.remote_not_connected);
             } else if row.identity_volatile {
                 item = item.caption(c.identity_volatile);
             } else if let Some((status, warning)) = row
@@ -922,6 +936,7 @@ impl FilesApp {
                             bookmark_index: None,
                             device_state: None,
                             identity_volatile: false,
+                            connected: None,
                         };
                         out.push((item.entry(), Some(NavTarget::Row(row))));
                     }

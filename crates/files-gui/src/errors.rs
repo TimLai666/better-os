@@ -59,6 +59,16 @@ pub const SENTENCES: &[(&str, &str, &str)] = &[
         "無法讀取這個資料夾（{detail}）。請重試，或檢查磁碟。",
     ),
     (
+        "files.listing.error.not_connected",
+        "This folder is on a server that isn't connected ({detail}).",
+        "這個資料夾所在的伺服器尚未連線（{detail}）。",
+    ),
+    (
+        "files.listing.error.not_answering",
+        "The server this folder is on isn't answering ({detail}).",
+        "這個資料夾所在的伺服器沒有回應（{detail}）。",
+    ),
+    (
         "files.location.error.relative_path",
         "That isn't a full path. Start it with / ({detail}).",
         "這不是完整路徑，請以 / 開頭（{detail}）。",

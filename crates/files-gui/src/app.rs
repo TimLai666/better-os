@@ -557,6 +557,15 @@ impl FilesApp {
                         handle.set_offset(point(px(0.0), px(-offset.max(0.0))));
                         cx.notify();
                     }
+                    // A dropped server connection comes back to where the
+                    // list was scrolled (ticket 310).
+                    let offset = app.content_scroll.0.borrow().base_handle.offset();
+                    app.session.note_scroll(-f32::from(offset.y));
+                    if let Some(offset) = app.session.take_scroll_to_restore() {
+                        let handle = app.content_scroll.0.borrow().base_handle.clone();
+                        handle.set_offset(point(px(0.0), px(-offset.max(0.0))));
+                        cx.notify();
+                    }
                     // A background catalog reload is a redraw for the
                     // Applications location and nothing else.
                     let generation = app.session.catalog_generation();
@@ -569,6 +578,7 @@ impl FilesApp {
                     }
                     if app.session.is_listing()
                         || app.session.is_refreshing()
+                        || app.session.is_mounting()
                         || app.session.folder_sizes.is_busy()
                         || app.session.jobs.iter().any(|job| !job.state.is_terminal())
                     {
@@ -703,6 +713,17 @@ impl FilesApp {
     pub(crate) fn begin_path_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.editing_path = true;
         self.sync_path_field(window, cx);
+        self.path_input
+            .update(cx, |state, cx| state.focus(window, cx));
+        cx.notify();
+    }
+
+    /// "Type the address" on a server folder whose address was not saved
+    /// (ticket 310): the address field, empty, takes the keys.
+    pub(crate) fn start_typing_address(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.editing_path = true;
+        self.path_input
+            .update(cx, |state, cx| state.set_value("", window, cx));
         self.path_input
             .update(cx, |state, cx| state.focus(window, cx));
         cx.notify();

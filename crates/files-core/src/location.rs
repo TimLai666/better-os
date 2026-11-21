@@ -7,11 +7,12 @@
 //! has to ask for one and handle the answer being "this location does not have
 //! one".
 //!
-//! The enum is closed on purpose. A future SMB or SFTP backend adds a variant
-//! and the compiler names every place that has to decide what to do about it.
-//! Until then [`Location::Network`] represents such a location without
-//! implementing it, and [`Location::Unsupported`] holds a location string this
-//! build recognizes as a location but refuses to interpret.
+//! The enum is closed on purpose: a new kind adds a variant and the compiler
+//! names every place that has to decide what to do about it.
+//! [`Location::Network`] is a folder on a server by its address, opened by
+//! connecting first (ticket 310), and [`Location::Unsupported`] holds a
+//! location string this build recognizes as a location but refuses to
+//! interpret.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -154,13 +155,20 @@ impl DeviceLocation {
     }
 }
 
-/// A network location's protocol. Every variant is representable; none is
-/// implemented in this build.
+/// A network location's protocol: the schemes GVfs mounts that a person
+/// types (ticket 117). Each is written back as the scheme GVfs takes, so an
+/// address round-trips into a mount request unchanged.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum NetworkScheme {
     Smb,
     Sftp,
-    Webdav,
+    Ftp,
+    /// WebDAV over plain HTTP.
+    Dav,
+    /// WebDAV over HTTPS.
+    Davs,
+    Afp,
+    Nfs,
     /// A GVfs- or portal-backed mount reached through the session's own
     /// gateway rather than by a protocol this project speaks.
     Gvfs,
@@ -171,7 +179,11 @@ impl NetworkScheme {
         match self {
             NetworkScheme::Smb => "smb",
             NetworkScheme::Sftp => "sftp",
-            NetworkScheme::Webdav => "webdav",
+            NetworkScheme::Ftp => "ftp",
+            NetworkScheme::Dav => "dav",
+            NetworkScheme::Davs => "davs",
+            NetworkScheme::Afp => "afp",
+            NetworkScheme::Nfs => "nfs",
             NetworkScheme::Gvfs => "gvfs",
         }
     }
@@ -180,16 +192,22 @@ impl NetworkScheme {
         match value.to_ascii_lowercase().as_str() {
             "smb" | "cifs" => Some(NetworkScheme::Smb),
             "sftp" | "ssh" => Some(NetworkScheme::Sftp),
-            "webdav" | "dav" | "davs" => Some(NetworkScheme::Webdav),
+            "ftp" => Some(NetworkScheme::Ftp),
+            "webdav" | "dav" => Some(NetworkScheme::Dav),
+            "davs" | "webdavs" => Some(NetworkScheme::Davs),
+            "afp" => Some(NetworkScheme::Afp),
+            "nfs" => Some(NetworkScheme::Nfs),
             "gvfs" => Some(NetworkScheme::Gvfs),
             _ => None,
         }
     }
 }
 
-/// A remote location. Modelled fully so a tab, a bookmark, and a history entry
-/// can hold one; listing it is not implemented and reports
-/// [`LocationError::BackendUnavailable`].
+/// A folder on a server, named by its address: the address bar, a pinned
+/// server folder, a `sftp://` URI handed in. A tab, a bookmark and a history
+/// entry hold one. It is listed by connecting to the server and listing the
+/// folder GVfs shows the mount under (files-gui's `remote` module, ticket
+/// 310); until then a listing of it reports that it is not connected.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct NetworkLocation {
     pub scheme: NetworkScheme,
@@ -264,7 +282,7 @@ pub enum Location {
     /// reported, and an unboxed variant would make every `Location` — a tab, a
     /// history entry, a bookmark — as large as the biggest one.
     Device(Box<DeviceLocation>),
-    /// A remote location. Representable, not implemented.
+    /// A folder on a server, by its address (ticket 310).
     Network(NetworkLocation),
     /// Recognized as a location, refused by this build.
     Unsupported(UnsupportedLocation),
@@ -320,9 +338,10 @@ impl Location {
     }
 
     /// Whether this build can list the location at all. Recents is a view
-    /// over the shared recently-used list.
+    /// over the shared recently-used list; a server address is listed once
+    /// its connection is made (ticket 310).
     pub fn is_listable(&self) -> bool {
-        !matches!(self, Location::Network(_) | Location::Unsupported(_))
+        !matches!(self, Location::Unsupported(_))
     }
 
     /// The location one level up, or `None` when there is none.
@@ -466,10 +485,47 @@ impl Location {
                 Some(name) => name.to_string_lossy().into_owned(),
                 None => device.identity.display_name(),
             },
-            Location::Network(network) => network.authority.clone(),
+            // The folder's own name (`site` for `sftp://nas/srv/site`), or the
+            // server's at its root.
+            Location::Network(network) => network
+                .path
+                .rsplit('/')
+                .find(|segment| !segment.is_empty())
+                .map(percent_decoded)
+                .unwrap_or_else(|| {
+                    let host = network
+                        .authority
+                        .rsplit_once('@')
+                        .map_or(network.authority.as_str(), |(_, host)| host);
+                    let host = match host.strip_prefix('[') {
+                        Some(bracketed) => bracketed.split(']').next().unwrap_or(bracketed),
+                        None => host.split(':').next().unwrap_or(host),
+                    };
+                    percent_decoded(host)
+                }),
             Location::Unsupported(unsupported) => unsupported.raw.clone(),
         }
     }
+}
+
+/// `%XX` in an address decoded; anything malformed is kept as it is.
+fn percent_decoded(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%'
+            && let Some(hex) = text.get(index + 1..index + 3)
+            && let Ok(value) = u8::from_str_radix(hex, 16)
+        {
+            out.push(value);
+            index += 3;
+        } else {
+            out.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 impl fmt::Display for Location {
@@ -575,6 +631,30 @@ mod tests {
         assert!(NetworkLocation::new(NetworkScheme::Sftp, "  ", "/home").is_err());
         let location = NetworkLocation::new(NetworkScheme::Sftp, "user@host:2222", "home").unwrap();
         assert_eq!(location.path, "/home");
-        assert!(!Location::Network(location).is_listable());
+        assert_eq!(Location::Network(location.clone()).display_name(), "home");
+        assert!(Location::Network(location).is_listable());
+        assert_eq!(
+            Location::parse_uri("sftp://ann@build.local:2222/").display_name(),
+            "build.local"
+        );
+        assert_eq!(
+            Location::parse_uri("smb://nas/photos/2024%20trip").display_name(),
+            "2024 trip"
+        );
+    }
+
+    #[test]
+    fn every_scheme_gvfs_mounts_round_trips_as_itself() {
+        for uri in [
+            "sftp://ann@nas:2222/srv",
+            "smb://nas/share/dir",
+            "ftp://ftp.example/pub",
+            "dav://cloud/remote.php",
+            "davs://cloud/remote.php",
+            "afp://mac/Media",
+            "nfs://nas/export",
+        ] {
+            assert_eq!(Location::parse_uri(uri).to_uri(), uri);
+        }
     }
 }

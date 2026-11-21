@@ -25,7 +25,8 @@
 //!
 //! Errors come back as GIO's (`…UnmappedGError.Quark._g_2dio_2derror_2dquark.
 //! Code<n>`): 30 the person cancelled, 17 already mounted, 14 refused, 24
-//! timed out, 28 host not found, 37–39 not reachable or refused, 15 not
+//! timed out, 28 host not found, 37 host not reachable, 38 no network, 39
+//! refused, 1 a share or folder that is not there (ticket 310), 15 not
 //! supported; a changed SSH host key is code 0 with GVfs's "Host key
 //! verification failed".
 
@@ -240,9 +241,15 @@ pub fn failure_of(error: &zbus::Error) -> (MountFailure, String) {
     let failure = match code {
         Some(30 | 19) => MountFailure::Cancelled,
         Some(14) => MountFailure::PermissionDenied,
+        // NOT_FOUND: a share or folder the server does not have.
+        Some(1) => MountFailure::ShareGone,
         Some(24) => MountFailure::TimedOut,
         Some(28) => MountFailure::HostNotFound,
-        Some(37..=39) => MountFailure::Refused,
+        // HOST_UNREACHABLE: nothing answered on the way there.
+        Some(37) => MountFailure::TimedOut,
+        // NETWORK_UNREACHABLE: this computer has no route.
+        Some(38) => MountFailure::NetworkDown,
+        Some(39) => MountFailure::Refused,
         Some(15) => MountFailure::NotSupported,
         _ if is_host_key_failure(&detail) => MountFailure::HostKeyChanged,
         _ => MountFailure::Failed,
@@ -684,7 +691,7 @@ impl GvfsMounter {
         &self,
         tracker: &MountTrackerProxy<'_>,
         spec: &MountSpec,
-    ) -> Result<PathBuf, MountError> {
+    ) -> Result<crate::remote::Mounted, MountError> {
         let info = tracker.lookup_mount(&spec.wire()).await.map_err(|error| {
             let (failure, detail) = failure_of(&error);
             MountError::new(failure, detail)
@@ -700,10 +707,12 @@ impl GvfsMounter {
         }
         let inside = spec.path.clone().unwrap_or_else(|| text(&info.11));
         let inside = inside.trim_start_matches('/');
-        let mut folder = PathBuf::from(fuse);
+        let root = PathBuf::from(fuse);
+        let mut folder = root.clone();
         if !inside.is_empty() {
             folder.push(inside);
         }
+        let folder = crate::remote::Mounted { root, folder };
         Ok(folder)
     }
 
@@ -755,7 +764,11 @@ impl GvfsMounter {
         Ok((owner, Arc::new(daemon)))
     }
 
-    async fn mount_async(&self, address: &str, asker: &Asker) -> Result<PathBuf, MountError> {
+    async fn mount_async(
+        &self,
+        address: &str,
+        asker: &Asker,
+    ) -> Result<crate::remote::Mounted, MountError> {
         let spec = mount_spec(address)?;
         let trust = self
             .trust
@@ -862,6 +875,10 @@ fn system_trust() -> Result<crate::gvfs_trust::Trust, String> {
 
 impl crate::network::Mounter for GvfsMounter {
     fn mount(&self, address: &str, asker: &Asker) -> Result<PathBuf, MountError> {
+        self.connect(address, asker).map(|mounted| mounted.folder)
+    }
+
+    fn connect(&self, address: &str, asker: &Asker) -> Result<crate::remote::Mounted, MountError> {
         smol::block_on(self.mount_async(address, asker))
     }
 }
