@@ -81,6 +81,9 @@ pub enum Recorded {
         sockets_before: Option<String>,
         keys: Vec<KeyChange>,
     },
+    /// A USB-C recovery choice the daemon keeps on (ticket 101). Never in
+    /// the person's record file: the machine's own setting is the record.
+    UsbRecovery { choice: crate::entry::UsbChoice },
 }
 
 /// One applied fix.
@@ -128,7 +131,7 @@ impl Records {
     /// what was there before the first. A fix that needs no undo is not
     /// kept: there is nothing it could put back.
     pub fn keep(&mut self, entry: &dyn Entry, record: AppliedRecord) {
-        if entry.undo_kind() == UndoKind::NotNeeded {
+        if entry.undo_kind() == UndoKind::NotNeeded || entry.kept_by_machine() {
             return;
         }
         match self

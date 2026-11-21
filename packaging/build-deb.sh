@@ -681,6 +681,7 @@ make_daemon_package() {
         "$staging_dir/DEBIAN" \
         "$staging_dir/usr/libexec" \
         "$staging_dir/usr/lib/systemd/system" \
+        "$staging_dir/usr/lib/systemd/system-sleep" \
         "$staging_dir/usr/share/dbus-1/system-services" \
         "$staging_dir/usr/share/dbus-1/system.d" \
         "$staging_dir/usr/share/polkit-1/actions" \
@@ -696,6 +697,11 @@ make_daemon_package() {
     # Ticket 140 (ADR 0033): watches for the login screen once per boot.
     install -m 0644 "$ROOT_DIR/packaging/daemon/better-greeter-watch.service" \
         "$staging_dir/usr/lib/systemd/system/better-greeter-watch.service"
+    # Ticket 101 (ADR 0046): the USB-C recovery after sleep. systemd 255 runs
+    # hooks only from /usr/lib/systemd/system-sleep, so the package ships it
+    # and it does nothing until the person turns the fix on in Fixes.
+    install -m 0755 "$ROOT_DIR/packaging/daemon/better-os-usb-recovery" \
+        "$staging_dir/usr/lib/systemd/system-sleep/better-os-usb-recovery"
     install -m 0644 "$ROOT_DIR/packaging/daemon/org.betteros.Manager1.service" \
         "$staging_dir/usr/share/dbus-1/system-services/org.betteros.Manager1.service"
     install -m 0644 "$ROOT_DIR/packaging/daemon/org.betteros.Manager1.conf" \
@@ -880,6 +886,9 @@ if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
     # too, and the boot-time restore finds nothing to write.
     rm -f /var/lib/better-os/keyboard-lighting.json \
         /var/lib/better-os/hardware.json /var/lib/better-os/hardware-before.json
+    # The USB-C recovery's choices (ADR 0046): the sleep hook went with the
+    # package, and what it was told to do goes too.
+    rm -f /var/lib/better-os/usb-recovery.json /run/better-os/usb-recovery.json
 fi
 
 if [ "$1" = "purge" ]; then

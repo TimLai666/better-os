@@ -267,6 +267,15 @@ async fn every_start_answers_the_call_that_activated_it() {
             manager_ipc::boot_watch::Records::at(bus.directory.join("empty-root/boot-watch")),
             service.gate(),
         );
+        let usb_recovery = manager_daemon::usb_recovery::UsbRecoveryService::new(
+            FakeAuthorizer(false),
+            std::sync::Arc::new(manager_daemon::usb_recovery::SystemUsbMachine {
+                root: hardware_platform::sysfs::SysRoot::at(bus.directory.join("empty-root")),
+                program: bus.directory.join("empty-root/no-program"),
+            }),
+            bus.directory.join("empty-root/usb-recovery.json"),
+            service.gate(),
+        );
         let connection = manager_daemon::service::serve(
             bus.builder(),
             name,
@@ -274,6 +283,7 @@ async fn every_start_answers_the_call_that_activated_it() {
             hardware,
             drives,
             boot_watch,
+            usb_recovery,
         )
         .await
         .expect("the daemon started on the bus");

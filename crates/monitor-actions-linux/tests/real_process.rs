@@ -192,6 +192,58 @@ fn terminating_a_process_that_already_exited_reports_the_race_honestly() {
 }
 
 #[test]
+fn force_stop_ends_a_child_that_ignores_being_asked_to_close() {
+    // `sleep` with SIGTERM ignored: the disposition survives the `exec`, so
+    // this is the program End task cannot end.
+    let child = Command::new("/bin/sh")
+        .args(["-c", "trap '' TERM; exec sleep 120"])
+        .spawn()
+        .expect("the test host must provide /bin/sh");
+    let sleeper = Sleeper(Some(child));
+    let pid = sleeper.pid();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let comm = || std::fs::read_to_string(format!("/proc/{pid}/comm")).unwrap_or_default();
+    while comm().trim() != "sleep" && Instant::now() < deadline {
+        sleep(Duration::from_millis(20));
+    }
+    assert_eq!(comm().trim(), "sleep", "the shell must have become `sleep`");
+    let mut controller = LinuxProcessController::for_current_process();
+    assert!(
+        controller
+            .availability(&target(&controller, pid), ProcessAction::ForceStop)
+            .is_available(),
+        "a child of the test is not something the session stands on"
+    );
+
+    controller
+        .perform(&target(&controller, pid), ProcessAction::Terminate)
+        .expect("asking it to close is allowed");
+    sleep(Duration::from_millis(300));
+    assert!(
+        matches!(state_of(pid), Some(state) if state != 'Z'),
+        "it ignores SIGTERM, so it is still running"
+    );
+
+    let outcome = controller
+        .perform(&target(&controller, pid), ProcessAction::ForceStop)
+        .expect("force stopping an own process is allowed");
+    assert_eq!(
+        outcome,
+        ActionOutcome::SignalAccepted {
+            signal: SignalKind::Kill
+        }
+    );
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !matches!(state_of(pid), None | Some('Z')) && Instant::now() < deadline {
+        sleep(Duration::from_millis(20));
+    }
+    assert!(
+        matches!(state_of(pid), None | Some('Z')),
+        "SIGKILL must end it"
+    );
+}
+
+#[test]
 fn another_users_process_is_refused_without_a_syscall_being_attempted() {
     let mut controller = LinuxProcessController::for_current_process();
     let sleeper = Sleeper::spawn();
@@ -214,4 +266,60 @@ fn another_users_process_is_refused_without_a_syscall_being_attempted() {
         matches!(state_of(mine), Some(state) if state != 'Z'),
         "the refusal must not have signalled anything"
     );
+}
+
+/// Prints what the Force stop guard decides for every process of the person
+/// running it, on the real desktop, without signalling anything. Run by hand
+/// with `--ignored --nocapture` to see the guard against a live session.
+#[test]
+#[ignore = "reads the running desktop; run by hand"]
+fn print_what_the_guard_decides_on_this_desktop() {
+    let mut controller = LinuxProcessController::for_current_process();
+    let uid = controller.current_uid().unwrap();
+    // What the window's background read costs: the whole scan, timed.
+    let reader = controller.reader();
+    let mut timings = Vec::new();
+    let mut facts = None;
+    for _ in 0..10 {
+        let started = std::time::Instant::now();
+        facts = Some(reader.read(&monitor_actions_linux::ScanRequest::default()));
+        timings.push(started.elapsed());
+    }
+    timings.sort();
+    let facts = facts.unwrap();
+    println!(
+        "read: {} processes scanned, {} descriptors readable; fastest {:?}, median {:?}, slowest {:?}",
+        facts.members.len(),
+        facts.fds_read.len(),
+        timings[0],
+        timings[timings.len() / 2],
+        timings[timings.len() - 1]
+    );
+    println!(
+        "holders: bus {:?} compositor {:?} x {:?} other compositors {:?} other x {:?} on demand {:?}",
+        facts.bus_holders,
+        facts.compositor_holders,
+        facts.x_display_holders,
+        facts.other_compositor_holders,
+        facts.other_x_holders,
+        facts.on_demand_compositors
+    );
+    controller.set_session(facts);
+    let mut pids: Vec<u32> = std::fs::read_dir("/proc")
+        .unwrap()
+        .filter_map(|entry| entry.ok()?.file_name().to_str()?.parse().ok())
+        .collect();
+    pids.sort_unstable();
+    for pid in pids {
+        let Some(target) = controller.target_for(pid) else {
+            continue;
+        };
+        if target.owner_uid != Some(uid) {
+            continue;
+        }
+        let verdict = controller
+            .snapshot_view()
+            .availability(&target, ProcessAction::ForceStop);
+        println!("{pid:>8} {:<16} {verdict:?}", target.name);
+    }
 }

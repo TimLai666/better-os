@@ -35,11 +35,19 @@
 use monitor_core::{
     ActionError, ActionOutcome, ProcessAction, ProcessController, ProcessTarget, SignalKind,
 };
+use std::cell::Cell;
 use std::ffi::OsString;
 use std::io;
 use std::os::fd::{FromRawFd, OwnedFd};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+pub mod session;
+
+pub use session::{ProcReader, ScanRequest, SessionEnv, SessionReader};
+
+use monitor_core::session::{LoginSession, SessionFacts, SessionMember};
 
 /// `USER_HZ`, the unit `/proc/[pid]/stat` counts start time in. It is part of
 /// the kernel's user-space ABI and is 100 on every Linux architecture.
@@ -66,7 +74,7 @@ pub struct LiveProcess {
 /// The fields of `stat` an action needs: name, parent, session, start ticks.
 type StatFields = (String, Option<u32>, Option<u32>, Option<u64>);
 
-fn parse_stat(text: &str) -> Option<StatFields> {
+pub(crate) fn parse_stat(text: &str) -> Option<StatFields> {
     let open = text.find('(')?;
     let close = text.rfind(')')?;
     let name = text.get(open + 1..close)?.to_string();
@@ -86,7 +94,7 @@ fn boot_seconds(root: &Path) -> Option<u64> {
         .and_then(|value| value.trim().parse().ok())
 }
 
-fn real_uid(root: &Path, pid: u32) -> Option<u32> {
+pub(crate) fn real_uid(root: &Path, pid: u32) -> Option<u32> {
     std::fs::read_to_string(root.join(pid.to_string()).join("status"))
         .ok()?
         .lines()
@@ -138,23 +146,59 @@ fn last_error(pid: u32) -> ActionError {
 }
 
 /// Process control against the running kernel.
+///
+/// The session guard is answered two ways. The window's interface thread
+/// asks [`LinuxProcessController::snapshot_view`], which answers from the
+/// [`SessionFacts`] the window read off that thread and handed in
+/// ([`LinuxProcessController::set_session`]) and never touches `/proc`.
+/// [`ProcessController::availability`] and `perform` on the controller itself
+/// read the facts again, fresh, for the processes concerned, right before a
+/// signal goes out.
 #[derive(Clone, Debug)]
 pub struct LinuxProcessController {
     current_uid: u32,
     own_pid: u32,
     proc_root: PathBuf,
+    session_env: SessionEnv,
+    reader: Arc<dyn SessionReader>,
+    /// The facts the window last read, for answers on its interface thread.
+    snapshot: Option<Arc<SessionFacts>>,
+    /// Set when such an answer met a process the snapshot does not cover,
+    /// so the window reads the facts again.
+    stale: Cell<bool>,
 }
 
 impl LinuxProcessController {
     /// A controller acting as whoever this process already is. It never
     /// escalates and never holds a privileged connection.
     pub fn for_current_process() -> Self {
-        Self {
-            // SAFETY: `geteuid` takes no arguments, touches no memory, and is
-            // documented as always succeeding.
-            current_uid: unsafe { libc::geteuid() },
+        // SAFETY: `geteuid` takes no arguments, touches no memory, and is
+        // documented as always succeeding.
+        let current_uid = unsafe { libc::geteuid() };
+        let mut controller = Self {
+            current_uid,
             own_pid: std::process::id(),
             proc_root: PathBuf::from("/proc"),
+            session_env: SessionEnv::from_process(),
+            reader: Arc::new(ProcReader {
+                proc_root: PathBuf::new(),
+                env: SessionEnv::default(),
+                uid: current_uid,
+                own_pid: 0,
+            }),
+            snapshot: None,
+            stale: Cell::new(false),
+        };
+        controller.reader = Arc::new(controller.proc_reader());
+        controller
+    }
+
+    fn proc_reader(&self) -> ProcReader {
+        ProcReader {
+            proc_root: self.proc_root.clone(),
+            env: self.session_env.clone(),
+            uid: self.current_uid,
+            own_pid: self.own_pid,
         }
     }
 
@@ -162,7 +206,144 @@ impl LinuxProcessController {
     /// a process whose recorded identity differs from the running one.
     pub fn with_proc_root(mut self, root: impl Into<PathBuf>) -> Self {
         self.proc_root = root.into();
+        self.reader = Arc::new(self.proc_reader());
+        self.snapshot = None;
         self
+    }
+
+    /// The same controller finding the session's sockets from `env`
+    /// rather than its own environment.
+    pub fn with_session_env(mut self, env: SessionEnv) -> Self {
+        self.session_env = env;
+        self.reader = Arc::new(self.proc_reader());
+        self.snapshot = None;
+        self
+    }
+
+    /// The same controller reading session facts with `reader` (a test's).
+    pub fn with_reader(mut self, reader: Arc<dyn SessionReader>) -> Self {
+        self.reader = reader;
+        self
+    }
+
+    /// The reader, for the window to run off its interface thread.
+    pub fn reader(&self) -> Arc<dyn SessionReader> {
+        self.reader.clone()
+    }
+
+    /// Adopt facts the window read off its interface thread.
+    pub fn set_session(&mut self, facts: SessionFacts) {
+        self.snapshot = Some(Arc::new(facts));
+        self.stale.set(false);
+    }
+
+    /// The facts the window holds, if it has read any.
+    pub fn session_snapshot(&self) -> Option<&SessionFacts> {
+        self.snapshot.as_deref()
+    }
+
+    /// The person's logind sessions as last handed in.
+    pub fn login_sessions(&self) -> Option<Vec<LoginSession>> {
+        self.snapshot
+            .as_ref()
+            .and_then(|facts| facts.sessions.clone())
+    }
+
+    /// Whether the window should read the facts again: none yet, an answer
+    /// met a process they do not cover, or a process they name as holding a
+    /// socket is no longer among `live` (the compositor and the bus do not
+    /// change while the window lives, so nothing else triggers a read).
+    pub fn needs_session_read(&self, live: &std::collections::BTreeSet<u32>) -> bool {
+        match &self.snapshot {
+            None => true,
+            Some(facts) => {
+                self.stale.get() || facts.holders().iter().any(|pid| !live.contains(pid))
+            }
+        }
+    }
+
+    /// The controller as the window's interface thread may ask it: from the
+    /// snapshot only, never reading `/proc`, never signalling.
+    pub fn snapshot_view(&self) -> SnapshotView<'_> {
+        SnapshotView { controller: self }
+    }
+
+    /// What the snapshot says about one process, or what the target alone
+    /// says when the snapshot does not cover it (which asks for a re-read).
+    fn snapshot_member(&self, facts: &SessionFacts, pid: u32, name: &str) -> SessionMember {
+        facts.members.get(&pid).cloned().unwrap_or_else(|| {
+            self.stale.set(true);
+            SessionMember {
+                pid,
+                name: name.to_string(),
+                parent: None,
+                cgroup: None,
+            }
+        })
+    }
+
+    fn empty_facts(&self) -> SessionFacts {
+        SessionFacts {
+            uid: self.current_uid,
+            ..SessionFacts::default()
+        }
+    }
+
+    /// The session refusal from the snapshot, for the interface thread.
+    fn snapshot_refusal(&self, target: &ProcessTarget) -> Option<monitor_core::ActionRefusal> {
+        let empty;
+        let facts = match &self.snapshot {
+            Some(facts) => facts.as_ref(),
+            None => {
+                self.stale.set(true);
+                empty = self.empty_facts();
+                &empty
+            }
+        };
+        let member = self.snapshot_member(facts, target.pid, &target.name);
+        monitor_core::session::refusal(&member, facts)
+    }
+
+    /// Whether a tree may be ended, from the snapshot, for the interface
+    /// thread.
+    pub fn tree_refusal_snapshot(
+        &self,
+        root: u32,
+        pids: &[u32],
+        name_of: impl Fn(u32) -> String,
+    ) -> Option<monitor_core::ActionRefusal> {
+        let empty;
+        let facts = match &self.snapshot {
+            Some(facts) => facts.as_ref(),
+            None => {
+                self.stale.set(true);
+                empty = self.empty_facts();
+                &empty
+            }
+        };
+        let members: Vec<SessionMember> = pids
+            .iter()
+            .map(|pid| self.snapshot_member(facts, *pid, &name_of(*pid)))
+            .collect();
+        monitor_core::session::tree_refusal(root, &members, facts)
+    }
+
+    /// Facts read now for `pids` and their parents: one look at the sockets
+    /// and at those processes' descriptors, which is all a decision about
+    /// them needs.
+    fn fresh_facts(&self, pids: &[u32]) -> SessionFacts {
+        let mut scan: Vec<u32> = pids.to_vec();
+        for pid in pids {
+            if let Some(parent) = self.live(*pid).and_then(|live| live.parent)
+                && !scan.contains(&parent)
+            {
+                scan.push(parent);
+            }
+        }
+        self.reader.read(&ScanRequest {
+            pids: Some(scan),
+            sessions: self.login_sessions(),
+        })
     }
 
     /// What `/proc` says about a process now, or `None` when it is gone.
@@ -236,19 +417,27 @@ impl LinuxProcessController {
         chain
     }
 
-    /// Whether a process tree may be ended: `None`, or the first member that
-    /// the session stands on. A member that is already gone is skipped.
-    pub fn tree_refusal(&self, pids: &[u32]) -> Option<monitor_core::ActionRefusal> {
-        let members: Vec<monitor_core::TreeMember> = pids
+    /// Whether the process tree rooted at `root` (every member in `pids`)
+    /// may be ended, by the one session rule
+    /// (`monitor_core::session::tree_refusal`), read now. A member that is
+    /// already gone is skipped.
+    pub fn tree_refusal(&self, root: u32, pids: &[u32]) -> Option<monitor_core::ActionRefusal> {
+        let facts = self.fresh_facts(pids);
+        let members: Vec<SessionMember> = pids
             .iter()
-            .filter_map(|pid| self.live(*pid))
-            .map(|live| monitor_core::TreeMember {
-                pid: live.pid,
-                session_leader: live.session == Some(live.pid),
-                name: live.name,
-            })
+            .filter_map(|pid| facts.members.get(pid).cloned())
             .collect();
-        monitor_core::tree_refusal(&members, &self.own_ancestors())
+        monitor_core::session::tree_refusal(root, &members, &facts)
+    }
+
+    /// Whether one process may be ended (asked, or at once) as far as the
+    /// session is concerned, read now: `None`, or the refusal naming the
+    /// part it plays. A process that is already gone is not refused here;
+    /// the identity check reports it.
+    pub fn session_refusal(&self, pid: u32) -> Option<monitor_core::ActionRefusal> {
+        let facts = self.fresh_facts(&[pid]);
+        let member = facts.members.get(&pid)?.clone();
+        monitor_core::session::refusal(&member, &facts)
     }
 
     /// The folder holding a process's program, for "Open file location". It
@@ -345,6 +534,31 @@ impl ProcessController for LinuxProcessController {
         self.own_pid
     }
 
+    /// The shared policy, and for every action that ends a process (End
+    /// task and Force stop) the session guard on top: the session ends with
+    /// these processes whichever signal it is (owner, 2026-11-22). Because
+    /// `perform` asks this again, the guard cannot be stepped around by a
+    /// view that skipped it.
+    fn availability(
+        &self,
+        target: &ProcessTarget,
+        action: ProcessAction,
+    ) -> monitor_core::ActionAvailability {
+        let policy = monitor_core::unprivileged_availability(
+            Some(self.current_uid),
+            self.own_pid,
+            target,
+            action,
+        );
+        if !policy.is_available() || !monitor_core::session::guards(action) {
+            return policy;
+        }
+        match self.session_refusal(target.pid) {
+            Some(refusal) => monitor_core::ActionAvailability::Refused(refusal),
+            None => policy,
+        }
+    }
+
     fn perform(
         &mut self,
         target: &ProcessTarget,
@@ -378,6 +592,55 @@ impl ProcessController for LinuxProcessController {
                     .expect("every non-priority action names a signal"),
             ),
         }
+    }
+}
+
+/// The controller as the window's interface thread asks it
+/// ([`LinuxProcessController::snapshot_view`]): every answer comes from the
+/// snapshot the window handed in, nothing reads `/proc`, and nothing is
+/// signalled.
+#[derive(Debug)]
+pub struct SnapshotView<'a> {
+    controller: &'a LinuxProcessController,
+}
+
+impl ProcessController for SnapshotView<'_> {
+    fn current_uid(&self) -> Option<u32> {
+        Some(self.controller.current_uid)
+    }
+
+    fn own_pid(&self) -> u32 {
+        self.controller.own_pid
+    }
+
+    fn availability(
+        &self,
+        target: &ProcessTarget,
+        action: ProcessAction,
+    ) -> monitor_core::ActionAvailability {
+        let policy = monitor_core::unprivileged_availability(
+            Some(self.controller.current_uid),
+            self.controller.own_pid,
+            target,
+            action,
+        );
+        if !policy.is_available() || !monitor_core::session::guards(action) {
+            return policy;
+        }
+        match self.controller.snapshot_refusal(target) {
+            Some(refusal) => monitor_core::ActionAvailability::Refused(refusal),
+            None => policy,
+        }
+    }
+
+    fn perform(
+        &mut self,
+        _: &ProcessTarget,
+        _: ProcessAction,
+    ) -> Result<ActionOutcome, ActionError> {
+        Err(ActionError::InvalidRequest {
+            detail: "the interface thread's view of the controller never signals".into(),
+        })
     }
 }
 
@@ -575,33 +838,710 @@ mod tests {
         fake.process(40, "bash", 30, 40, 6, 1000);
         fake.process(41, "make", 40, 40, 7, 1000);
         fake.process(42, "cc", 41, 40, 8, 1000);
-        let controller = LinuxProcessController::for_current_process().with_proc_root(&fake.0);
+        let controller = LinuxProcessController::for_current_process()
+            .with_proc_root(&fake.0)
+            .with_session_env(SessionEnv::default());
         assert_eq!(controller.own_ancestors(), vec![30, 20, 1]);
         assert_eq!(
-            controller.tree_refusal(&[42, 41]),
+            controller.tree_refusal(41, &[42, 41]),
             None,
             "a build under a shell may end"
         );
+        // Leading a session is not the rule (owner, 2026-11-22): a shell that
+        // is not above the window may be ended with everything it started.
+        assert_eq!(controller.tree_refusal(40, &[42, 41, 40]), None);
         assert!(
             matches!(
-                controller.tree_refusal(&[42, 41, 40]),
-                Some(ActionRefusal::ProtectedTree { pid: 40, .. })
-            ),
-            "the shell leads its session"
-        );
-        assert!(
-            matches!(
-                controller.tree_refusal(&[own, 30]),
-                Some(ActionRefusal::ProtectedTree { pid: 30, .. })
+                controller.tree_refusal(30, &[42, 41, 40, own, 30]),
+                Some(ActionRefusal::SessionProcess { pid: 30, .. })
             ),
             "the monitor's own terminal"
         );
-        assert!(controller.tree_refusal(&[20]).is_some(), "systemd --user");
+        assert!(
+            controller.tree_refusal(20, &[20]).is_some(),
+            "systemd --user"
+        );
         assert_eq!(
-            controller.tree_refusal(&[9999]),
+            controller.tree_refusal(9999, &[9999]),
             None,
             "a gone process is skipped"
         );
+    }
+
+    /// A session laid out in a scratch `/proc`: processes with their
+    /// cgroups and descriptors, the listening sockets in `net/unix`, and the
+    /// logind sessions the window would have read over D-Bus.
+    struct FakeSession {
+        proc: FakeProc,
+        uid: u32,
+        sockets: Vec<String>,
+        sessions: Option<Vec<LoginSession>>,
+    }
+
+    impl FakeSession {
+        fn new(name: &str) -> Self {
+            let proc = FakeProc::new(name);
+            let uid = LinuxProcessController::for_current_process()
+                .current_uid()
+                .unwrap();
+            Self {
+                proc,
+                uid,
+                sockets: Vec::new(),
+                sessions: None,
+            }
+        }
+
+        /// A process of the user's, in a cgroup under the user's slice, whose
+        /// descriptors can be read.
+        fn process(&self, pid: u32, name: &str, parent: u32, session: u32, cgroup: &str) {
+            self.hidden(pid, name, parent, session, cgroup);
+            std::fs::create_dir_all(self.proc.0.join(pid.to_string()).join("fd")).unwrap();
+        }
+
+        /// The same, but its descriptors cannot be read (a non-dumpable
+        /// process such as gpg-agent).
+        fn hidden(&self, pid: u32, name: &str, parent: u32, session: u32, cgroup: &str) {
+            self.proc
+                .process(pid, name, parent, session, pid as u64, self.uid);
+            std::fs::write(
+                self.proc.0.join(pid.to_string()).join("cgroup"),
+                format!("0::/user.slice/user-{}.slice/{cgroup}\n", self.uid),
+            )
+            .unwrap();
+        }
+
+        /// A listening socket at `path`, held by `holders`.
+        fn socket(&mut self, path: &str, inode: u64, holders: &[u32]) {
+            self.sockets.push(format!(
+                "0000000000000000: 00000002 00000000 00010000 0001 01 {inode} {path}"
+            ));
+            std::fs::create_dir_all(self.proc.0.join("net")).unwrap();
+            std::fs::write(
+                self.proc.0.join("net/unix"),
+                format!(
+                    "Num       RefCount Protocol Flags    Type St Inode Path\n{}\n",
+                    self.sockets.join("\n")
+                ),
+            )
+            .unwrap();
+            for pid in holders {
+                let fd = self.proc.0.join(pid.to_string()).join("fd");
+                std::fs::create_dir_all(&fd).unwrap();
+                let slot = std::fs::read_dir(&fd).unwrap().count() + 3;
+                std::os::unix::fs::symlink(format!("socket:[{inode}]"), fd.join(slot.to_string()))
+                    .unwrap();
+            }
+        }
+
+        /// A graphical logind session of the person.
+        fn logind(&mut self, id: u32, leader: u32, own: bool) {
+            self.sessions
+                .get_or_insert_with(Vec::new)
+                .push(LoginSession {
+                    id: id.to_string(),
+                    leader: Some(leader),
+                    graphical: true,
+                    own,
+                });
+        }
+
+        /// A controller as the window has it: the facts read once, off the
+        /// interface thread, and handed in.
+        fn controller(&self, env: SessionEnv) -> LinuxProcessController {
+            let mut controller = LinuxProcessController::for_current_process()
+                .with_proc_root(&self.proc.0)
+                .with_session_env(env);
+            let facts = controller.reader().read(&ScanRequest {
+                pids: None,
+                sessions: self.sessions.clone(),
+            });
+            controller.set_session(facts);
+            controller
+        }
+
+        fn user(&self, unit: &str) -> String {
+            format!("user@{}.service/{unit}", self.uid)
+        }
+    }
+
+    fn session_env() -> SessionEnv {
+        SessionEnv {
+            runtime_dir: Some("/run/user/1000".into()),
+            wayland_display: Some("wayland-0".into()),
+            bus_address: Some("unix:path=/run/user/1000/bus".into()),
+            x_display: Some(":0".into()),
+        }
+    }
+
+    /// The role a force stop is refused with, or `None` when it is offered.
+    /// The role End task and Force stop are both refused with, or `None`
+    /// when both are offered; the two never disagree. Pausing is never the
+    /// guard's.
+    fn force_stop_role(
+        controller: &LinuxProcessController,
+        pid: u32,
+    ) -> Option<monitor_core::session::SessionRole> {
+        // The start token matches nothing in the fake `/proc`, so even a
+        // broken guard would stop at the identity check and never signal
+        // whatever really runs under these PIDs.
+        let target = ProcessTarget::new(pid, "fixture")
+            .owned_by(controller.current_uid().unwrap())
+            .started_at(1)
+            .with_nice(0);
+        let role = |action| match controller.availability(&target, action) {
+            ActionAvailability::Available => None,
+            ActionAvailability::Refused(ActionRefusal::SessionProcess { role, .. }) => Some(role),
+            other => panic!("pid {pid} {action:?}: {other:?}"),
+        };
+        let force = role(ProcessAction::ForceStop);
+        assert_eq!(role(ProcessAction::Terminate), force, "pid {pid}: End task");
+        // The interface thread's answer, from the snapshot the window read,
+        // is the same.
+        if controller.session_snapshot().is_some() {
+            let view = match controller
+                .snapshot_view()
+                .availability(&target, ProcessAction::ForceStop)
+            {
+                ActionAvailability::Available => None,
+                ActionAvailability::Refused(ActionRefusal::SessionProcess { role, .. }) => {
+                    Some(role)
+                }
+                other => panic!("pid {pid} from the snapshot: {other:?}"),
+            };
+            assert_eq!(view, force, "pid {pid}: the snapshot agrees");
+        }
+        assert!(
+            controller
+                .availability(&target, ProcessAction::Pause)
+                .is_available(),
+            "pid {pid}: Suspend is not the guard's"
+        );
+        force
+    }
+
+    /// GNOME 46 as Ubuntu 24.04 and Zorin 18 run it, laid out from this
+    /// desktop on 2026-11-22: gnome-shell in `org.gnome.Shell@wayland.service`
+    /// holding the Wayland and X sockets, Xwayland started on demand, the
+    /// bus socket held by systemd and dbus-daemon, GDM's leader (root) with
+    /// `gdm-wayland-session` under it, and a terminal whose shell leads its
+    /// own session.
+    #[test]
+    fn a_gnome_session_keeps_its_compositor_bus_and_session_and_lets_the_rest_go() {
+        use monitor_core::session::SessionRole as Role;
+        let mut s = FakeSession::new("gnome");
+        let own = std::process::id();
+        s.process(2338, "systemd", 1, 2338, &s.user("init.scope"));
+        s.process(
+            2370,
+            "dbus-daemon",
+            2338,
+            2370,
+            &s.user("session.slice/dbus.service"),
+        );
+        let shell = s.user("session.slice/org.gnome.Shell@wayland.service");
+        s.process(2545, "gnome-shell", 2338, 2545, &shell);
+        s.process(2600, "Xwayland", 2545, 2545, &shell);
+        s.process(2408, "gdm-wayland-ses", 2321, 2408, "session-2.scope");
+        s.process(2412, "gnome-session-b", 2408, 2408, "session-2.scope");
+        s.process(
+            2480,
+            "gnome-session-b",
+            2338,
+            2480,
+            &s.user("session.slice/gnome-session-manager@gnome.service"),
+        );
+        s.process(
+            3336,
+            "better-monitor-",
+            2338,
+            3336,
+            &s.user("app.slice/better-monitor.service"),
+        );
+        // A terminal, its shell, and Better Monitor started from it.
+        let ptyxis = s.user("app.slice/app-org.gnome.Ptyxis-4000.scope");
+        s.process(4000, "ptyxis", 2338, 4000, &ptyxis);
+        s.process(4001, "ptyxis-agent", 4000, 4001, &ptyxis);
+        s.process(4002, "bash", 4001, 4002, &ptyxis);
+        s.process(own, "monitor-gui", 4002, 4002, &ptyxis);
+        // A second terminal shell, not above the window.
+        s.process(4010, "bash", 4001, 4010, &ptyxis);
+        // User services, each its own session leader.
+        s.process(
+            4100,
+            "tracker-miner-f",
+            2338,
+            4100,
+            &s.user("session.slice/tracker-miner-fs-3.service"),
+        );
+        s.process(
+            4200,
+            "gvfsd",
+            2338,
+            4200,
+            &s.user("app.slice/gvfs-daemon.service"),
+        );
+        s.process(
+            4300,
+            "xdg-desktop-por",
+            2338,
+            4300,
+            &s.user("app.slice/xdg-desktop-portal.service"),
+        );
+        // A nested gnome-shell another program runs, which is not the desktop.
+        s.process(
+            4400,
+            "gnome-shell",
+            4390,
+            4390,
+            &s.user("app.slice/run-r1.scope"),
+        );
+        s.socket("/run/user/1000/bus", 927, &[2338, 2370]);
+        s.socket("/run/user/1000/wayland-0", 31750, &[2545]);
+        s.socket("/tmp/.X11-unix/X0", 31747, &[2545, 2600]);
+        s.socket("@/tmp/.X11-unix/X0", 31746, &[2545, 2600]);
+        s.logind(2, 2321, true);
+        let controller = s.controller(session_env());
+
+        for (pid, role) in [
+            (2338, Some(Role::Monitor)),
+            (2370, Some(Role::MessageBus)),
+            (2545, Some(Role::Compositor)),
+            // Mutter 46 starts Xwayland on demand inside a user unit and
+            // carries on without it: only X11 windows close.
+            (2600, None),
+            (2408, Some(Role::SessionLauncher)),
+            (2412, Some(Role::SessionManager)),
+            (2480, Some(Role::SessionManager)),
+            (3336, Some(Role::MonitorService)),
+            // The terminal and the shell Better Monitor runs in.
+            (4000, Some(Role::Monitor)),
+            (4002, Some(Role::Monitor)),
+            // Everything else that leads a session may be force stopped.
+            (4010, None),
+            (4100, None),
+            (4200, None),
+            (4300, None),
+            (4400, None),
+        ] {
+            assert_eq!(force_stop_role(&controller, pid), role, "pid {pid}");
+        }
+        let facts = controller.session_snapshot().unwrap();
+        assert_eq!(facts.bus_holders, Some(vec![2338, 2370]));
+        assert_eq!(facts.compositor_holders, Some(vec![2545]));
+        assert_eq!(facts.on_demand_compositors, vec![2545]);
+        // `perform` asks again, so a refused End task or Force stop reaches
+        // no syscall.
+        let target = ProcessTarget::new(2545, "gnome-shell")
+            .owned_by(s.uid)
+            .started_at(1)
+            .with_nice(0);
+        for action in [ProcessAction::Terminate, ProcessAction::ForceStop] {
+            assert!(matches!(
+                controller.clone().perform(&target, action),
+                Err(ActionError::PermissionDenied { .. })
+            ));
+        }
+        // End process tree, by the same rule.
+        assert!(matches!(
+            controller.tree_refusal(2338, &[2370, 2545, 2600, 4000, 2338]),
+            Some(ActionRefusal::SessionProcess {
+                pid: 2338,
+                role: Role::Monitor,
+                ..
+            })
+        ));
+        assert!(matches!(
+            controller.tree_refusal(2408, &[2412, 2408]),
+            Some(ActionRefusal::SessionProcess {
+                role: Role::SessionLauncher,
+                ..
+            })
+        ));
+        // The terminal Better Monitor runs in, from above it.
+        assert!(matches!(
+            controller.tree_refusal(4000, &[own, 4002, 4010, 4001, 4000]),
+            Some(ActionRefusal::SessionProcess {
+                pid: 4000,
+                role: Role::Monitor,
+                ..
+            })
+        ));
+        // Another shell in that terminal, a user service, and the nested
+        // shell may be ended whole.
+        assert_eq!(controller.tree_refusal(4010, &[4010]), None);
+        assert_eq!(controller.tree_refusal(4100, &[4100]), None);
+        assert_eq!(controller.tree_refusal(4400, &[4400]), None);
+        // The window itself is the shared policy's.
+        let itself = ProcessTarget::new(own, "monitor-gui")
+            .owned_by(s.uid)
+            .with_nice(0);
+        assert!(matches!(
+            controller.availability(&itself, ProcessAction::ForceStop),
+            ActionAvailability::Refused(ActionRefusal::ProtectedProcess { .. })
+        ));
+        assert_eq!(controller.session_refusal(99_999), None, "gone");
+    }
+
+    /// COSMIC from a greeter: the leader starts `start-cosmic`, which starts
+    /// cosmic-session, which starts cosmic-comp, which starts Xwayland, all
+    /// in the session's scope beside the panel and an application.
+    #[test]
+    fn a_cosmic_session_keeps_its_compositor_x_server_and_session_manager() {
+        use monitor_core::session::SessionRole as Role;
+        let mut s = FakeSession::new("cosmic");
+        let scope = "session-3.scope";
+        s.process(2200, "systemd", 1, 2200, &s.user("init.scope"));
+        s.process(
+            2210,
+            "dbus-broker-lau",
+            2200,
+            2210,
+            &s.user("session.slice/dbus-broker.service"),
+        );
+        s.process(
+            2211,
+            "dbus-broker",
+            2210,
+            2210,
+            &s.user("session.slice/dbus-broker.service"),
+        );
+        s.process(2305, "start-cosmic", 2300, 2305, scope);
+        s.process(2310, "cosmic-session", 2305, 2305, scope);
+        s.process(2320, "cosmic-comp", 2310, 2305, scope);
+        s.process(2330, "Xwayland", 2320, 2305, scope);
+        s.process(2340, "cosmic-panel", 2310, 2305, scope);
+        s.process(2350, "cosmic-edit", 2310, 2305, scope);
+        s.socket("/run/user/1000/bus", 900, &[2200, 2210, 2211]);
+        s.socket("/run/user/1000/wayland-1", 901, &[2320]);
+        s.socket("/tmp/.X11-unix/X1", 902, &[2320, 2330]);
+        s.logind(3, 2300, true);
+        let env = SessionEnv {
+            wayland_display: Some("wayland-1".into()),
+            x_display: Some(":1".into()),
+            ..session_env()
+        };
+        let controller = s.controller(env);
+        for (pid, role) in [
+            (2200, Some(Role::UserManager)),
+            (2210, Some(Role::MessageBus)),
+            (2211, Some(Role::MessageBus)),
+            (2305, Some(Role::SessionLauncher)),
+            (2310, Some(Role::SessionManager)),
+            (2320, Some(Role::Compositor)),
+            // cosmic-comp's Xwayland policy is not known, so it stays.
+            (2330, Some(Role::XServer)),
+            (2340, None),
+            (2350, None),
+        ] {
+            assert_eq!(force_stop_role(&controller, pid), role, "pid {pid}");
+        }
+        // End process tree: the session manager's tree is its own refusal;
+        // the panel's and an application's trees may be ended.
+        assert!(matches!(
+            controller.tree_refusal(2310, &[2330, 2320, 2340, 2350, 2310]),
+            Some(ActionRefusal::SessionProcess {
+                role: Role::SessionManager,
+                ..
+            })
+        ));
+        assert_eq!(controller.tree_refusal(2340, &[2340]), None);
+        assert_eq!(controller.tree_refusal(2350, &[2350]), None);
+    }
+
+    /// `flatpak run` 1.14.6 adds no `--new-session` to bwrap (its
+    /// `common/flatpak-run.c` blocks `TIOCSTI` with seccomp instead), and on
+    /// this desktop on 2026-11-22 `flatpak run --command=sleep` left
+    /// `bwrap`, the inner `bwrap`, and `sleep` in the caller's session. The
+    /// application may be force stopped either way: leading a session is not
+    /// the rule.
+    #[test]
+    fn a_flatpak_application_may_be_force_stopped() {
+        let mut s = FakeSession::new("flatpak");
+        let scope = s.user("app.slice/app-flatpak-net.nokyan.Resources-5000.scope");
+        s.process(2338, "systemd", 1, 2338, &s.user("init.scope"));
+        s.process(5000, "bwrap", 2338, 5000, &scope);
+        s.process(5001, "bwrap", 5000, 5000, &scope);
+        s.process(5002, "resources", 5001, 5000, &scope);
+        s.process(5010, "xdg-dbus-proxy", 2338, 5010, &scope);
+        s.process(
+            2545,
+            "gnome-shell",
+            2338,
+            2545,
+            &s.user("session.slice/org.gnome.Shell@wayland.service"),
+        );
+        s.socket("/run/user/1000/bus", 927, &[2338]);
+        s.socket("/run/user/1000/wayland-0", 931, &[2545]);
+        let controller = s.controller(session_env());
+        for pid in [5000, 5001, 5002, 5010] {
+            assert_eq!(force_stop_role(&controller, pid), None, "pid {pid}");
+        }
+    }
+
+    #[test]
+    fn a_session_whose_records_cannot_be_read_keeps_every_process_that_matches_a_name() {
+        use monitor_core::session::SessionRole as Role;
+        // No net/unix, no logind record, no cgroups: nothing can be proven.
+        let fake = FakeProc::new("blind");
+        let uid = LinuxProcessController::for_current_process()
+            .current_uid()
+            .unwrap();
+        for (pid, name) in [
+            (10, "systemd"),
+            (11, "dbus-daemon"),
+            (12, "gnome-shell"),
+            (13, "Xwayland"),
+            (14, "gnome-session-b"),
+            (15, "make"),
+        ] {
+            fake.process(pid, name, 1, pid, pid as u64, uid);
+        }
+        let controller = LinuxProcessController::for_current_process()
+            .with_proc_root(&fake.0)
+            .with_session_env(session_env());
+        for (pid, role) in [
+            (10, Some(Role::UserManager)),
+            (11, Some(Role::MessageBus)),
+            (12, Some(Role::Compositor)),
+            (13, Some(Role::XServer)),
+            (14, Some(Role::SessionManager)),
+            (15, None),
+        ] {
+            assert_eq!(force_stop_role(&controller, pid), role, "pid {pid}");
+        }
+    }
+
+    /// A process whose descriptors cannot be read is not known to hold
+    /// nothing: the socket's holder list says nothing about it, and a
+    /// matching name protects it. A process that holds nothing and whose
+    /// descriptors were read is not protected by its name.
+    #[test]
+    fn a_process_whose_descriptors_cannot_be_read_is_protected_by_its_name() {
+        use monitor_core::session::SessionRole as Role;
+        let mut s = FakeSession::new("hidden");
+        s.process(2338, "systemd", 1, 2338, &s.user("init.scope"));
+        let shell = s.user("session.slice/org.gnome.Shell@wayland.service");
+        // The compositor's descriptors cannot be read; the socket is found.
+        s.hidden(2545, "gnome-shell", 2338, 2545, &shell);
+        s.hidden(
+            2700,
+            "gpg-agent",
+            2338,
+            2700,
+            &s.user("app.slice/gpg.service"),
+        );
+        s.process(
+            2800,
+            "dbus-daemon",
+            2338,
+            2800,
+            &s.user("app.slice/other.scope"),
+        );
+        s.socket("/run/user/1000/bus", 927, &[2338]);
+        s.socket("/run/user/1000/wayland-0", 931, &[]);
+        let controller = s.controller(session_env());
+        let facts = controller.session_snapshot().unwrap();
+        assert!(!facts.fds_read.contains(&2545));
+        assert!(facts.fds_read.contains(&2800));
+        assert_eq!(force_stop_role(&controller, 2545), Some(Role::Compositor));
+        assert_eq!(force_stop_role(&controller, 2700), None);
+        assert_eq!(force_stop_role(&controller, 2800), None);
+    }
+
+    /// The person is signed in to GNOME and to COSMIC at once, and Better
+    /// Monitor runs in GNOME. COSMIC's compositor holds `wayland-1` in the
+    /// same runtime directory and runs in COSMIC's session scope, so it is
+    /// found by the same facts; a nested compositor in an app scope is not.
+    #[test]
+    fn a_second_graphical_session_is_protected_by_the_same_facts() {
+        use monitor_core::session::SessionRole as Role;
+        let mut s = FakeSession::new("two");
+        s.process(2338, "systemd", 1, 2338, &s.user("init.scope"));
+        s.process(
+            2370,
+            "dbus-daemon",
+            2338,
+            2370,
+            &s.user("session.slice/dbus.service"),
+        );
+        let shell = s.user("session.slice/org.gnome.Shell@wayland.service");
+        s.process(2545, "gnome-shell", 2338, 2545, &shell);
+        s.process(2408, "gdm-wayland-ses", 2321, 2408, "session-2.scope");
+        let cosmic = "session-3.scope";
+        s.process(3305, "start-cosmic", 3300, 3305, cosmic);
+        s.process(3310, "cosmic-session", 3305, 3305, cosmic);
+        s.process(3320, "cosmic-comp", 3310, 3305, cosmic);
+        s.process(3330, "Xwayland", 3320, 3305, cosmic);
+        s.process(3340, "cosmic-panel", 3310, 3305, cosmic);
+        s.process(4400, "sway", 4390, 4390, &s.user("app.slice/run-r1.scope"));
+        s.socket("/run/user/1000/bus", 927, &[2338, 2370]);
+        s.socket("/run/user/1000/wayland-0", 931, &[2545]);
+        s.socket("/run/user/1000/wayland-1", 932, &[3320]);
+        s.socket("/tmp/.X11-unix/X1", 933, &[3320, 3330]);
+        s.socket("/run/user/1000/wayland-9", 934, &[4400]);
+        s.logind(2, 2321, true);
+        s.logind(3, 3300, false);
+        let controller = s.controller(session_env());
+        for (pid, role) in [
+            (2545, Some(Role::Compositor)),
+            (2408, Some(Role::SessionLauncher)),
+            (3305, Some(Role::SessionLauncher)),
+            (3310, Some(Role::SessionManager)),
+            (3320, Some(Role::Compositor)),
+            (3330, Some(Role::XServer)),
+            (3340, None),
+            (4400, None),
+        ] {
+            assert_eq!(force_stop_role(&controller, pid), role, "pid {pid}");
+        }
+    }
+
+    /// A reader that must never be called.
+    #[derive(Debug)]
+    struct PanickingReader;
+
+    impl SessionReader for PanickingReader {
+        fn read(&self, _: &ScanRequest) -> SessionFacts {
+            panic!("the interface thread read /proc")
+        }
+    }
+
+    /// A reader that counts its reads and answers with fixed facts.
+    #[derive(Debug)]
+    struct CountingReader {
+        reads: std::sync::atomic::AtomicUsize,
+        facts: SessionFacts,
+    }
+
+    impl SessionReader for CountingReader {
+        fn read(&self, _: &ScanRequest) -> SessionFacts {
+            self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.facts.clone()
+        }
+    }
+
+    /// Everything the window asks while it draws comes from the snapshot:
+    /// a reader that panics is never reached, for a process the snapshot
+    /// covers, one it does not, and a tree.
+    #[test]
+    fn the_interface_threads_answers_never_read_proc() {
+        let uid = LinuxProcessController::for_current_process()
+            .current_uid()
+            .unwrap();
+        let shell = SessionMember {
+            pid: 2545,
+            name: "gnome-shell".into(),
+            parent: Some(2338),
+            cgroup: Some("/user.slice/x/session.slice/org.gnome.Shell@wayland.service".into()),
+        };
+        let mut facts = SessionFacts {
+            uid,
+            compositor_holders: Some(vec![2545]),
+            ..SessionFacts::default()
+        };
+        facts.fds_read.insert(2545);
+        facts.members.insert(2545, shell);
+        let mut controller =
+            LinuxProcessController::for_current_process().with_reader(Arc::new(PanickingReader));
+        controller.set_session(facts);
+        let target = |pid: u32, name: &str| {
+            ProcessTarget::new(pid, name)
+                .owned_by(uid)
+                .started_at(1)
+                .with_nice(0)
+        };
+        let view = controller.snapshot_view();
+        assert!(matches!(
+            view.availability(&target(2545, "gnome-shell"), ProcessAction::ForceStop),
+            ActionAvailability::Refused(ActionRefusal::SessionProcess { .. })
+        ));
+        assert!(
+            view.availability(&target(7000, "make"), ProcessAction::Terminate)
+                .is_available()
+        );
+        assert!(
+            controller
+                .tree_refusal_snapshot(2545, &[2545], |_| "gnome-shell".into())
+                .is_some()
+        );
+        // A process the snapshot does not cover asks for a re-read.
+        let live: std::collections::BTreeSet<u32> = [2545].into();
+        assert!(controller.needs_session_read(&live));
+    }
+
+    /// A new holder that appears after the snapshot (an Xwayland a
+    /// compositor whose policy is not known just started, under another
+    /// name than the one the guard knows): the snapshot cannot know it, but
+    /// the window reads again because its PID is not covered, and `perform`
+    /// reads fresh facts before it signals, so it is refused there.
+    #[test]
+    fn a_holder_that_appeared_after_the_snapshot_is_refused_when_it_matters() {
+        use monitor_core::session::SessionRole as Role;
+        let mut s = FakeSession::new("late");
+        s.process(2200, "systemd", 1, 2200, &s.user("init.scope"));
+        s.process(2320, "cosmic-comp", 2200, 2320, "session-3.scope");
+        s.socket("/run/user/1000/bus", 900, &[2200]);
+        s.socket("/run/user/1000/wayland-0", 901, &[2320]);
+        s.logind(3, 2300, true);
+        let mut controller = s.controller(session_env());
+        // After the snapshot, the compositor starts an X server.
+        s.process(2330, "xserver-new", 2320, 2320, "session-3.scope");
+        s.socket("/tmp/.X11-unix/X0", 902, &[2320, 2330]);
+        let target = ProcessTarget::new(2330, "xserver-new")
+            .owned_by(s.uid)
+            .started_at(1)
+            .with_nice(0);
+        // The snapshot does not cover it, and says so.
+        let live: std::collections::BTreeSet<u32> = [2200, 2320, 2330].into();
+        assert!(!controller.needs_session_read(&live));
+        let _ = controller
+            .snapshot_view()
+            .availability(&target, ProcessAction::ForceStop);
+        assert!(controller.needs_session_read(&live));
+        // Fresh facts refuse it, in `availability` and in `perform`.
+        assert!(matches!(
+            controller.availability(&target, ProcessAction::ForceStop),
+            ActionAvailability::Refused(ActionRefusal::SessionProcess {
+                role: Role::XServer,
+                ..
+            })
+        ));
+        assert!(matches!(
+            controller.perform(&target, ProcessAction::ForceStop),
+            Err(ActionError::PermissionDenied { .. })
+        ));
+    }
+
+    /// `perform` reads the facts itself every time: the window's snapshot
+    /// is never what lets a signal through.
+    #[test]
+    fn perform_reads_fresh_facts_every_time() {
+        let uid = LinuxProcessController::for_current_process()
+            .current_uid()
+            .unwrap();
+        let reader = Arc::new(CountingReader {
+            reads: Default::default(),
+            facts: SessionFacts {
+                uid,
+                ..SessionFacts::default()
+            },
+        });
+        let mut controller =
+            LinuxProcessController::for_current_process().with_reader(reader.clone());
+        controller.set_session(SessionFacts {
+            uid,
+            ..SessionFacts::default()
+        });
+        // A target whose identity cannot match, so nothing is signalled.
+        let target = ProcessTarget::new(0x7FFF_FFF0, "gone")
+            .owned_by(uid)
+            .started_at(1)
+            .with_nice(0);
+        for _ in 0..2 {
+            let _ = controller.perform(&target, ProcessAction::Terminate);
+        }
+        assert_eq!(reader.reads.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 
     #[test]

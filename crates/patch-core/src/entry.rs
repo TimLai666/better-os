@@ -6,11 +6,12 @@
 //! answers and changes. So every decision is tested with a fake host, and
 //! the only code that touches the machine is the host in `patch-platform`.
 //!
-//! A later entry that needs root adds a variant to [`Change`] naming one
-//! typed daemon method (for example "reload the USB-C interface"), which the
-//! host sends to `manager-daemon` under its own polkit action, as ADR 0017
-//! says for every root write. The trait does not change: `plan` returns that
-//! change like any other, and `plan_undo` returns its reverse.
+//! An entry that needs root returns [`Change::Privileged`], naming one typed
+//! daemon method ([`Privileged`]: reload the USB-C interface, rebind a dead
+//! USB controller, change a USB-C recovery choice), which the host sends to
+//! `manager-daemon` under its own polkit action, as ADR 0017 says for every
+//! root write. The trait does not change: `plan` returns that change like
+//! any other, and `plan_undo` returns its reverse.
 
 use std::fmt;
 
@@ -20,6 +21,8 @@ use crate::command::Command;
 use crate::flatpak::{AppId, AppName, InstalledApp};
 use crate::record::{AppliedRecord, ChangedElsewhere, OverrideKey, Recorded};
 
+pub use hardware_core::usb_recovery::{UsbChoice, UsbFindings, UsbPresent, UsbRecoverySettings};
+
 /// Every entry Better Patch knows, in the page's order.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Ord, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -28,6 +31,12 @@ pub enum EntryId {
     FontconfigCache,
     /// A half-size pointer over an Electron Flatpak on native Wayland.
     ElectronCursor,
+    /// The USB-C interface (UCSI) stops answering, and a port stops
+    /// charging, on a known ASUS model (ticket 101).
+    UsbCInterface,
+    /// The USB controller of one USB-C side dies on resume, and its hung
+    /// hub work keeps every later sleep from working (ticket 101).
+    UsbController,
 }
 
 /// What a finding is about: the whole machine, or one application.
@@ -52,6 +61,18 @@ pub enum Read {
     FlatpakApps,
     /// The person's own override file for one application.
     UserOverride(AppId),
+    /// The machine's model, USB-C ports, chargers, and xHCI controllers,
+    /// and the USB-C recovery choices kept by the daemon.
+    UsbMachine,
+    /// This boot's kernel log, classified (never its text).
+    UsbFindings,
+}
+
+/// What [`Read::UsbMachine`] answers.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct UsbMachineView {
+    pub present: UsbPresent,
+    pub settings: UsbRecoverySettings,
 }
 
 /// Why something could not be read.
@@ -89,6 +110,8 @@ pub enum Answer {
     Apps(Result<Vec<InstalledApp>, ReadError>),
     /// A file's text, `None` when it is not there.
     File(Result<Option<String>, ReadError>),
+    UsbMachine(Result<UsbMachineView, ReadError>),
+    UsbFindings(Result<UsbFindings, ReadError>),
 }
 
 /// The answers a host gave, for an entry to decide from.
@@ -138,6 +161,9 @@ pub enum CannotCheck {
     /// The host gave no answer to a read the entry asked for; a fault in
     /// the host, never a guess.
     NotAnswered,
+    /// This boot's kernel log could not be read: by the person's account
+    /// (not in `adm` or `systemd-journal`), nor through the daemon.
+    KernelLogUnreadable(String),
 }
 
 /// What an entry found on this machine.
@@ -146,6 +172,9 @@ pub enum Detection {
     /// It looked. An empty list means the fault is not here.
     Checked(Vec<Finding>),
     CannotCheck(CannotCheck),
+    /// The fault is known only on other machines (a model list), so on
+    /// this one there is nothing to look for and nothing to offer.
+    DoesNotApply,
 }
 
 /// One instance of a fault.
@@ -170,6 +199,24 @@ pub enum FindingDetail {
         electron: Option<String>,
         /// Whether the verified fix is offered for these scales.
         offer: Offer,
+    },
+    /// The USB-C interface timed out since the last reset (ticket 101).
+    UsbCInterface {
+        /// `GET_CONNECTOR_STATUS` and other timeouts this boot.
+        timeouts: u32,
+        /// `failed to re-enable notifications` after a resume.
+        after_sleep: u32,
+    },
+    /// A USB controller died on resume and is still dead (ticket 101).
+    UsbController {
+        /// Its PCI address, as the kernel names it.
+        address: String,
+        /// Sleeps this boot that failed because its hub work would not
+        /// freeze, and how many of the last ones in a row.
+        sleep_failures: u32,
+        streak: u32,
+        /// The hub work is stuck: only a restart brings it back.
+        restart_needed: bool,
     },
 }
 
@@ -227,6 +274,16 @@ pub enum Limit {
     /// windows: Chromium picks its PipeWire capturer only in a Wayland
     /// session.
     ScreenSharing,
+    /// Offered only on the models it was seen on (ASUS Vivobook S 14
+    /// M5406WA and S 15 M5506WA).
+    KnownModelsOnly,
+    /// It resets the USB-C interface after each sleep; the firmware fault
+    /// itself stays until ASUS or the kernel fixes it.
+    ResetsNotRepairs,
+    /// When the hub work is stuck, only a restart fixes it.
+    RestartWhenStuck,
+    /// Not yet measured on the owner's machine before and after.
+    NotMeasured,
 }
 
 /// One line of "the exact change it makes".
@@ -239,6 +296,21 @@ pub enum ChangeLine {
         app: AppId,
         keys: Vec<(OverrideKey, crate::record::KeyValue)>,
     },
+    /// Asks `manager-daemon` for one typed action.
+    Privileged(Privileged),
+}
+
+/// One typed `manager-daemon` method (`org.betteros.UsbRecovery1`), each
+/// behind its own polkit action. None takes a path, a device, or text.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum Privileged {
+    /// `ReloadUcsi`: unload and load `ucsi_acpi`.
+    ReloadUcsi,
+    /// `RebindController`: unbind and bind the controller the daemon finds
+    /// dead.
+    RebindController,
+    /// `SetChoice`: turn one USB-C recovery choice on or off.
+    SetChoice { choice: UsbChoice, on: bool },
 }
 
 /// What a finding means and what its fix does.
@@ -262,6 +334,8 @@ pub enum Change {
         expected: Option<String>,
         contents: Option<String>,
     },
+    /// Asks the daemon for one typed action.
+    Privileged(Privileged),
 }
 
 /// Why a change was not made.
@@ -377,13 +451,27 @@ pub trait Entry: Send + Sync {
         answers: &Answers,
         confirm_changed: bool,
     ) -> Result<UndoPlan, PlanError>;
+
+    /// Whether the machine keeps this entry's fix (a choice the daemon
+    /// holds for every account), rather than the person's record file.
+    fn kept_by_machine(&self) -> bool {
+        false
+    }
+
+    /// The fixes the machine itself says are on, from detection's answers,
+    /// for an entry [`Entry::kept_by_machine`].
+    fn machine_records(&self, _answers: &Answers) -> Vec<(Subject, Recorded)> {
+        Vec::new()
+    }
 }
 
 /// Every entry, in the page's order.
-pub fn all() -> [&'static dyn Entry; 2] {
+pub fn all() -> [&'static dyn Entry; 4] {
     [
         &crate::entries::font_cache::FontCache,
         &crate::entries::electron_cursor::ElectronCursor,
+        &crate::entries::usb_c::UsbCInterface,
+        &crate::entries::usb_c::UsbController,
     ]
 }
 
@@ -402,7 +490,15 @@ mod tests {
     #[test]
     fn every_id_has_exactly_one_entry_in_order() {
         let ids: Vec<EntryId> = all().iter().map(|entry| entry.id()).collect();
-        assert_eq!(ids, [EntryId::FontconfigCache, EntryId::ElectronCursor]);
+        assert_eq!(
+            ids,
+            [
+                EntryId::FontconfigCache,
+                EntryId::ElectronCursor,
+                EntryId::UsbCInterface,
+                EntryId::UsbController
+            ]
+        );
         for id in ids {
             assert_eq!(by_id(id).id(), id);
         }
@@ -417,6 +513,10 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&EntryId::ElectronCursor).unwrap(),
             "\"electron-cursor\""
+        );
+        assert_eq!(
+            serde_json::to_string(&EntryId::UsbCInterface).unwrap(),
+            "\"usb-c-interface\""
         );
         let subject = Subject::FlatpakApp(AppId::parse("org.example.App").unwrap());
         assert_eq!(

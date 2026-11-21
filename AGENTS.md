@@ -309,7 +309,12 @@ GUI or dependency compiles when the relevant command was not executed.
   `monitor-actions-linux` is the only crate that calls `kill(2)` or
   `setpriority(2)`. Process actions are own-user only; cross-user and elevated
   actions are refused with the reason shown, and the narrow polkit-reviewed
-  boundary that would allow them is not built.
+  boundary that would allow them is not built. End task, End process tree and
+  Force stop are never offered on what the desktop stands on (owner,
+  2026-11-22): `monitor_core::session` is the one rule, decided from socket
+  holders, cgroups and logind (over D-Bus) before names, read off the
+  window's interface thread and never while drawing, and `session::NAMED` is
+  the only place a session process is named.
 - `monitor-service` owns collection. `monitor-gui` has no sampler: it reaches
   the service over `org.betteros.Monitor1`, and where there is no service it
   runs the same engine in-process and says so. Do not add a collector call to
@@ -734,8 +739,28 @@ GUI or dependency compiles when the relevant command was not executed.
   `cosmic-comp` every session ticket tests in; its bus activates nothing
   installed. It has one output, so anything about several outputs runs on its
   headless sway until ticket 201's VM.
+- The USB-C recovery (ticket 101, ADR 0046) is Fixes entries 3 and 4 and
+  `manager-daemon`'s `org.betteros.UsbRecovery1`: `ReloadUcsi` (the
+  distribution's signed `ucsi_acpi`, by `delete_module` and `finit_module`
+  in a helper unit whose only capability is `CAP_SYS_MODULE`) and
+  `RebindController` (the one xHCI function this boot's log names as dead,
+  in a helper unit that sees `xhci_hcd`'s `unbind` and `bind`), each with
+  its own polkit action, plus the after-sleep unit the daemon package's
+  `systemd-sleep` hook queues once a fix is on. Secure Boot stays on and no
+  key is enrolled (owner, 2026-11-21): nothing may need a module the kernel
+  would refuse, and no DKMS module is built. Offer it on another machine
+  only by adding a model or controller to
+  `crates/hardware-core/data/usb-recovery-machines.txt` for a fault someone
+  reproduced there. Never run the reload or the rebind on the owner's
+  machine from a session, a test, or the container check (it shares the
+  host's kernel); `packaging/hardware-unit/check.sh` covers the units'
+  sandboxes with stand-ins and makes no module system call. Nothing has
+  reloaded a module or rebound a controller through the helpers yet, the
+  notification and the logind power-off have run against fakes only, and
+  ticket 101 stays open until the owner measures a real occurrence on a
+  release.
 - Better Patch, the Fixes page (ticket 90, `engineering/specs/better-patch.md`),
-  has run its two entries only against fixture machines in scratch
+  has run its entries only against fixture machines in scratch
   directories: no agent session may rebuild the person's font cache or write
   their Flatpak overrides. Nobody has watched it find, fix, or undo either
   fault on a real desktop; the Mutter scale read has been seen only in a

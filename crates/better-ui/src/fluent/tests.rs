@@ -10,7 +10,7 @@ use super::chrome::{
     ButtonLayout, WindowButton, back_tooltip, bar_buttons, bar_response, forced_button_state,
     is_back_shortcut,
 };
-use super::command_bar::{fit_count, split_primary};
+use super::command_bar::{Command, fit_count, split_primary};
 use super::dialog::{DefaultButton, DialogButtons, DialogResult};
 use super::hyperlink::link_color;
 use super::info_bar::{ErrorReport, Severity, severity_look};
@@ -879,6 +879,24 @@ fn a_command_bar_keeps_what_fits() {
     assert_eq!(fit_count(&widths, px(240.0), px(40.0)), 3);
     assert_eq!(fit_count(&widths, px(239.0), px(40.0)), 2);
     assert_eq!(fit_count(&widths, px(100.0), px(40.0)), 0);
+}
+
+#[test]
+fn a_disabled_command_keeps_its_reason_in_the_bar_and_in_the_overflow() {
+    let command = Command::new("End task", gpui_component::IconName::Close)
+        .disabled(true)
+        .reason(Some("It's the desktop itself."));
+    assert_eq!(command.reason.as_deref(), Some("It's the desktop itself."));
+    match command.menu_entry() {
+        MenuEntry::Item(item) => {
+            assert!(item.disabled);
+            assert_eq!(item.reason.as_deref(), Some("It's the desktop itself."));
+        }
+        _ => panic!("a command moves into the overflow as an item"),
+    }
+    // No reason given: none shown.
+    let plain = MenuItem::new("Properties").reason(None::<&str>);
+    assert_eq!(plain.reason, None);
 }
 
 #[test]

@@ -47,8 +47,8 @@ impl Locale {
     }
 
     pub fn from_tag(tag: &str) -> Self {
-        let tag = tag.replace('-', "_").to_ascii_lowercase();
-        if tag.starts_with("zh_tw") || tag.starts_with("zh_hant") || tag.starts_with("zh_hk") {
+        // One rule for every notification (better_core::locale).
+        if better_core::locale::is_traditional_chinese(tag) {
             Locale::ZhTw
         } else {
             Locale::EnUs
