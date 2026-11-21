@@ -1,7 +1,7 @@
 # Ticket 265 — The `better-os-greeter` package: unit, configuration, account, and display-manager registration
 
 **Spec:** `design/login-screen-spec.md` section 5.5; ADR 0044 ("What the greeter is")
-**Blocked by:** 264, 203
+**Blocked by:** 264, 267, 280, 203
 
 ## Why
 
@@ -13,9 +13,15 @@ back.
 
 - `better-os-greeter.service`: `ExecStart=greetd --config
   /etc/greetd/better-os-greeter.toml`, Debian's `greetd.service` settings
-  (`Conflicts=getty@tty1.service`, `Restart=always`, `RestartSec=1`,
-  `StartLimitBurst=5`, `StartLimitInterval=30`, `KeyringMode=shared`), and
-  `OnFailure=gdm.service`; no `[Install]` section.
+  (`Conflicts=getty@tty1.service`, `KeyringMode=shared`) except
+  `Restart=no` (the supervisor owns every restart), `Wants=` and `After=`
+  the supervisor and the GNOME unlock service, `OnFailure=` the supervisor's
+  fall back and `plymouth-quit.service`; no `[Install]` section. Never
+  `OnFailure=gdm.service`: GDM is not on this path (L8).
+- `better-os-login-supervisor.service` (ticket 267),
+  `better-os-gnome-unlock.service` (ticket 280), and
+  `better-os-login-fallback@.service`, each bound to the greeter's unit so
+  they run only while it is the display manager.
 - `/etc/greetd/better-os-greeter.toml`: `vt = 1`, `command =
   "/usr/sbin/better-os-greeter"`, `user = "_better-greeter"`.
 - A sysusers entry for `_better-greeter` (home `/var/lib/better-os-greeter`,
@@ -35,4 +41,4 @@ back.
       better-os-greeter` makes it the display manager; reinstalling `gdm3`
       keeps it; `dpkg-reconfigure gdm3` puts GDM back; purge leaves the
       four places of ADR 0044's step 1 as they were before install.
-- [ ] Five forced greeter failures start GDM.
+- [ ] A greeter that cannot start ends in the text login, never in GDM.

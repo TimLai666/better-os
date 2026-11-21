@@ -1,7 +1,7 @@
 # Ticket 264 — `better-greeter`: the Better OS login screen on greetd
 
 **Spec:** `design/login-screen-spec.md` sections 3, 5.2, 5.3, 5.5 to 5.8; `engineering/specs/login-screen-security.md`; ADR 0044
-**Blocked by:** 260, 262, 263, 269, 279, the owner's decision L1 (B or C), and L2 and L7
+**Blocked by:** 260, 262, 263, 269, 279, the owner's decision L1 (B or C), and L7
 
 ## Why
 
@@ -16,11 +16,14 @@ shares everything with it but the identity and the authentication path.
 - `better-greeter` (GPUI, on `login-screen-core`, `better_ui::layer`
   surfaces at the overlay layer with exclusive keyboard on every output):
   accounts from AccountsService, the chooser and "Other account…", the
-  session menu from `/usr/share/wayland-sessions/` with L2's caption, the
+  session menu from `/usr/share/wayland-sessions/` (a GNOME session listed
+  only while `org.gnome.DisplayManager`'s `Version` answers, ticket 280), the
   layout indicator from locale1, the status row (NetworkManager and UPower,
   read only), the power menu through logind, the accessibility switches in
   `/var/lib/better-os-greeter/settings.json`, Better OS's artwork (ticket
-  279), the heartbeat in `/run/better-os-greeter/alive`, ticket 263's
+  279), the heartbeat in `/run/better-os-greeter/alive` (written when
+  connected to the compositor, `ready` once the first frame is presented on
+  every output and the field has focus, then every 5 s), ticket 263's
   sandbox applied at start.
 - greetd's IPC: framing, every request and response of `greetd-ipc(7)`,
   answering every prompt in order, `start_session` with the session's `Exec`

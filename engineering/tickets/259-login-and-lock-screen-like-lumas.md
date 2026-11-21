@@ -1,7 +1,7 @@
 # Ticket 259 — A Better OS login screen laid out like Luma's lock screen
 
 **Blocked by:** 203 (the session package) for running it; none for the design
-**Blocked:** on the owner's answers to L1 to L7 at the top of `design/login-screen-spec.md` (L1, L2 and L7 are ADR 0044's)
+**Blocked:** on the owner's answers to L1 to L8 at the top of `design/login-screen-spec.md` (L1, L2, L7 and L8 are ADR 0044's)
 
 ## Why
 
@@ -62,7 +62,7 @@ decisions at the top):
 Design delivered on 2026-11-21; the ticket stays open for the owner's
 answers.
 
-- **The spec**, `design/login-screen-spec.md`: the owner's decisions L1 to L7
+- **The spec**, `design/login-screen-spec.md`: the owner's decisions (L1 to L7, L8 added in the revision below)
   first, each with a recommendation and its costs; the sources read on the
   machine and upstream; Luma's screens measured from its source (section
   1); what Better OS follows and does not take; every state of the login
@@ -80,7 +80,7 @@ answers.
   and off as one action each with GDM put back exactly.
 - **Mockups**, `design/login-screen/`: nine views in light and dark, zh-TW,
   rendered in `/home/tim/Developer/better-os-evidence/259/`.
-- **Tickets 260 to 269, 278 and 279** (270 to 277 were already taken on another branch).
+- **Tickets 260 to 269 and 278 to 281** (270 to 277 were already taken on another branch).
 
 Findings that changed the design:
 
@@ -98,6 +98,33 @@ Findings that changed the design:
   greeter by default.
 - GPUI at the workspace's revision has no session lock window and no
   password content purpose (L6).
+
+Revised on 2026-11-21 for the owner's two requirements:
+
+- **Locking never depends on GDM.** The Better OS session locks through
+  `cosmic-comp`'s own `ext_session_lock_v1` (confirmed in its source: while
+  locked it draws only lock surfaces, a dead lock client leaves outputs
+  black and the lock held, a new client may lock again). GNOME Shell 46
+  needs only an answer on `org.gnome.DisplayManager` (`Version`,
+  `OpenReauthenticationChannel` and a private `UserVerifier` connection),
+  not GDM itself; ticket 280's `better-os-gnome-unlock` gives that answer
+  without patching the shell (L2 (a)). Locking on another terminal fails
+  the "never shows content" invariant; GDM cannot run beside another
+  display manager. L1 now asks who owns the login and lock path.
+- **The login screen always appears.** Spec section 5.10: every stage from
+  the display manager's start to a prompt accepting input, each with a
+  deadline, owned by a root login supervisor (ticket 267, rewritten from
+  the greetd form of ADR 0033's watch); the property "within 60 seconds,
+  the Better OS login screen or a text login is accepting input, Plymouth
+  has quit, and the journal names the failed stage"; the fault-injection
+  proof (ticket 281); the new decision L8 (no automatic GDM fall back).
+  Found on the way: `gdm.service` quits Plymouth itself and only on failure
+  does systemd, so an active, silent GDM leaves the splash up; the Linux
+  console cannot draw Chinese, so the text fall back's message is English.
+- ADR 0044 rewritten: Better OS owns the path on greetd (B), in six proven
+  steps, the default left to a later decision. The security review covers
+  the two new root services. The `session` mockup lost GNOME's "cannot
+  lock" line; `text-fallback` is new.
 
 Not done: nothing was run (no greetd, no `cosmic-comp` greeter, no VM); the
 mockups' wallpaper is a gradient stand-in for ticket 279's artwork. The

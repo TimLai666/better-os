@@ -1,7 +1,7 @@
 # Ticket 266 — Better Manager: use the Better OS login screen, and go back, in one action each
 
 **Spec:** `design/login-screen-spec.md` section 6; ADR 0044 ("Switching on", "Switching off")
-**Blocked by:** 265, 204, 205, the owner's decision L1 (B or C)
+**Blocked by:** 265, 268, 281, 204, 205, the owner's decision L1 (B or C)
 
 ## Why
 
@@ -18,8 +18,11 @@ was.
   `dpkg-reconfigure`.
 - The Better OS session page's choice, its description, the confirmation,
   the next-boot state with Restart now, the on state with Go back, and the
-  "GDM took over" notice (ticket 267's record), with every string of section
-  6; the security review's way-back steps shown beside it.
+  "fell back to text sign-in" and "had to be restarted" notices (ticket
+  267's records), with every string of section 6; the security review's
+  way-back steps shown beside it.
+- Switching off stops the supervisor and the GNOME unlock service before
+  GDM starts.
 - Removing the session switches the login screen off first.
 - A health check: the chosen display manager is the recorded one.
 

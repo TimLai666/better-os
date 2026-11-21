@@ -1,7 +1,7 @@
 # Ticket 278 — Fingerprint and smart card at the lock and login screens
 
 **Spec:** `design/login-screen-spec.md` section 3.10
-**Blocked by:** 262, 264
+**Blocked by:** 262, 264, 280
 
 ## Why
 
@@ -17,6 +17,8 @@ two programs, because greetd runs one PAM conversation at a time.
 - The login screen: what greetd 0.9.0 and later allow (one service, its
   modules in order), measured, and the spec's copy adjusted to what is
   possible.
+- GNOME's lock: the unlock service's `gdm-fingerprint` and `gdm-smartcard`
+  conversations, which GNOME Shell runs beside the password one.
 
 ## Done when
 
