@@ -42,7 +42,8 @@ as_user systemctl --user show-environment >"$OUT/user-manager-environment.txt" 2
 # else running under cosmic-comp), and a D-Bus-activated service.
 {
     for name in cosmic-comp cosmic-greeter bash xdg-desktop-portal fcitx5 cosmic-settings-daemon better-launcher; do
-        pid="$(pgrep -u "$U" -n -x "$name")" || { echo "== $name: not running"; continue; }
+        # -f with an anchored pattern: -x matches only the first 15 bytes.
+        pid="$(pgrep -u "$U" -n -f "^(/[^ ]*/)?$name( |$)")" || { echo "== $name: not running"; continue; }
         echo "== $name (pid $pid, unit $(ps -o unit= -p "$pid"))"
         tr '\0' '\n' <"/proc/$pid/environ" | grep -E '^(XDG_CURRENT_DESKTOP|XDG_SESSION_DESKTOP|DESKTOP_SESSION|DCONF_PROFILE|XDG_DATA_DIRS|GTK_IM_MODULE|QT_IM_MODULE|XMODIFIERS|WAYLAND_DISPLAY|DISPLAY|BETTER_OS_SESSION_RESUME)=' | sort
     done

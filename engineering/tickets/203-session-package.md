@@ -2,6 +2,7 @@
 
 **Spec:** better-os-session.md S1, S4 ("The session": what it is, the environment, the process table, how units bind)
 **Blocked by:** 201
+**Blocked:** the key bindings for Super+A (the owner's decision S3, ticket 210), Alt+Tab (ticket 211), the overview (ticket 212), and Print (ticket 253, pull request 32), and the theme's corner radius (ticket 148 has not decided the window radius); everything else is built and checked (Notes)
 
 ## Why
 
@@ -47,9 +48,9 @@ user target, and the session's configuration of COSMIC's daemons.
 
 ## Done when
 
-- [ ] Unit tests for the environment, the import and unset lists, the target
+- [x] Unit tests for the environment, the import and unset lists, the target
       ordering rules, and the shortcut table naming only shipped programs.
-- [ ] In ticket 201's VM, the package installed by hand: GDM lists Better OS,
+- [x] In ticket 201's VM, the package installed by hand: GDM lists Better OS,
       the session starts with every unit of the table active, every Better OS
       unit of the installed components active, `XDG_CURRENT_DESKTOP` and
       `DCONF_PROFILE` as the spec says in a terminal and in a D-Bus-activated
@@ -57,9 +58,9 @@ user target, and the session's configuration of COSMIC's daemons.
       shows none of the session's variables in `systemctl --user
       show-environment`. Notes and screenshots in
       `/home/tim/Developer/better-os-evidence/203/`.
-- [ ] A GSettings write in the session lands in `~/.config/dconf/betteros`
+- [x] A GSettings write in the session lands in `~/.config/dconf/betteros`
       and GNOME's `~/.config/dconf/user` is byte-for-byte unchanged.
-- [ ] fmt, clippy on stable, the crates' tests, `verify-deb.sh`, and the
+- [x] fmt, clippy on stable, the crates' tests, `verify-deb.sh`, and the
       license inventory check pass.
 
 ## What ticket 201 found that this ticket builds on
@@ -89,3 +90,68 @@ process table now carries the facts; these change what is built here:
   `stop-sigterm` with `cosmic-settings-daemon` alive after 34 s once.
 - **A greeter already running did not list a new session file** until GDM
   restarted (Ubuntu); ticket 205 checks the real install-then-log-out path.
+
+## Notes (2026-11-22)
+
+### What is built
+
+- `crates/session-launcher`, installed as `/usr/libexec/better-os/session/start`:
+  `environment` (the spec's table, the import list, `GTK_IM_MODULE` withheld,
+  each changed variable put back to its value before the session),
+  `compositor` (the session socket's message), `lifecycle` (import before the
+  target; stop the target, wait for `graphical-session.target`, restore last),
+  `children` (the locker, restart limit, SIGTERM then SIGKILL), `callers`
+  (`org.betteros.Session1.Logout` from `/usr/bin/better-manager`;
+  `com.system76.CosmicSession.Exit` from `/usr/bin/cosmic-osd`, which is what
+  Super+Shift+Escape's confirmation calls), `resume` (the launcher re-executes
+  itself after an update of its package, keeping its children), `process`
+  (children start with no signal blocked). 29 unit tests, 7 on the shortcut
+  table, 10 on the units.
+- **Changed from the ticket's text, with the spec updated first:**
+  - `cosmic-comp` is the launcher's child through `COSMIC_SESSION_SOCK`, not
+    exec'd with the launcher as its program: a program to run puts it in
+    kiosk mode, which turns every key binding off (`src/config/mod.rs` at
+    `6968c5d`). Ticket 201's stand-in had that, unnoticed.
+  - The session's units are not `WantedBy=better-os-session.target` (that
+    needs an enable step per person); the target names each with `Wants=`,
+    and they have no `[Install]`. `user-units.sh` now never enables or counts
+    a static unit, so an upgrade can never start one under GNOME (regression
+    test in `packaging/tests/maintainer-scripts.test.sh`).
+  - `cosmic-osd` is a unit: its polkit agent works from outside the session
+    scope (VM, screenshot 09). Only the locker is the launcher's child.
+  - `cosmic-config` takes a configuration's defaults from one directory, the
+    first under `XDG_DATA_DIRS` that has it, not key by key as the spec said;
+    the session therefore ships the whole
+    `com.system76.CosmicSettings.Shortcuts/v1/` (`defaults` based on
+    cosmic-comp's GPL-3.0-only `keybindings.ron`, marked so, and
+    `system_actions`), and no `custom`.
+  - COSMIC's GTK file syncing is left as is: ticket 201 found no file under
+    `~/.config/gtk-3.0` or `gtk-4.0` written on either base.
+- Package `better-os-session` (Ubuntu 24.04 targets only), its
+  `verify-deb.sh` block, CI's package list for 24.04, release-packaging.md.
+
+### Checked
+
+The VM run is in `/home/tim/Developer/better-os-evidence/203/NOTES.md` with
+17 screenshots and the records: Ubuntu 24.04, every item of the second
+"Done when" and the GSettings item, the launcher's update in a running
+session, and GTK on XWayland typing Zhuyin without `GTK_IM_MODULE`. Three
+defects found there are fixed in this change (kiosk mode, the compositor's
+displays left in the user manager, children inheriting the blocked SIGTERM).
+**Not run:** Zorin OS 18.1 with the package (ticket 201 ran the closure and a
+stand-in there; the package's files do not differ by base).
+
+### What is left, and on what
+
+- Super+A: the owner's decision S3, then ticket 210.
+- Alt+Tab, Alt+Shift+Tab, Super+Tab: ticket 211 ships the switcher.
+- Super+W, XF86LaunchA: ticket 212 ships the overview.
+- Print and the screenshot keys, the portal line, the binary and its
+  Depends: ticket 253 (pull request 32, not merged); each place is marked
+  "Ticket 253 adds" and ticket 253's "What to build" lists them.
+- The theme's corner radius: ticket 148 has not said the window radius.
+  Writing COSMIC's theme also means shipping the theme configuration's whole
+  default directory (the one-directory rule above).
+Each binding goes into the session's `defaults` together with its
+`system_actions` command, and its line leaves `WAITING` in
+`crates/session-launcher/tests/shortcuts.rs`.

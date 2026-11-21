@@ -28,6 +28,7 @@ pub mod children;
 pub mod compositor;
 pub mod environment;
 pub mod lifecycle;
+pub mod process;
 pub mod resume;
 
 /// The systemd user target the session's units hang from.

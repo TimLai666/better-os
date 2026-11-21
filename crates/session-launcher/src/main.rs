@@ -20,6 +20,7 @@ use session_launcher::children::{self, AfterExit, ChildSpec, Ending, Restarts};
 use session_launcher::compositor;
 use session_launcher::environment::{self, Import};
 use session_launcher::lifecycle::{self, UserSession};
+use session_launcher::process;
 use session_launcher::resume::{self, Resume};
 use zbus::fdo;
 use zbus::message::Header;
@@ -172,7 +173,8 @@ fn watch_exit(pid: i32, sender: Sender<Event>) {
 }
 
 fn spawn(spec: &ChildSpec, environment: &BTreeMap<String, String>) -> std::io::Result<i32> {
-    let child = Command::new(spec.program)
+    let mut command = Command::new(spec.program);
+    let child = process::with_signals_unblocked(&mut command)
         .args(spec.arguments)
         .env_clear()
         .envs(environment)
@@ -216,7 +218,7 @@ impl Session {
         })?;
         let theirs_fd: RawFd = theirs.as_raw_fd();
         let mut command = Command::new(session_launcher::COMPOSITOR);
-        command
+        process::with_signals_unblocked(&mut command)
             .env_clear()
             .envs(&environment)
             .env(compositor::SOCKET_VARIABLE, theirs_fd.to_string());
@@ -518,7 +520,7 @@ impl Session {
                 log(problem);
             }
         }
-        // The children in the reverse order they started, the compositor last.
+        // The units have stopped; the children and the compositor end together.
         let mut pids: Vec<i32> = children::CHILDREN
             .iter()
             .rev()
@@ -541,34 +543,43 @@ impl Session {
     }
 }
 
-/// Ends each process in turn: SIGTERM, then SIGKILL after the patience.
+/// Ends the processes together: SIGTERM to all of them, then SIGKILL to any
+/// still there after the patience. Together and not one after another, so a
+/// logout waits the patience once at most: in ticket 203's VM both the
+/// locker and the compositor outlived SIGTERM, and one after the other they
+/// held the logout for ten seconds.
 fn end_processes(pids: &[i32], events: &Receiver<Event>) {
-    let mut gone = Vec::new();
-    for &pid in pids {
-        let mut terminated = None;
-        while !gone.contains(&pid) {
-            match children::ending(terminated, Instant::now()) {
-                Ending::Terminate => {
+    let mut left: Vec<i32> = pids.to_vec();
+    let mut terminated = None;
+    while !left.is_empty() {
+        match children::ending(terminated, Instant::now()) {
+            Ending::Terminate => {
+                for &pid in &left {
                     signal(pid, libc::SIGTERM);
-                    terminated = Some(Instant::now());
                 }
-                Ending::Kill => {
-                    log(format!("process {pid} ignored SIGTERM; killing it"));
+                terminated = Some(Instant::now());
+            }
+            Ending::Kill => {
+                for &pid in &left {
+                    log(format!("process {pid} outlived SIGTERM; killing it"));
                     signal(pid, libc::SIGKILL);
-                    // A killed process is gone at once; its waiter says so.
-                    match events.recv_timeout(Duration::from_secs(2)) {
-                        Ok(Event::Exited { pid: ended, .. }) => gone.push(ended),
+                }
+                // A killed process is gone at once; its waiter says so.
+                let deadline = Instant::now() + Duration::from_secs(2);
+                while !left.is_empty() && Instant::now() < deadline {
+                    match events.recv_timeout(Duration::from_millis(100)) {
+                        Ok(Event::Exited { pid, .. }) => left.retain(|&running| running != pid),
                         Ok(_) | Err(RecvTimeoutError::Timeout) => {}
                         Err(RecvTimeoutError::Disconnected) => return,
                     }
-                    gone.push(pid);
                 }
-                Ending::Wait => match events.recv_timeout(Duration::from_millis(100)) {
-                    Ok(Event::Exited { pid: ended, .. }) => gone.push(ended),
-                    Ok(_) | Err(RecvTimeoutError::Timeout) => {}
-                    Err(RecvTimeoutError::Disconnected) => return,
-                },
+                return;
             }
+            Ending::Wait => match events.recv_timeout(Duration::from_millis(100)) {
+                Ok(Event::Exited { pid, .. }) => left.retain(|&running| running != pid),
+                Ok(_) | Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => return,
+            },
         }
     }
 }

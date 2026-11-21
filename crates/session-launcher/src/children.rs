@@ -11,9 +11,11 @@
 //!
 //! The launcher ends what it started rather than leaving it to logind: ticket
 //! 201 saw a session scope stay in `stop-sigterm` for 34 s once, with
-//! `cosmic-settings-daemon` alive, after the compositor ended. Each child gets
-//! SIGTERM, then SIGKILL after [`TERM_PATIENCE`]; the compositor last, so
-//! every client can still say goodbye to it.
+//! `cosmic-settings-daemon` alive, after the compositor ended. Once the
+//! target's units have stopped, the children and the compositor get SIGTERM
+//! together, then SIGKILL after [`TERM_PATIENCE`]: in ticket 203's VM the
+//! locker and `cosmic-comp` both outlived SIGTERM, so ending them one after
+//! the other cost the patience twice.
 
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};

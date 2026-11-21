@@ -180,6 +180,22 @@ pub fn plan_import(
     let mut import = Import::default();
     let mut changed = Vec::new();
     for name in IMPORTED {
+        // The compositor's displays name a display that ends with the
+        // session, whatever was there before: cosmic-comp imports both into
+        // the user manager itself as it comes up, before it tells the
+        // launcher, so "before" already holds them. They are set and, at the
+        // end, unset, as COSMIC's own cosmic-comp.service does
+        // (ExecStopPost=systemctl --user unset-environment DISPLAY
+        // WAYLAND_DISPLAY). Ticket 203's VM found them left behind otherwise.
+        if crate::compositor::REPORTED.contains(&name) {
+            if let Some(value) = session(name).filter(|value| !value.is_empty()) {
+                import.set.insert(name.to_string(), value);
+            } else if before.contains_key(name) {
+                import.unset.push(name.to_string());
+            }
+            import.restore_unset.push(name.to_string());
+            continue;
+        }
         match session(name).filter(|value| !value.is_empty()) {
             Some(value) => {
                 if before.get(name) != Some(&value) {
@@ -387,10 +403,10 @@ mod tests {
             import.restore_set.get("GTK_IM_MODULE").map(String::as_str),
             Some("ibus")
         );
-        assert_eq!(
-            import.restore_set.get("DISPLAY").map(String::as_str),
-            Some(":1")
-        );
+        // A display of an earlier session is gone with it; nothing brings
+        // it back.
+        assert!(!import.restore_set.contains_key("DISPLAY"));
+        assert!(import.restore_unset.contains(&"DISPLAY".to_string()));
         for name in [
             "WAYLAND_DISPLAY",
             "DCONF_PROFILE",
@@ -438,6 +454,31 @@ mod tests {
             manager.remove(name);
         }
         assert_eq!(manager, before);
+    }
+
+    #[test]
+    fn the_compositors_displays_go_at_the_end_even_when_it_imported_them_first() {
+        // What the user manager held when the launcher read it in ticket
+        // 203's VM: cosmic-comp had already imported its own two.
+        let before = parse_assignments(&[
+            "WAYLAND_DISPLAY=wayland-1".to_string(),
+            "DISPLAY=:0".to_string(),
+            "XDG_DATA_DIRS=/usr/share/".to_string(),
+        ]);
+        let session = lookup(&[("WAYLAND_DISPLAY", "wayland-1"), ("DISPLAY", ":0")]);
+        let import = plan_import(session, &before);
+        assert_eq!(
+            import.set.get("WAYLAND_DISPLAY").map(String::as_str),
+            Some("wayland-1")
+        );
+        assert_eq!(import.set.get("DISPLAY").map(String::as_str), Some(":0"));
+        for name in ["WAYLAND_DISPLAY", "DISPLAY"] {
+            assert!(
+                import.restore_unset.contains(&name.to_string()),
+                "{name} is unset at the end"
+            );
+            assert!(!import.restore_set.contains_key(name));
+        }
     }
 
     #[test]
