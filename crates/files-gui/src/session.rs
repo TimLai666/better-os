@@ -554,6 +554,13 @@ pub struct FilesSession {
     /// The large preview's program when a test names it; `None` is the
     /// companion rule's.
     preview_program: Option<String>,
+    /// The folder each server this window mounted was mounted at, by the
+    /// address it was asked for, so the sidebar can light that server's row
+    /// (ticket 175).
+    server_folders: Vec<(String, std::path::PathBuf)>,
+    /// The network or FUSE mount the last folder asked about is on, read
+    /// from the kernel's mount table once per folder.
+    foreign_mount: Option<(std::path::PathBuf, Option<std::path::PathBuf>)>,
     pub search: SearchState,
     /// How much each folder in view holds (ticket 126).
     pub folder_sizes: crate::folder_sizes::FolderSizes,
@@ -726,6 +733,8 @@ impl FilesSession {
             pending_open: None,
             preview,
             preview_program: None,
+            server_folders: Vec::new(),
+            foreign_mount: None,
             search: SearchState::default(),
             folder_sizes: crate::folder_sizes::FolderSizes::default()
                 .watching_with(Arc::clone(&hub)),
@@ -3550,6 +3559,35 @@ impl FilesSession {
         self.mounter = mounter;
     }
 
+    /// The folder a server this window mounted was mounted at, by the
+    /// address it was asked for.
+    pub fn server_folder(&self, address: &str) -> Option<&std::path::Path> {
+        self.server_folders
+            .iter()
+            .find(|(known, _)| known == address)
+            .map(|(_, folder)| folder.as_path())
+    }
+
+    /// The mount point of the network or FUSE filesystem `path` is on, or
+    /// `None` for a local disk. Read from the kernel's mount table, once for
+    /// each folder asked about.
+    pub fn foreign_mount(&mut self, path: &std::path::Path) -> Option<std::path::PathBuf> {
+        if let Some((known, foreign)) = &self.foreign_mount
+            && known == path
+        {
+            return foreign.clone();
+        }
+        let table = files_platform::MountTable::from_env();
+        let foreign = match table.reach(path) {
+            files_platform::Reach::Local => None,
+            files_platform::Reach::Network | files_platform::Reach::Fuse => {
+                table.mount_for(path).map(|mount| mount.mount_point.clone())
+            }
+        };
+        self.foreign_mount = Some((path.to_path_buf(), foreign.clone()));
+        foreign
+    }
+
     /// Whether a server is being opened.
     pub fn is_mounting(&self) -> bool {
         self.mounting.is_some()
@@ -3589,9 +3627,11 @@ impl FilesSession {
         self.server_asks = None;
         self.server_prompt = None;
         match result {
-            Ok(path) => match Location::local(path) {
+            Ok(path) => match Location::local(path.clone()) {
                 Ok(location) => {
                     self.notice = None;
+                    self.server_folders.retain(|(known, _)| *known != address);
+                    self.server_folders.push((address, path));
                     self.navigate_to(location);
                 }
                 Err(_) => {

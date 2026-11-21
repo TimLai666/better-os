@@ -55,9 +55,19 @@ pub(crate) enum NavTarget {
 
 impl NavTarget {
     /// What the line stands for when the highlight is chosen (ticket 175):
-    /// a folder row its location, a drive row its mount point. `drives` is
-    /// the session's drive list, which a [`NavTarget::Drive`] names by key.
-    fn place(&self, drives: &[crate::drives::Drive]) -> Option<RowPlace> {
+    /// a folder row its location, a drive row its mount point, a server
+    /// this window mounted the folder GVfs mounted it at. `drives` is the
+    /// session's drive list, which a [`NavTarget::Drive`] names by key.
+    fn place(
+        &self,
+        session: &crate::session::FilesSession,
+        drives: &[crate::drives::Drive],
+    ) -> Option<RowPlace> {
+        let server = |address: &str| {
+            session
+                .server_folder(address)
+                .map(|folder| RowPlace::Mount(folder.to_path_buf()))
+        };
         match self {
             // The mount table's rows, shown when there is no drive list.
             NavTarget::Row(row) if row.section == SidebarSection::Devices => row
@@ -71,10 +81,12 @@ impl NavTarget {
                 .find(|drive| drive.key == *key)
                 .and_then(|drive| drive.mount_point.clone())
                 .map(RowPlace::Mount),
-            NavTarget::Machine(_)
-            | NavTarget::PluginItem(_)
-            | NavTarget::PluginView(_)
-            | NavTarget::ThisPc => None,
+            NavTarget::Machine(machine) => server(&crate::share::sftp_address(machine)),
+            NavTarget::PluginItem(pair) => match &pair.1.open {
+                Some(crate::plugins::Open::Mount { mount }) => server(mount),
+                _ => None,
+            },
+            NavTarget::PluginView(_) | NavTarget::ThisPc => None,
         }
     }
 }
@@ -1154,9 +1166,16 @@ impl FilesApp {
                 let drives = self.session.shown_drives();
                 let places: Vec<Option<RowPlace>> = lines
                     .iter()
-                    .map(|(_, target)| target.as_ref().and_then(|target| target.place(&drives)))
+                    .map(|(_, target)| {
+                        target
+                            .as_ref()
+                            .and_then(|target| target.place(&self.session, &drives))
+                    })
                     .collect();
-                highlighted_row(&places, &current)
+                let foreign = current
+                    .as_local_path()
+                    .and_then(|path| self.session.foreign_mount(path.as_path()));
+                highlighted_row(&places, &current, foreign.as_deref())
             }
         };
         let targets: Rc<Vec<Option<NavTarget>>> =

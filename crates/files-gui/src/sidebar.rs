@@ -374,16 +374,31 @@ pub enum RowPlace {
     /// A favourite or a folder row: highlighted only while it is the open
     /// folder itself.
     Exact(Location),
-    /// A drive, by its mount point: highlighted while the open folder is on
-    /// it and no line is more specific.
+    /// A drive, a phone, or a server this window mounted, by the folder it
+    /// is mounted at: highlighted while the open folder is in it and no line
+    /// is more specific.
     Mount(std::path::PathBuf),
 }
 
 /// The line to highlight for the open folder: a favourite or folder row
-/// that is exactly it, else the drive whose mount point is the longest
-/// prefix of its path. The first line wins a tie. `None` when no line
-/// contains the folder (the Trash, a network share with no row).
-pub fn highlighted_row(places: &[Option<RowPlace>], current: &Location) -> Option<usize> {
+/// that is exactly it, else the line whose mount is the longest prefix of
+/// its path. The first line wins a tie.
+///
+/// `foreign` is the mount point of the network or FUSE filesystem the open
+/// folder is on, when it is on one (a GVfs share under
+/// `/run/user/<uid>/gvfs`, an NFS or SMB mount, sshfs). A line outside that
+/// filesystem never contains the folder: the system drive's `/` is a prefix
+/// of every GVfs path, and it is not where the files are. So only a line at
+/// or inside the foreign mount can light, and a folder there with no such
+/// line lights nothing.
+///
+/// `None` when no line contains the folder (the Trash, Recent, a share with
+/// no row).
+pub fn highlighted_row(
+    places: &[Option<RowPlace>],
+    current: &Location,
+    foreign: Option<&std::path::Path>,
+) -> Option<usize> {
     let exact = places
         .iter()
         .position(|place| matches!(place, Some(RowPlace::Exact(location)) if location == current));
@@ -395,7 +410,10 @@ pub fn highlighted_row(places: &[Option<RowPlace>], current: &Location) -> Optio
         .iter()
         .enumerate()
         .filter_map(|(index, place)| match place {
-            Some(RowPlace::Mount(point)) if path.starts_with(point) => {
+            Some(RowPlace::Mount(point))
+                if path.starts_with(point)
+                    && foreign.is_none_or(|foreign| point.starts_with(foreign)) =>
+            {
                 Some((index, point.components().count()))
             }
             _ => None,
@@ -408,7 +426,7 @@ pub fn highlighted_row(places: &[Option<RowPlace>], current: &Location) -> Optio
 mod highlight_tests {
     use super::{RowPlace, highlighted_row};
     use files_core::Location;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     fn local(path: &str) -> Location {
         Location::local(path).unwrap()
@@ -422,9 +440,14 @@ mod highlight_tests {
         Some(RowPlace::Exact(local(path)))
     }
 
+    const GVFS: &str = "/run/user/1000/gvfs";
+    const NAS: &str = "/run/user/1000/gvfs/sftp:host=nas";
+    const PHONE: &str = "/run/user/1000/gvfs/mtp:host=Pixel_8_1234";
+
     /// A sidebar like the window's: Home and Documents as places, a pinned
-    /// folder, a header, the system drive, a second drive, and a drive
-    /// mounted inside the second one.
+    /// folder, a header, the system drive, a second drive, a drive mounted
+    /// inside the second one, a tailnet machine this window mounted, and a
+    /// phone.
     fn sidebar() -> Vec<Option<RowPlace>> {
         vec![
             exact("/home/a"),
@@ -434,69 +457,107 @@ mod highlight_tests {
             mount("/"),
             mount("/media/a/Data"),
             mount("/media/a/Data/inner"),
+            mount(NAS),
+            mount(PHONE),
         ]
+    }
+
+    fn lit(current: &str) -> Option<usize> {
+        highlighted_row(&sidebar(), &local(current), None)
+    }
+
+    fn lit_on_gvfs(current: &str) -> Option<usize> {
+        highlighted_row(&sidebar(), &local(current), Some(Path::new(GVFS)))
     }
 
     #[test]
     fn the_root_folder_lights_the_system_drive() {
-        assert_eq!(highlighted_row(&sidebar(), &local("/")), Some(4));
+        assert_eq!(lit("/"), Some(4));
     }
 
     #[test]
     fn a_folder_on_the_system_drive_with_a_favourite_lights_the_favourite() {
-        assert_eq!(
-            highlighted_row(&sidebar(), &local("/home/a/Projects/site")),
-            Some(2)
-        );
-        assert_eq!(highlighted_row(&sidebar(), &local("/home/a")), Some(0));
+        assert_eq!(lit("/home/a/Projects/site"), Some(2));
+        assert_eq!(lit("/home/a"), Some(0));
     }
 
     #[test]
     fn a_folder_on_the_system_drive_without_a_favourite_lights_the_system_drive() {
         // Not Home, though Home contains it: a place lights only when it is
         // the open folder.
-        assert_eq!(
-            highlighted_row(&sidebar(), &local("/home/a/Projects/site/src")),
-            Some(4)
-        );
-        assert_eq!(highlighted_row(&sidebar(), &local("/etc")), Some(4));
+        assert_eq!(lit("/home/a/Projects/site/src"), Some(4));
+        assert_eq!(lit("/etc"), Some(4));
     }
 
     #[test]
     fn a_folder_on_a_second_drive_lights_that_drive() {
-        assert_eq!(
-            highlighted_row(&sidebar(), &local("/media/a/Data")),
-            Some(5)
-        );
-        assert_eq!(
-            highlighted_row(&sidebar(), &local("/media/a/Data/photos/2026")),
-            Some(5)
-        );
+        assert_eq!(lit("/media/a/Data"), Some(5));
+        assert_eq!(lit("/media/a/Data/photos/2026"), Some(5));
     }
 
     #[test]
     fn a_folder_on_a_drive_mounted_inside_another_lights_the_inner_drive() {
-        assert_eq!(
-            highlighted_row(&sidebar(), &local("/media/a/Data/inner/music")),
-            Some(6)
-        );
+        assert_eq!(lit("/media/a/Data/inner/music"), Some(6));
         // A sibling whose name only starts the same is not on it.
+        assert_eq!(lit("/media/a/Data/inner-old"), Some(5));
+    }
+
+    /// Review of ticket 175: a mounted tailnet machine is browsed at its
+    /// GVfs path, and `/` is a prefix of it.
+    #[test]
+    fn a_server_this_window_mounted_lights_its_own_row_not_the_system_drive() {
+        assert_eq!(lit_on_gvfs(NAS), Some(7));
+        assert_eq!(lit_on_gvfs(&format!("{NAS}/home/ann/photos")), Some(7));
+    }
+
+    #[test]
+    fn a_phone_lights_its_own_row() {
         assert_eq!(
-            highlighted_row(&sidebar(), &local("/media/a/Data/inner-old")),
-            Some(5)
+            lit_on_gvfs(&format!("{PHONE}/Internal storage/DCIM")),
+            Some(8)
         );
     }
 
     #[test]
-    fn a_place_with_no_containing_line_lights_nothing() {
+    fn a_gvfs_or_fuse_folder_with_no_row_lights_nothing() {
+        // An SMB share mounted from the path bar, which has no row.
         assert_eq!(
-            highlighted_row(
-                &sidebar(),
-                &Location::Trash(files_core::TrashLocation::Root)
-            ),
+            lit_on_gvfs(&format!("{GVFS}/smb-share:server=nas,share=media/films")),
             None
         );
+        // An sshfs or NFS mount of its own.
+        let sshfs = highlighted_row(
+            &sidebar(),
+            &local("/home/a/remote/project"),
+            Some(Path::new("/home/a/remote")),
+        );
+        assert_eq!(sshfs, None);
+    }
+
+    #[test]
+    fn a_place_with_no_containing_line_lights_nothing() {
+        for place in [
+            Location::Trash(files_core::TrashLocation::Root),
+            Location::Recent,
+        ] {
+            assert_eq!(highlighted_row(&sidebar(), &place, None), None, "{place:?}");
+        }
         let no_drives = vec![exact("/home/a"), None];
-        assert_eq!(highlighted_row(&no_drives, &local("/home/a/x")), None);
+        assert_eq!(highlighted_row(&no_drives, &local("/home/a/x"), None), None);
+    }
+
+    #[test]
+    fn the_trash_row_lights_for_the_trash_itself() {
+        let places = vec![Some(RowPlace::Exact(Location::Trash(
+            files_core::TrashLocation::Root,
+        )))];
+        assert_eq!(
+            highlighted_row(
+                &places,
+                &Location::Trash(files_core::TrashLocation::Root),
+                None
+            ),
+            Some(0)
+        );
     }
 }
