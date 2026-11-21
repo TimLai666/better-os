@@ -32,6 +32,7 @@ pub mod keyboard_lighting;
 pub mod revalidate;
 pub mod service;
 pub mod store;
+pub mod usb_recovery;
 
 /// Where staged artifacts live. Root-owned, and the only directory the daemon
 /// will install from.
@@ -147,6 +148,17 @@ pub enum DaemonError {
     /// The entry was written and the mount failed.
     #[error("daemon.error.mount_failed:{0}")]
     MountFailed(String),
+    /// A USB-C recovery that does not apply now (ticket 101): the machine
+    /// is not affected, nothing is failing, the controller is not one it
+    /// may touch, or only a restart helps. The key is the refusal's own.
+    #[error("{}", .0.key())]
+    UsbRefused(hardware_core::usb_recovery::Refusal),
+    /// The helper unit failed; systemd-run's or the helper's own words.
+    #[error("daemon.error.usb_recovery_failed:{0}")]
+    UsbRecoveryFailed(String),
+    /// journalctl could not read this boot's kernel log.
+    #[error("daemon.error.kernel_log_unreadable:{0}")]
+    KernelLogUnreadable(String),
 }
 
 impl From<manager_ipc::IpcError> for DaemonError {

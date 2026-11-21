@@ -3,7 +3,8 @@
 # starts, never on a machine anyone uses. It covers the places the checks
 # write with empty tmpfs stand-ins first and stops before any write if a cover
 # is missing. ADR 0029: the daemon and the restore cannot write /sys; only the
-# transient helper can, and only its one bound file.
+# transient helper can, and only its one bound file. ADR 0046: the USB-C
+# recovery's two helpers and its after-sleep unit start with their own lists.
 set -euo pipefail
 
 if [[ "${BETTER_OS_E2E_CONTAINER:-}" != "1" ]]; then
@@ -200,4 +201,113 @@ systemctl start better-hardware-restore.service || true
 [[ "$(systemctl show -p ConditionResult --value better-hardware-restore.service)" == "no" ]] \
     || fail "the boot-time restore still had something to write after removal"
 echo "PASS removal: charge limit 80 -> 100 as before Better OS, nothing left for the boot-time restore"
+# 6. The USB-C recovery's helpers (ADR 0046, ticket 101). A container shares
+# the host's kernel, so nothing here may unload a module or unbind a real
+# device: the module reload helper is never run with a module system call to
+# make, and the rebind helper writes only into stand-ins mounted over
+# /sys/bus/pci first. What is checked is the units' shape.
+for cover in /sys/bus/pci/drivers /sys/bus/pci/devices; do
+    [[ -d "$cover" ]] || { echo "FAIL: $cover is missing in this kernel" >&2; exit 1; }
+    mount -t tmpfs -o size=1m,mode=0755 better-os-standin "$cover"
+    if [[ "$(findmnt -n -o SOURCE --mountpoint "$cover")" != "better-os-standin" ]]; then
+        echo "FAIL: $cover is not covered by the stand-in; nothing was written" >&2
+        exit 1
+    fi
+done
+xhci=/sys/bus/pci/devices/0000:63:00.4
+mkdir -p "$xhci" /sys/bus/pci/drivers/xhci_hcd
+echo 0x1022 > "$xhci/vendor"
+echo 0x151e > "$xhci/device"
+echo 0x0c0330 > "$xhci/class"
+: > /sys/bus/pci/drivers/xhci_hcd/unbind
+: > /sys/bus/pci/drivers/xhci_hcd/bind
+
+# 6a. The reload helper's unit: systemd takes every property, /sys is empty,
+# the modules tree is readable, /proc/sys is read-only, and the only
+# capability left is CAP_SYS_MODULE (bit 16). The helper itself is started
+# only with an argument it refuses before any system call.
+props_for ucsi-reload
+printf '%s\n' "${probe_props[@]}" | grep -qx 'ProtectKernelModules=yes' \
+    && fail "the reload helper's list takes module loading away"
+printf '%s\n' "${probe_props[@]}" | grep -qx 'CapabilityBoundingSet=CAP_SYS_MODULE' \
+    || fail "the reload helper's list keeps more than CAP_SYS_MODULE"
+probe='echo PROBE-STARTED'
+probe="$probe; [ \"\$(ls -A /sys | wc -l)\" -eq 0 ] && echo SYS-EMPTY"
+probe="$probe; [ -d /usr/lib/modules ] && echo MODULES-VISIBLE"
+probe="$probe; grep -q ' /proc/sys ro,' /proc/self/mountinfo && echo PROC-SYS-RO"
+probe="$probe; grep -q '^CapBnd:[[:space:]]*0000000000010000\$' /proc/self/status && echo CAP-MODULE-ONLY"
+probe="$probe; echo /bin/false > /proc/sys/kernel/modprobe && echo WROTE-MODPROBE"
+probe="$probe; touch /usr/lib/better-os-probe && echo WROTE-USR"
+probe="$probe; true"
+out="$(systemd-run --quiet --wait --pipe --collect "${probe_props[@]}" /bin/sh -c "$probe" 2>&1 || true)"
+for wanted in PROBE-STARTED SYS-EMPTY MODULES-VISIBLE PROC-SYS-RO CAP-MODULE-ONLY; do
+    [[ "$out" == *"$wanted"* ]] || fail "the reload helper's unit did not show $wanted: $out"
+done
+for marker in WROTE-MODPROBE WROTE-USR; do
+    [[ "$out" != *"$marker"* ]] || fail "the reload helper's sandbox let through $marker: $out"
+done
+out="$(systemd-run --quiet --wait --pipe --collect "${probe_props[@]}" \
+    /usr/libexec/better-manager-daemon --reload-ucsi refuse-me 2>&1 || true)"
+[[ "$out" == *"takes no value"* ]] || fail "the reload helper did not start in its unit: $out"
+echo "PASS reload helper: properties accepted; /sys empty, modules readable, CAP_SYS_MODULE only"
+
+# 6b. The rebind helper: its unit sees the driver's two files and the
+# function's identity and nothing else, cannot change the identity, and the
+# real helper rebinds the stand-in function by its address.
+props_for xhci-rebind 0000:63:00.4
+probe='echo PROBE-STARTED'
+probe="$probe; [ \"\$(ls -A /sys | wc -l)\" -eq 1 ] && echo SYS-ONE-ENTRY"
+probe="$probe; [ \"\$(ls -A /sys/bus/pci/drivers/xhci_hcd | wc -l)\" -eq 2 ] && echo DRIVER-TWO-FILES"
+probe="$probe; echo 0x1234 > $xhci/device && echo WROTE-IDENTITY"
+probe="$probe; grep -q ' /proc/sys ro,' /proc/self/mountinfo && echo PROC-SYS-RO"
+probe="$probe; grep -q '^CapBnd:[[:space:]]*0000000000000000\$' /proc/self/status && echo NO-CAPS"
+probe="$probe; true"
+out="$(systemd-run --quiet --wait --pipe --collect "${probe_props[@]}" /bin/sh -c "$probe" 2>&1 || true)"
+for wanted in PROBE-STARTED SYS-ONE-ENTRY DRIVER-TWO-FILES PROC-SYS-RO NO-CAPS; do
+    [[ "$out" == *"$wanted"* ]] || fail "the rebind helper's unit did not show $wanted: $out"
+done
+[[ "$out" != *WROTE-IDENTITY* && "$(cat "$xhci/device")" == "0x151e" ]] \
+    || fail "the rebind helper's unit could change the function's identity: $out"
+out="$(systemd-run --quiet --wait --pipe --collect "${probe_props[@]}" \
+    /usr/libexec/better-manager-daemon --rebind-xhci 0000:63:00.4 2>&1 || true)"
+[[ "$out" == *rebound* ]] || fail "the rebind helper did not run in its unit: $out"
+[[ "$(cat /sys/bus/pci/drivers/xhci_hcd/unbind)" == "0000:63:00.4" \
+    && "$(cat /sys/bus/pci/drivers/xhci_hcd/bind)" == "0000:63:00.4" ]] \
+    || fail "the rebind helper did not write unbind and bind"
+echo 0x151f > "$xhci/device"
+: > /sys/bus/pci/drivers/xhci_hcd/unbind
+out="$(systemd-run --quiet --wait --pipe --collect "${probe_props[@]}" \
+    /usr/libexec/better-manager-daemon --rebind-xhci 0000:63:00.4 2>&1 || true)"
+[[ "$out" == *"not a controller of the affected kind"* && ! -s /sys/bus/pci/drivers/xhci_hcd/unbind ]] \
+    || fail "the rebind helper touched a controller of another kind: $out"
+echo "PASS rebind helper: two driver files and a read-only identity; rebinds only the affected kind"
+
+# 6c. The after-sleep run's unit: systemd takes every property; it cannot
+# write /etc, /var, or load modules, and can write /run/better-os.
+mkdir -p /run/better-os
+props_for after-sleep
+probe='echo PROBE-STARTED'
+probe="$probe; touch /etc/better-os-probe && echo WROTE-ETC"
+probe="$probe; touch /var/lib/better-os-probe && echo WROTE-VAR"
+probe="$probe; touch /run/better-os/probe && echo WROTE-RUN"
+probe="$probe; grep -q '^CapBnd:[[:space:]]*00000000000000c0\$' /proc/self/status && echo CAPS-SETUID-SETGID"
+probe="$probe; true"
+out="$(systemd-run --quiet --wait --pipe --collect "${probe_props[@]}" /bin/sh -c "$probe" 2>&1 || true)"
+for wanted in PROBE-STARTED WROTE-RUN CAPS-SETUID-SETGID; do
+    [[ "$out" == *"$wanted"* ]] || fail "the after-sleep unit did not show $wanted: $out"
+done
+for marker in WROTE-ETC WROTE-VAR; do
+    [[ "$out" != *"$marker"* ]] || fail "the after-sleep unit let through $marker: $out"
+done
+# With nothing chosen the hook queues nothing.
+/usr/libexec/better-manager-daemon --after-sleep post suspend
+! systemctl list-units --all --no-legend 'better-os-usb-after-sleep*' | grep -q . \
+    || fail "the hook queued the after-sleep run with nothing chosen"
+echo "PASS after-sleep: properties accepted; writes only /run/better-os; the hook does nothing while off"
+
+# 6d. Removal forgets the choices.
+echo '{"version":1,"ucsi_automatic":true}' > /var/lib/better-os/usb-recovery.json
+/usr/libexec/better-manager-daemon --release-hardware
+[[ ! -e /var/lib/better-os/usb-recovery.json ]] || fail "removal left the USB-C recovery's choices"
+echo "PASS removal: the USB-C recovery's choices are gone"
 systemctl --version | head -n 1

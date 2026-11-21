@@ -1,0 +1,18 @@
+# Machines and controllers the USB-C recovery (ticket 101, ADR 0046) acts on.
+#
+# Read at build time by hardware_core::usb_recovery; never fetched. A line is
+#   model <DMI board_name> <USB-C ports>
+#   controller <PCI vendor>:<PCI device>
+# Add a machine only for a fault someone reproduced on it.
+
+# ASUS Vivobook S 14 (owner's machine, BIOS M5406WA.314): the UCSI -110
+# timeouts and the xHCI host at 0000:63:00.4 dying on resume.
+model M5406WA 2
+# ASUS Vivobook S 15, same AMD CPMUCSI SSDT: the linux-usb report of
+# 2026-06-23 (ticket 101).
+model M5506WA 2
+
+# AMD xHCI 1022:151e, the controller that died on resume on the M5406WA
+# (first on 2026-11-13, again in the boot of 2026-11-16). The other three xHCI functions of the
+# same machine (151f, 151a, 151b) have not been seen to die.
+controller 1022:151e

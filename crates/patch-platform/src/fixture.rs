@@ -15,6 +15,8 @@
 //! <root>/system-flatpak/    a system installation
 //! <root>/.local/share/flatpak/ the person's installation and overrides
 //! <root>/.local/state/better-os/ the record of applied fixes
+//! <root>/machine/           the USB-C entries' machine: sys/, etc/, var/,
+//!                           and kernel.log (this boot's classified lines)
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -29,6 +31,10 @@ use crate::paths::Paths;
 use crate::store::RecordStore;
 
 const FONTS: &str = "fonts.tsv";
+
+/// The fixture machine's own root for the USB-C entries: `sys/`, `etc/`,
+/// `var/`, and the kernel log.
+pub const MACHINE: &str = "machine";
 const FONTS_REBUILT: &str = "fonts-rebuilt.tsv";
 
 /// Answers commands from the fixture's files.
@@ -88,6 +94,12 @@ impl CommandRunner for FixtureCommands {
             Command::ShowFlatpakOverride(app) => {
                 ok(std::fs::read_to_string(self.paths.user_override(app)).unwrap_or_default())
             }
+            // journalctl prints the lines the query keeps; the fixture's
+            // log is already that.
+            Command::KernelUsbLog { .. } => ok(std::fs::read_to_string(
+                self.root.join(MACHINE).join(crate::usb::FIXTURE_LOG),
+            )
+            .unwrap_or_default()),
         }
     }
 }
@@ -125,7 +137,7 @@ pub fn private_demo_root(runtime: Option<&Path>) -> Result<PathBuf, String> {
     let path =
         better_core::private_dir::private_runtime_dir(runtime, &["better-os", "fixes-demo"])?;
     if !path.join("session").exists() {
-        seed(&path, Seed::BothFaults).map_err(|error| format!("{}: {error}", path.display()))?;
+        seed(&path, Seed::AllFaults).map_err(|error| format!("{}: {error}", path.display()))?;
     }
     Ok(path)
 }
@@ -144,6 +156,12 @@ pub fn host(root: &Path) -> LinuxHost {
         }),
         session,
     )
+    .with_usb(
+        root.join(MACHINE),
+        Box::new(crate::usb::FixtureUsbDaemon {
+            root: root.join(MACHINE),
+        }),
+    )
 }
 
 /// The record store of a fixture root.
@@ -155,8 +173,11 @@ pub fn store(root: &Path) -> RecordStore {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Seed {
     /// Both faults: a damaged font cache, and an Electron Flatpak on
-    /// Wayland at scale 2.
+    /// Wayland at scale 2. Its USB-C machine is another laptop's.
     BothFaults,
+    /// Both of those, on the owner's M5406WA with ticket 101's USB-C
+    /// faults ([`UsbSeed::Failing`]): the demo window's machine.
+    AllFaults,
     /// Neither.
     Healthy,
 }
@@ -226,7 +247,7 @@ pub fn seed(root: &Path, seed: Seed) -> std::io::Result<()> {
         .join(SEEDED_APP)
         .join("current/active");
     match seed {
-        Seed::BothFaults => {
+        Seed::BothFaults | Seed::AllFaults => {
             write(&root.join(FONTS), &damaged_fonts())?;
             write(
                 &app.join("metadata"),
@@ -251,7 +272,114 @@ pub fn seed(root: &Path, seed: Seed) -> std::io::Result<()> {
             let _ = std::fs::remove_dir_all(Paths::under(root).system_flatpak.join("app"));
         }
     }
-    Ok(())
+    seed_usb(
+        root,
+        match seed {
+            Seed::AllFaults => UsbSeed::Failing,
+            Seed::BothFaults | Seed::Healthy => UsbSeed::NotAffected,
+        },
+    )
+}
+
+/// What a fixture machine's USB-C looks like.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UsbSeed {
+    /// The owner's M5406WA with ticket 101's faults: the interface timed
+    /// out after a sleep (one port left), the controller at 0000:63:00.4
+    /// died on resume, and two sleeps since failed on its hub work.
+    Failing,
+    /// The same machine with the controller dead and its hub work free
+    /// (no failed sleep yet), so a rebind is offered.
+    ControllerDeadOnly,
+    /// The same machine with nothing wrong this boot.
+    Healthy,
+    /// Another laptop.
+    NotAffected,
+}
+
+/// This boot's kernel lines for a seed, from ticket 101's excerpts (message
+/// text only).
+fn usb_log(seed: UsbSeed) -> &'static str {
+    match seed {
+        UsbSeed::Failing => "\
+ucsi_acpi USBC000:00: ucsi_handle_connector_change: GET_CONNECTOR_STATUS failed (-110)
+PM: suspend entry (s2idle)
+xhci_hcd 0000:63:00.4: AMD-Vi: Event logged [IO_PAGE_FAULT domain=0x0014 address=0x0 flags=0x0000]
+xhci_hcd 0000:63:00.4: WARN: xHC restore state timeout
+xhci_hcd 0000:63:00.4: PCI post-resume error -110!
+xhci_hcd 0000:63:00.4: HC died; cleaning up
+PM: suspend exit
+ucsi_acpi USBC000:00: failed to re-enable notifications (-110)
+PM: suspend entry (s2idle)
+Freezing remaining freezable tasks failed after 20.004 seconds (0 tasks refusing to freeze, wq_busy=1):
+workqueue usb_hub_wq: flags=0x104
+PM: suspend exit
+PM: suspend entry (s2idle)
+Freezing remaining freezable tasks failed after 20.000 seconds (0 tasks refusing to freeze, wq_busy=1):
+workqueue usb_hub_wq: flags=0x104
+PM: suspend exit
+",
+        UsbSeed::ControllerDeadOnly => "\
+PM: suspend entry (s2idle)
+xhci_hcd 0000:63:00.4: HC died; cleaning up
+PM: suspend exit
+",
+        UsbSeed::Healthy | UsbSeed::NotAffected => "\
+PM: suspend entry (s2idle)
+PM: suspend exit
+",
+    }
+}
+
+/// Lays out the fixture's USB-C machine under `<root>/machine`.
+pub fn seed_usb(root: &Path, seed: UsbSeed) -> std::io::Result<()> {
+    let machine = root.join(MACHINE);
+    let _ = std::fs::remove_dir_all(&machine);
+    let sys = machine.join("sys");
+    let board = if seed == UsbSeed::NotAffected {
+        "UX3405MA"
+    } else {
+        "M5406WA"
+    };
+    write(&sys.join("class/dmi/id/board_name"), &format!("{board}\n"))?;
+    write(
+        &sys.join("class/dmi/id/sys_vendor"),
+        "ASUSTeK COMPUTER INC.\n",
+    )?;
+    let ports: &[&str] = if seed == UsbSeed::Failing {
+        &["port0"]
+    } else {
+        &["port0", "port1"]
+    };
+    for port in ports {
+        std::fs::create_dir_all(sys.join("class/typec").join(port))?;
+    }
+    let charging = if seed == UsbSeed::Failing { "0" } else { "1" };
+    for (name, kind, online) in [
+        ("ACAD", "Mains", "1"),
+        ("ucsi-source-psy-USBC000:001", "USB", charging),
+        ("ucsi-source-psy-USBC000:002", "USB", "0"),
+    ] {
+        let dir = sys.join("class/power_supply").join(name);
+        write(&dir.join("type"), kind)?;
+        write(&dir.join("online"), online)?;
+    }
+    let function = sys.join("devices/pci0000:00/0000:00:08.1/0000:63:00.4");
+    write(&function.join("vendor"), "0x1022\n")?;
+    write(&function.join("device"), "0x151e\n")?;
+    write(&function.join("class"), "0x0c0330\n")?;
+    std::fs::create_dir_all(sys.join("bus/pci/drivers/xhci_hcd"))?;
+    std::os::unix::fs::symlink(
+        "../../../../bus/pci/drivers/xhci_hcd",
+        function.join("driver"),
+    )?;
+    std::fs::create_dir_all(sys.join("bus/pci/devices"))?;
+    std::os::unix::fs::symlink(
+        "../../../devices/pci0000:00/0000:00:08.1/0000:63:00.4",
+        sys.join("bus/pci/devices/0000:63:00.4"),
+    )?;
+    std::fs::create_dir_all(sys.join("bus/usb/devices"))?;
+    write(&machine.join(crate::usb::FIXTURE_LOG), usb_log(seed))
 }
 
 #[cfg(test)]

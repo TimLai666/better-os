@@ -107,4 +107,55 @@
       <allow_active>auth_admin_keep</allow_active>
     </defaults>
   </action>
+
+  <!-- ADR 0046, ticket 101. Unloads and loads ucsi_acpi, the distribution's
+       own signed module, by a fixed name. The daemon refuses unless this
+       boot's kernel log shows the USB-C interface failing since the last
+       reload, and runs at most one reload every 30 seconds. The person at
+       the machine is not asked: what it can do is restart a driver that has
+       already stopped answering. -->
+  <action id="org.betteros.manager.usb-c-reload">
+    <description>Reset the USB-C ports</description>
+    <description xml:lang="zh_TW">重設 USB-C 連接埠</description>
+    <message>Authentication is required to reset the USB-C ports</message>
+    <message xml:lang="zh_TW">重設 USB-C 連接埠需要驗證身分</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+  </action>
+
+  <!-- ADR 0046, ticket 101. Unbinds and binds the one xHCI function this
+       boot's kernel log names as dead, of the kind known to die on resume;
+       the daemon picks it, and refuses while the hub work is stuck. At most
+       one every 60 seconds. A dead controller has no device left to lose. -->
+  <action id="org.betteros.manager.usb-controller-rebind">
+    <description>Restart a USB controller that stopped after sleep</description>
+    <description xml:lang="zh_TW">重新啟動睡眠後停止運作的 USB 控制器</description>
+    <message>Authentication is required to restart the USB controller</message>
+    <message xml:lang="zh_TW">重新啟動 USB 控制器需要驗證身分</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+  </action>
+
+  <!-- ADR 0046, ticket 101. Turns the after-sleep recovery on or off and
+       chooses whether a PC whose sleep keeps failing with the lid closed is
+       turned off: three booleans in /var/lib/better-os/usb-recovery.json.
+       Turning the PC off is a choice about the person's work, so an
+       administrator authenticates. -->
+  <action id="org.betteros.manager.usb-recovery-settings">
+    <description>Change the USB-C recovery after sleep</description>
+    <description xml:lang="zh_TW">變更睡眠後的 USB-C 修復</description>
+    <message>Authentication is required to change the USB-C recovery after sleep</message>
+    <message xml:lang="zh_TW">變更睡眠後的 USB-C 修復需要驗證身分</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
 </policyconfig>

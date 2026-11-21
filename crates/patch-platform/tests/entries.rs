@@ -252,3 +252,184 @@ fn electron_cursor_refuses_to_write_when_the_file_moved_under_it() {
     );
     drop(outcome);
 }
+
+// --- Entries 3 and 4: the USB-C faults (ticket 101) ------------------------
+
+mod usb {
+    use super::*;
+    use patch_core::entries::usb_c::{UsbCInterface, UsbController};
+    use patch_core::entry::FindingDetail;
+    use patch_core::{Answer, Change, Entry, Host, Privileged, Read};
+    use patch_platform::fixture::UsbSeed;
+
+    fn usb_machine(seed: UsbSeed) -> (tempfile::TempDir, LinuxHost) {
+        let root = scratch();
+        fixture::seed(root.path(), Seed::Healthy).unwrap();
+        fixture::seed_usb(root.path(), seed).unwrap();
+        let host = fixture::host(root.path());
+        (root, host)
+    }
+
+    fn settings(root: &Path) -> Option<String> {
+        std::fs::read_to_string(
+            root.join(fixture::MACHINE)
+                .join(patch_platform::usb::SETTINGS),
+        )
+        .ok()
+    }
+
+    #[test]
+    fn on_another_laptop_neither_entry_applies() {
+        let (_root, mut host) = usb_machine(UsbSeed::NotAffected);
+        for entry in [&UsbCInterface as &dyn Entry, &UsbController] {
+            let report = engine::check(entry, &mut host, &Records::default(), &[]);
+            assert_eq!(report.overall(), EntryState::DoesNotApply);
+            assert!(report.instances.is_empty());
+        }
+    }
+
+    #[test]
+    fn a_healthy_affected_machine_shows_neither_fault() {
+        let (_root, mut host) = usb_machine(UsbSeed::Healthy);
+        for entry in [&UsbCInterface as &dyn Entry, &UsbController] {
+            let report = engine::check(entry, &mut host, &Records::default(), &[]);
+            assert_eq!(report.overall(), EntryState::NotPresent);
+        }
+    }
+
+    #[test]
+    fn the_interface_is_found_fixed_checked_and_undone() {
+        let (root, mut host) = usb_machine(UsbSeed::Failing);
+        let report = engine::check(&UsbCInterface, &mut host, &Records::default(), &[]);
+        assert_eq!(report.overall(), EntryState::Found);
+        let finding = report.instances[0].finding.clone().unwrap();
+        assert_eq!(
+            finding.detail,
+            FindingDetail::UsbCInterface {
+                timeouts: 1,
+                after_sleep: 1
+            }
+        );
+        let outcome = engine::fix(&UsbCInterface, &finding, &mut host, 5).unwrap();
+        assert_eq!(outcome.check, CheckOutcome::Passed);
+        assert!(
+            settings(root.path())
+                .unwrap()
+                .contains("\"ucsi_automatic\": true")
+        );
+
+        // Kept by the machine: a fresh check with an empty personal record
+        // sees it fixed.
+        let report = engine::check(&UsbCInterface, &mut host, &Records::default(), &[]);
+        assert_eq!(report.overall(), EntryState::FixedAndChecked);
+        let record = report.instances[0].record.clone().unwrap();
+        engine::undo(&UsbCInterface, &record, &mut host, false).unwrap();
+        assert!(
+            !settings(root.path())
+                .unwrap()
+                .contains("\"ucsi_automatic\": true")
+        );
+        let report = engine::check(&UsbCInterface, &mut host, &Records::default(), &[]);
+        assert_eq!(report.overall(), EntryState::NotPresent);
+    }
+
+    #[test]
+    fn a_stuck_hub_is_a_restart_and_the_guard_is_turned_on() {
+        let (root, mut host) = usb_machine(UsbSeed::Failing);
+        let report = engine::check(&UsbController, &mut host, &Records::default(), &[]);
+        let finding = report.instances[0].finding.clone().unwrap();
+        assert!(matches!(
+            finding.detail,
+            FindingDetail::UsbController {
+                restart_needed: true,
+                sleep_failures: 2,
+                streak: 2,
+                ..
+            }
+        ));
+        let outcome = engine::fix(&UsbController, &finding, &mut host, 5).unwrap();
+        assert_eq!(outcome.check, CheckOutcome::StillPresent);
+        assert!(
+            settings(root.path())
+                .unwrap()
+                .contains("\"controller_automatic\": true")
+        );
+        // Reset USB-C on that machine is refused as a restart.
+        assert_eq!(
+            host.usb_act(Privileged::RebindController),
+            Err(patch_core::ChangeError::Refused(
+                "daemon.error.usb_restart_needed".into()
+            ))
+        );
+    }
+
+    #[test]
+    fn a_dead_controller_with_free_hub_work_is_rebound_and_checked() {
+        let (_root, mut host) = usb_machine(UsbSeed::ControllerDeadOnly);
+        let report = engine::check(&UsbController, &mut host, &Records::default(), &[]);
+        let finding = report.instances[0].finding.clone().unwrap();
+        let outcome = engine::fix(&UsbController, &finding, &mut host, 5).unwrap();
+        assert_eq!(outcome.check, CheckOutcome::Passed);
+        let report = engine::check(&UsbController, &mut host, &Records::default(), &[]);
+        assert_eq!(report.overall(), EntryState::FixedAndChecked);
+    }
+
+    #[test]
+    fn reset_usb_c_reports_what_came_back() {
+        let (_root, mut host) = usb_machine(UsbSeed::Failing);
+        let reply = host.usb_act(Privileged::ReloadUcsi).unwrap().unwrap();
+        assert!(reply.restored.complete(), "{reply:?}");
+        // Nothing failing any more: a second reset is refused, not run.
+        assert_eq!(
+            host.usb_act(Privileged::ReloadUcsi),
+            Err(patch_core::ChangeError::Refused(
+                "daemon.error.usb_nothing_to_reset".into()
+            ))
+        );
+    }
+
+    /// The person who can read the system journal reads it themselves;
+    /// nobody else's read reaches a log line, only the daemon's findings.
+    #[test]
+    fn the_kernel_log_is_read_as_the_person_when_they_may() {
+        let (root, mut host) = usb_machine(UsbSeed::Failing);
+        let machine = root.path().join(fixture::MACHINE);
+        // The daemon's answer (from the fixture daemon) when they may not.
+        let from_daemon = host.read(&Read::UsbFindings);
+        // Readable: the same classification through journalctl's output.
+        std::fs::create_dir_all(machine.join("etc")).unwrap();
+        std::fs::write(machine.join("etc/machine-id"), "0123abcd\n").unwrap();
+        let journal = machine.join("var/log/journal/0123abcd");
+        std::fs::create_dir_all(&journal).unwrap();
+        std::fs::write(journal.join("system.journal"), b"").unwrap();
+        let as_person = host.read(&Read::UsbFindings);
+        assert_eq!(from_daemon, as_person);
+        assert!(matches!(as_person, Answer::UsbFindings(Ok(ref f)) if f.ucsi.active));
+    }
+
+    #[test]
+    fn a_host_without_usb_set_up_reaches_nothing() {
+        let root = scratch();
+        let mut host = LinuxHost::new(
+            Paths::under(root.path()),
+            Box::new(patch_platform::fixture::FixtureCommands::new(root.path())),
+            Box::new(NoScales),
+            None,
+        );
+        assert!(matches!(
+            host.read(&Read::UsbMachine),
+            Answer::UsbMachine(Err(_))
+        ));
+        assert!(
+            host.change(&Change::Privileged(Privileged::ReloadUcsi))
+                .is_err()
+        );
+    }
+
+    struct NoScales;
+    impl patch_platform::display::DisplayScales for NoScales {
+        fn scales(&self) -> Result<Vec<f64>, patch_core::ReadError> {
+            Err(patch_core::ReadError::NotOnThisDesktop)
+        }
+    }
+}

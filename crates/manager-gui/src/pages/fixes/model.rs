@@ -4,11 +4,16 @@
 
 use std::collections::BTreeMap;
 
+use hardware_core::usb_recovery::{
+    ChargerShown, RecoveryReply, Restored, UsbChoice, UsbRecoverySettings,
+};
 use patch_core::engine::Report;
 use patch_core::entry::{self, ChangeLine, Limit};
 use patch_core::flatpak::{AppId, AppName};
 use patch_core::record::{ChangedElsewhere, KeyValue, OverrideKey};
-use patch_core::{CannotCheck, CheckOutcome, Entry, EntryId, EntryState, Subject, UndoKind};
+use patch_core::{
+    CannotCheck, CheckOutcome, Entry, EntryId, EntryState, Privileged, Subject, UndoKind,
+};
 
 use super::copy::copy;
 use crate::i18n::Locale;
@@ -32,7 +37,11 @@ pub(crate) enum Tone {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum RowResult {
     Fixed(CheckOutcome),
-    Undone { skipped: usize },
+    Undone {
+        skipped: usize,
+    },
+    /// What Reset USB-C restored.
+    Reset(RecoveryReply),
 }
 
 /// A button on a row.
@@ -46,6 +55,11 @@ pub(crate) enum RowAction {
     Undo,
     /// Undo everything, the keys another program changed included.
     UndoAll,
+    /// Reset the USB-C interface, or restart the dead controller, now.
+    ResetUsbC,
+    /// Choose whether a sleep that keeps failing with the lid closed turns
+    /// the PC off (`true`) or only notifies (`false`).
+    PowerOff(bool),
 }
 
 /// One fault's expander.
@@ -110,6 +124,18 @@ fn header_of(locale: Locale, entry: EntryId, app: Option<&str>) -> String {
             Some(app) => c.electron_header.replace("{app}", app),
             None => c.electron_header_any.to_string(),
         },
+        EntryId::UsbCInterface => c.usb_header.to_string(),
+        EntryId::UsbController => c.controller_header.to_string(),
+    }
+}
+
+fn known_header(locale: Locale, entry: EntryId) -> &'static str {
+    let c = copy(locale);
+    match entry {
+        EntryId::FontconfigCache => c.font_header,
+        EntryId::ElectronCursor => c.electron_header_any,
+        EntryId::UsbCInterface => c.usb_header,
+        EntryId::UsbController => c.controller_header,
     }
 }
 
@@ -118,6 +144,8 @@ fn cause_of(locale: Locale, entry: EntryId) -> &'static str {
     match entry {
         EntryId::FontconfigCache => c.font_cause,
         EntryId::ElectronCursor => c.electron_cause,
+        EntryId::UsbCInterface => c.usb_cause,
+        EntryId::UsbController => c.controller_cause,
     }
 }
 
@@ -129,6 +157,10 @@ fn limit_text(locale: Locale, limit: Limit) -> &'static str {
         Limit::UntilTheAppScalesItsPointer => c.limit_until_scaled,
         Limit::WholeNumberScaleOnly => c.limit_whole_scale,
         Limit::ScreenSharing => c.limit_screen_sharing,
+        Limit::KnownModelsOnly => c.limit_known_models,
+        Limit::ResetsNotRepairs => c.limit_resets,
+        Limit::RestartWhenStuck => c.limit_restart_when_stuck,
+        Limit::NotMeasured => c.limit_not_measured,
     }
 }
 
@@ -188,6 +220,7 @@ pub(crate) fn reason(locale: Locale, reason: &CannotCheck) -> String {
         CannotCheck::FileUnreadable(_) => c.reason_file.to_string(),
         CannotCheck::NotAnswered => c.reason_not_answered.to_string(),
         CannotCheck::NotOnThisDesktop => c.reason_not_on_desktop.to_string(),
+        CannotCheck::KernelLogUnreadable(_) => c.reason_kernel_log.to_string(),
     }
 }
 
@@ -205,6 +238,70 @@ pub(crate) fn state_line(locale: Locale, state: &EntryState) -> (String, Tone) {
                 .replace("{reason}", &reason(locale, why)),
             Tone::Warning,
         ),
+        EntryState::DoesNotApply => (c.state_does_not_apply.to_string(), Tone::Neutral),
+    }
+}
+
+/// What Reset USB-C restored, in words.
+pub(crate) fn reset_line(locale: Locale, reply: &RecoveryReply) -> (String, Tone) {
+    let c = copy(locale);
+    let (text, tone) = match &reply.restored {
+        Restored::Ucsi {
+            ports,
+            expected_ports,
+            ..
+        } if ports < expected_ports => (
+            c.reset_ports_missing
+                .replace("{n}", &ports.to_string())
+                .replace("{m}", &expected_ports.to_string()),
+            Tone::Warning,
+        ),
+        Restored::Ucsi { charger, .. } => match charger {
+            ChargerShown::Online => (c.reset_ports_back.to_string(), Tone::Success),
+            ChargerShown::NoneConnected => {
+                (c.reset_ports_back_no_charger.to_string(), Tone::Success)
+            }
+            ChargerShown::Unknown => (
+                c.reset_ports_back_charger_unknown.to_string(),
+                Tone::Success,
+            ),
+            ChargerShown::NotShown => (c.reset_charger_missing.to_string(), Tone::Warning),
+        },
+        Restored::Controller { devices, .. } if reply.restored.complete() => (
+            c.reset_controller_back.replace("{n}", &devices.to_string()),
+            Tone::Success,
+        ),
+        Restored::Controller { .. } => (c.reset_controller_missing.to_string(), Tone::Warning),
+    };
+    if reply.recent {
+        (format!("{text} {}", c.reset_recent), tone)
+    } else {
+        (text, tone)
+    }
+}
+
+/// A daemon refusal or failure from the USB-C actions, in words.
+pub(crate) fn usb_refusal(locale: Locale, error: &patch_core::ChangeError) -> &'static str {
+    let c = copy(locale);
+    let text = error.to_string();
+    if let patch_core::ChangeError::NotInstalled(_) = error {
+        return c.daemon_missing;
+    }
+    match hardware_core::usb_recovery::Refusal::from_key(&text) {
+        Some(hardware_core::usb_recovery::Refusal::NothingToReset) => c.refused_nothing,
+        Some(hardware_core::usb_recovery::Refusal::RestartNeeded) => c.refused_restart,
+        Some(hardware_core::usb_recovery::Refusal::NotAffected) => c.refused_not_affected,
+        Some(hardware_core::usb_recovery::Refusal::ControllerNotRecognised) => {
+            c.refused_not_recognised
+        }
+        None if text.contains("daemon.error.auth_cancelled") => c.refused_cancelled,
+        None if text.contains("daemon.error.unauthorized") => c.refused_not_allowed,
+        None if text.contains("daemon.error.busy")
+            || text.contains("daemon.error.shutting_down") =>
+        {
+            c.refused_busy
+        }
+        None => c.reset_failed,
     }
 }
 
@@ -227,6 +324,7 @@ fn result_line(locale: Locale, result: &RowResult) -> (String, Tone) {
             c.undone_with_skipped.replace("{n}", &skipped.to_string()),
             Tone::Warning,
         ),
+        RowResult::Reset(reply) => reset_line(locale, reply),
     }
 }
 
@@ -262,8 +360,76 @@ pub(crate) fn change_lines(
                     .replace("{path}", &format!("{override_dir}/{app}"))
                     .replace("{keys}", &flags.join(" "))
             }
+            ChangeLine::Privileged(action) => match action {
+                Privileged::ReloadUcsi => c.change_ucsi_now.to_string(),
+                Privileged::RebindController => c.change_controller_now.to_string(),
+                Privileged::SetChoice { choice, .. } => match choice {
+                    UsbChoice::UcsiAutomatic => c.change_ucsi_auto.to_string(),
+                    UsbChoice::ControllerAutomatic => c.change_controller_auto.to_string(),
+                    UsbChoice::PowerOffWhenSleepBlocked => c.change_power_off.to_string(),
+                },
+            },
         })
         .collect()
+}
+
+/// What detection found about a USB-C fault, as lines.
+fn usb_facts(locale: Locale, instance: &patch_core::Instance) -> Vec<String> {
+    let c = copy(locale);
+    match &instance.finding {
+        Some(patch_core::Finding {
+            detail:
+                patch_core::entry::FindingDetail::UsbCInterface {
+                    timeouts,
+                    after_sleep,
+                },
+            ..
+        }) => vec![
+            c.fact_ucsi_seen
+                .replace("{n}", &(timeouts + after_sleep).to_string())
+                .replace("{m}", &after_sleep.to_string()),
+        ],
+        Some(patch_core::Finding {
+            detail:
+                patch_core::entry::FindingDetail::UsbController {
+                    address,
+                    sleep_failures,
+                    streak,
+                    restart_needed,
+                },
+            ..
+        }) => {
+            let mut lines = vec![c.fact_controller_seen.replace("{address}", address)];
+            if *sleep_failures > 0 {
+                lines.push(
+                    c.fact_sleep_blocked
+                        .replace("{n}", &sleep_failures.to_string())
+                        .replace("{m}", &streak.to_string()),
+                );
+            }
+            if *restart_needed {
+                lines.push(c.fact_restart_needed.to_string());
+            }
+            lines
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Whether a USB-C fault row's Reset USB-C can do anything now: the fault
+/// is there and, for the controller, its hub work is not stuck.
+fn resettable(instance: &patch_core::Instance) -> bool {
+    match &instance.finding {
+        Some(patch_core::Finding {
+            detail: patch_core::entry::FindingDetail::UsbCInterface { .. },
+            ..
+        }) => true,
+        Some(patch_core::Finding {
+            detail: patch_core::entry::FindingDetail::UsbController { restart_needed, .. },
+            ..
+        }) => !restart_needed,
+        _ => false,
+    }
 }
 
 fn changed_lines(locale: Locale, changed: &[ChangedElsewhere]) -> Vec<String> {
@@ -323,10 +489,10 @@ fn fault_row(
         cause: cause_of(locale, key.entry),
         state,
         change: change_lines(locale, &description.change, override_dir),
-        undo_note: if reversible {
-            c.electron_undo
-        } else {
-            c.no_undo_needed
+        undo_note: match key.entry {
+            EntryId::UsbCInterface | EntryId::UsbController => c.usb_undo,
+            _ if reversible => c.electron_undo,
+            _ => c.no_undo_needed,
         },
         takes_effect: app.map(|app| c.electron_restart.replace("{app}", app)),
         facts: Vec::new(),
@@ -342,12 +508,31 @@ fn fault_row(
     }
 }
 
-/// Everything the page draws.
+/// Everything the page draws, with no USB-C choice made (the tests' view).
+#[cfg(test)]
 pub(crate) fn page_rows(
     locale: Locale,
     reports: &[Report],
     results: &BTreeMap<RowKey, RowResult>,
     override_dir: &str,
+) -> PageRows {
+    page_rows_with(
+        locale,
+        reports,
+        results,
+        override_dir,
+        &UsbRecoverySettings::default(),
+    )
+}
+
+/// Everything the page draws; `usb` is the daemon's USB-C choices, for the
+/// controller card's power-off choice.
+pub(crate) fn page_rows_with(
+    locale: Locale,
+    reports: &[Report],
+    results: &BTreeMap<RowKey, RowResult>,
+    override_dir: &str,
+    usb: &UsbRecoverySettings,
 ) -> PageRows {
     let c = copy(locale);
     let mut rows = PageRows::default();
@@ -393,13 +578,29 @@ pub(crate) fn page_rows(
                 EntryState::CannotCheck(_) if instance.record.is_some() && reversible => {
                     (false, vec![RowAction::Undo])
                 }
-                EntryState::CannotCheck(_) | EntryState::NotPresent | EntryState::Undone => {
+                EntryState::CannotCheck(_)
+                | EntryState::NotPresent
+                | EntryState::Undone
+                | EntryState::DoesNotApply => {
                     continue;
                 }
             };
             let mut actions = actions;
             if actions.contains(&RowAction::Undo) && !instance.changed_elsewhere.is_empty() {
                 actions.push(RowAction::UndoAll);
+            }
+            let usb_entry = matches!(
+                report.entry,
+                EntryId::UsbCInterface | EntryId::UsbController
+            );
+            if usb_entry && resettable(instance) {
+                actions.push(RowAction::ResetUsbC);
+            }
+            // The power-off choice belongs to entry 4's fix, once it is on.
+            let power_off = (report.entry == EntryId::UsbController && instance.record.is_some())
+                .then_some(usb.power_off_when_sleep_blocked);
+            if let Some(on) = power_off {
+                actions.push(RowAction::PowerOff(!on));
             }
             let mut row = fault_row(
                 locale,
@@ -421,6 +622,21 @@ pub(crate) fn page_rows(
                 row.facts
                     .push(c.electron_version.replace("{version}", version));
             }
+            if usb_entry {
+                row.facts.extend(usb_facts(locale, instance));
+                row.takes_effect = None;
+            }
+            if let Some(on) = power_off {
+                row.facts.push(
+                    if on {
+                        c.power_off_now_off
+                    } else {
+                        c.power_off_now_notify
+                    }
+                    .to_string(),
+                );
+                row.facts.push(c.power_off_safety.to_string());
+            }
             if group_found {
                 row.found = true;
                 rows.found.push(row);
@@ -428,18 +644,19 @@ pub(crate) fn page_rows(
                 rows.applied.push(row);
             }
         }
-        // A fix that keeps no record (its fault is simply gone) still says
-        // how it went until the next Check again.
+        // A fix that keeps no record (its fault is simply gone), and a
+        // Reset USB-C that cleared its fault, still say how it went until the
+        // next Check again.
         for (key, result) in results.iter().filter(|(key, _)| key.entry == report.entry) {
             let shown = report.instances.iter().any(|i| i.subject == key.subject);
-            if shown || !matches!(result, RowResult::Fixed(_)) {
+            if shown || !matches!(result, RowResult::Fixed(_) | RowResult::Reset(_)) {
                 continue;
             }
             let app = match &key.subject {
                 Subject::FlatpakApp(id) => Some(id.to_string()),
                 Subject::Machine => None,
             };
-            rows.applied.push(fault_row(
+            let mut row = fault_row(
                 locale,
                 entry,
                 key.clone(),
@@ -448,7 +665,14 @@ pub(crate) fn page_rows(
                 Vec::new(),
                 &[],
                 override_dir,
-            ));
+            );
+            // A reset changed nothing the fix would: its card says only what
+            // came back.
+            if matches!(result, RowResult::Reset(_)) {
+                row.change.clear();
+                row.undo_note = "";
+            }
+            rows.applied.push(row);
         }
         let state = match report.overall() {
             EntryState::Found if report.needing_attention() > 1 => (
@@ -466,13 +690,16 @@ pub(crate) fn page_rows(
                 limit_text(locale, Limit::WholeNumberScaleOnly),
                 limit_text(locale, Limit::ScreenSharing),
             ],
+            EntryId::UsbCInterface | EntryId::UsbController => entry
+                .describe(&Subject::Machine)
+                .limits
+                .iter()
+                .map(|limit| limit_text(locale, *limit))
+                .collect(),
         };
         rows.all.push(KnownRow {
             entry: report.entry,
-            header: match report.entry {
-                EntryId::FontconfigCache => c.font_header,
-                EntryId::ElectronCursor => c.electron_header_any,
-            },
+            header: known_header(locale, report.entry),
             cause: cause_of(locale, report.entry),
             state,
             limits,

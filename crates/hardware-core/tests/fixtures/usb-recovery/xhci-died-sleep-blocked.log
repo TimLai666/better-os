@@ -1,0 +1,33 @@
+ucsi_acpi USBC000:00: ucsi_handle_connector_change: GET_CONNECTOR_STATUS failed (-110)
+PM: suspend entry (s2idle)
+Freezing remaining freezable tasks completed (elapsed 0.003 seconds)
+xhci_hcd 0000:63:00.4: AMD-Vi: Event logged [IO_PAGE_FAULT domain=0x0014 address=0x0 flags=0x0000]
+xhci_hcd 0000:63:00.4: WARN: xHC restore state timeout
+xhci_hcd 0000:63:00.4: PCI post-resume error -110!
+xhci_hcd 0000:63:00.4: HC died; cleaning up
+xhci_hcd 0000:63:00.4: PM: dpm_run_callback(): pci_pm_resume returns -110
+usb 1-1: USB disconnect, device number 2
+PM: suspend exit
+ucsi_acpi USBC000:00: failed to re-enable notifications (-110)
+PM: suspend entry (s2idle)
+Freezing user space processes completed (elapsed 0.007 seconds)
+Freezing remaining freezable tasks
+Freezing remaining freezable tasks failed after 20.004 seconds (0 tasks refusing to freeze, wq_busy=1):
+Showing freezable workqueues that are still busy:
+workqueue events_freezable: flags=0x104
+  pwq 2: cpus=0 node=0 flags=0x0 nice=0 active=0 refcnt=2
+    inactive: pci_pme_list_scan
+workqueue usb_hub_wq: flags=0x104
+  pwq 50: cpus=12 node=0 flags=0x0 nice=0 active=1 refcnt=2
+    in-flight: 1115178:hub_event for 48s
+Restarting kernel threads ...
+PM: suspend exit
+PM: suspend entry (s2idle)
+Freezing remaining freezable tasks failed after 20.000 seconds (0 tasks refusing to freeze, wq_busy=1):
+Showing freezable workqueues that are still busy:
+workqueue usb_hub_wq: flags=0x104
+  pwq 50: cpus=12 node=0 flags=0x0 nice=0 active=1 refcnt=2
+    in-flight: 1115178:hub_event for 129s
+PM: suspend exit
+INFO: task kworker/12:2:1115178 blocked for more than 122 seconds.
+Workqueue: usb_hub_wq hub_event

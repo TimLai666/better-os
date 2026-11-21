@@ -149,6 +149,13 @@ fn all_known_problems_lists_every_entry_with_its_state() {
                 "The pointer is half size over Electron apps",
                 "This PC doesn't have this problem."
             ),
+            // Ticket 101's two entries, on a laptop that is not one of the
+            // models they are for.
+            ("One USB-C port stops charging", "Doesn't apply to this PC."),
+            (
+                "USB on one side stops working after sleep",
+                "Doesn't apply to this PC."
+            ),
         ]
     );
     assert_eq!(rows.all[1].limits.len(), 4);
@@ -237,7 +244,8 @@ fn a_fix_that_did_not_help_says_so_and_offers_undo_or_another_try() {
     let mut host = fixture::host(root.path());
     let reports = check(root.path(), &Records::default(), &[]);
     let mut records = Records::default();
-    for report in &reports {
+    // The two faults this machine has (its USB-C entries do not apply).
+    for report in reports.iter().filter(|r| !r.instances.is_empty()) {
         let entry = entry::by_id(report.entry);
         let finding = report.instances[0].finding.clone().unwrap();
         let outcome = engine::fix(entry, &finding, &mut host, 1).unwrap();
@@ -515,4 +523,307 @@ fn the_page_is_built_and_named_fixes() {
     assert_eq!(module.status, pages::PageStatus::Built);
     assert_eq!(pages::title(Route::Fixes, Locale::ZhTw), "修正");
     assert_eq!(pages::title(Route::Fixes, Locale::EnUs), "Fixes");
+}
+
+// --- Ticket 101: the USB-C entries -----------------------------------------
+
+mod usb {
+    use super::*;
+    use hardware_core::usb_recovery::{
+        ChargerShown, PciAddress, RecoveryReply, Restored, UsbChoice, UsbRecoverySettings,
+    };
+    use patch_platform::fixture::UsbSeed;
+
+    use super::super::model::page_rows_with;
+
+    fn usb_machine(seed: UsbSeed) -> tempfile::TempDir {
+        let root = machine(Seed::Healthy);
+        fixture::seed_usb(root.path(), seed).unwrap();
+        root
+    }
+
+    fn key(entry: EntryId) -> RowKey {
+        RowKey {
+            entry,
+            subject: Subject::Machine,
+        }
+    }
+
+    #[test]
+    fn both_usb_faults_are_found_with_their_facts_in_both_languages() {
+        let root = usb_machine(UsbSeed::Failing);
+        let reports = check(root.path(), &Records::default(), &[]);
+        let rows = page_rows(Locale::EnUs, &reports, &BTreeMap::new(), DIR);
+        let usb = rows
+            .found
+            .iter()
+            .find(|r| r.key == key(EntryId::UsbCInterface))
+            .unwrap();
+        assert_eq!(usb.header, "One USB-C port stops charging");
+        assert_eq!(usb.state, ("Found on this PC.".to_string(), Tone::Warning));
+        assert_eq!(usb.actions, vec![RowAction::Fix, RowAction::ResetUsbC]);
+        assert!(usb.facts.contains(
+            &"Since this PC started, the USB-C interface stopped answering 2 times, 1 of them after sleep."
+                .to_string()
+        ));
+        assert_eq!(
+            usb.change,
+            vec![
+                "After each sleep, resets the USB-C interface when it stopped answering (reloads the ucsi_acpi driver).",
+                "Resets it now.",
+            ]
+        );
+        assert_eq!(
+            usb.undo_note,
+            "Undo turns this off again. Nothing else changes."
+        );
+        let controller = rows
+            .found
+            .iter()
+            .find(|r| r.key == key(EntryId::UsbController))
+            .unwrap();
+        // Stuck: no Reset USB-C, the facts say a restart.
+        assert_eq!(controller.actions, vec![RowAction::Fix]);
+        assert!(
+            controller
+                .facts
+                .iter()
+                .any(|f| f == "The USB controller at 0000:63:00.4 stopped working after sleep.")
+        );
+        assert!(
+            controller
+                .facts
+                .iter()
+                .any(|f| f == "Sleep failed 2 times because of it, the last 2 in a row.")
+        );
+        assert!(
+            controller
+                .facts
+                .iter()
+                .any(|f| f.starts_with("It's stuck, and only restarting the PC"))
+        );
+
+        let zh = page_rows(Locale::ZhTw, &reports, &BTreeMap::new(), DIR);
+        let usb = zh
+            .found
+            .iter()
+            .find(|r| r.key == key(EntryId::UsbCInterface))
+            .unwrap();
+        assert_eq!(usb.header, "其中一個 USB-C 連接埠不再充電");
+        assert!(usb.facts.contains(
+            &"這台電腦開機以來，USB-C 介面停止回應了 2 次，其中 1 次在睡眠後。".to_string()
+        ));
+        let controller = zh
+            .found
+            .iter()
+            .find(|r| r.key == key(EntryId::UsbController))
+            .unwrap();
+        assert_eq!(controller.header, "睡眠之後，一側的 USB 停止運作");
+        assert!(
+            controller
+                .facts
+                .iter()
+                .any(|f| f == "睡眠因此失敗了 2 次，最近連續 2 次。")
+        );
+        // Home counts both.
+        let facts = FixesFacts::of(&reports);
+        assert_eq!(
+            facts.found.iter().map(|f| f.entry).collect::<Vec<_>>(),
+            vec![EntryId::UsbCInterface, EntryId::UsbController]
+        );
+    }
+
+    #[test]
+    fn a_fixed_controller_card_offers_the_power_off_choice_with_its_safety() {
+        let root = usb_machine(UsbSeed::Failing);
+        let mut host = fixture::host(root.path());
+        let reports = check(root.path(), &Records::default(), &[]);
+        let report = reports
+            .iter()
+            .find(|r| r.entry == EntryId::UsbController)
+            .unwrap();
+        let finding = report.instances[0].finding.clone().unwrap();
+        engine::fix(entry::by_id(EntryId::UsbController), &finding, &mut host, 1).unwrap();
+        let reports = check(root.path(), &Records::default(), &[]);
+        let settings = host.usb_settings();
+        assert!(settings.controller_automatic && !settings.power_off_when_sleep_blocked);
+        let rows = page_rows_with(Locale::EnUs, &reports, &BTreeMap::new(), DIR, &settings);
+        let row = rows
+            .found
+            .iter()
+            .find(|r| r.key == key(EntryId::UsbController))
+            .unwrap();
+        assert_eq!(row.state.0, "Applied, but the problem is still there.");
+        assert_eq!(
+            row.actions,
+            vec![RowAction::Undo, RowAction::PowerOff(true)]
+        );
+        assert!(
+            row.facts.contains(
+                &"When sleep keeps failing with the lid closed, Better OS only notifies you."
+                    .to_string()
+            )
+        );
+        assert!(
+            row.facts
+                .iter()
+                .any(|f| f.starts_with("It never turns off the PC while the lid is open"))
+        );
+
+        let chosen = settings.with(UsbChoice::PowerOffWhenSleepBlocked, true);
+        let rows = page_rows_with(Locale::ZhTw, &reports, &BTreeMap::new(), DIR, &chosen);
+        let row = rows
+            .found
+            .iter()
+            .find(|r| r.key == key(EntryId::UsbController))
+            .unwrap();
+        assert_eq!(
+            row.actions,
+            vec![RowAction::Undo, RowAction::PowerOff(false)]
+        );
+        assert!(
+            row.facts.contains(
+                &"闔上螢幕後睡眠一直失敗時，Better OS 會關機。開著的應用程式裡沒存的內容會不見。"
+                    .to_string()
+            )
+        );
+        let _ = UsbRecoverySettings::default();
+    }
+
+    #[test]
+    fn on_another_laptop_nothing_is_offered_and_the_list_says_why() {
+        let root = usb_machine(UsbSeed::NotAffected);
+        let reports = check(root.path(), &Records::default(), &[]);
+        for locale in [Locale::EnUs, Locale::ZhTw] {
+            let rows = page_rows(locale, &reports, &BTreeMap::new(), DIR);
+            assert!(
+                rows.found.iter().chain(&rows.applied).all(|r| !matches!(
+                    r.key.entry,
+                    EntryId::UsbCInterface | EntryId::UsbController
+                ))
+            );
+            let states: Vec<&str> = rows
+                .all
+                .iter()
+                .filter(|r| matches!(r.entry, EntryId::UsbCInterface | EntryId::UsbController))
+                .map(|r| r.state.0.as_str())
+                .collect();
+            let expected = if locale == Locale::ZhTw {
+                "不適用於這台電腦。"
+            } else {
+                "Doesn't apply to this PC."
+            };
+            assert_eq!(states, vec![expected, expected]);
+        }
+    }
+
+    #[test]
+    fn a_reset_says_what_came_back_in_both_languages() {
+        let reply = |restored, recent| RecoveryReply { restored, recent };
+        let ucsi = |ports, charger| Restored::Ucsi {
+            ports,
+            expected_ports: 2,
+            charger,
+        };
+        for (reply, en, zh, tone) in [
+            (
+                reply(ucsi(2, ChargerShown::Online), false),
+                "Reset: both USB-C ports are back, and the charger is charging.",
+                "已重設：兩個 USB-C 連接埠都恢復了，充電器也在充電。",
+                Tone::Success,
+            ),
+            (
+                reply(ucsi(1, ChargerShown::Online), false),
+                "Reset, but only 1 of 2 USB-C ports came back.",
+                "已重設，但 2 個 USB-C 連接埠只恢復了 1 個。",
+                Tone::Warning,
+            ),
+            (
+                reply(ucsi(2, ChargerShown::NotShown), true),
+                "Reset, but the plugged-in charger still doesn't show on a USB-C port. This is the reset from a moment ago; it isn't run twice in a row.",
+                "已重設，但接著的充電器還是沒有出現在 USB-C 連接埠上。 這是剛才那次重設的結果，不會連續重設兩次。",
+                Tone::Warning,
+            ),
+            (
+                reply(
+                    Restored::Controller {
+                        address: PciAddress::parse("0000:63:00.4").unwrap(),
+                        bound: true,
+                        root_hubs: 2,
+                        devices: 1,
+                    },
+                    false,
+                ),
+                "Restarted: the USB controller is back, with 1 devices on it.",
+                "已重新啟動：USB 控制器恢復了，上面接著 1 個裝置。",
+                Tone::Success,
+            ),
+        ] {
+            assert_eq!(
+                super::super::model::reset_line(Locale::EnUs, &reply),
+                (en.to_string(), tone)
+            );
+            assert_eq!(super::super::model::reset_line(Locale::ZhTw, &reply).0, zh);
+        }
+    }
+
+    /// A reset that cleared the fault keeps saying what came back after the
+    /// fault is gone, without the fix's change lines.
+    #[test]
+    fn a_reset_that_cleared_the_fault_still_says_what_came_back() {
+        let root = usb_machine(UsbSeed::Failing);
+        let mut host = fixture::host(root.path());
+        let reply = host
+            .usb_act(patch_core::Privileged::ReloadUcsi)
+            .unwrap()
+            .unwrap();
+        let reports = check(root.path(), &Records::default(), &[]);
+        let results = BTreeMap::from([(key(EntryId::UsbCInterface), RowResult::Reset(reply))]);
+        let rows = page_rows(Locale::EnUs, &reports, &results, DIR);
+        assert!(
+            rows.found
+                .iter()
+                .all(|r| r.key != key(EntryId::UsbCInterface))
+        );
+        let row = rows
+            .applied
+            .iter()
+            .find(|r| r.key == key(EntryId::UsbCInterface))
+            .unwrap();
+        assert_eq!(
+            row.state,
+            (
+                "Reset: both USB-C ports are back, and the charger is charging.".to_string(),
+                Tone::Success
+            )
+        );
+        assert!(row.change.is_empty() && row.undo_note.is_empty() && row.actions.is_empty());
+    }
+
+    #[test]
+    fn a_daemon_refusal_is_a_sentence_never_a_key() {
+        use patch_core::ChangeError;
+        for (error, en) in [
+            (
+                ChangeError::Refused("daemon.error.usb_restart_needed".into()),
+                "The USB controller is stuck, and only restarting the PC brings it back.",
+            ),
+            (
+                ChangeError::Refused("daemon.error.usb_nothing_to_reset".into()),
+                "Nothing to reset: the USB-C ports are working.",
+            ),
+            (
+                ChangeError::Refused("daemon.error.auth_cancelled".into()),
+                "Authentication wasn't completed, so nothing changed.",
+            ),
+            (
+                ChangeError::NotInstalled("better-manager-daemon"),
+                "The Better OS privileged service isn't installed, so this can't be done.",
+            ),
+        ] {
+            let text = super::super::model::usb_refusal(Locale::EnUs, &error);
+            assert_eq!(text, en);
+            assert!(!super::super::model::usb_refusal(Locale::ZhTw, &error).contains("daemon."));
+        }
+    }
 }

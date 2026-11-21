@@ -9,6 +9,9 @@ license.workspace = true
 serde.workspace = true
 
 [dev-dependencies]
+# The kernel log query's --grep pattern, checked against the classifier
+# (tests/usb_recovery.rs).
+regex = "1"
 serde_json.workspace = true
 
 [features]
