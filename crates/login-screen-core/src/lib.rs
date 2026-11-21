@@ -23,6 +23,7 @@
 //! - [`copy`]: every sentence of the spec's tables in zh-TW and English.
 
 pub mod accounts;
+pub mod attempts;
 pub mod clock;
 pub mod copy;
 pub mod greetd;
@@ -38,5 +39,5 @@ pub mod view;
 pub mod wait;
 
 pub use copy::Language;
-pub use secret::{SECRET_CAPACITY, Secret, SecretFull};
+pub use secret::{NOT_LOCKED_LOG_LINE, SECRET_CAPACITY, Secret, SecretError, SecretFull};
 pub use view::{Effects, Event, Request, Screen, ScreenKind, View};

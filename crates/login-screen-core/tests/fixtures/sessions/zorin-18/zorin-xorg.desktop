@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Zorin Desktop on Xorg
+Comment=This session logs you into Zorin Desktop
+Exec=env GNOME_SHELL_SESSION_MODE=zorin /usr/bin/gnome-session --session=zorin
+TryExec=/usr/bin/gnome-shell
+Type=Application
+DesktopNames=zorin;GNOME;
+X-GDM-SessionRegisters=true
+X-Ubuntu-Gettext-Domain=gnome-session-46

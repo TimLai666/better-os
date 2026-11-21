@@ -256,14 +256,42 @@ removed. What limits it:
   removed), and none of `Debug`, `Display`, `Clone` or `Serialize` is
   implemented by either type. The view model (`login_screen_core::view`)
   never holds a password: it only says when the field's `Secret` is sent
-  and when it is wiped.
+  and when it is wiped. The drop test reads only page-aligned blocks, the
+  password buffers' own, which are allocated zeroed, so it never reads a
+  byte nothing wrote.
+- **When the lock fails.** `mlock` can fail (an `RLIMIT_MEMLOCK` of 0, a
+  container's limit). The buffer is then not locked and may be written to
+  swap; it still wipes itself. This is not silent: `Secret::is_locked` and
+  `Secret::lock_warning` say so, and the greeter and the lock program write
+  `login_screen_core::NOT_LOCKED_LOG_LINE` (`BETTER_OS_SECRET_LOCKED=no`, the
+  cause, no content) to the journal once (tickets 264 and 262). The test
+  that the pages are locked needs an `RLIMIT_MEMLOCK` of at least 1 MiB,
+  through `test_prerequisites::require_that!` (a skip on a developer's
+  machine, a failure under CI). A page size the kernel does not report is
+  an error (`SecretError::PageSize`), never a guessed 4096, which on a
+  16 KiB or 64 KiB page arm64 kernel would break the page alignment.
+- **Who may read it.** Only `Secret::expose_str` gives the text out, and
+  only the greetd message builder calls it; `tests/one_secret_reader.rs`
+  reads every crate's source and fails on any other caller. Ticket 262 adds
+  its PAM conversation to that test's audited list in the change that adds
+  it.
 - **Where it goes.** In the greeter, into greetd's
   `post_auth_message_response` JSON, built directly into a second `Secret`
   buffer, written to the socket, then both are wiped. In the lock program
   and the unlock service, into PAM's conversation reply, which PAM frees
   itself; the program's copy is wiped when the reply is handed over.
 - **When it is wiped.** After it is sent; on Escape; when the view changes;
-  after 60 seconds without input; when the program exits normally.
+  after 60 seconds without input; when PAM's question turns out to be one
+  whose answer is shown (`visible`), so nothing typed hidden or queued for a
+  secret question appears in clear; when an answer queued for a question
+  that never came is abandoned; when the machine is about to sleep, however
+  that was asked for, and when it wakes; when the program exits normally.
+  Each is a test in `login_screen_core::view`.
+- **Late replies.** Every conversation has an id; a reply from one that was
+  cancelled (a switch of account, two Escapes, a sleep) is dropped in
+  `login_screen_core::view`, so it can neither count a failure against the
+  next account, show its question in the next one's field, nor unlock.
+  Tested with a cancel, a new begin, and every kind of stale reply.
 - **What is never done with it.** No log line, no error message, no panic
   message carries it; a test feeds a known secret through each path with
   logging at its most verbose and searches the log and every error value
@@ -371,7 +399,18 @@ screen back rather than the session unlocked.
 
 - **At the keyboard:** a password prompt backed by PAM's own rules and
   delay, with the greeter's doubling wait on top; the text fallback is the
-  standard `login`. Nothing to open, no launcher, no network menu. The power
+  standard `login`. The doubling wait is kept per user name and is not
+  reset by anything the person at the keyboard can do: Switch account is
+  not offered while it runs, choosing the account again (or typing its name
+  under "Other account…") finds it still running, and a restart of the
+  greeter or the lock program reads it back from the program's own record
+  (`/run/better-os-greeter/attempts.json`, written only by
+  `_better-greeter`, mode 0600 in a 0700 directory; the lock program's in the
+  person's `$XDG_RUNTIME_DIR/better-os/`). Only a reboot, which empties
+  `/run`, ends it early; spec section 3.9. Text another program puts on the
+  lock screen (notifications, media) is put on one line, stripped of control
+  and direction characters and capped (spec section 4.2), so it cannot
+  imitate a system message there. Nothing to open, no launcher, no network menu. The power
   menu can restart the machine, as the power button can. Switching virtual
   terminals shows another login prompt or the locked session's lock, never
   its content (the lock is in the session's compositor in both sessions).

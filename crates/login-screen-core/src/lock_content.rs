@@ -102,7 +102,64 @@ pub fn first_line(body: &str) -> Option<String> {
     text.lines()
         .map(str::trim)
         .find(|line| !line.is_empty())
-        .map(str::to_string)
+        .and_then(|line| shown_text(line, MAX_BODY_CHARS))
+}
+
+/// The longest application name, title, body line, artist and track shown.
+pub const MAX_APP_NAME_CHARS: usize = 64;
+pub const MAX_TITLE_CHARS: usize = 120;
+pub const MAX_BODY_CHARS: usize = 200;
+pub const MAX_ARTIST_CHARS: usize = 120;
+pub const MAX_TRACK_CHARS: usize = 120;
+
+/// Whether a character changes the direction or the look of the text around
+/// it without being seen: the Unicode bidirectional controls (U+061C, U+200E,
+/// U+200F, U+202A to U+202E, U+2066 to U+2069) and the other invisible
+/// format characters that can hide or reorder text (U+00AD, U+2060 to
+/// U+2064, U+FEFF, U+FFF9 to U+FFFB). Joiners (U+200C, U+200D) stay, since
+/// emoji and some scripts need them.
+fn is_hidden_format(character: char) -> bool {
+    matches!(character,
+        '\u{00AD}' | '\u{061C}' | '\u{200B}' | '\u{200E}' | '\u{200F}'
+        | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{2069}'
+        | '\u{FEFF}' | '\u{FFF9}'..='\u{FFFB}')
+}
+
+/// Text from another program (a notification, a media player) as the lock
+/// screen may show it: on one line, with control characters and the
+/// invisible direction and format characters removed, runs of white space
+/// made one space, and at most `max_chars` characters (the last one then an
+/// ellipsis). `None` when nothing is left. Every notification and media
+/// text goes through it, so a sender cannot reverse text, fake a second
+/// line, or fill the card.
+pub fn shown_text(text: &str, max_chars: usize) -> Option<String> {
+    let mut cleaned = String::with_capacity(text.len().min(max_chars * 4));
+    let mut pending_space = false;
+    for character in text.chars() {
+        if character.is_whitespace() || character.is_control() {
+            // A newline, a tab or any other control is a word break at most.
+            pending_space = true;
+            continue;
+        }
+        if is_hidden_format(character) {
+            continue;
+        }
+        if pending_space && !cleaned.is_empty() {
+            cleaned.push(' ');
+        }
+        pending_space = false;
+        cleaned.push(character);
+    }
+    if cleaned.is_empty() || max_chars == 0 {
+        return None;
+    }
+    if cleaned.chars().count() > max_chars {
+        let mut shortened: String = cleaned.chars().take(max_chars - 1).collect();
+        shortened.truncate(shortened.trim_end().len());
+        shortened.push('…');
+        return Some(shortened);
+    }
+    Some(cleaned)
 }
 
 /// The block, or `None` when nothing is to be shown: the setting is off, or
@@ -139,12 +196,13 @@ pub fn notifications_block(
             )
             .short_time;
             NotificationRow {
-                app_name: notification.app_name.clone(),
+                app_name: shown_text(&notification.app_name, MAX_APP_NAME_CHARS)
+                    .unwrap_or_default(),
                 app_icon: notification.app_icon.clone(),
                 title: if hidden {
                     copy.new_notification.to_string()
                 } else {
-                    notification.title.clone()
+                    shown_text(&notification.title, MAX_TITLE_CHARS).unwrap_or_default()
                 },
                 body: if hidden {
                     None
@@ -230,16 +288,15 @@ pub fn media_row(player: Option<&MediaPlayer>, language: Language) -> Option<Med
         return None;
     }
     let copy = language.copy();
-    let title = Some(player.title.trim())
-        .filter(|title| !title.is_empty())
-        .map(str::to_string);
-    let artists: Vec<&str> = player
+    let title = shown_text(&player.title, MAX_TRACK_CHARS);
+    let artists: Vec<String> = player
         .artists
         .iter()
-        .map(|artist| artist.trim())
-        .filter(|artist| !artist.is_empty())
+        .filter_map(|artist| shown_text(artist, MAX_ARTIST_CHARS))
         .collect();
-    let artist = (!artists.is_empty()).then(|| artists.join(", "));
+    let artist = (!artists.is_empty())
+        .then(|| artists.join(", "))
+        .and_then(|joined| shown_text(&joined, MAX_ARTIST_CHARS));
     let play_pause = match player.status {
         PlaybackStatus::Playing => player.can_pause.then_some((PlayPause::Pause, copy.pause)),
         _ => player.can_play.then_some((PlayPause::Play, copy.play)),
@@ -425,5 +482,86 @@ mod tests {
             Some(PlaybackStatus::Paused)
         );
         assert_eq!(PlaybackStatus::from_mpris("paused"), None);
+    }
+
+    #[test]
+    fn shown_text_removes_what_could_fake_or_hide_text() {
+        // A newline in a title cannot make a second line.
+        assert_eq!(
+            shown_text("Update\nSystem: enter password", 120).as_deref(),
+            Some("Update System: enter password")
+        );
+        // U+202E would show "gnp.exe" backwards; the overrides go.
+        assert_eq!(
+            shown_text("photo\u{202E}gnp.exe", 120).as_deref(),
+            Some("photognp.exe")
+        );
+        assert_eq!(
+            shown_text(
+                "a\u{2066}b\u{2069}c\u{200F}d\u{061C}e\u{FEFF}f\u{200B}g",
+                120
+            )
+            .as_deref(),
+            Some("abcdefg")
+        );
+        assert_eq!(
+            shown_text("tab\there\u{7}bell\u{85}next", 120).as_deref(),
+            Some("tab here bell next")
+        );
+        // Joiners stay: a family emoji is one picture.
+        assert_eq!(
+            shown_text("👨\u{200D}👩", 120).as_deref(),
+            Some("👨\u{200D}👩")
+        );
+        assert_eq!(shown_text("  \n\u{202E} ", 120), None);
+        assert_eq!(shown_text("x", 0), None);
+    }
+
+    #[test]
+    fn shown_text_is_capped() {
+        let long = "字".repeat(500);
+        let shown = shown_text(&long, MAX_TITLE_CHARS).unwrap();
+        assert_eq!(shown.chars().count(), MAX_TITLE_CHARS);
+        assert!(shown.ends_with('…'));
+        assert_eq!(shown_text("exactly", 7).as_deref(), Some("exactly"));
+        assert_eq!(shown_text("one two three", 8).as_deref(), Some("one two…"));
+    }
+
+    #[test]
+    fn every_notification_and_media_text_is_cleaned_and_capped() {
+        let list = [LockNotification {
+            app_name: format!("App\u{202E}{}", "a".repeat(100)),
+            app_icon: "icon".into(),
+            title: "Line one\nLine two".into(),
+            body: format!("\u{202E}{}", "b".repeat(400)),
+            received_at: LOCKED_AT + 1,
+            private: false,
+        }];
+        let block = notifications_block(
+            &list,
+            LOCKED_AT,
+            LockScreenNotifications::default(),
+            Language::EnUs,
+            CLOCK,
+        )
+        .unwrap();
+        let row = &block.rows[0];
+        assert_eq!(row.app_name.chars().count(), MAX_APP_NAME_CHARS);
+        assert!(!row.app_name.contains('\u{202E}'));
+        assert_eq!(row.title, "Line one Line two");
+        let body = row.body.as_deref().unwrap();
+        assert_eq!(body.chars().count(), MAX_BODY_CHARS);
+        assert!(!body.contains('\u{202E}'));
+
+        let mut long = player(PlaybackStatus::Playing);
+        long.title = format!("Track\u{202E}\n{}", "t".repeat(300));
+        long.artists = vec!["A\u{2067}".into(), "c".repeat(300)];
+        let row = media_row(Some(&long), Language::EnUs).unwrap();
+        let title = row.title.unwrap();
+        assert!(title.starts_with("Track t"));
+        assert_eq!(title.chars().count(), MAX_TRACK_CHARS);
+        let artist = row.artist.unwrap();
+        assert!(artist.starts_with("A, c"));
+        assert_eq!(artist.chars().count(), MAX_ARTIST_CHARS);
     }
 }

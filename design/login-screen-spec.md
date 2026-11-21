@@ -402,7 +402,10 @@ view: the card fades in and moves 24 px in from the end over 250 ms (Fluent's
 woke it is the field's first character (Enter, Space and Escape are not
 typed). After 60 seconds without input the entry view clears the field and
 goes back to the quiet view over 200 ms. The login screen opens in the entry
-view and stays there.
+view and stays there. When the machine is about to sleep, however that was
+asked for (the lid, idle, the power menu: logind's `PrepareForSleep`), and
+again when it wakes, the field is wiped and the conversation cancelled; the
+lock screen wakes in the quiet view.
 
 Under L3 (a) the card never hides on a wide screen.
 
@@ -433,9 +436,20 @@ The session button at the end of the bottom row reads
 `session`) listing every `.desktop` file in `/usr/share/wayland-sessions/`
 with its `Name` (localized `Name[zh_TW]` when present), the last-used one
 (AccountsService's `Session` for the chosen account) checked, and Better OS
-first. A GNOME session (its `Exec` runs `gnome-session`, as Zorin's two
-entries do: `env GNOME_SHELL_SESSION_MODE=zorin /usr/bin/gnome-session
---session=zorin`) is listed like any other and locks through the GNOME
+first. An entry whose `TryExec` program is not installed is left out, by the
+application catalog's one `TryExec` rule (`app_catalog_core::group_try_exec_found`),
+as GDM leaves it out. A GNOME session is one with any of three signs: an
+`Exec` argument that is `gnome-session` (Zorin's: `env
+GNOME_SHELL_SESSION_MODE=zorin /usr/bin/gnome-session --session=zorin`), a
+`TryExec` that is `gnome-shell`, or `GNOME` among its `DesktopNames` (also
+when written `zorin:GNOME` or `ubuntu:GNOME` as one entry). Every GNOME
+session file Ubuntu 22.04 and 24.04, Zorin OS 18 and Debian ship carries all
+three (read on 2026-11-22: Ubuntu's `gnome-session` packaging, GNOME 42 and
+46's own files, which Debian ships unchanged, and this machine's Zorin
+files; Zorin OS 17's were not read); any one is enough, so a wrapped or
+unusual GNOME entry is hidden with GNOME's rather than started without a
+lock, at the cost of hiding Budgie's too (`DesktopNames=Budgie:GNOME`). It
+is listed like any other and locks through the GNOME
 unlock service (section 5.6, L2 (a)); under L2 (d) it is left out. The
 greeter shows a GNOME session only while the unlock service answers on the
 system bus, and checks again right before starting it (section 5.6), so a
@@ -509,7 +523,32 @@ The greeter never decides that a password is wrong; it shows what greetd
 says (`auth_error`). It answers as many `secret` and `visible` prompts as PAM
 asks, in order, each with its own field (greetd's manual: "a greeter should
 not make any assumptions about the messages"), unlike Luma's handheld
-greeter, which refuses a second secret.
+greeter, which refuses a second secret. When a question's answer is to be
+shown (`visible`), the field is wiped first, so nothing typed while it was
+hidden (or typed before the question came) ever appears in clear.
+
+Each conversation has its own id (`login_screen_core::view::ConversationId`,
+named in the request that begins it); a question, a message, a refusal or a
+success that names any other conversation, one cancelled while its reply was
+on the way, is dropped, never applied to the current one.
+
+**The wait belongs to the account, and survives a restart.** Failures in a
+row and the end of the wait are kept per user name (`login_screen_core::
+attempts`). Switching account and back, choosing "Other account…" and typing
+the same name, or the greeter or the lock program restarting, all keep them:
+while a wait runs, Switch account is not offered, and an account chosen
+while its own wait runs starts in that wait. The record is a file in the
+program's own runtime directory, written only by that program, mode 0600,
+created anew and renamed into place, at most 64 accounts:
+`/run/better-os-greeter/attempts.json` (the greeter's account, directory
+0700, ticket 264) and `$XDG_RUNTIME_DIR/better-os/lock-attempts.json` (the
+person, directory 0700, ticket 262). Its times are `CLOCK_BOOTTIME`
+milliseconds, which count through sleep; `/run` is emptied at boot, so a
+reboot ends every wait, as it ends PAM's own delay. A success removes the
+account's entry. A record that cannot be read is logged and replaced by an
+empty one: refusing every login over a damaged file would lock everyone out.
+The person's own programs can delete the lock program's record, as they can
+unlock the session through logind anyway (section 4.5).
 
 ### 3.10 Later additions: PIN, fingerprint, smart card
 
@@ -674,6 +713,17 @@ the bottom of the card is empty (mockup `lock-private`). The rows are not
 buttons: nothing is opened or answered from a locked screen. A row's time is
 written like the clock's, on the same hour cycle (「下午3:31」 / "3:31 PM");
 the mockups' 24-hour `15:31` on a 12-hour clock is not followed.
+
+Notification and media text comes from other programs, and a notification's
+from other people. Before it is shown, every application name, title, body
+line, artist and track goes through one function
+(`login_screen_core::lock_content::shown_text`): it is put on one line,
+control characters and the invisible direction and format characters
+(U+202A to U+202E, U+2066 to U+2069, U+200E, U+200F, U+061C and the like)
+are removed, and it is cut with an ellipsis at 64 characters for the
+application name, 120 for a title, an artist or a track, and 200 for the body
+line. A sender cannot reverse text, fake a second line that reads like a
+message from the system, or fill the card.
 
 ### 4.3 Media controls
 

@@ -656,6 +656,23 @@ pub fn try_exec_found<'a>(
     value("TryExec").map(|program| resolve_program(program.trim(), probe).is_some())
 }
 
+/// The program a `[Desktop Entry]` group's `TryExec` names, as written, for
+/// an entry this crate parsed that is not an application (a session file of
+/// the login screen, ticket 260).
+pub fn try_exec_program(group: &Group) -> Option<String> {
+    group.value("TryExec")
+}
+
+/// [`try_exec_found`] for a group this crate parsed: `None` when it names no
+/// `TryExec`, otherwise whether `probe` finds the program.
+pub fn group_try_exec_found(group: &Group, probe: &dyn ExecutableProbe) -> Option<bool> {
+    let program = try_exec_program(group);
+    try_exec_found(
+        |key| (key == "TryExec").then_some(program.as_deref()).flatten(),
+        probe,
+    )
+}
+
 fn resolve_program(program: &str, probe: &dyn ExecutableProbe) -> Option<PathBuf> {
     if program.is_empty() {
         return None;
@@ -724,6 +741,26 @@ mod tests {
         fn resolve(&self, program: &str) -> Option<PathBuf> {
             self.known.get(program).cloned()
         }
+    }
+
+    #[test]
+    fn a_parsed_groups_try_exec_follows_the_same_rule() {
+        let file = DesktopFile::parse(
+            "[Desktop Entry]\nName=Zorin\nExec=gnome-session\nTryExec=/usr/bin/gnome-shell\n",
+        )
+        .unwrap();
+        let group = file.desktop_entry().unwrap();
+        assert_eq!(
+            try_exec_program(group).as_deref(),
+            Some("/usr/bin/gnome-shell")
+        );
+        let installed = FakeProbe::with(&[("/usr/bin/gnome-shell", "/usr/bin/gnome-shell")]);
+        assert_eq!(group_try_exec_found(group, &installed), Some(true));
+        assert_eq!(group_try_exec_found(group, &NoProbe), Some(false));
+        let plain = DesktopFile::parse("[Desktop Entry]\nName=Sway\nExec=sway\n").unwrap();
+        let plain = plain.desktop_entry().unwrap();
+        assert_eq!(try_exec_program(plain), None);
+        assert_eq!(group_try_exec_found(plain, &NoProbe), None);
     }
 
     fn record_with(

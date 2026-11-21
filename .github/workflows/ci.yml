@@ -54,8 +54,11 @@ jobs:
         # taking those off this line would not turn CI red; the line names
         # them so the dependency is written down. The runner itself gives the
         # rest: a user other than root (files-gui, files-operations,
-        # files-platform, monitor-collectors-linux) and a temporary directory
-        # with sparse files and user extended attributes (files-operations).
+        # files-platform, monitor-collectors-linux), a temporary directory
+        # with sparse files and user extended attributes (files-operations),
+        # and an RLIMIT_MEMLOCK of at least 1 MiB (login-screen-core's
+        # `the_pages_are_locked_where_the_memory_lock_limit_allows_it`; the
+        # next step prints the runner's limit).
         run: |
           for attempt in 1 2 3 4 5; do
             if sudo apt-get update && sudo apt-get install -y libfontconfig1-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-base gstreamer1.0-plugins-good dbus dconf-service gjs locales language-pack-gnome-zh-hant-base gvfs-backends poppler-utils; then
@@ -69,6 +72,11 @@ jobs:
       # (ticket 117); the test reads GVfs's own catalog in that locale.
       - name: Generate the zh_TW.UTF-8 locale
         run: sudo locale-gen zh_TW.UTF-8
+      # login-screen-core's mlock test needs 1 MiB of lockable memory; the
+      # line says what the runner gives, in KiB, so a failure there is read
+      # from the log rather than guessed.
+      - name: Show the memory lock limit
+        run: ulimit -l
       - run: cargo fmt --all -- --check
       - run: cargo check --workspace
       - run: cargo build --workspace

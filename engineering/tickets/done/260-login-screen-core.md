@@ -86,6 +86,29 @@ form (「電池 87%，充電中」 / "Battery 87%: Charging") names the button;
 the spec's first battery copy was replaced by it (CI's `one_battery_rule`
 caught the crate's own strings on pull request 36).
 
+The independent security review of 2026-11-22
+(`/home/tim/Developer/better-os-evidence/260/security-review-2026-11-22.md`)
+found two P2 and eight P3, all fixed with tests: a `visible` question wipes
+the field first; failures and the wait are kept per user name in
+`attempts`, kept across switching account and, through each program's
+runtime record, across a restart (spec 3.9), and the chooser is not
+offered during a wait; the drop test reads only the buffers' own
+page-aligned, zeroed blocks; the `mlock` test goes through
+`require_that!` (CI's install step names it and a step prints the
+runner's `ulimit -l`); a failed `mlock` has `lock_warning` and
+`NOT_LOCKED_LOG_LINE` for tickets 262 and 264 to log; `one_secret_reader`
+fails on any `expose_str` outside the audited files; sessions honour
+`TryExec` through `app_catalog_core::group_try_exec_found` (new beside `try_exec_found`, same rule); notification and
+media text goes through `lock_content::shown_text`; `Suspending` and
+every `Resumed` wipe the field; a page size the kernel does not give is
+`SecretError::PageSize`. Its two open questions are settled: a GNOME
+session is any of `gnome-session` in `Exec`, `gnome-shell` as `TryExec`,
+or `GNOME` in `DesktopNames` (every Ubuntu 22.04 and 24.04, Debian and
+Zorin OS 18 GNOME file has all three, `tests/fixtures/sessions/`; Zorin
+OS 17's were not read), and every conversation has an id, so a stale
+reply is dropped in the view model. What this leaves to 262 and 264 is
+written into their tickets.
+
 Unverified: the strings greetd 0.9.0 puts in an `auth_error` description
 (`pam::classify_refusal` matches both `pam_strerror`'s text and the return
 code's name); ticket 264 sees the real ones. Left to their tickets: drawing

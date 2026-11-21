@@ -42,6 +42,23 @@ shares everything with it but the identity and the authentication path.
 - Tests against a fake greetd socket: success, `auth_error`, several secret
   prompts, `info` and `error` messages, a password change, a broken reply,
   greetd vanishing.
+- What `login-screen-core` (ticket 260) leaves to this program, from its
+  security review of 2026-11-22:
+  - write `login_screen_core::NOT_LOCKED_LOG_LINE` to the journal once when
+    a field's `Secret::lock_warning()` says its pages are not locked;
+  - create `/run/better-os-greeter/` (owned by `_better-greeter`, 0700),
+    load `Attempts` from `attempts::GREETER_RECORD` into `Screen::login(…)
+    .with_attempts(…)`, and save it whenever `Effects::attempts_changed`;
+    log a record that cannot be read and start empty;
+  - pass `boot_time_now()` (`CLOCK_BOOTTIME`) as every event's time;
+  - tag every greetd reply with the `ConversationId` of the
+    `create_session` it answers (greetd replies in order, so the greeter
+    counts its requests), and drop none itself: the view model drops stale
+    ones;
+  - read the session menu with `sessions::read_sessions(…,
+    &app_catalog_platform::HostProbe::from_env())` so `TryExec` is honoured;
+  - send `Event::Suspending` and `Event::Resumed` from logind's
+    `PrepareForSleep(true / false)`.
 
 ## Done when
 

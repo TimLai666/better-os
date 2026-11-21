@@ -37,6 +37,22 @@ the login screen.
   claim beyond it.
 - `better-os-session.md`'s process table: the lock row names `better-lock`
   with `cosmic-greeter` as its fallback.
+- What `login-screen-core` (ticket 260) leaves to this program, from its
+  security review of 2026-11-22:
+  - write `login_screen_core::NOT_LOCKED_LOG_LINE` to the journal once when
+    a field's `Secret::lock_warning()` says its pages are not locked;
+  - load `Attempts` from `$XDG_RUNTIME_DIR/better-os/lock-attempts.json`
+    (`attempts::LOCK_RECORD_NAME`, directory 0700) into `Screen::lock(…)
+    .with_attempts(…)`, and save it whenever `Effects::attempts_changed`;
+    log a record that cannot be read and start empty;
+  - pass `boot_time_now()` (`CLOCK_BOOTTIME`) as every event's time;
+  - give each PAM conversation the `ConversationId` its `Request::Begin`
+    names and report every prompt, message and outcome with it;
+  - send `Event::Suspending` and `Event::Resumed` from logind's
+    `PrepareForSleep(true / false)`, whatever asked for the sleep;
+  - add its PAM conversation module, the one other caller of
+    `Secret::expose_str`, to `AUDITED` in
+    `crates/login-screen-core/tests/one_secret_reader.rs`, with its review.
 
 ## Done when
 

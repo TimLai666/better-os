@@ -13,7 +13,7 @@
 
 use serde::Deserialize;
 
-use crate::secret::{SECRET_CAPACITY, Secret, SecretBytes};
+use crate::secret::{SECRET_CAPACITY, Secret, SecretBytes, SecretError};
 
 /// The longest reply the greeter reads. greetd's replies are a type, an enum
 /// and one PAM message; anything longer is refused before it is read.
@@ -76,8 +76,8 @@ fn push_escaped(out: &mut SecretBytes<MESSAGE_CAPACITY>, text: &str) {
 
 /// Builds `post_auth_message_response` for one prompt. `None` answers an
 /// `info` or `error` message, which take no response.
-pub fn post_auth_message_response(answer: Option<&Secret>) -> GreetdMessage {
-    let mut bytes = SecretBytes::<MESSAGE_CAPACITY>::new();
+pub fn post_auth_message_response(answer: Option<&Secret>) -> Result<GreetdMessage, SecretError> {
+    let mut bytes = SecretBytes::<MESSAGE_CAPACITY>::try_new()?;
     let fits = "MESSAGE_CAPACITY holds the longest escaped answer";
     bytes.push(&[0; LENGTH_BYTES]).expect(fits);
     match answer {
@@ -90,7 +90,7 @@ pub fn post_auth_message_response(answer: Option<&Secret>) -> GreetdMessage {
     }
     let payload = u32::try_from(bytes.len() - LENGTH_BYTES).expect("the frame is small");
     bytes.overwrite(0, &payload.to_ne_bytes());
-    GreetdMessage { bytes }
+    Ok(GreetdMessage { bytes })
 }
 
 fn frame(json: &serde_json::Value) -> Vec<u8> {
@@ -212,7 +212,7 @@ mod tests {
     fn the_answer_is_framed_and_escaped_as_json() {
         let mut secret = Secret::new();
         secret.push_str("pa\"ss\\wo\u{1}rd 密碼").unwrap();
-        let message = post_auth_message_response(Some(&secret));
+        let message = post_auth_message_response(Some(&secret)).unwrap();
         let parsed = value(message.as_bytes());
         assert_eq!(parsed["type"], "post_auth_message_response");
         assert_eq!(parsed["response"], "pa\"ss\\wo\u{1}rd 密碼");
@@ -220,7 +220,7 @@ mod tests {
 
     #[test]
     fn an_info_message_is_answered_with_null() {
-        let message = post_auth_message_response(None);
+        let message = post_auth_message_response(None).unwrap();
         let parsed = value(message.as_bytes());
         assert_eq!(parsed["response"], serde_json::Value::Null);
     }
@@ -231,7 +231,7 @@ mod tests {
         for _ in 0..SECRET_CAPACITY {
             secret.push_char('\u{1f}').unwrap();
         }
-        let message = post_auth_message_response(Some(&secret));
+        let message = post_auth_message_response(Some(&secret)).unwrap();
         assert_eq!(message.as_bytes().len(), MESSAGE_CAPACITY);
         let parsed = value(message.as_bytes());
         assert_eq!(parsed["response"].as_str().unwrap().len(), SECRET_CAPACITY);
@@ -241,7 +241,7 @@ mod tests {
     fn wiping_the_message_zeroes_it() {
         let mut secret = Secret::new();
         secret.push_str("hunter2").unwrap();
-        let mut message = post_auth_message_response(Some(&secret));
+        let mut message = post_auth_message_response(Some(&secret)).unwrap();
         message.wipe();
         assert!(message.as_bytes().is_empty());
         assert!(message.bytes.storage().iter().all(|byte| *byte == 0));

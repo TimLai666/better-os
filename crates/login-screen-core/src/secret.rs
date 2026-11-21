@@ -17,12 +17,31 @@
 //!
 //! A failed `mlock` (an `RLIMIT_MEMLOCK` too small) does not stop a login: the
 //! buffer still wipes itself, and [`Secret::is_locked`] says the pages may be
-//! swapped.
+//! swapped. That degradation is not silent: the program writes
+//! [`NOT_LOCKED_LOG_LINE`] to the journal once (tickets 262 and 264), which
+//! names no content.
+//!
+//! A page size the kernel will not give (`sysconf(_SC_PAGESIZE)` failing, or
+//! a value that is not a power of two) is an error, never a guessed 4096:
+//! on an arm64 kernel with 16 KiB or 64 KiB pages a guess would break the
+//! alignment the rest relies on.
 
 use std::alloc::{Layout, alloc_zeroed, dealloc, handle_alloc_error};
 use std::ptr::NonNull;
+use std::sync::OnceLock;
 
 use zeroize::Zeroize;
+
+/// The one journal line a program writes when a buffer's pages could not be
+/// locked. It says what happened and why, and nothing that was typed.
+pub const NOT_LOCKED_LOG_LINE: &str = "BETTER_OS_SECRET_LOCKED=no: a password buffer could not be locked in memory (mlock failed, RLIMIT_MEMLOCK too small); it may be written to swap";
+
+/// Why a password buffer could not be made.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum SecretError {
+    #[error("the kernel did not report a usable page size")]
+    PageSize,
+}
 
 /// How many bytes a password may have. Better OS's password field stops here
 /// (256 characters of a keyboard layout's ASCII).
@@ -41,20 +60,26 @@ struct LockedPages {
     locked: bool,
 }
 
-fn page_size() -> usize {
-    // SAFETY: sysconf has no preconditions.
-    let size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
-    usize::try_from(size)
+/// A `sysconf(_SC_PAGESIZE)` answer as a page size, or `None` when it is not
+/// one.
+fn usable_page_size(answer: libc::c_long) -> Option<usize> {
+    usize::try_from(answer)
         .ok()
         .filter(|size| size.is_power_of_two())
-        .unwrap_or(4096)
+}
+
+fn page_size() -> Result<usize, SecretError> {
+    static PAGE: OnceLock<Option<usize>> = OnceLock::new();
+    // SAFETY: sysconf has no preconditions.
+    PAGE.get_or_init(|| usable_page_size(unsafe { libc::sysconf(libc::_SC_PAGESIZE) }))
+        .ok_or(SecretError::PageSize)
 }
 
 impl LockedPages {
-    fn new(len: usize) -> Self {
-        let page = page_size();
+    fn new(len: usize) -> Result<Self, SecretError> {
+        let page = page_size()?;
         let size = len.div_ceil(page).max(1) * page;
-        let layout = Layout::from_size_align(size, page).expect("a page-sized layout is valid");
+        let layout = Layout::from_size_align(size, page).map_err(|_| SecretError::PageSize)?;
         // SAFETY: the layout has a non-zero size.
         let raw = unsafe { alloc_zeroed(layout) };
         let Some(pointer) = NonNull::new(raw) else {
@@ -67,11 +92,11 @@ impl LockedPages {
         unsafe {
             libc::madvise(pointer.as_ptr().cast(), size, libc::MADV_DONTDUMP);
         }
-        Self {
+        Ok(Self {
             pointer,
             layout,
             locked,
-        }
+        })
     }
 
     fn bytes(&self) -> &[u8] {
@@ -113,11 +138,11 @@ pub(crate) struct SecretBytes<const N: usize> {
 }
 
 impl<const N: usize> SecretBytes<N> {
-    pub(crate) fn new() -> Self {
-        Self {
-            pages: LockedPages::new(N),
+    pub(crate) fn try_new() -> Result<Self, SecretError> {
+        Ok(Self {
+            pages: LockedPages::new(N)?,
             len: 0,
-        }
+        })
     }
 
     pub(crate) fn len(&self) -> usize {
@@ -180,10 +205,24 @@ impl Default for Secret {
 }
 
 impl Secret {
+    /// A new, empty buffer, or the reason none can be made.
+    pub fn try_new() -> Result<Self, SecretError> {
+        Ok(Self {
+            bytes: SecretBytes::try_new()?,
+        })
+    }
+
+    /// A new, empty buffer. Panics when the kernel reports no usable page
+    /// size, which Linux always does; a program that would rather say so uses
+    /// [`Secret::try_new`].
     pub fn new() -> Self {
-        Self {
-            bytes: SecretBytes::new(),
-        }
+        Self::try_new().expect("the kernel reports a usable page size")
+    }
+
+    /// [`NOT_LOCKED_LOG_LINE`] when this buffer's pages are not locked, for
+    /// the program to write to the journal once.
+    pub fn lock_warning(&self) -> Option<&'static str> {
+        (!self.is_locked()).then_some(NOT_LOCKED_LOG_LINE)
     }
 
     pub fn capacity(&self) -> usize {
@@ -382,7 +421,7 @@ mod tests {
     fn the_allocation_is_page_aligned_and_whole_pages() {
         let secret = Secret::new();
         let storage = secret.storage();
-        let page = page_size();
+        let page = page_size().unwrap();
         assert_eq!(storage.as_ptr() as usize % page, 0);
         assert_eq!(storage.len() % page, 0);
         assert!(storage.len() >= SECRET_CAPACITY);
@@ -396,8 +435,35 @@ mod tests {
         };
         // SAFETY: getrlimit writes into the struct it is given.
         let read = unsafe { libc::getrlimit(libc::RLIMIT_MEMLOCK, &mut limit) } == 0;
-        if read && limit.rlim_cur >= 64 * 1024 {
-            assert!(Secret::new().is_locked());
+        // Room for this test's page beside every other test thread's buffers.
+        test_prerequisites::require_that!(
+            "an RLIMIT_MEMLOCK of at least 1 MiB",
+            read && limit.rlim_cur >= 1024 * 1024
+        );
+        let secret = Secret::new();
+        assert!(secret.is_locked());
+        assert_eq!(secret.lock_warning(), None);
+    }
+
+    #[test]
+    fn a_page_size_that_is_not_one_is_an_error_not_a_guess() {
+        assert_eq!(usable_page_size(-1), None);
+        assert_eq!(usable_page_size(0), None);
+        assert_eq!(usable_page_size(3000), None);
+        assert_eq!(usable_page_size(4096), Some(4096));
+        assert_eq!(usable_page_size(16384), Some(16384));
+        assert_eq!(usable_page_size(65536), Some(65536));
+    }
+
+    #[test]
+    fn the_lock_warning_names_no_content() {
+        assert!(NOT_LOCKED_LOG_LINE.starts_with("BETTER_OS_SECRET_LOCKED=no"));
+        let mut secret = Secret::new();
+        secret.push_str("hunter2").unwrap();
+        // Whatever the buffer holds, the line is the same constant.
+        if let Some(line) = secret.lock_warning() {
+            assert_eq!(line, NOT_LOCKED_LOG_LINE);
         }
+        assert!(!NOT_LOCKED_LOG_LINE.contains("hunter2"));
     }
 }

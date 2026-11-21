@@ -10,23 +10,61 @@
 //! belongs to the program; the model only says when it is sent
 //! ([`Request::Answer`]) and when it is wiped ([`Effects::wipe_field`]):
 //! after it is sent, on every change of view, on Escape, after 60 seconds
-//! without input, after a refusal, and when the machine sleeps or stops.
+//! without input, after a refusal, when PAM's question turns out to be one
+//! whose answer is shown, when the machine is about to sleep and when it
+//! wakes, and when it restarts or shuts down.
 //!
-//! Time is passed in as monotonic milliseconds, so every timer (the wait
-//! after failures, the minute without input, greetd's 60 seconds) is tested
-//! without sleeping.
+//! Every conversation has a [`ConversationId`], named in its
+//! [`Request::Begin`]; a question, a message or an outcome that names any
+//! other conversation (one cancelled while its reply was on the way) is
+//! dropped here, never applied to the current one.
+//!
+//! Failures in a row and the wait after them are kept per account in
+//! [`Attempts`], which survives switching account and, through its file, a
+//! restart of the program ([`Effects::attempts_changed`]).
+//!
+//! Time is passed in as `CLOCK_BOOTTIME` milliseconds ([`boot_time_now`]),
+//! so every timer (the wait after failures, the minute without input,
+//! greetd's 60 seconds) is tested without sleeping, keeps counting through
+//! suspend, and means the same after a restart of the program.
 
 use std::time::Duration;
 
 use crate::accounts::Account;
+use crate::attempts::Attempts;
 use crate::copy::{Language, fill};
 use crate::pam::{PamText, Refusal, classify};
 use crate::power::PowerAction;
 use crate::sessions::{Session, menu_sessions, preselected_session};
-use crate::wait::{seconds_shown, wait_after_failures};
+use crate::wait::seconds_shown;
 
-/// Monotonic milliseconds.
+/// `CLOCK_BOOTTIME` milliseconds: since boot, counting suspend.
 pub type Millis = u64;
+
+/// The time now, for [`Screen::handle`]. `None` only when the kernel refuses
+/// `CLOCK_BOOTTIME`, which Linux has offered since 2.6.39.
+pub fn boot_time_now() -> Option<Millis> {
+    let mut time = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: clock_gettime writes into the struct it is given.
+    if unsafe { libc::clock_gettime(libc::CLOCK_BOOTTIME, &mut time) } != 0 {
+        return None;
+    }
+    let seconds = u64::try_from(time.tv_sec).ok()?;
+    let nanos = u64::try_from(time.tv_nsec).ok()?;
+    Some(
+        seconds
+            .saturating_mul(1000)
+            .saturating_add(nanos / 1_000_000),
+    )
+}
+
+/// Names one PAM conversation (greetd session, or `pam_start` in the lock
+/// program).
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct ConversationId(pub u64);
 
 /// Without input for this long, the field is wiped, and the lock screen goes
 /// back to its quiet view.
@@ -137,22 +175,32 @@ pub enum Event {
     PowerRefused(&'static str),
     /// logind was asked to sleep, restart or shut down.
     PowerChosen(PowerAction),
-    /// The machine woke from sleep.
+    /// The machine is about to sleep, whatever asked for it (the power menu,
+    /// the lid, idle): logind's `PrepareForSleep(true)`.
+    Suspending,
+    /// The machine woke from sleep: `PrepareForSleep(false)`.
     Resumed,
-    /// PAM asks a question.
+    /// PAM asks a question in a conversation.
     Prompt {
+        conversation: ConversationId,
         kind: PromptKind,
         text: String,
     },
     /// PAM says something.
     PamMessage {
+        conversation: ConversationId,
         kind: PamMessageKind,
         text: String,
     },
     /// PAM refused.
-    Refused(Refusal),
+    Refused {
+        conversation: ConversationId,
+        refusal: Refusal,
+    },
     /// PAM said yes to every question.
-    Authenticated,
+    Authenticated {
+        conversation: ConversationId,
+    },
     /// greetd's `success` to `start_session`: the greeter leaves.
     SessionStarted,
     /// The greeter found its record of a session that ended within 15
@@ -175,7 +223,11 @@ pub enum Event {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Request {
     /// greetd's `create_session`; PAM's `pam_start` for the lock program.
-    Begin { user: String },
+    /// Every reply to it is reported with `conversation`.
+    Begin {
+        user: String,
+        conversation: ConversationId,
+    },
     /// Answer the current prompt with the field's [`crate::Secret`], then
     /// wipe it.
     Answer,
@@ -213,6 +265,8 @@ pub struct Effects {
     /// The lock program unlocks the session (`unlock_and_destroy`).
     pub unlock: bool,
     pub transition: Option<Transition>,
+    /// [`Screen::attempts`] changed: save it to the program's record.
+    pub attempts_changed: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -309,9 +363,14 @@ pub struct Screen {
     view: View,
     phase: Phase,
     conversation: Conversation,
+    /// The current conversation's id, and the next one's.
+    conversation_id: ConversationId,
+    next_conversation: u64,
     queued_submit: bool,
     changing_password: bool,
-    failures: u32,
+    attempts: Attempts,
+    /// The time of the event being handled.
+    now: Millis,
     problem: Option<Problem>,
     notice: Option<Notice>,
     caps_lock: bool,
@@ -371,6 +430,23 @@ impl Screen {
         screen
     }
 
+    /// Starts from the failures the program's record kept
+    /// ([`crate::attempts`]), so a restart does not end a wait.
+    pub fn with_attempts(mut self, attempts: Attempts) -> Self {
+        self.attempts = attempts;
+        self
+    }
+
+    /// The failures to save when [`Effects::attempts_changed`] is set.
+    pub fn attempts(&self) -> &Attempts {
+        &self.attempts
+    }
+
+    /// The conversation replies are expected for, if one is running.
+    pub fn conversation(&self) -> Option<ConversationId> {
+        (self.conversation != Conversation::NotStarted).then_some(self.conversation_id)
+    }
+
     fn base(
         kind: ScreenKind,
         accounts: Vec<Account>,
@@ -384,9 +460,12 @@ impl Screen {
             view: View::Quiet,
             phase: Phase::Ready,
             conversation: Conversation::NotStarted,
+            conversation_id: ConversationId(0),
+            next_conversation: 1,
             queued_submit: false,
             changing_password: false,
-            failures: 0,
+            attempts: Attempts::default(),
+            now,
             problem: None,
             notice: None,
             caps_lock: false,
@@ -582,9 +661,14 @@ impl Screen {
         None
     }
 
-    /// Whether the bottom row shows "Switch account".
+    /// Whether the bottom row shows "Switch account". Not during a wait: the
+    /// chooser is not a way out of it (the wait stays with the account
+    /// anyway, in [`Attempts`]).
     pub fn shows_switch_account(&self) -> bool {
-        self.kind == ScreenKind::Login && self.accounts.len() > 1 && self.view == View::Entry
+        self.kind == ScreenKind::Login
+            && self.accounts.len() > 1
+            && self.view == View::Entry
+            && !matches!(self.phase, Phase::Waiting { .. })
     }
 
     /// The rows of "Choose an account", the preselected (most recent) first
@@ -704,6 +788,32 @@ impl Screen {
         }
     }
 
+    /// The end of the chosen account's wait, if one runs now.
+    fn current_wait(&self) -> Option<Millis> {
+        self.user()
+            .and_then(|user| self.attempts.waiting_until(&user, self.now))
+    }
+
+    /// Puts the chosen account's own wait in force (or ends one that
+    /// belonged to another account).
+    fn refresh_wait(&mut self) {
+        if matches!(self.phase, Phase::Ready | Phase::Waiting { .. }) {
+            match self.current_wait() {
+                Some(until) => {
+                    self.phase = Phase::Waiting { until };
+                    if self.problem.is_none() {
+                        self.problem = Some(Problem::WrongPassword);
+                    }
+                }
+                None => {
+                    if matches!(self.phase, Phase::Waiting { .. }) {
+                        self.phase = Phase::Ready;
+                    }
+                }
+            }
+        }
+    }
+
     fn set_view(&mut self, view: View, effects: &mut Effects) {
         if self.view != view {
             self.view = view;
@@ -713,17 +823,30 @@ impl Screen {
     }
 
     fn begin(&mut self, effects: &mut Effects) {
-        if self.conversation == Conversation::NotStarted
-            && let Some(user) = self.user()
-        {
-            effects.requests.push(Request::Begin { user });
-            self.conversation = Conversation::Begun;
+        if self.conversation != Conversation::NotStarted {
+            return;
         }
+        let Some(user) = self.user() else { return };
+        self.refresh_wait();
+        if self.phase != Phase::Ready {
+            return;
+        }
+        self.conversation_id = ConversationId(self.next_conversation);
+        self.next_conversation = self.next_conversation.wrapping_add(1);
+        effects.requests.push(Request::Begin {
+            user,
+            conversation: self.conversation_id,
+        });
+        self.conversation = Conversation::Begun;
     }
 
     fn cancel(&mut self, effects: &mut Effects) {
         if self.conversation != Conversation::NotStarted {
             effects.requests.push(Request::Cancel);
+        }
+        if self.queued_submit {
+            // What was typed for a question that never came is not kept.
+            effects.wipe_field = true;
         }
         self.conversation = Conversation::NotStarted;
         self.queued_submit = false;
@@ -736,6 +859,7 @@ impl Screen {
     fn enter(&mut self, effects: &mut Effects) {
         self.set_view(View::Entry, effects);
         effects.focus_field = true;
+        self.refresh_wait();
         if self.phase == Phase::Ready {
             self.begin(effects);
         }
@@ -770,7 +894,7 @@ impl Screen {
             Conversation::Answered => {}
             Conversation::NotStarted | Conversation::Begun => {
                 // The person typed before PAM's question arrived: the answer
-                // goes with the first secret question.
+                // goes with the first question if it is a secret one.
                 self.begin(effects);
                 if self.conversation == Conversation::Begun {
                     self.notice = None;
@@ -782,6 +906,7 @@ impl Screen {
     }
 
     fn refused(&mut self, refusal: Refusal, now: Millis, effects: &mut Effects) {
+        let user = self.user();
         self.cancel(effects);
         self.notice = None;
         effects.wipe_field = true;
@@ -791,16 +916,17 @@ impl Screen {
         }
         match refusal {
             Refusal::WrongPassword => {
-                self.failures = self.failures.saturating_add(1);
                 self.problem = Some(Problem::WrongPassword);
-                let wait = wait_after_failures(self.failures);
-                if wait.is_zero() {
-                    self.phase = Phase::Ready;
-                    self.begin(effects);
-                } else {
-                    self.phase = Phase::Waiting {
-                        until: now.saturating_add(millis(wait)),
-                    };
+                let until = user.map(|user| {
+                    effects.attempts_changed = true;
+                    self.attempts.record_failure(&user, now).wait_until
+                });
+                match until {
+                    Some(until) if until > now => self.phase = Phase::Waiting { until },
+                    _ => {
+                        self.phase = Phase::Ready;
+                        self.begin(effects);
+                    }
                 }
             }
             Refusal::AccountExpired => {
@@ -868,8 +994,14 @@ impl Screen {
         }
     }
 
+    /// Whether a reply belongs to the conversation running now.
+    fn is_current(&self, conversation: ConversationId) -> bool {
+        self.conversation != Conversation::NotStarted && conversation == self.conversation_id
+    }
+
     /// Moves the screen on one event.
     pub fn handle(&mut self, event: Event, now: Millis) -> Effects {
+        self.now = now;
         let mut effects = Effects::default();
         match event {
             Event::Shown => match self.kind {
@@ -877,6 +1009,7 @@ impl Screen {
                     self.note_input(now);
                     if self.view == View::Entry {
                         effects.focus_field = true;
+                        self.refresh_wait();
                         self.begin(&mut effects);
                     }
                 }
@@ -964,8 +1097,12 @@ impl Screen {
                 self.note_input(now);
                 if let Selection::Other { user_name } = &mut self.selection {
                     *user_name = name;
-                    // A new name is a new conversation.
+                    // A new name is a new conversation, with its own wait.
                     self.cancel(&mut effects);
+                    if matches!(self.phase, Phase::Waiting { .. }) {
+                        self.phase = Phase::Ready;
+                        self.problem = None;
+                    }
                 }
             }
             Event::Back => {
@@ -1013,19 +1150,46 @@ impl Screen {
                 effects.wipe_field = true;
                 effects.requests.push(Request::Power(action));
             }
+            Event::Suspending => {
+                // However the sleep was asked for, nothing half typed stays.
+                effects.wipe_field = true;
+                self.cancel(&mut effects);
+                if self.kind == ScreenKind::Lock && self.view != View::Quiet {
+                    self.set_view(View::Quiet, &mut effects);
+                }
+            }
             Event::Resumed => {
                 self.note_input(now);
-                if matches!(self.view, View::PowerOverlay(_)) {
-                    match self.kind {
-                        ScreenKind::Lock => {
-                            self.set_view(View::Quiet, &mut effects);
+                effects.wipe_field = true;
+                match self.kind {
+                    ScreenKind::Lock => {
+                        self.cancel(&mut effects);
+                        self.set_view(View::Quiet, &mut effects);
+                    }
+                    ScreenKind::Login => {
+                        if matches!(self.view, View::PowerOverlay(_) | View::Entry) {
+                            self.enter(&mut effects);
                         }
-                        ScreenKind::Login => self.enter(&mut effects),
                     }
                 }
             }
-            Event::Prompt { kind, text } => self.prompted(kind, &text, &mut effects),
-            Event::PamMessage { kind, text } => {
+            Event::Prompt {
+                conversation,
+                kind,
+                text,
+            } => {
+                if self.is_current(conversation) {
+                    self.prompted(kind, &text, &mut effects);
+                }
+            }
+            Event::PamMessage {
+                conversation,
+                kind,
+                text,
+            } => {
+                if !self.is_current(conversation) {
+                    return effects;
+                }
                 effects.requests.push(Request::Acknowledge);
                 match (classify(&text), kind) {
                     (PamText::PasswordExpired, _) => self.notice = Some(Notice::PasswordExpired),
@@ -1038,9 +1202,24 @@ impl Screen {
                     }
                 }
             }
-            Event::Refused(refusal) => self.refused(refusal, now, &mut effects),
-            Event::Authenticated => {
-                self.failures = 0;
+            Event::Refused {
+                conversation,
+                refusal,
+            } => {
+                if self.is_current(conversation) {
+                    self.refused(refusal, now, &mut effects);
+                }
+            }
+            Event::Authenticated { conversation } => {
+                if !self.is_current(conversation) {
+                    return effects;
+                }
+                if let Some(user) = self.user()
+                    && self.attempts.get(&user).failures > 0
+                {
+                    self.attempts.record_success(&user);
+                    effects.attempts_changed = true;
+                }
                 self.problem = None;
                 self.conversation = Conversation::NotStarted;
                 effects.wipe_field = true;
@@ -1111,13 +1290,10 @@ impl Screen {
     }
 
     fn after_account_change(&mut self, effects: &mut Effects) {
-        self.failures = 0;
+        // The failures stay with the account that made them (Attempts); the
+        // newly chosen account's own wait, if any, is put in force by enter.
         self.problem = None;
         self.notice = None;
-        if matches!(self.phase, Phase::Waiting { .. }) {
-            // The wait belongs to the account that failed.
-            self.phase = Phase::Ready;
-        }
         self.cancel(effects);
         self.chosen_session = self.preselected_session_id();
         self.enter(effects);
@@ -1130,6 +1306,11 @@ impl Screen {
         }
         let queued = self.queued_submit && kind == PromptKind::Secret;
         self.conversation = Conversation::Prompted { kind, text };
+        if kind == PromptKind::Visible {
+            // The field is about to show what it holds: anything typed while
+            // it was hidden, or queued for a secret question, goes first.
+            effects.wipe_field = true;
+        }
         if queued {
             // Sent now with what was typed before the question came.
             effects.requests.push(Request::Answer);

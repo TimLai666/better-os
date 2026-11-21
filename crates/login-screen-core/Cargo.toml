@@ -35,3 +35,5 @@ zeroize = "1"
 
 [dev-dependencies]
 tempfile.workspace = true
+# The mlock test needs a memory lock limit: a skip here, a failure in CI.
+test-prerequisites.workspace = true
