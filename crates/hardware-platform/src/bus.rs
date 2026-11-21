@@ -75,9 +75,18 @@ pub enum BusError {
 impl BusError {
     fn from_zbus(error: zbus::Error) -> BusError {
         let text = error.to_string();
+        // dbus-daemon passes systemd's own error on when a unit it was asked
+        // to activate cannot start (`dbus_activation_systemd_failure` in
+        // bus/activation.c hands the ActivationFailure code through; systemd
+        // names them in bus-common-errors.h): a masked or missing unit is a
+        // service that is not on this machine. dbus-broker answers the same
+        // failure with NameHasNoOwner (`driver_name_activation_failed`).
         let absent = [
             "ServiceUnknown",
             "NameHasNoOwner",
+            "org.freedesktop.systemd1.UnitMasked",
+            "org.freedesktop.systemd1.NoSuchUnit",
+            "org.freedesktop.systemd1.LoadFailed",
             "UnknownObject",
             "UnknownInterface",
             "UnknownProperty",
@@ -107,20 +116,44 @@ impl<T> From<BusError> for Presence<T> {
     }
 }
 
-fn get(connection: &Connection, at: &Endpoint, property: &str) -> Result<OwnedValue, BusError> {
-    let reply = connection
-        .call_method(
-            Some(at.name),
-            at.path,
-            Some("org.freedesktop.DBus.Properties"),
-            "Get",
-            &(at.interface, property),
-        )
+/// One method call that never starts the service it is sent to: every
+/// message carries `NO_AUTO_START`, so a service that is not running (or
+/// stops between two calls) answers `ServiceUnknown`, which is absent.
+/// Nothing here may start the desktop's services: Better Monitor's taskbar
+/// item follows power-profiles-daemon all day, and starting it would undo a
+/// person stopping it or its package's removal (ticket 295 reviews).
+fn invoke<B, R>(
+    connection: &Connection,
+    at: &Endpoint,
+    interface: &str,
+    method: &str,
+    body: &B,
+) -> Result<R, BusError>
+where
+    B: serde::ser::Serialize + zbus::zvariant::DynamicType,
+    R: for<'d> zbus::zvariant::DynamicDeserialize<'d>,
+{
+    let proxy: zbus::blocking::Proxy<'_> = zbus::blocking::proxy::Builder::new(connection)
+        .destination(at.name)
+        .and_then(|b| b.path(at.path))
+        .and_then(|b| b.interface(interface.to_string()))
+        .map(|b| b.cache_properties(zbus::proxy::CacheProperties::No))
+        .and_then(|b| b.build())
         .map_err(BusError::from_zbus)?;
-    reply
-        .body()
-        .deserialize::<OwnedValue>()
-        .map_err(|error| BusError::Failed(error.to_string()))
+    proxy
+        .call_with_flags::<_, B, R>(method, zbus::proxy::MethodFlags::NoAutoStart.into(), body)
+        .map_err(BusError::from_zbus)?
+        .ok_or_else(|| BusError::Failed(format!("{method} gave no reply")))
+}
+
+fn get(connection: &Connection, at: &Endpoint, property: &str) -> Result<OwnedValue, BusError> {
+    invoke(
+        connection,
+        at,
+        "org.freedesktop.DBus.Properties",
+        "Get",
+        &(at.interface, property),
+    )
 }
 
 fn set(
@@ -129,30 +162,21 @@ fn set(
     property: &str,
     value: Value<'_>,
 ) -> Result<(), BusError> {
-    connection
-        .call_method(
-            Some(at.name),
-            at.path,
-            Some("org.freedesktop.DBus.Properties"),
-            "Set",
-            &(at.interface, property, value),
-        )
-        .map(|_| ())
-        .map_err(BusError::from_zbus)
+    invoke(
+        connection,
+        at,
+        "org.freedesktop.DBus.Properties",
+        "Set",
+        &(at.interface, property, value),
+    )
 }
 
-fn call<B>(
-    connection: &Connection,
-    at: &Endpoint,
-    method: &str,
-    body: &B,
-) -> Result<zbus::Message, BusError>
+fn call<B, R>(connection: &Connection, at: &Endpoint, method: &str, body: &B) -> Result<R, BusError>
 where
     B: serde::ser::Serialize + zbus::zvariant::DynamicType,
+    R: for<'d> zbus::zvariant::DynamicDeserialize<'d>,
 {
-    connection
-        .call_method(Some(at.name), at.path, Some(at.interface), method, body)
-        .map_err(BusError::from_zbus)
+    invoke(connection, at, at.interface, method, body)
 }
 
 fn string(value: OwnedValue) -> Result<String, BusError> {
@@ -177,7 +201,8 @@ fn entry(dict: &HashMap<String, OwnedValue>, key: &str) -> Option<String> {
         .and_then(|v| String::try_from(v).ok())
 }
 
-/// The first power-profiles-daemon name that answers.
+/// The first power-profiles-daemon name that answers. Only a daemon that
+/// is running answers: no call here starts one ([`invoke`]).
 pub fn power_profiles_endpoint(system: &Connection) -> Result<Endpoint, BusError> {
     let mut last = BusError::Absent("power-profiles-daemon".into());
     for endpoint in POWER_PROFILES {
@@ -220,6 +245,27 @@ pub fn power_profiles(system: &Connection) -> Presence<PowerProfilesFacts> {
         })
     };
     read().map_or_else(Presence::from, Presence::Present)
+}
+
+/// Reads power-profiles-daemon now and again after every change it
+/// announces, or its name getting or losing an owner, handing each reading
+/// to `send` until it returns `false` or the bus closes. The watch is in
+/// place before the first read, so no change is missed. Better Monitor's
+/// taskbar item and its popup follow the mode in force with it (ticket 295).
+///
+/// When the watch ends because the bus closed, or could never be set up, a
+/// last `Unreadable` says so, so nothing goes on showing a stale mode.
+pub fn follow_power_profiles(
+    system: &Connection,
+    mut send: impl FnMut(Presence<PowerProfilesFacts>) -> bool,
+) {
+    let end = watch(system, &POWER_PROFILES, || send(power_profiles(system)));
+    let why = match end {
+        WatchEnd::Stopped => return,
+        WatchEnd::Closed => "the system bus connection closed",
+        WatchEnd::NotWatched => "power-profiles-daemon's changes cannot be watched",
+    };
+    send(Presence::Unreadable(why.to_string()));
 }
 
 /// Sets the active profile; no root (the daemon's own polkit action is
@@ -267,17 +313,9 @@ pub fn keyboard(session: &Connection, system: &Connection) -> Presence<KeyboardL
         Err(BusError::Failed(text)) => return Presence::Unreadable(text),
         Err(BusError::Absent(_)) => {}
     }
-    let upower = call(system, &UPOWER_KEYBOARD, "GetMaxBrightness", &())
-        .and_then(|m| {
-            m.body()
-                .deserialize::<i32>()
-                .map_err(|e| BusError::Failed(e.to_string()))
-        })
-        .and_then(|max| {
-            let level = call(system, &UPOWER_KEYBOARD, "GetBrightness", &())?
-                .body()
-                .deserialize::<i32>()
-                .map_err(|e| BusError::Failed(e.to_string()))?;
+    let upower =
+        call::<_, i32>(system, &UPOWER_KEYBOARD, "GetMaxBrightness", &()).and_then(|max| {
+            let level = call::<_, i32>(system, &UPOWER_KEYBOARD, "GetBrightness", &())?;
             Ok((level, max))
         });
     match upower {
@@ -300,7 +338,7 @@ pub fn set_keyboard(
             set(session, &GSD_KEYBOARD, "Brightness", Value::from(value))
         }
         KeyboardSource::UPower { .. } => {
-            call(system, &UPOWER_KEYBOARD, "SetBrightness", &(value,)).map(|_| ())
+            call::<_, ()>(system, &UPOWER_KEYBOARD, "SetBrightness", &(value,))
         }
     }
 }
@@ -349,7 +387,42 @@ pub fn shell_major_version(session: &Connection) -> Option<String> {
 /// Calls `changed` whenever a `PropertiesChanged` arrives from any of
 /// `endpoints`, or one of their names gets or loses an owner. Runs until the
 /// connection closes or `changed` returns `false`.
-pub fn follow(connection: &Connection, endpoints: &[Endpoint], mut changed: impl FnMut() -> bool) {
+pub fn follow(
+    connection: &Connection,
+    endpoints: &[Endpoint],
+    changed: impl FnMut() -> bool,
+) -> WatchEnd {
+    follow_after(connection, endpoints, false, changed)
+}
+
+/// Why a [`follow`] or a [`watch`] ended.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WatchEnd {
+    /// `changed` returned `false`.
+    Stopped,
+    /// The connection closed.
+    Closed,
+    /// Not one match rule could be added, so no change would ever arrive.
+    NotWatched,
+}
+
+/// [`follow`], calling `changed` once as soon as the watch is in place, so
+/// a reader that reads there misses no change between its first reading and
+/// the watch (the taskbar item's power mode, ticket 295).
+pub fn watch(
+    connection: &Connection,
+    endpoints: &[Endpoint],
+    changed: impl FnMut() -> bool,
+) -> WatchEnd {
+    follow_after(connection, endpoints, true, changed)
+}
+
+fn follow_after(
+    connection: &Connection,
+    endpoints: &[Endpoint],
+    now: bool,
+    mut changed: impl FnMut() -> bool,
+) -> WatchEnd {
     let (merged, events) = std::sync::mpsc::channel::<()>();
     let mut rules = Vec::new();
     for at in endpoints {
@@ -371,10 +444,12 @@ pub fn follow(connection: &Connection, endpoints: &[Endpoint], mut changed: impl
                 .map(|r| r.build()),
         );
     }
+    let mut watched = 0;
     for rule in rules.into_iter().flatten() {
         if let Ok(stream) =
             zbus::blocking::MessageIterator::for_match_rule(rule, connection, Some(16))
         {
+            watched += 1;
             let merged = merged.clone();
             std::thread::spawn(move || {
                 for message in stream {
@@ -386,9 +461,16 @@ pub fn follow(connection: &Connection, endpoints: &[Endpoint], mut changed: impl
         }
     }
     drop(merged);
+    if now && !changed() {
+        return WatchEnd::Stopped;
+    }
+    if watched == 0 {
+        return WatchEnd::NotWatched;
+    }
     while events.recv().is_ok() {
         if !changed() {
-            return;
+            return WatchEnd::Stopped;
         }
     }
+    WatchEnd::Closed
 }
