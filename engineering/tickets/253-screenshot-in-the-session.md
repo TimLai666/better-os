@@ -127,7 +127,7 @@ stand-in notification service and file manager (test scripts, not in the
 repository). Drags are a `zwlr_virtual_pointer_v1` on the outer sway
 (`pointer-drag` example). Six runs of the same sequence, English and zh-TW,
 light and dark, 100 % and 150 %, each in
-`/home/tim/Developer/better-os-evidence/253/<lang>-<theme>-<scale>/`:
+`better-os-evidence/253/<lang>-<theme>-<scale>/` (beside the repository):
 screenshots 01–13, the saved picture and recording, the clipboard read back
 with `wl-paste`, the portal client's answers, the notifications, the recent
 files, and the state file.
@@ -139,7 +139,7 @@ files, and the state file.
 | Escape and the close button close without a picture; close on the desktop's side (O4) | yes | Escape (11), portal answer 1; close side from GTK's `button-layout`, left side not seen |
 | Fade in 200 ms (O5) | yes | GPUI's animation, easing out as Clutter's `EASE_OUT_QUAD` |
 | Fade out 200 ms, the frozen screen included, no input meanwhile (O5) | yes | captured 60 ms after Escape half faded (`fade-and-lockdown/02-fading-out.png`: the shade at (100, 100) read 19, then 34, then 39 closed) |
-| Print during the fade out brings it back (O5) | yes | core test (`Shown::Closing` → `Reopen`); nested: Escape then Print, the interface was open after (`review-checks/1-reopened.png`), but whether the second Print landed inside the 200 ms was not measured |
+| Print during the fade out brings it back (O5) | yes | core test (`Shown::Closing` → `Reopen`); nested: Escape then Print, the interface was open after (first fix round's run), but whether the second Print landed inside the 200 ms was not measured |
 | The session's lock (O9) | yes | core test of the decision; logind's `Lock` and `LockedHint` are read from the system bus and were not exercised (no test may lock the owner's session; ticket 201's VM) |
 | An output change closes the interface (O6) | yes | not exercised: the nested compositor has one output |
 | Panel on the pointer's output, tooltips (O7, O8) | yes | nested (01); cursor session `enter` read |
@@ -178,9 +178,9 @@ files, and the state file.
 | WebM under Videos/Screencasts, GNOME's names (R5) | yes | every run |
 | Failure notices (R8) | yes | core tests; disk full not provoked |
 | Portal interactive: interface, URI, cancel (A1) | yes | real frontend: response 0 with the URI (12), Escape → 1 |
-| Portal non-interactive: flash, URI, a file only (A2) | yes | real frontend after the permission store said yes: response 0 with `file://…/Screenshot.png` in the home folder (the sandbox had no Pictures), clipboard empty before and after, no notification, no recent list (`review-checks/2-*`); "Deny" in the Access dialog → response 2, no file |
+| Portal non-interactive: flash, URI, a file only (A2) | yes | real frontend after the permission store said yes: response 0 with `file://…/Screenshot.png` in the home folder (the sandbox had no Pictures), clipboard empty before and after, no notification, no recent list (first fix round's run); "Deny" in the Access dialog → response 2, no file |
 | PickColor (A3) | yes | real frontend: response 0 with `(ddd)` (13) |
-| Request.Close, the caller leaving, one request at a time, only the frontend served (A4) | yes | Close closed the interface (`review-checks/4-after-close.png`); a PickColor stayed pending through a Shift+Print and was answered by the click (`review-checks/3-pickcolor.txt`); the caller leaving and a caller other than the frontend by private-bus tests; busy and binding by core tests |
+| Request.Close, the caller leaving, one request at a time, only the frontend served (A4) | yes | Close closed the interface (first fix round's run); a PickColor stayed pending through a Shift+Print and was answered by the click (first fix round's run); the caller leaving and a caller other than the frontend by private-bus tests; busy and binding by core tests |
 
 ### What is left, and why
 
@@ -286,3 +286,44 @@ said otherwise.
 Retaken after the fixes: `zh_TW-dark-1`, `en_US-light-1.5`, and the window
 mode at 150 % in both languages and both themes (`zh_TW-dark-1.5`,
 `zh_TW-light-1.5`, `en_US-dark-1.5`, `en_US-light-1.5`, screenshot 06).
+
+### The second review of 2026-11-22
+
+`better-os-evidence/253/review-2-2026-11-22.md`: the twenty first-round
+items confirmed fixed; three new ones, fixed.
+
+- **A portal call while locked, or a lock while its interface opens, was
+  never answered** (the slot stayed taken; every later call was "already
+  showing"; the process could not leave or restart on update). Every way an
+  interface or a request ends now goes through
+  `screenshot_core::portal::Requests`: a call while locked is answered
+  "cancelled" and takes no slot; the interface owes its request an answer
+  from the moment it starts opening until its picture is handed over;
+  `close_instantly` (Print over a portal's fade, an output change, a lock)
+  ends an interface that is still opening as well, and the copy that comes
+  back opens nothing. `request_tests` drive done, failed, cancel, Close
+  (before and after the copy is back), a lock while opening and at the
+  copy's return, an output change, and the fade-out reopen, and assert the
+  slot is empty and exactly one answer went out.
+- **A close during the fade after Capture said "cancelled" for the
+  person's picture:** Capture hands the picture over (`handed_over`), and
+  later closes no longer answer for it; the store sends the picture (same
+  test, "done, then anything that closes the interface during the fade").
+- **A damaged name of any `H` table failed the whole dconf database:** now a
+  lock problem, values still read
+  (`a_table_whose_name_cannot_be_read_is_a_lock_problem_not_a_failure`,
+  which fails on the parser before this change).
+- The account name is out of the text evidence (paths now `~/…`).
+- Seen in the nested compositor while the owner's own session was locked
+  (logind `LockedHint` true; the watcher reads the session the process
+  runs in, read only): the portal's instant picture, an interactive call,
+  and PickColor each heard 1 at once and none heard 2, Print opened
+  nothing, and Shift+Print still saved and notified
+  (`review-checks-locked/`). That run showed a call arriving before the
+  first `LockedHint` message was served (response 0,
+  `review-checks-locked-before-startup-read/`), so the lock is now read
+  before the first bus message is handled. The first fix round's
+  `review-checks` folder (unlocked) was overwritten by that run; its
+  results are the ones recorded in the table above. The unlocked paths
+  after this round are covered by `request_tests` and were not run again in
+  the nested compositor, because the owner's session stayed locked.

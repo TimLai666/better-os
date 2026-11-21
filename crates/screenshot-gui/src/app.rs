@@ -26,7 +26,7 @@ use screenshot_core::geometry::{Point, Rect, stage_of};
 use screenshot_core::interface::{Interface, Kind, Mode, Purpose};
 use screenshot_core::layout::{arrange, layout_area};
 use screenshot_core::lockdown::{Allowed, Asked, Saving, allowed};
-use screenshot_core::portal::{Origin, Outcome, PortalSlot, RequestKind, color_of};
+use screenshot_core::portal::{Answer, Origin, Outcome, RequestKind, Requests, color_of};
 use screenshot_core::recording::{Phase, Started, Stop, elapsed_label};
 use screenshot_core::session::{Action, Holds, Lock, Remembered, Request, Shown, action_for};
 use screenshot_core::words::{InterfaceWords, Locale, Notice, NoticeKind, SaveWords};
@@ -215,7 +215,8 @@ pub struct Shooter {
     pub run: Option<Run>,
     clipboard: Vec<ClipboardHold>,
     saving: usize,
-    portal: PortalSlot<smol::channel::Sender<Outcome>>,
+    /// The portal request in flight and who the interface answers for.
+    portal: Requests<smol::channel::Sender<Outcome>>,
     portal_started: bool,
     /// The session's lock, from logind.
     pub lock: Lock,
@@ -344,7 +345,7 @@ impl Shooter {
             }
         }));
 
-        service::watch_session_lock(service.sender());
+        let locked = service::watch_session_lock(service.sender());
         let tracker = ProgramFile::current()
             .ok()
             .map(|program| UpdateTracker::new(program, Some(PACKAGE)));
@@ -361,9 +362,9 @@ impl Shooter {
             run: None,
             clipboard: Vec::new(),
             saving: 0,
-            portal: PortalSlot::default(),
+            portal: Requests::default(),
             portal_started: first == Request::Portal,
-            lock: Lock::default(),
+            lock: Lock { locked },
             fade_generation: 0,
             flash: None,
             last_outputs: Vec::new(),
@@ -514,12 +515,13 @@ impl Shooter {
                 // The instant picture opens nothing, so only another request
                 // keeps it waiting; the interface needs the screen free.
                 let busy = kind == RequestKind::Interface && self.shown() != Shown::Closed;
-                if let Err((reply, refusal)) = self.portal.begin(handle.clone(), kind, reply, busy)
+                let origin = match self
+                    .portal
+                    .begin(handle, kind, reply, busy, self.lock.locked)
                 {
-                    let _ = reply.try_send(refusal);
-                    return;
-                }
-                let origin = Origin::Portal(handle);
+                    Ok(origin) => origin,
+                    Err(answer) => return send(Some(answer)),
+                };
                 match kind {
                     RequestKind::Interface => {
                         self.open_interface(Use::Capture, Purpose::PictureOnly, origin, cx)
@@ -529,28 +531,24 @@ impl Shooter {
             }
             Message::PortalPickColor { handle, reply } => {
                 let busy = self.shown() != Shown::Closed;
-                if let Err((reply, refusal)) =
-                    self.portal
-                        .begin(handle.clone(), RequestKind::PickColor, reply, busy)
-                {
-                    let _ = reply.try_send(refusal);
-                    return;
-                }
-                self.open_interface(
-                    Use::PickColor,
-                    Purpose::PictureOnly,
-                    Origin::Portal(handle),
-                    cx,
-                );
+                let origin = match self.portal.begin(
+                    handle,
+                    RequestKind::PickColor,
+                    reply,
+                    busy,
+                    self.lock.locked,
+                ) {
+                    Ok(origin) => origin,
+                    Err(answer) => return send(Some(answer)),
+                };
+                self.open_interface(Use::PickColor, Purpose::PictureOnly, origin, cx);
             }
             Message::PortalClose { handle } => {
                 // `Request.Close`, or the caller left the bus: the request
                 // ends as cancelled, its interface closes, and a capture still
                 // running for it is dropped when it finishes.
                 let origin = Origin::Portal(handle.clone());
-                if let Some(reply) = self.portal.close(&handle) {
-                    let _ = reply.try_send(Outcome::Cancelled);
-                }
+                send(self.portal.close(&handle));
                 if self.open.as_ref().is_some_and(|open| open.origin == origin) {
                     self.fade_out(cx);
                 }
@@ -591,9 +589,13 @@ impl Shooter {
     /// Answers the portal request `origin` belongs to, if it is still
     /// pending; the person's own captures answer nothing.
     fn answer(&mut self, origin: &Origin, outcome: Outcome) {
-        if let Some(reply) = self.portal.take_for(origin) {
-            let _ = reply.try_send(outcome);
-        }
+        send(self.portal.answer(origin, outcome));
+    }
+
+    /// The interface ended without handing a picture over: its request, if
+    /// still pending, hears "cancelled" (`Requests::interface_ended`).
+    fn interface_ended(&mut self) {
+        send(self.portal.interface_ended());
     }
 
     /// Print, or the recording key, while the interface fades out: it comes
@@ -611,6 +613,7 @@ impl Shooter {
             return;
         }
         self.fade_generation += 1;
+        self.portal.interface_opening(Origin::Person);
         if let Some(open) = &mut self.open {
             open.closing = false;
             if purpose == Purpose::Recording {
@@ -632,6 +635,7 @@ impl Shooter {
             return;
         }
         self.opening = true;
+        self.portal.interface_opening(origin.clone());
         let task = cx.background_spawn(async move {
             WaylandCapture.snapshot(Want {
                 windows: using == Use::Capture,
@@ -642,8 +646,12 @@ impl Shooter {
             let snapshot = task.await;
             let _ = this.update(cx, |this, cx| {
                 this.opening = false;
-                // Closed or locked meanwhile: nothing opens.
-                if !this.portal.wants(&origin) || this.lock.locked {
+                // Ended, closed, or locked meanwhile: nothing opens, and a
+                // request still waiting hears "cancelled".
+                if !this.portal.may_show(&origin, this.lock.locked) {
+                    if this.portal.interface_owner() == Some(&origin) {
+                        this.interface_ended();
+                    }
                     return;
                 }
                 match snapshot {
@@ -651,6 +659,7 @@ impl Shooter {
                     Err(error) => {
                         let person = origin == Origin::Person;
                         this.answer(&origin, Outcome::Refused(error.to_string()));
+                        this.interface_ended();
                         if person {
                             this.notify(
                                 &NoticeKind::CaptureFailed(error.to_string()),
@@ -692,6 +701,7 @@ impl Shooter {
             .collect();
         if outputs.is_empty() {
             self.answer(&origin, Outcome::Refused("no outputs".into()));
+            self.interface_ended();
             return;
         }
         let stage = stage_of(outputs.iter().map(|output| &output.logical));
@@ -821,6 +831,7 @@ impl Shooter {
                                 &open.origin,
                                 Outcome::Refused("the interface could not open".into()),
                             );
+                            this.interface_ended();
                         }
                     }
                 }
@@ -834,23 +845,24 @@ impl Shooter {
     /// Closes the interface without capturing (spec O4); the portal hears
     /// "cancelled".
     pub fn close_interface(&mut self, cx: &mut Context<Self>) {
-        if let Some(origin) = self.open.as_ref().map(|open| open.origin.clone()) {
-            self.answer(&origin, Outcome::Cancelled);
-        }
+        self.interface_ended();
         self.fade_out(cx);
         cx.notify();
     }
 
     /// Closes without the fade, as GNOME's `close(true)` does when the
     /// outputs change or a recording starts.
+    /// An interface still opening is ended too: its screen copy, when it
+    /// comes back, opens nothing. A picture already handed to be stored is
+    /// answered by the store, not here.
     pub fn close_instantly(&mut self, cx: &mut Context<Self>) {
         if let Some(mut open) = self.open.take() {
             self.remember(&open);
             if let Some(surfaces) = open.surfaces.take() {
                 surfaces.close_all(cx);
             }
-            self.answer(&open.origin, Outcome::Cancelled);
         }
+        self.interface_ended();
         cx.notify();
     }
 
@@ -883,6 +895,7 @@ impl Shooter {
                 {
                     surfaces.close_all(cx);
                 }
+                this.interface_ended();
                 cx.notify();
             });
         })
@@ -907,7 +920,9 @@ impl Shooter {
                 // The picture is the frozen one, taken now; the interface
                 // fades out after it (`_onCaptureButtonClicked` 1879–1882).
                 let picture = open.picture();
-                let origin = open.origin.clone();
+                // Handed over: from here the store answers the request, and
+                // a close during the fade out no longer says "cancelled".
+                let origin = self.portal.handed_over();
                 self.fade_out(cx);
                 match picture {
                     Some(frame) => self.store(frame, origin, cx),
@@ -935,6 +950,7 @@ impl Shooter {
             None => Outcome::Cancelled,
         };
         self.answer(&open.origin, outcome);
+        self.interface_ended();
         cx.notify();
     }
 
@@ -1217,6 +1233,8 @@ impl Shooter {
         if let Some(surfaces) = open.surfaces.take() {
             surfaces.close_all(cx);
         }
+        // Only the person's interface records; it answers nobody.
+        self.interface_ended();
         let saving = platform::saving();
         if allowed(Asked::Recording, saving.disabled()) == Allowed::Refused {
             let reason = self.saving_refusal(&saving);
@@ -1425,6 +1443,13 @@ impl Shooter {
             .iter()
             .find(|(name, _)| display_key(name) == key)
             .map(|(_, rect)| *rect)
+    }
+}
+
+/// Sends an answer to the portal call it belongs to.
+fn send(answer: Option<Answer<smol::channel::Sender<Outcome>>>) {
+    if let Some((reply, outcome)) = answer {
+        let _ = reply.try_send(outcome);
     }
 }
 

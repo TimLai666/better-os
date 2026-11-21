@@ -182,6 +182,290 @@ impl<T> PortalSlot<T> {
     }
 }
 
+/// The portal request in flight and who the interface answers for: every
+/// way an interface or a request ends goes through here, so a pending request
+/// is answered exactly once and the slot is never left taken (a taken slot
+/// refuses every later call and keeps the process from leaving).
+///
+/// The interface owes an answer while it is opening, open, or fading out,
+/// until its picture is handed to be stored ([`Requests::handed_over`]):
+/// from then on the store answers, and a close during the fade out no longer
+/// says "cancelled" for a picture the person took.
+#[derive(Debug)]
+pub struct Requests<T> {
+    slot: PortalSlot<T>,
+    interface: Option<Origin>,
+}
+
+impl<T> Default for Requests<T> {
+    fn default() -> Self {
+        Requests {
+            slot: PortalSlot::default(),
+            interface: None,
+        }
+    }
+}
+
+/// An answer to send: the reply and what it says.
+pub type Answer<T> = (T, Outcome);
+
+impl<T> Requests<T> {
+    /// A new portal call. Refused while another is pending or the screen is
+    /// busy, and answered "cancelled" while the session is locked (O9).
+    pub fn begin(
+        &mut self,
+        handle: String,
+        kind: RequestKind,
+        reply: T,
+        busy: bool,
+        locked: bool,
+    ) -> Result<Origin, Answer<T>> {
+        if locked {
+            return Err((reply, Outcome::Cancelled));
+        }
+        self.slot.begin(handle.clone(), kind, reply, busy)?;
+        Ok(Origin::Portal(handle))
+    }
+
+    pub fn is_pending(&self) -> bool {
+        self.slot.is_pending()
+    }
+
+    pub fn wants(&self, origin: &Origin) -> bool {
+        self.slot.wants(origin)
+    }
+
+    /// An interface starts opening for `origin`.
+    pub fn interface_opening(&mut self, origin: Origin) {
+        self.interface = Some(origin);
+    }
+
+    /// Who the interface answers for now, if anyone.
+    pub fn interface_owner(&self) -> Option<&Origin> {
+        self.interface.as_ref()
+    }
+
+    /// Whether the interface `origin` asked for may still be shown once its
+    /// screen copy is back: it was not ended meanwhile, its request is still
+    /// pending, and the session is not locked. When it may not, the caller
+    /// ends it with [`Requests::interface_ended`].
+    pub fn may_show(&self, origin: &Origin, locked: bool) -> bool {
+        !locked && self.interface.as_ref() == Some(origin) && self.slot.wants(origin)
+    }
+
+    /// The picture is handed to be stored: the store answers for it from
+    /// now on. Returns whose picture it is.
+    pub fn handed_over(&mut self) -> Origin {
+        self.interface.take().unwrap_or(Origin::Person)
+    }
+
+    /// The interface ended without a picture handed over (Escape, close,
+    /// Close, a lock, an output change, a failed open, a fade's end): its
+    /// request, if still pending, hears "cancelled".
+    pub fn interface_ended(&mut self) -> Option<Answer<T>> {
+        let origin = self.interface.take()?;
+        self.answer(&origin, Outcome::Cancelled)
+    }
+
+    /// Answers `origin`'s request with `outcome`, if it is still pending.
+    pub fn answer(&mut self, origin: &Origin, outcome: Outcome) -> Option<Answer<T>> {
+        self.slot.take_for(origin).map(|reply| (reply, outcome))
+    }
+
+    /// `Request.Close` or the caller leaving: "cancelled", once.
+    pub fn close(&mut self, handle: &str) -> Option<Answer<T>> {
+        self.slot
+            .close(handle)
+            .map(|reply| (reply, Outcome::Cancelled))
+    }
+}
+
+#[cfg(test)]
+mod request_tests {
+    use super::{Answer, Origin, Outcome, RequestKind, Requests};
+
+    /// What a run sent: each answer with its request.
+    struct Run {
+        requests: Requests<&'static str>,
+        sent: Vec<(&'static str, Outcome)>,
+    }
+
+    impl Run {
+        fn new() -> Run {
+            Run {
+                requests: Requests::default(),
+                sent: Vec::new(),
+            }
+        }
+
+        fn send(&mut self, answer: Option<Answer<&'static str>>) {
+            if let Some(answer) = answer {
+                self.sent.push(answer);
+            }
+        }
+
+        /// A portal interface call, its interface opening.
+        fn open(&mut self, kind: RequestKind) -> Origin {
+            let origin = self
+                .requests
+                .begin("/r/a".into(), kind, "a", false, false)
+                .unwrap();
+            self.requests.interface_opening(origin.clone());
+            origin
+        }
+
+        fn finished(self, want: Outcome) {
+            assert!(!self.requests.is_pending(), "the slot is still taken");
+            assert_eq!(self.requests.interface_owner(), None);
+            assert_eq!(self.sent, vec![("a", want)], "exactly one answer");
+        }
+    }
+
+    fn picture() -> Outcome {
+        Outcome::Picture("file:///p.png".into())
+    }
+
+    #[test]
+    fn every_way_an_interface_ends_answers_once_and_frees_the_slot() {
+        // Done: the picture is handed over, the fade ends, the store answers.
+        let mut run = Run::new();
+        let origin = run.open(RequestKind::Interface);
+        assert!(run.requests.may_show(&origin, false));
+        let theirs = run.requests.handed_over();
+        let ended = run.requests.interface_ended();
+        run.send(ended);
+        let stored = run.requests.answer(&theirs, picture());
+        run.send(stored);
+        run.finished(picture());
+
+        // Done, then anything that closes the interface during the fade out
+        // (Print, an output change, a lock): still the picture.
+        let mut run = Run::new();
+        run.open(RequestKind::Interface);
+        let theirs = run.requests.handed_over();
+        let ended = run.requests.interface_ended();
+        run.send(ended);
+        let stored = run.requests.answer(&theirs, picture());
+        run.send(stored);
+        run.finished(picture());
+
+        // PickColor done: the colour, then the interface ends.
+        let mut run = Run::new();
+        let origin = run.open(RequestKind::PickColor);
+        let colour = run.requests.answer(&origin, Outcome::Color(1.0, 0.0, 0.0));
+        run.send(colour);
+        let ended = run.requests.interface_ended();
+        run.send(ended);
+        run.finished(Outcome::Color(1.0, 0.0, 0.0));
+
+        // Failed: the screen copy failed.
+        let mut run = Run::new();
+        let origin = run.open(RequestKind::Interface);
+        let refused = run.requests.answer(&origin, Outcome::Refused("no".into()));
+        run.send(refused);
+        let ended = run.requests.interface_ended();
+        run.send(ended);
+        run.finished(Outcome::Refused("no".into()));
+
+        // Cancelled (Escape or the close button), an output change, a lock
+        // while open: the interface ends.
+        let mut run = Run::new();
+        run.open(RequestKind::Interface);
+        let ended = run.requests.interface_ended();
+        run.send(ended);
+        let again = run.requests.interface_ended();
+        run.send(again);
+        run.finished(Outcome::Cancelled);
+
+        // Close, or the caller leaving, then the interface ends.
+        let mut run = Run::new();
+        run.open(RequestKind::Interface);
+        let closed = run.requests.close("/r/a");
+        run.send(closed);
+        let ended = run.requests.interface_ended();
+        run.send(ended);
+        run.finished(Outcome::Cancelled);
+
+        // Close while the screen copy is still being made: it is not shown.
+        let mut run = Run::new();
+        let origin = run.open(RequestKind::Interface);
+        let closed = run.requests.close("/r/a");
+        run.send(closed);
+        assert!(!run.requests.may_show(&origin, false));
+        let ended = run.requests.interface_ended();
+        run.send(ended);
+        run.finished(Outcome::Cancelled);
+
+        // A lock while the interface is opening: answered at the lock, and
+        // the copy that comes back is not shown.
+        let mut run = Run::new();
+        let origin = run.open(RequestKind::PickColor);
+        let ended = run.requests.interface_ended();
+        run.send(ended);
+        assert!(!run.requests.may_show(&origin, true));
+        assert!(!run.requests.may_show(&origin, false));
+        run.finished(Outcome::Cancelled);
+
+        // A lock that the copy's return sees first (`LockedHint` arrived
+        // between): not shown, and ended there.
+        let mut run = Run::new();
+        let origin = run.open(RequestKind::Interface);
+        assert!(!run.requests.may_show(&origin, true));
+        let ended = run.requests.interface_ended();
+        run.send(ended);
+        run.finished(Outcome::Cancelled);
+
+        // Print during the fade out of a portal's interface: it finishes
+        // closing (cancelled, nothing was taken) and the person's opens.
+        let mut run = Run::new();
+        run.open(RequestKind::Interface);
+        let ended = run.requests.interface_ended();
+        run.send(ended);
+        run.requests.interface_opening(Origin::Person);
+        let persons = run.requests.interface_ended();
+        assert!(persons.is_none());
+        run.finished(Outcome::Cancelled);
+    }
+
+    #[test]
+    fn a_call_while_locked_is_cancelled_and_takes_no_slot() {
+        let mut requests: Requests<&str> = Requests::default();
+        for kind in [
+            RequestKind::Interface,
+            RequestKind::Instant,
+            RequestKind::PickColor,
+        ] {
+            let (reply, outcome) = requests
+                .begin("/r/a".into(), kind, "a", false, true)
+                .unwrap_err();
+            assert_eq!((reply, outcome), ("a", Outcome::Cancelled));
+            assert!(!requests.is_pending());
+        }
+        // An instant picture closed while it is taken writes nothing and is
+        // answered once.
+        let origin = requests
+            .begin("/r/b".into(), RequestKind::Instant, "b", false, false)
+            .unwrap();
+        assert_eq!(requests.close("/r/b"), Some(("b", Outcome::Cancelled)));
+        assert!(!requests.wants(&origin));
+        assert_eq!(requests.answer(&origin, Outcome::Picture("x".into())), None);
+        assert!(!requests.is_pending());
+    }
+
+    #[test]
+    fn the_persons_interface_answers_nothing() {
+        let mut requests: Requests<&str> = Requests::default();
+        let portal = requests
+            .begin("/r/a".into(), RequestKind::Instant, "a", false, false)
+            .unwrap();
+        requests.interface_opening(Origin::Person);
+        assert!(requests.may_show(&Origin::Person, false));
+        assert_eq!(requests.interface_ended(), None);
+        assert_eq!(requests.answer(&Origin::Person, Outcome::Cancelled), None);
+        assert!(requests.wants(&portal));
+    }
+}
+
 #[cfg(test)]
 mod slot_tests {
     use super::{Origin, Outcome, PortalSlot, RequestKind};

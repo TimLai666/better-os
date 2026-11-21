@@ -604,49 +604,53 @@ impl Service {
 /// logind's `auto` session (the caller's, or the user's graphical one), so
 /// a process started by D-Bus activation outside the session's scope still
 /// finds it. Without a system bus or logind nothing is followed.
-pub fn watch_session_lock(tx: smol::channel::Sender<Message>) {
+///
+/// Returns whether the session is locked now, read before the first bus
+/// message is handled, so a portal call that started this process while the
+/// session is locked is refused like any other; the changes after it come
+/// as messages.
+pub fn watch_session_lock(tx: smol::channel::Sender<Message>) -> bool {
+    let Ok(system) = Connection::system() else {
+        return false;
+    };
+    let session: Result<OwnedObjectPath, _> = system
+        .call_method(
+            Some("org.freedesktop.login1"),
+            "/org/freedesktop/login1",
+            Some("org.freedesktop.login1.Manager"),
+            "GetSession",
+            &("auto",),
+        )
+        .and_then(|reply| reply.body().deserialize());
+    let Ok(session) = session else { return false };
+    // Subscribed before the read, so no change falls between the two.
+    let Ok(rule) = zbus::MatchRule::builder()
+        .msg_type(zbus::message::Type::Signal)
+        .sender("org.freedesktop.login1")
+        .and_then(|rule| rule.path(session.as_str()))
+        .map(|rule| rule.build())
+    else {
+        return false;
+    };
+    let Ok(messages) = zbus::blocking::MessageIterator::for_match_rule(rule, &system, None) else {
+        return false;
+    };
+    let hint: Result<OwnedValue, _> = system
+        .call_method(
+            Some("org.freedesktop.login1"),
+            session.as_str(),
+            Some("org.freedesktop.DBus.Properties"),
+            "Get",
+            &("org.freedesktop.login1.Session", "LockedHint"),
+        )
+        .and_then(|reply| reply.body().deserialize());
+    let locked = hint
+        .ok()
+        .and_then(|hint| bool::try_from(&hint).ok())
+        .unwrap_or(false);
     let _ = std::thread::Builder::new()
         .name("session-lock".into())
         .spawn(move || {
-            let Ok(system) = Connection::system() else {
-                return;
-            };
-            let session: Result<OwnedObjectPath, _> = system
-                .call_method(
-                    Some("org.freedesktop.login1"),
-                    "/org/freedesktop/login1",
-                    Some("org.freedesktop.login1.Manager"),
-                    "GetSession",
-                    &("auto",),
-                )
-                .and_then(|reply| reply.body().deserialize());
-            let Ok(session) = session else { return };
-            let hint: Result<OwnedValue, _> = system
-                .call_method(
-                    Some("org.freedesktop.login1"),
-                    session.as_str(),
-                    Some("org.freedesktop.DBus.Properties"),
-                    "Get",
-                    &("org.freedesktop.login1.Session", "LockedHint"),
-                )
-                .and_then(|reply| reply.body().deserialize());
-            if let Ok(hint) = hint
-                && let Ok(locked) = bool::try_from(&hint)
-            {
-                let _ = tx.send_blocking(Message::LockedHint(locked));
-            }
-            let Ok(rule) = zbus::MatchRule::builder()
-                .msg_type(zbus::message::Type::Signal)
-                .sender("org.freedesktop.login1")
-                .and_then(|rule| rule.path(session.as_str()))
-                .map(|rule| rule.build())
-            else {
-                return;
-            };
-            let Ok(messages) = zbus::blocking::MessageIterator::for_match_rule(rule, &system, None)
-            else {
-                return;
-            };
             for message in messages {
                 let Ok(message) = message else { return };
                 let header = message.header();
@@ -672,6 +676,7 @@ pub fn watch_session_lock(tx: smol::channel::Sender<Message>) {
                 }
             }
         });
+    locked
 }
 
 /// How long a notification's buttons keep the process: a notification

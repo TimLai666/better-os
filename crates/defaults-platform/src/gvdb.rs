@@ -120,12 +120,20 @@ impl GvdbDatabase {
                     let data = slice(bytes, item.value_start, item.value_end)?;
                     values.insert(key, decode_variant(data));
                 }
-                b'H' if full_key(bytes, &items, index)? == ".locks" => {
-                    match read_locks(bytes, item.value_start, item.value_end) {
-                        Ok(read) => locks = read,
-                        Err(error) => lock_problem = Some(error),
+                // A table's own name: `.locks`, or another table, which is not
+                // read. A name that cannot be read might be `.locks`, so it is
+                // a lock problem, never a failure of the whole database (the
+                // values were read without it before locks were).
+                b'H' => match full_key(bytes, &items, index) {
+                    Ok(key) if key == ".locks" => {
+                        match read_locks(bytes, item.value_start, item.value_end) {
+                            Ok(read) => locks = read,
+                            Err(error) => lock_problem = Some(error),
+                        }
                     }
-                }
+                    Ok(_) => {}
+                    Err(error) => lock_problem = Some(error),
+                },
                 _ => {}
             }
         }
@@ -141,6 +149,22 @@ impl GvdbDatabase {
 /// damaged lock table does.
 #[cfg(test)]
 pub(crate) fn damage_lock_table(bytes: &mut [u8]) {
+    let record = lock_table_record(bytes);
+    // The item's value end, 20 bytes into its 24-byte record.
+    bytes[record + 20..record + 24].copy_from_slice(&u32::MAX.to_le_bytes());
+}
+
+/// Points the `.locks` table's own name outside the file.
+#[cfg(test)]
+pub(crate) fn damage_lock_table_name(bytes: &mut [u8]) {
+    let record = lock_table_record(bytes);
+    // The key's start, 8 bytes into the record.
+    bytes[record + 8..record + 12].copy_from_slice(&u32::MAX.to_le_bytes());
+}
+
+/// Where the `.locks` item's record starts.
+#[cfg(test)]
+fn lock_table_record(bytes: &[u8]) -> usize {
     let (start, end) = root(bytes).unwrap();
     let items = hash_items(bytes, start, end).unwrap();
     let index = (0..items.len())
@@ -148,11 +172,9 @@ pub(crate) fn damage_lock_table(bytes: &mut [u8]) {
             items[*index].item_type == b'H' && full_key(bytes, &items, *index).unwrap() == ".locks"
         })
         .expect("a .locks table");
-    // The item's value end, 20 bytes into its 24-byte record.
     let bloom = (read_u32(bytes, start).unwrap() & BLOOM_WORD_MASK) as usize;
     let buckets = read_u32(bytes, start + 4).unwrap() as usize;
-    let record = start + 8 + bloom * 4 + buckets * 4 + index * HASH_ITEM_SIZE;
-    bytes[record + 20..record + 24].copy_from_slice(&u32::MAX.to_le_bytes());
+    start + 8 + bloom * 4 + buckets * 4 + index * HASH_ITEM_SIZE
 }
 
 /// The keys a `.locks` table lists.
@@ -573,6 +595,20 @@ mod tests {
 
         damage_lock_table(&mut bytes);
 
+        let damaged = GvdbDatabase::parse(&bytes).unwrap();
+        assert_eq!(damaged.lock_problem(), Some(&GvdbError::Truncated));
+        assert!(!damaged.is_locked(key));
+        assert_eq!(damaged.get(key), Some(&GVariantValue::Boolean(true)));
+    }
+
+    /// The same database with the `.locks` table's own name pointed outside
+    /// the file: the table cannot be named, so it is a lock problem, and the
+    /// values still read.
+    #[test]
+    fn a_table_whose_name_cannot_be_read_is_a_lock_problem_not_a_failure() {
+        let mut bytes = include_bytes!("../tests/fixtures/dconf/system-local-locked").to_vec();
+        let key = "/org/gnome/desktop/lockdown/disable-save-to-disk";
+        damage_lock_table_name(&mut bytes);
         let damaged = GvdbDatabase::parse(&bytes).unwrap();
         assert_eq!(damaged.lock_problem(), Some(&GvdbError::Truncated));
         assert!(!damaged.is_locked(key));
