@@ -211,8 +211,9 @@ pub fn holds(active_state: &str, job_type: Option<&str>) -> bool {
 /// Puts back what a session whose launcher is gone left, touching only what
 /// is still the session's ([`environment::leftover_restore`]): another
 /// session may have started meanwhile. When the user manager's environment
-/// cannot be read, nothing in it is touched, since whose each value is is
-/// then unknown.
+/// cannot be read, nothing in it is set or unset, since whose each value is
+/// is then unknown; only D-Bus activation's `DCONF_PROFILE` is set, which
+/// `dbus-daemon` also passes on to the user manager.
 pub fn put_back_leftovers(
     session: &dyn UserSession,
     import: &Import,
@@ -236,17 +237,22 @@ pub fn put_back_leftovers(
             "setting the user manager's environment back: {error}"
         ));
     }
-    if !left.unset.is_empty()
-        && let Err(error) = session.unset_environment(&left.unset)
-    {
-        problems.push(format!("unsetting the session's variables: {error}"));
-    }
+    // Activation before the unset: `dbus-daemon` started with
+    // `--systemd-activation` passes every activation update on to the user
+    // manager too, so in the other order the activation value of
+    // `DCONF_PROFILE` is what the user manager is left with (ticket 203's
+    // second review, VM).
     if !left.activation.is_empty()
         && let Err(error) = session.update_activation_environment(&left.activation)
     {
         problems.push(format!(
             "setting D-Bus activation's environment back: {error}"
         ));
+    }
+    if !left.unset.is_empty()
+        && let Err(error) = session.unset_environment(&left.unset)
+    {
+        problems.push(format!("unsetting the session's variables: {error}"));
     }
     problems
 }
@@ -321,6 +327,9 @@ mod tests {
         ) -> Result<(), String> {
             self.calls.borrow_mut().push("activation".into());
             self.activation.borrow_mut().extend(values.clone());
+            // As `dbus-daemon --systemd-activation` does: every activation
+            // update reaches the user manager too.
+            self.manager.borrow_mut().extend(values.clone());
             Ok(())
         }
         fn start_unit(&self, unit: &str) -> Result<(), String> {
@@ -640,7 +649,11 @@ mod tests {
         };
         let problems = put_back_leftovers(&fake, &import, &activation);
         assert_eq!(problems.len(), 1, "{problems:?}");
-        assert_eq!(*fake.manager.borrow(), before);
+        // Only what dbus-daemon passes on from activation reaches it: a
+        // DCONF_PROFILE that behaves as unset.
+        let mut expected = before;
+        expected.insert("DCONF_PROFILE".into(), "/default".into());
+        assert_eq!(*fake.manager.borrow(), expected);
         assert_eq!(
             fake.activation
                 .borrow()

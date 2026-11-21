@@ -81,7 +81,8 @@ process table now carries the facts; these change what is built here:
 - **`betteros-portals.conf` needs `org.freedesktop.impl.portal.Secret=gnome-keyring;`**
   or no Secret portal is offered.
 - **`tracker-miner-fs-3` is `WantedBy=gnome-session.target`**: the session
-  target `Wants=` it.
+  wants it, through `better-os-session-autostart.target`, which only the
+  launcher starts (the second review below).
 - **`system_actions`**: COSMIC's defaults name `cosmic-app-library`,
   `cosmic-launcher`, `cosmic-screenshot`, `cosmic-term`, and
   `cosmic-workspaces`, none installed; the session's defaults name shipped

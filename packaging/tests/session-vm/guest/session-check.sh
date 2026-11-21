@@ -34,7 +34,19 @@ as_user() { runuser -u "$U" -- env XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" DBUS_SESSI
     as_user systemctl --user list-units --state=failed --no-pager --plain
     echo "== dependencies of better-os-session.target"
     as_user systemctl --user list-dependencies better-os-session.target --no-pager
+    echo "== dependencies of better-os-session-autostart.target"
+    as_user systemctl --user list-dependencies better-os-session-autostart.target --no-pager
 } >"$OUT/units.txt" 2>&1
+
+# The XDG autostart entries the generator made and what ran, and any
+# ordering cycle the user manager broke this boot (ticket 203: a cycle once
+# dropped every autostart entry).
+{
+    echo "== app-*@autostart.service"
+    as_user systemctl --user list-units --all --no-pager --plain 'app-*@autostart.service'
+    echo "== ordering cycles in this boot's journal"
+    journalctl --no-pager -b _UID="$UID_" | grep -iE 'ordering cycle|job .* deleted to break' || echo "none"
+} >"$OUT/autostart.txt" 2>&1
 
 as_user systemctl --user show-environment >"$OUT/user-manager-environment.txt" 2>&1
 

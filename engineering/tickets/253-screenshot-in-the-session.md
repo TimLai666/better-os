@@ -90,13 +90,22 @@ session as in GNOME.
       and an image; screenshots in `/home/tim/Developer/better-os-evidence/253/`.
 - [x] Tests for the program's rules (save path, file name, refusal when the
       portal says no).
+- [ ] S typed as the interface opens picks the screen. In the Better OS
+      session (ticket 203's VM) it did not, while P did take effect (notes,
+      "Checked in the Better OS session").
+- [ ] Enter captures after a mode button was clicked. In the session it
+      pressed the clicked Screen button again, which held the keyboard focus
+      (`crates/screenshot-gui/src/view.rs`: the keys go to the root's
+      `on_key_down`, and a focused button takes Enter first).
 
 **Blocked:** several outputs (the VM's virtual GPU shows its second head
 disconnected with QEMU's headless display; ticket 201's VM plan for several
 outputs), the recording's indicator in a real top bar (tickets 152, 156),
-and the non-interactive portal call through COSMIC's own Access backend;
-everything else ran in the real session (notes, "Checked in the Better OS
-session").
+and the non-interactive portal call through COSMIC's own Access backend.
+The two key defects above are open and not blocked: their cause is in Better
+Screenshot's own focus and key handling, not in the session's data (no
+session shortcut uses S or Enter), and they are fixed here. Everything else
+ran in the real session (notes, "Checked in the Better OS session").
 
 ## Notes (2026-11-22)
 
@@ -371,10 +380,10 @@ real GDM login. Screenshots and files in
 | Recording | Ctrl+Shift+Alt+R opened the interface in recording mode (31), Screen and Capture started it (32), Ctrl+Shift+Alt+R again stopped it: `Videos/Screencasts/Screencast from … .webm`, WebM VP8 1920×1080, 7.5 s (`gst-discoverer-1.0`) |
 | Notifications | every capture logged "no notification shown: org.freedesktop.Notifications was not provided": the session has no notification service until ticket 215 |
 
-Two things seen in passing: S typed while the interface opened did not
-switch to Screen (P did take effect), and Enter after clicking the Screen
-button pressed that button again rather than capturing (it held the
-keyboard focus); both were worked around with the capture button. Not run
+Two defects, open in "Done when": S typed while the interface opened did
+not switch to Screen (P did take effect), and Enter after clicking the
+Screen button pressed that button again rather than capturing (it held the
+keyboard focus); the checks above went on with the capture button. Not run
 here: several outputs (QEMU's headless virtual GPU reports its second head
 disconnected), the recording's indicator in a real top bar, and the
 non-interactive portal call with COSMIC's Access dialog.

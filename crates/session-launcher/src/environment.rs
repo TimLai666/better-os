@@ -260,10 +260,12 @@ pub fn is_session_value(name: &str, value: &str) -> bool {
         "XDG_SESSION_DESKTOP" | "DESKTOP_SESSION" => {
             value == better_core::desktop::BETTER_OS_SESSION_NAME
         }
+        // Anywhere in the list, not only first: a GNOME login after a
+        // session that left its value puts its own entries in front of it
+        // (ticket 203's second review, VM).
         "XDG_DATA_DIRS" => value
             .split(':')
-            .next()
-            .is_some_and(|first| first.trim_end_matches('/') == SESSION_DATA_DIR),
+            .any(|entry| entry.trim_end_matches('/') == SESSION_DATA_DIR),
         _ => false,
     }
 }
@@ -362,11 +364,12 @@ pub fn activation_restore(import: &Import, dconf_default: &str) -> BTreeMap<Stri
 /// touch, given the user manager's environment `now`. Another session may
 /// have started since (the leftovers unit runs inside a GNOME login, after
 /// gnome-session imported its own values), so a variable is put back only
-/// while its value is one only the session sets ([`is_session_value`]);
-/// every other value may be someone else's and stays, a display or an input
-/// method variable equal to the session's included (ticket 203's second
-/// review, P2). `XDG_DATA_DIRS` still holding the session's entry loses only
-/// that entry. In D-Bus activation, which cannot be read, only
+/// while its value is still the session's: one only the session sets
+/// ([`is_session_value`]), or the session's input method value beside its
+/// leftover `DCONF_PROFILE`. Every other value may be someone else's and
+/// stays, a display equal to the session's included (ticket 203's second
+/// review, P2). `XDG_DATA_DIRS` still holding the session's entry, wherever
+/// in the list, loses only that entry. In D-Bus activation, which cannot be read, only
 /// `DCONF_PROFILE` is set, to the record's value that behaves as unset:
 /// nothing but the session sets it, and a GNOME login sets its own
 /// `XDG_DATA_DIRS` there.
@@ -383,13 +386,22 @@ pub fn leftover_restore(
     now: &BTreeMap<String, String>,
 ) -> Leftovers {
     let mut leftovers = Leftovers::default();
-    // Only a value nobody but the session sets is known to be the session's.
-    // A display (`:0`, `wayland-0`) or an input method variable (`fcitx`)
-    // may as well be the starting session's own, which then imports its
-    // value anyway, so those are left.
+    // A value nobody but the session sets is the session's. The input method
+    // variables are the session's while they still hold its value and the
+    // session's DCONF_PROFILE is still there beside them (the rule of
+    // [`without_leftovers`]): GNOME's login does not set them, so they would
+    // otherwise reach GNOME Shell. A display (`:0`) is never taken back:
+    // the next session's compositor sets its own.
+    let leaked = now
+        .get("DCONF_PROFILE")
+        .is_some_and(|value| is_session_value("DCONF_PROFILE", value));
     let still_ours = |name: &str| {
-        now.get(name)
-            .is_some_and(|value| is_session_value(name, value))
+        now.get(name).is_some_and(|value| {
+            is_session_value(name, value)
+                || (leaked
+                    && matches!(name, "QT_IM_MODULE" | "XMODIFIERS")
+                    && import.set.get(name) == Some(value))
+        })
     };
     let names = import
         .restore_set
@@ -731,15 +743,27 @@ mod tests {
             "DESKTOP_SESSION=ubuntu".to_string(),
             "WAYLAND_DISPLAY=wayland-0".to_string(),
             "DISPLAY=:0".to_string(),
-            "XDG_DATA_DIRS=/usr/share/ubuntu:/usr/share/gnome:/usr/local/share/:/usr/share/"
+            // As the VM had it: GNOME's entries in front of the session's
+            // leftover value.
+            "XDG_DATA_DIRS=/usr/share/ubuntu:/usr/share/gnome:/usr/share/better-os/session:/usr/local/share/:/usr/share/:/var/lib/snapd/desktop"
                 .to_string(),
             "QT_IM_MODULE=ibus".to_string(),
             "XMODIFIERS=@im=fcitx".to_string(),
             "DCONF_PROFILE=betteros".to_string(),
         ]);
         let left = leftover_restore(&import, &activation, &now);
-        assert_eq!(left.unset, vec!["DCONF_PROFILE".to_string()]);
-        assert!(left.set.is_empty(), "{:?}", left.set);
+        assert_eq!(
+            left.unset,
+            vec!["DCONF_PROFILE".to_string(), "XMODIFIERS".to_string()]
+        );
+        assert_eq!(
+            left.set.get("XDG_DATA_DIRS").map(String::as_str),
+            Some(
+                "/usr/share/ubuntu:/usr/share/gnome:/usr/local/share/:/usr/share/:/var/lib/snapd/desktop"
+            ),
+            "only the session's entry leaves GNOME's list"
+        );
+        assert_eq!(left.set.len(), 1, "{:?}", left.set);
         // DISPLAY=:0 and XMODIFIERS=@im=fcitx equal the session's values
         // but may as well be GNOME's own: they are left.
         for gnome in [
@@ -748,9 +772,7 @@ mod tests {
             "DESKTOP_SESSION",
             "WAYLAND_DISPLAY",
             "DISPLAY",
-            "XDG_DATA_DIRS",
             "QT_IM_MODULE",
-            "XMODIFIERS",
         ] {
             assert!(
                 !left.unset.contains(&gnome.to_string()),
@@ -782,9 +804,33 @@ mod tests {
         ] {
             assert!(left.unset.contains(&name.to_string()), "{name}");
         }
-        // Not provably the session's, so left even here (the next session
-        // imports its own).
+        // Beside the session's DCONF_PROFILE, its input method values go.
+        assert!(left.unset.contains(&"QT_IM_MODULE".to_string()));
+        assert!(left.unset.contains(&"XMODIFIERS".to_string()));
+        // A display is the next session's to set.
         assert!(!left.unset.contains(&"WAYLAND_DISPLAY".to_string()));
-        assert!(!left.unset.contains(&"QT_IM_MODULE".to_string()));
+    }
+
+    #[test]
+    fn input_method_values_without_the_sessions_profile_are_someone_elses() {
+        let import = fresh_session_import();
+        let now = parse_assignments(&[
+            "QT_IM_MODULE=fcitx".to_string(),
+            "XMODIFIERS=@im=fcitx".to_string(),
+        ]);
+        let left = leftover_restore(&import, &BTreeMap::new(), &now);
+        assert!(left.unset.is_empty(), "{:?}", left.unset);
+    }
+
+    #[test]
+    fn the_sessions_data_dir_anywhere_in_the_list_is_the_sessions() {
+        assert!(is_session_value(
+            "XDG_DATA_DIRS",
+            "/usr/share/gnome:/usr/share/better-os/session/:/usr/share/"
+        ));
+        assert!(!is_session_value(
+            "XDG_DATA_DIRS",
+            "/usr/share/gnome:/usr/share/"
+        ));
     }
 }

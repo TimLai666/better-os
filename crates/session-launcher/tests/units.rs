@@ -268,11 +268,13 @@ fn the_leftovers_unit_is_the_one_that_runs_in_any_session() {
         session_launcher::LEFTOVERS_UNIT
     ));
     let lines = unit_lines(&text);
-    // Any session of the person, GNOME's too: before its graphical session.
-    assert_eq!(
-        values(&lines, "WantedBy"),
-        vec!["graphical-session-pre.target"]
-    );
+    // Any session of the person, GNOME's too: before its graphical session,
+    // and before GNOME's own early target, which every GNOME login starts
+    // even when a dead session left graphical-session-pre.target active
+    // (ticket 203's second review, VM).
+    let targets = vec!["graphical-session-pre.target", "gnome-session-pre.target"];
+    assert_eq!(values(&lines, "WantedBy"), targets);
+    assert_eq!(values(&lines, "Before"), targets);
     assert!(!text.contains("WantedBy=graphical-session.target"));
     assert_eq!(values(&lines, "ConditionPathExists"), vec![IN_SESSION]);
     assert_eq!(

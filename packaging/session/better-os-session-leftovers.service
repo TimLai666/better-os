@@ -7,15 +7,21 @@ Description=Puts back what a Better OS session that ended without its launcher l
 # With no record, or with a launcher that runs, it does nothing. It is
 # enabled for every person at install and disabled at removal.
 ConditionPathExists=%t/better-os/session/restore.json
-Before=graphical-session-pre.target
+# graphical-session-pre.target alone is not enough: a session whose launcher
+# and guard both died leaves that target active, so the next login starts
+# nothing through it (ticket 203's second review, VM). GNOME's own
+# gnome-session-pre.target is started by every GNOME login and runs before
+# GNOME's session manager and GNOME Shell, which then read the environment
+# this puts back.
+Before=graphical-session-pre.target gnome-session-pre.target
 
 [Service]
 Type=oneshot
 ExecStart=/usr/libexec/better-os/session/start --leftovers
-# graphical-session-pre.target waits for it, so a hung bus call must not hold
-# a login up: it waits up to 5 s for the old target to stop and is killed
-# after 15 s in all, and the login goes on (a oneshot's default is no limit).
+# The login waits for it, so a hung bus call must not hold a login up: it
+# waits up to 5 s for the old target to stop and is killed after 15 s in
+# all, and the login goes on (a oneshot's default is no limit).
 TimeoutStartSec=15s
 
 [Install]
-WantedBy=graphical-session-pre.target
+WantedBy=graphical-session-pre.target gnome-session-pre.target

@@ -166,15 +166,17 @@ GDM ──> /usr/share/wayland-sessions/better-os.desktop
            (once it is up cosmic-comp sends WAYLAND_DISPLAY and DISPLAY on it:
             src/session.rs run_socket; cosmic-session starts it the same way)
          the launcher then imports the session's variables into the user
-         manager and D-Bus activation, starts better-os-session.target, starts
-         the locker as its own child, and waits; at logout, a signal, or the
+         manager and D-Bus activation, starts better-os-session.target and
+         then better-os-session-autostart.target, starts the locker as its
+         own child, and waits; at logout, a signal, or the
          compositor's end it stops the target, ends its children and the
          compositor, and puts the user manager's environment back
 
 better-os-session.target   BindsTo=graphical-session.target
                            Wants=graphical-session-pre.target
-                           Wants=xdg-desktop-autostart.target
                            Wants= each unit of the session (no enable step)
+better-os-session-autostart.target   PartOf=, After=better-os-session.target
+                           Wants=xdg-desktop-autostart.target, tracker-miner-fs-3
   ├── COSMIC (taken as released, from System76's pinned source)
   │     cosmic-settings-daemon, cosmic-osd (polkit agent, OSD), cosmic-idle,
   │     cosmic-bg, the cosmic-greeter locker, xdg-desktop-portal-cosmic
@@ -276,7 +278,27 @@ user manager for the next GNOME login to read and write. So:
   and `WantedBy=graphical-session-pre.target`, runs at the start of any
   session of the person, GNOME's included, and puts back a record whose
   launcher is gone; the launcher does the same before a new Better OS
-  session reads what is "before".
+  session reads what is "before". By then GNOME's login may have imported
+  its own values, so it touches only a variable whose value is still one
+  only the session sets (the list below), and leaves every other, a
+  `DISPLAY=:0` or `XMODIFIERS=@im=fcitx` equal to the session's included;
+  in D-Bus activation it sets only `DCONF_PROFILE`
+  (`session_launcher::environment::leftover_restore`). When the user
+  manager's environment cannot be read it touches nothing there. It may
+  hold a GNOME login up at most 15 s (`TimeoutStartSec=`).
+- `graphical-session.target` is stopped after a dead launcher only when no
+  other unit that binds it is active or has a start job queued: a GNOME
+  login's `gnome-session.target` waits inactive with a start job while its
+  dependencies start (`session_launcher::lifecycle::holds`). A state that
+  cannot be read leaves it, and leaves the environment of a session whose
+  launcher still runs. The guard exits with failure when it could not stop
+  the target, so `Restart=on-failure` tries again.
+- A record is read from a file the person can write, so only the names the
+  session imports or withholds are taken from it (`Import::known_only`).
+- A stop signal is watched through a `signalfd` that is polled and never
+  read, so one that arrives while the launcher `exec`s its updated program
+  stays pending across the exec and ends the new program's session
+  (`session_launcher::process::pending_stop_signal`).
 - A value only the session sets (`DCONF_PROFILE=betteros`,
   `BetterOS:COSMIC`, `better-os`, `XDG_DATA_DIRS` starting with the
   session's directory, and beside those `QT_IM_MODULE=fcitx` and
@@ -285,11 +307,18 @@ user manager for the next GNOME login to read and write. So:
   sets its variables and at the end takes back only what is provably its
   own: the session-only values, the displays, and its entry in
   `XDG_DATA_DIRS`.
-- The target and every unit of the session but the leftovers unit carry
-  `ConditionPathExists=%t/better-os/session/restore.json`, so a start
-  outside a session (by hand, or by a manager that enables every unit of a
-  package) does nothing; a record left by a dead launcher makes the guard end
-  at once and takes the target down with it.
+- The targets and every unit of the session but the leftovers unit carry
+  `ConditionPathExists=%t/better-os/session/restore.json`. A condition skips
+  only its own unit and not what it wants (systemd.unit(5)), so a start of
+  `better-os-session.target` outside a session (by hand, or by a manager
+  that enables every unit of a package) starts only units that carry the
+  condition and skip themselves, and `graphical-session-pre.target` and
+  `graphical-session.target`, which a GNOME login has started already (with
+  no graphical session at all, a start by hand would start the latter and
+  every unit it wants). The XDG autostart target and Tracker carry
+  no condition of ours, so `better-os-session-autostart.target` wants them
+  and only the launcher starts it, after the first. A record left by a dead
+  launcher makes the guard end at once and takes the target down with it.
 
 **D-Bus activation.** `dbus-daemon` cannot unset a variable, and GNOME starts
 its DBusActivatable applications (Settings, Files, Text Editor) through
@@ -302,9 +331,17 @@ default. dconf treats a set `DCONF_PROFILE` naming a missing profile as the
 null configuration and an empty one as the directory `/etc/dconf/profile/`
 (`engine/dconf-engine-profile.c`), so neither `user` nor the empty string
 will do on a machine without a `user` profile: the value is the absolute
-path of the runtime or `user` profile dconf would pick, else the shipped
+path of the runtime profile (`$XDG_RUNTIME_DIR/dconf/profile`, dconf 0.40.0
+`engine/dconf-engine-profile.c` line 33 and `dconf_engine_open_runtime_profile`)
+or the `user` profile dconf would pick, else
 `/usr/share/dconf/profile/betteros-default` (`user-db:user`, dconf's own
-fallback) (`session_launcher::dconf::default_profile`).
+fallback) (`session_launcher::dconf::default_profile`). That file ships in
+`better-manager` and not in the session package: activation keeps the path
+after the session package is removed (nothing can unset it while the bus
+lives), and a path to a removed file would be the null configuration, where
+GNOME's applications save nothing. `better-os-session` depends on
+`better-manager`, which therefore outlives it; removing Better Manager too
+while that session bus lives would leave the same path missing.
 
 ### Every process the session runs, and who provides it
 
@@ -334,7 +371,7 @@ fallback) (`session_launcher::dconf::default_profile`).
 | Overview and workspaces | Better OS's overview on layer-shell, windows through `ext-image-copy-capture`, workspaces through `ext_workspace_v1` | Better OS, new (ticket 212) | `cosmic-workspaces` is not installed |
 | Desktop icons and stacks, `org.freedesktop.FileManager1` | Better Files on the background layer (C6) | Better OS (tickets 214, 144, 129) | COSMIC Files' desktop process is not started; `FileManager1` had no owner on both bases |
 | Gestures | `better-touchpad-gestured` with a `cosmic-comp` backend (tickets 223, 224); the edge swipe through the scroll pass-through (ticket 225) | Better OS | Zorin's `touchegg` client starts from its autostart entry and connects to the system `touchegg` daemon; it acts only on X11 (ticket 255) |
-| File search index | `tracker-miner-fs-3`, started by the session target when installed | Ubuntu | Ticket 201, both bases: its unit is `WantedBy=gnome-session.target` and its autostart entry is `OnlyShowIn=GNOME;KDE;XFCE;X-IVI;Unity;`, so nothing starts it in the session; the session target `Wants=` it (ticket 203) |
+| File search index | `tracker-miner-fs-3`, started by `better-os-session-autostart.target` when installed | Ubuntu | Ticket 201, both bases: its unit is `WantedBy=gnome-session.target` and its autostart entry is `OnlyShowIn=GNOME;KDE;XFCE;X-IVI;Unity;`, so nothing starts it in the session; `better-os-session-autostart.target` `Wants=` it (ticket 203) |
 | Accessibility | Orca over AT-SPI, `cosmic_a11y_manager_v1` | Ubuntu, COSMIC | the AT-SPI bus starts from its autostart entry; Orca started by hand read a GTK dialog's title and field (`SPEECH OUTPUT: 'OrcaCheck dialog'`, `'ReadMe text.'`, both bases); Orca's own autostart entry is `OnlyShowIn=GNOME;…`, so turning the screen reader on in the session is ticket 244's; a Better OS window read by Orca: ticket 222 |
 | Screen sharing | `xdg-desktop-portal-cosmic` ScreenCast over `ext-image-copy-capture` and PipeWire | COSMIC, Ubuntu | Ticket 201, both bases on PipeWire 1.0.5: `CreateSession`, `SelectSources`, and `Start` answered 0 after COSMIC's picker, `OpenPipeWireRemote` gave a descriptor, and GStreamer's `pipewiresrc` took a 1920×1080 frame from the node (`screencast-check.py`, `41-screencast-frame-from-pipewire.png`, `51-screencast-frame.png`) |
 | XDG autostart | `systemd-xdg-autostart-generator`'s `xdg-desktop-autostart.target`, entries filtered by `OnlyShowIn`/`NotShowIn` against `XDG_CURRENT_DESKTOP` | systemd | Ticket 201: on Ubuntu `at-spi-dbus-bus`, `geoclue-demo-agent`, `nm-applet`, Evolution's alarm notifier, `update-notifier`, and (first login) Ubuntu's release-upgrade check ran; on Zorin also `touchegg` and Déjà Dup's monitor; every `org.gnome.SettingsDaemon.*`, `gnome-keyring-*`, Orca, Tracker, and `ibus-mozc` entry stayed out (`autostart.txt`). The ones that should not run in the session: ticket 255 |
@@ -374,7 +411,7 @@ The session's own surfaces are units of their own packages, enabled by
 `manager-core` like any component unit (AGENTS.md), `PartOf=better-os-session.target`
 and `WantedBy=better-os-session.target`, so they never start under GNOME.
 
-Besides these, the guard (bound to by the target) and the leftovers unit
+Besides these, the guard (wanted by the target) and the leftovers unit
 (the one unit that runs in any session) are described under "However the
 launcher ends" above.
 
@@ -385,10 +422,11 @@ different: they have no `[Install]` section and the target names each with
 Each is `PartOf=` and `After=better-os-session.target`, so stopping the target
 waits for them; being after it also keeps systemd from ordering the target
 after them, which it does for whatever a target wants. For the same reason
-the target is `Before=xdg-desktop-autostart.target`: without it the target
-was ordered after the autostart target, whose entries are after
-`graphical-session.target`, which is after this target, and systemd broke
-the cycle by dropping every autostart entry (ticket 203, Zorin OS 18.1). A drop-in makes `tracker-miner-fs-3.service` `PartOf=` the
+`better-os-session-autostart.target` is `Before=xdg-desktop-autostart.target`:
+without it the target that wants it was ordered after the autostart target,
+whose entries are after `graphical-session.target`, which is after the
+session's target, and systemd broke the cycle by dropping every autostart
+entry (ticket 203, Zorin OS 18.1). A drop-in makes `tracker-miner-fs-3.service` `PartOf=` the
 target too; it changes nothing under GNOME, where the target never runs.
 `verify-deb.sh` and `crates/session-launcher/tests/units.rs` check that none
 of them is `WantedBy=graphical-session.target`.

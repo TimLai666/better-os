@@ -1176,7 +1176,10 @@ if [[ "$RELEASE_TARGET" != ubuntu-22.04 ]]; then
             # The one unit that runs in any session, to put back what a
             # session that ended without its launcher left.
             better-os-session-leftovers.service)
-                grep -qxF 'WantedBy=graphical-session-pre.target' "$unit" || {
+                # GNOME's own early target too: a session whose launcher and
+                # guard both died leaves graphical-session-pre.target active.
+                grep -qxF 'WantedBy=graphical-session-pre.target gnome-session-pre.target' "$unit" &&
+                    grep -qxF 'Before=graphical-session-pre.target gnome-session-pre.target' "$unit" || {
                     printf 'The leftovers unit does not run in every session\n' >&2
                     exit 1
                 }
