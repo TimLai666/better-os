@@ -198,7 +198,7 @@ impl PluginHost {
                         plugin.spawn_detached(&command, &arguments, &env, &host.language())
                         && let Ok(mut shared) = host.shared.lock()
                     {
-                        shared.outcomes.push(Outcome::Failed(format!("{error:?}")));
+                        shared.outcomes.push(Outcome::Failed(error.key()));
                         shared.changed = true;
                     }
                     return;
@@ -206,10 +206,7 @@ impl PluginHost {
                 let language = host.language();
                 let outcome = match plugin.run(&command, &arguments, &env, &language, None) {
                     Ok(output) => host.result(&plugin, &output),
-                    Err(crate::plugins::RunError::Failed { last_error, .. }) => {
-                        Some(Outcome::Failed(last_error))
-                    }
-                    Err(other) => Some(Outcome::Failed(format!("{other:?}"))),
+                    Err(error) => Some(Outcome::Failed(error.key())),
                 };
                 if let (Some(outcome), Ok(mut shared)) = (outcome, host.shared.lock()) {
                     shared.outcomes.push(outcome);

@@ -211,10 +211,11 @@ fn config(store_root: PathBuf) -> ServiceConfig {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn every_start_answers_the_call_that_activated_it() {
     let names = names("org.betteros.Monitor1Test");
-    let Some(bus) = ActivatingBus::start("monitor-service", &names) else {
-        eprintln!("skipping: dbus-daemon is not available in this environment");
-        return;
-    };
+    let bus = test_prerequisites::require!(
+        "dbus-daemon",
+        ActivatingBus::start("monitor-service", &names)
+            .ok_or("a private dbus-daemon did not start")
+    );
     let caller = bus.caller().await;
 
     let mut unanswered = Vec::new();

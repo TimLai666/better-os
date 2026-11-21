@@ -131,7 +131,7 @@ impl ManagerApp {
                         Some(bus) => privileged::set_keyboard_lighting(&bus, &choice),
                         None => (
                             WriteOutcome::Failed {
-                                details: "the system bus is not reachable".to_string(),
+                                details: "manager.system.bus_unreachable".to_string(),
                             },
                             None,
                         ),
@@ -194,7 +194,7 @@ impl ManagerApp {
                 let unavailable = matches!(other, LightingView::Unavailable(_));
                 let mut card_ = plain(line, unavailable);
                 if let LightingView::Unavailable(Access::Failed(details)) = other {
-                    card_ = card_.caution(details.clone());
+                    card_ = card_.caution(crate::reasons::details_in_words(details, self.locale));
                 }
                 return vec![Row::card(gap, card::LIGHTING, card_)];
             }

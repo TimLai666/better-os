@@ -114,6 +114,29 @@ pub enum GitError {
     /// This `Git` does not do that (a test fake).
     #[error("git.error.unsupported:{0}")]
     Unsupported(&'static str),
+    /// A discard's copy could not be put in the trash, so nothing was
+    /// discarded. `detail` is the system's words about the file.
+    #[error("git.error.trash:{detail}")]
+    Trash { reason: TrashReason, detail: String },
+    /// Discard was asked of a submodule. Its changes are in the submodule's
+    /// own repository; the parent's Discard does not reach into it.
+    #[error("git.error.submodule:{}", .0.to_string_lossy())]
+    Submodule(PathBuf),
+}
+
+/// Why a discard's copy did not reach the trash.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TrashReason {
+    /// There is no home folder to keep a trash in.
+    NoHome,
+    /// Every name the copy could take in the trash is taken.
+    NoFreeName,
+    /// A named pipe, a socket, or a device node, which a trash cannot hold.
+    NotCopyable,
+    /// The trash folder may not be used (a link, or someone else's).
+    Unusable,
+    /// Reading the file or writing the trash failed.
+    Io,
 }
 
 impl GitError {

@@ -41,6 +41,9 @@ zbus_polkit = { version = "5" }
 test-support = ["hardware-core/test-support"]
 
 [dev-dependencies]
+# A missing program is a skip on a developer's machine and a failure
+# under CI (ticket 177).
+test-prerequisites.workspace = true
 tempfile.workspace = true
 hardware-core = { workspace = true, features = ["test-support"] }
 hardware-platform = { workspace = true, features = ["test-support"] }

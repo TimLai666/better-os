@@ -12,7 +12,8 @@
 //!   a `dbus-daemon` this test owns, with every XDG directory pointed into a
 //!   temporary directory, and the bus is configured with no service directories
 //!   so nothing on it can be activated with the developer's environment. When
-//!   either program is missing, the test says so and does nothing.
+//!   either program is missing, the test says so and does nothing on a
+//!   developer's machine, and fails under CI.
 
 mod common;
 

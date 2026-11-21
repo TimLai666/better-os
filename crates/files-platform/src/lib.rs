@@ -34,9 +34,11 @@ pub use mime::{
 };
 pub use mounts::{MountPoint, MountTable, Reach, external_devices, read_mount_table};
 pub use trash::{
-    DeviceProbe, HostDevices, SharedTrash, TrashDirectory, TrashError, TrashedItem, VolumeTrash,
-    current_uid, ensure_trash, move_to_trash, network_or_fuse_mounts, original_path_of, purge,
-    read_trash, restore, restore_to, trash_root_of, trashes_on_mount, volume_trash, volume_trashes,
+    DeviceProbe, HostDevices, Put, SharedTrash, TrashDirectory, TrashError, TrashTarget,
+    TrashedItem, VolumeTrash, choose_trash, copy_to_trash, current_uid, ensure_trash,
+    move_to_trash, network_or_fuse_mounts, original_path_of, own_device_trash, purge, put_in_trash,
+    read_trash, restore, restore_to, trash_path, trash_path_with, trash_root_of, trashes_on_mount,
+    volume_trash, volume_trashes,
 };
 pub use watch::{
     DirectoryWatcher, HUB_BATCH, HUB_BURST, HubUpdate, Subscription, WatchBackend, WatchEvent,

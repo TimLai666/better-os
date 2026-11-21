@@ -53,6 +53,9 @@ zbus.workspace = true
 uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
+# A missing program is a skip on a developer's machine and a failure
+# under CI (ticket 177).
+test-prerequisites.workspace = true
 awake-service = { workspace = true, features = ["test-support"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 serde_json.workspace = true

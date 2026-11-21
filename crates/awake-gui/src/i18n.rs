@@ -114,6 +114,14 @@ pub(crate) struct Copy {
     // ---- Status --------------------------------------------------------
     pub(crate) service_unreachable: &'static str,
     pub(crate) service_unreachable_detail: &'static str,
+    /// The service is not on the bus, as one sentence (ticket 172).
+    pub(crate) service_not_running: &'static str,
+    /// The connection to the service failed partway (ticket 172).
+    pub(crate) service_connection_failed: &'static str,
+    /// The service's answer could not be read.
+    pub(crate) service_answer_unreadable: &'static str,
+    /// The system's own words after one of the two above: `{text}`.
+    pub(crate) system_said: &'static str,
     pub(crate) active_summary: &'static str,
     pub(crate) inactive_summary: &'static str,
     pub(crate) attention_summary: &'static str,
@@ -365,7 +373,50 @@ impl Copy {
     /// A provider's reason key as a sentence in this language
     /// (`awake_ipc::reasons`); `None` when the provider gave no reason.
     pub(crate) fn reason(&self, key: Option<&str>) -> Option<String> {
-        key.map(|key| awake_ipc::reasons::provider_reason(key, self.reason_language))
+        key.map(|key| self.said(key))
+    }
+
+    /// Any key the service sends, as a sentence in this language.
+    pub(crate) fn said(&self, key: &str) -> String {
+        awake_ipc::reasons::reason(key, self.reason_language)
+    }
+
+    /// What went wrong between this window and the service, in words: the
+    /// service's refusal as its sentence, and the system's own message, when
+    /// there is one, after a sentence that says whose words they are.
+    pub(crate) fn client_error(&self, error: &crate::client::ClientError) -> String {
+        use crate::client::ClientError;
+        let (sentence, system) = match error {
+            ClientError::ServiceUnavailable(text) => (self.service_not_running, Some(text)),
+            ClientError::Transport(text) => (self.service_connection_failed, Some(text)),
+            ClientError::Protocol(text) => (self.service_answer_unreadable, Some(text)),
+            ClientError::Rejected(key) => return self.said(key),
+            ClientError::UnexpectedReply => return self.said(awake_ipc::UNEXPECTED_REPLY),
+        };
+        match system.and_then(|text| self.system_line(text)) {
+            None => sentence.to_string(),
+            Some(system) => match self.reason_language {
+                awake_ipc::reasons::Language::English => format!("{sentence} {system}"),
+                awake_ipc::reasons::Language::TraditionalChinese => format!("{sentence}{system}"),
+            },
+        }
+    }
+
+    /// The line under the "service is not running" banner: the banner's
+    /// title already says the service cannot be read, so a service that is
+    /// not there adds only the system's own words, and any other failure
+    /// says what it was.
+    pub(crate) fn banner_detail(&self, error: &crate::client::ClientError) -> Option<String> {
+        match error {
+            crate::client::ClientError::ServiceUnavailable(text) => self.system_line(text),
+            other => Some(self.client_error(other)),
+        }
+    }
+
+    /// "The system said: …", or nothing when the system said nothing.
+    fn system_line(&self, text: &str) -> Option<String> {
+        let text = text.trim();
+        (!text.is_empty()).then(|| fill(self.system_said, "text", text))
     }
 }
 
@@ -418,6 +469,10 @@ static EN_US: Copy = Copy {
 
     service_unreachable: "Better Awake service is not running",
     service_unreachable_detail: "Nothing on this screen can be read or changed until the service answers. No session was started or ended.",
+    service_not_running: "The Better Awake service is not running.",
+    service_connection_failed: "The connection to the Better Awake service failed.",
+    service_answer_unreadable: "The Better Awake service's answer could not be read.",
+    system_said: "The system said: {text}",
     active_summary: "This machine is being kept awake",
     inactive_summary: "Nothing is keeping this machine awake",
     attention_summary: "A session needs attention",
@@ -693,6 +748,10 @@ static ZH_TW: Copy = Copy {
 
     service_unreachable: "Better Awake 服務沒有在執行",
     service_unreachable_detail: "服務回應之前，這個畫面上的內容都無法讀取或修改。沒有任何工作階段被開始或結束。",
+    service_not_running: "Better Awake 服務沒有在執行。",
+    service_connection_failed: "和 Better Awake 服務的連線中斷了。",
+    service_answer_unreadable: "看不懂 Better Awake 服務的回應。",
+    system_said: "系統回報：{text}",
     active_summary: "這台電腦正被保持清醒",
     inactive_summary: "沒有任何東西在保持這台電腦清醒",
     attention_summary: "有工作階段需要處理",

@@ -290,9 +290,7 @@ fn a_move_is_refused_a_rollback_because_it_has_no_safe_undo() {
 
 #[test]
 fn stop_and_roll_back_on_failure_undoes_a_partly_finished_copy() {
-    if support::running_as_root() {
-        return;
-    }
+    test_prerequisites::require_that!("a user other than root", !support::running_as_root());
     let root = tempfile::tempdir().unwrap();
     let source = root.path().join("source");
     fs::create_dir(&source).unwrap();

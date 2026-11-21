@@ -196,6 +196,11 @@ contract.
   local one and reject code it accepts (a duplicated `#[allow]` attribute, new
   lints). Run clippy with the newest stable available, read the main CI run
   after every push to main, and fix a red main before the next merge.
+- A test that needs something the machine may not have (a program, a
+  locale, a filesystem feature) takes it through `test_prerequisites::require!`
+  or `require_that!`: a skip on a developer's machine, a failure under CI.
+  Install the prerequisite in CI's install step and name the tests that need
+  it there (ticket 177).
 - A test never executes a file it has just written: another test thread's
   fork can still hold it open and the exec fails with ETXTBSY. Run a written
   script as `/bin/sh <script>`, or reach a checked-in fixture through a

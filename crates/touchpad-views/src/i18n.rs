@@ -873,6 +873,26 @@ pub fn reason_sentence(reason: &str, locale: Locale) -> Option<&'static str> {
 /// detail (`gestures.import.no_such_file: /tmp/x.json`); the key decides the
 /// sentence and the whole string is kept for the details. An unknown key
 /// gets the generic sentence, never the key itself (audit T2).
+/// What follows a problem's key (`gestures.import.no_such_file:/x.json` gives
+/// `/x.json`): the file or the system's own words, for an error's details.
+/// A problem that is no key is all detail; a bare key has none. The key
+/// itself is never in it (ticket 172).
+pub fn problem_detail(problem: &str) -> Option<&str> {
+    let problem = problem.trim();
+    let is_key = |word: &str| {
+        word.starts_with("gestures.")
+            && word
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '.')
+    };
+    let detail = match problem.split_once(':') {
+        Some((key, rest)) if is_key(key) => rest.trim(),
+        _ if is_key(problem) => "",
+        _ => problem,
+    };
+    (!detail.is_empty()).then_some(detail)
+}
+
 pub fn problem_sentence(problem: &str, locale: Locale) -> &'static str {
     let zh = locale.resolved() == Locale::ZhTw;
     let pick = |en: &'static str, zh_tw: &'static str| if zh { zh_tw } else { en };
@@ -912,7 +932,79 @@ pub fn problem_sentence(problem: &str, locale: Locale) -> &'static str {
         "gestures.plan.nothing_to_do" => {
             pick("There's nothing to change.", "沒有任何項目需要變更。")
         }
+        // The gesture editor's refusals (ticket 172: they were shown as
+        // their keys in the standalone window).
+        "gestures.contacts_out_of_range" => pick(
+            "Choose between two and five fingers.",
+            "請選擇兩到五根手指。",
+        ),
+        "gestures.threshold_out_of_range" => pick(
+            "That threshold is outside what a gesture can use.",
+            "這個門檻超出手勢可以使用的範圍。",
+        ),
+        "gestures.cancellation_not_below_activation" => pick(
+            "The point where a gesture is called off must come before the point where it happens.",
+            "取消手勢的位置必須在觸發手勢的位置之前。",
+        ),
+        "gestures.cooldown_out_of_range" => pick(
+            "That pause between gestures is outside what Better OS allows.",
+            "手勢之間的間隔超出 Better OS 允許的範圍。",
+        ),
+        "gestures.direction_required" => pick(
+            "Choose a direction for this gesture.",
+            "請為這個手勢選擇方向。",
+        ),
+        "gestures.direction_not_allowed" => pick(
+            "This kind of gesture can't go in that direction.",
+            "這種手勢不能往那個方向。",
+        ),
+        "gestures.duplicate_id" => pick(
+            "There is already a gesture with this name.",
+            "已經有同名的手勢了。",
+        ),
+        "gestures.unknown_id" => pick("That gesture no longer exists.", "這個手勢已經不存在了。"),
+        "gestures.id_not_well_formed" => pick(
+            "That name can't be used for a gesture.",
+            "這個名稱不能用在手勢上。",
+        ),
+        "gestures.shortcut_not_usable" => pick(
+            "Those keys aren't a shortcut that can be used.",
+            "這些按鍵不是可以使用的快速鍵。",
+        ),
+        // Why a gesture was not checked after applying.
+        "gestures.integration_disabled" => pick(
+            "Gestures are turned off, so this one wasn't checked.",
+            "手勢功能已關閉，所以沒有檢查這個手勢。",
+        ),
+        "gestures.gesture_disabled" => pick(
+            "This gesture is turned off, so it wasn't checked.",
+            "這個手勢已關閉，所以沒有檢查。",
+        ),
+        "gestures.no_action" => pick(
+            "This gesture does nothing, so it wasn't checked.",
+            "這個手勢沒有設定動作，所以沒有檢查。",
+        ),
+        "gestures.built_in_not_changed" => pick(
+            "The desktop's own gesture was left as it is.",
+            "桌面本身的手勢維持原樣。",
+        ),
+        "gestures.shortcuts_not_read_in_test_mode" => pick(
+            "The desktop's shortcuts aren't read in test mode, so a clash can't be checked.",
+            "測試模式不會讀取桌面的快速鍵，所以無法檢查是否衝突。",
+        ),
         _ => pick("That didn't work.", "沒有成功。"),
+    }
+}
+
+impl Copy {
+    /// Which language this copy is, for the sentences that are kept by key
+    /// ([`problem_sentence`]) rather than as a field.
+    pub fn locale(&self) -> Locale {
+        if self.verification_not_run == ZH_TW.verification_not_run {
+            Locale::ZhTw
+        } else {
+            Locale::EnUs
+        }
     }
 }
 

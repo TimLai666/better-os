@@ -171,8 +171,7 @@ fn a_sparse_file_keeps_its_holes_where_the_filesystem_supports_them() {
         // The temporary directory's filesystem does not do sparse files. That
         // is a real configuration, and the policy's fallback is a dense copy;
         // there is nothing here to assert about holes.
-        eprintln!("filesystem is not sparse-capable; hole preservation not exercised");
-        return;
+        test_prerequisites::require_that!("a temporary directory that keeps sparse files", false);
     }
 
     let destination = root.path().join("destination");
@@ -246,10 +245,10 @@ fn extended_attributes_cross_where_the_destination_takes_them() {
     let root = tempfile::tempdir().unwrap();
     let source = root.path().join("tagged.txt");
     fs::write(&source, b"content").unwrap();
-    if fsops::write_xattr(&source, "user.better-os.origin", b"https://example.invalid").is_err() {
-        eprintln!("this filesystem refuses user extended attributes; not exercised");
-        return;
-    }
+    test_prerequisites::require!(
+        "a temporary directory that takes user extended attributes",
+        fsops::write_xattr(&source, "user.better-os.origin", b"https://example.invalid")
+    );
     let destination = root.path().join("destination");
     fs::create_dir(&destination).unwrap();
     let engine = engine();

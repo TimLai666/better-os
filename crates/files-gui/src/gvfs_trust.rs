@@ -410,10 +410,8 @@ mod tests {
 
     #[test]
     fn the_installed_gvfs_is_found_when_there_is_one() {
-        let Ok(trust) = Trust::system() else {
-            // No GVfs on this computer: nothing to find.
-            return;
-        };
+        // CI installs `gvfs-backends` (ticket 177).
+        let trust = test_prerequisites::require!("GVfs (gvfs-backends)", Trust::system());
         assert!(trust.daemon.is_absolute());
         assert!(trust.backends.contains_key("sftp"), "{trust:?}");
     }

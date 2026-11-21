@@ -28,3 +28,8 @@ futures-util = { workspace = true, optional = true }
 # itself stays on its default async-io flavor — see the root Cargo.toml.
 tokio = { version = "1", features = ["rt-multi-thread", "time"], optional = true }
 zbus = { version = "5", optional = true }
+
+[dev-dependencies]
+# A missing program is a skip on a developer's machine and a failure
+# under CI (ticket 177).
+test-prerequisites.workspace = true

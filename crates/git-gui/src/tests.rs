@@ -1797,3 +1797,92 @@ fn the_diff_drop_bar_and_graph_tooltip_keep_inside_the_rounded_corner() {
         assert!(!source.contains(".bottom_0()\n                    .left_0()\n                    .right_0()\n                    .bg(p.flyout)"));
     }
 }
+
+/// Ticket 172: every Git failure has a headline and a message in the
+/// window's language; Git's or the system's own text is only ever the
+/// detail, under a label saying whose words it is, and no `git.error` or
+/// `files.trash` key is anywhere.
+#[test]
+fn every_git_failure_is_said_in_the_windows_language_with_the_original_as_the_detail() {
+    use git_platform::TrashReason;
+    let english_git = " ! some message only Git writes";
+    let errors = [
+        GitError::NotInstalled,
+        GitError::NotARepository(PathBuf::from("/work/notes")),
+        GitError::Failed {
+            exit_code: Some(128),
+            message: english_git.into(),
+        },
+        GitError::UnreadableOutput("garbled".into()),
+        GitError::Conflicts("CONFLICT (content): Merge conflict in a.txt".into()),
+        GitError::ChangedMeanwhile,
+        GitError::Io("/work/notes/a.txt: Permission denied (os error 13)".into()),
+        GitError::Cancelled,
+        GitError::Stalled,
+        GitError::Trash {
+            reason: TrashReason::NoHome,
+            detail: String::new(),
+        },
+        GitError::Trash {
+            reason: TrashReason::NoFreeName,
+            detail: "/work/notes/a.txt".into(),
+        },
+        GitError::Trash {
+            reason: TrashReason::NotCopyable,
+            detail: "/work/notes/pipe".into(),
+        },
+        GitError::Trash {
+            reason: TrashReason::Unusable,
+            detail: "/home/a/.local/share/Trash: symlink".into(),
+        },
+        GitError::Trash {
+            reason: TrashReason::Io,
+            detail: "/work/notes/a.txt: permission denied".into(),
+        },
+        GitError::Submodule(PathBuf::from("vendor/lib")),
+    ];
+    for copy in [&EN_US, &ZH_TW] {
+        for error in &errors {
+            let (title, message, details) = copy.problem(&Problem::Git {
+                kind: crate::session::OpKind::Discard,
+                error: error.clone(),
+            });
+            assert!(!title.is_empty() && !message.is_empty(), "{error:?}");
+            for text in [&title, &message, &details] {
+                assert!(
+                    !text.contains("git.error") && !text.contains("files.trash"),
+                    "{error:?}: {text}"
+                );
+            }
+            assert!(!message.contains(english_git.trim()), "{message}");
+            assert!(!message.contains("os error"), "{message}");
+        }
+    }
+    let (_, message, details) = ZH_TW.problem(&Problem::Git {
+        kind: crate::session::OpKind::Discard,
+        error: GitError::Failed {
+            exit_code: Some(128),
+            message: english_git.into(),
+        },
+    });
+    assert!(message.contains("無法辨識"), "{message}");
+    assert!(details.starts_with("Git 的原文：\n"), "{details}");
+    assert!(details.contains("some message only Git writes"));
+    let (_, message, details) = EN_US.problem(&Problem::Git {
+        kind: crate::session::OpKind::Discard,
+        error: GitError::Io("/work/notes/a.txt: Permission denied (os error 13)".into()),
+    });
+    assert!(message.starts_with("A file Better Git needed"), "{message}");
+    assert!(
+        details.starts_with("What the system said:\n/work/notes/a.txt"),
+        "{details}"
+    );
+    let (_, message, _) = ZH_TW.problem(&Problem::Git {
+        kind: crate::session::OpKind::Discard,
+        error: GitError::Trash {
+            reason: TrashReason::NoHome,
+            detail: String::new(),
+        },
+    });
+    assert!(message.starts_with("沒有捨棄任何東西"), "{message}");
+}

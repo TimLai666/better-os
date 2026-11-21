@@ -57,10 +57,10 @@ impl Drop for PrivateBus {
 
 #[test]
 fn every_claim_answers_a_call_made_the_instant_the_name_appears() {
-    let Some(private) = PrivateBus::start() else {
-        eprintln!("skipping: dbus-daemon is not available in this environment");
-        return;
-    };
+    let private = test_prerequisites::require!(
+        "dbus-daemon",
+        PrivateBus::start().ok_or("a private dbus-daemon did not start")
+    );
     let caller = bus::connect(Some(&private.address), ANSWER_TIMEOUT).unwrap();
     // The owner changes are read on a thread of their own and handed over a
     // channel, so a claim that panics or never happens fails the test after

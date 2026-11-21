@@ -1205,10 +1205,10 @@ mod bus {
     /// a name nobody owns reads as not on the bus.
     #[tokio::test(flavor = "multi_thread")]
     async fn the_page_reads_the_service_and_changes_the_offer() {
-        let Some(bus) = PrivateBus::start() else {
-            eprintln!("skipping: dbus-daemon is not available");
-            return;
-        };
+        let bus = test_prerequisites::require!(
+            "dbus-daemon",
+            PrivateBus::start().ok_or("a private dbus-daemon did not start")
+        );
         let directory = tempfile::tempdir().unwrap();
         let engine = std::sync::Arc::new(
             awake_service::AwakeEngine::start_in(
@@ -1266,6 +1266,61 @@ mod bus {
             ),
             "{:?}",
             missing.status
+        );
+    }
+}
+
+/// Ticket 172: the page shows the service's keys as sentences, and an
+/// answer of the wrong kind as a sentence rather than its debug shape.
+mod no_key_on_screen {
+    use super::super::copy::{copy, page_copy};
+    use super::super::decide::Headline;
+    use crate::i18n::Locale;
+    use better_core::local_time::TimeZone;
+
+    #[test]
+    fn attention_reads_as_a_sentence_in_both_languages() {
+        let headline = Headline::Attention {
+            reason: "awake.backend.denied:no".to_string(),
+        };
+        let english = headline.words(page_copy(Locale::EnUs), copy(Locale::EnUs), TimeZone::UTC);
+        assert_eq!(
+            english.1,
+            "The system refused to keep the computer awake. (no)"
+        );
+        let chinese = headline.words(page_copy(Locale::ZhTw), copy(Locale::ZhTw), TimeZone::UTC);
+        assert_eq!(chinese.1, "系統拒絕讓電腦保持清醒。（no）");
+        let empty = Headline::Attention {
+            reason: String::new(),
+        };
+        assert_eq!(
+            empty
+                .words(page_copy(Locale::EnUs), copy(Locale::EnUs), TimeZone::UTC)
+                .1,
+            ""
+        );
+    }
+
+    #[test]
+    fn a_failure_s_details_are_a_sentence_when_they_are_a_key() {
+        let c = copy(Locale::EnUs);
+        assert_eq!(
+            c.details(awake_ipc::UNEXPECTED_REPLY),
+            "The keep-awake service answered with something other than what was asked for."
+        );
+        assert_eq!(
+            copy(Locale::ZhTw).details("awake.error.too_many_sessions"),
+            "同時執行的工作階段太多了，請先結束一個再開始新的。"
+        );
+        // The system's own message stays, under a label saying whose words
+        // they are: the error report is where someone diagnosing it reads it.
+        assert_eq!(
+            c.details("org.freedesktop.DBus.Error.NoReply: timed out"),
+            "The system said: org.freedesktop.DBus.Error.NoReply: timed out"
+        );
+        assert_eq!(
+            copy(Locale::ZhTw).details("org.freedesktop.DBus.Error.NoReply: timed out"),
+            "系統回報：org.freedesktop.DBus.Error.NoReply: timed out"
         );
     }
 }

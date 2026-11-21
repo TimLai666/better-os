@@ -1525,6 +1525,12 @@ fn strip_version_3(value: &mut serde_json::Value) {
     }
 }
 
+/// What a window says when the service answered with a reply of another
+/// kind than the request asked for. The service never sends it: it is a
+/// client's own key, said from the same table as the service's
+/// (`reasons::reason`), so no window shows a reply's raw shape instead.
+pub const UNEXPECTED_REPLY: &str = "awake.ipc.error.unexpected_reply";
+
 /// Protocol-level rejections. Every message is a stable machine key.
 #[derive(Clone, Debug, Eq, PartialEq, Error)]
 pub enum IpcError {

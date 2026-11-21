@@ -203,10 +203,8 @@ fn a_cancelled_job_is_heard_finishing_and_one_that_never_started_is_not_heard_at
 #[test]
 fn a_retried_job_is_announced_again() {
     use std::os::unix::fs::PermissionsExt;
-    if support::running_as_root() {
-        // Root ignores the mode bits, so there is nothing to fail.
-        return;
-    }
+    // Root ignores the mode bits, so there is nothing to fail.
+    test_prerequisites::require_that!("a user other than root", !support::running_as_root());
     let root = tempfile::tempdir().unwrap();
     let destination = root.path().join("usb");
     fs::create_dir(&destination).unwrap();

@@ -692,9 +692,14 @@ impl TouchpadApp {
                                 format!("{} {key}", c.shortcut_conflict)
                             }
                             ShortcutCheck::NoneRecorded => c.shortcut_none_recorded.to_string(),
-                            ShortcutCheck::Unknown { reason } => {
-                                format!("{} · {reason}", c.shortcut_unknown)
-                            }
+                            ShortcutCheck::Unknown { reason } => format!(
+                                "{} · {}",
+                                c.shortcut_unknown,
+                                touchpad_views::i18n::problem_sentence(
+                                    reason.as_str(),
+                                    self.model.locale()
+                                )
+                            ),
                         }),
                 )
             })
@@ -997,7 +1002,10 @@ impl TouchpadApp {
                                 .min_w_0()
                                 .text_xs()
                                 .text_color(cx.theme().danger)
-                                .child(error),
+                                .child(touchpad_views::i18n::problem_sentence(
+                                    &error,
+                                    self.model.locale(),
+                                )),
                         )
                     })
                     .child(
@@ -1146,7 +1154,25 @@ impl TouchpadApp {
             .child(self.preset_card(cx))
             .when_some(
                 self.gestures.problem().map(str::to_string),
-                |this, problem| this.child(self.card(div().min_w_0().text_xs().child(problem), cx)),
+                |this, problem| {
+                    // A sentence in the window's language, and the file or
+                    // the system's words under it; never the key (ticket 172).
+                    let locale = self.model.locale();
+                    let said = touchpad_views::i18n::problem_sentence(&problem, locale);
+                    let detail = touchpad_views::i18n::problem_detail(&problem).map(str::to_string);
+                    this.child(
+                        self.card(
+                            v_flex()
+                                .min_w_0()
+                                .gap_1()
+                                .child(div().text_sm().child(said))
+                                .when_some(detail, |view, detail| {
+                                    view.child(div().text_xs().child(detail))
+                                }),
+                            cx,
+                        ),
+                    )
+                },
             )
             .when(rows.is_empty(), |this| {
                 this.child(self.card(div().text_sm().child(c.no_gestures), cx))

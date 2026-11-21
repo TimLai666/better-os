@@ -160,23 +160,13 @@ impl DesktopEntry {
         self.flag("Hidden") != Some(true) && self.flag("X-GNOME-Autostart-enabled") != Some(false)
     }
 
-    /// Whether `OnlyShowIn` and `NotShowIn` let it start on these desktops.
+    /// Whether the entry's desktop lists let it start on these desktops. The
+    /// rule is the application catalog's, the one every Better OS window
+    /// uses (ticket 173).
     pub(crate) fn for_desktops(&self, desktops: &[String]) -> bool {
-        let list = |key: &str| -> Vec<String> {
-            self.get(key)
-                .unwrap_or_default()
-                .split(';')
-                .filter(|name| !name.is_empty())
-                .map(|name| name.to_ascii_lowercase())
-                .collect()
-        };
-        let current: Vec<String> = desktops.iter().map(|d| d.to_ascii_lowercase()).collect();
-        let only = list("OnlyShowIn");
-        let not = list("NotShowIn");
-        if !only.is_empty() && !only.iter().any(|name| current.contains(name)) {
-            return false;
-        }
-        !not.iter().any(|name| current.contains(name))
+        app_catalog_core::DesktopEnvironments::new(desktops)
+            .shows_entry(|key| self.get(key))
+            .is_ok()
     }
 }
 
@@ -195,25 +185,13 @@ fn desktop_files(dir: &Path) -> Vec<(String, PathBuf)> {
     files
 }
 
-/// Whether a `TryExec` program exists: an absolute path that is an
-/// executable file, or a name found in one of `PATH`'s directories.
-pub(crate) fn program_installed(program: &str, path: Option<&std::ffi::OsStr>) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    let executable = |candidate: &Path| {
-        std::fs::metadata(candidate)
-            .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
-    };
-    let candidate = Path::new(program);
-    if candidate.is_absolute() {
-        return executable(candidate);
-    }
-    if program.contains('/') {
-        return false;
-    }
-    path.map(std::env::split_paths)
-        .into_iter()
-        .flatten()
-        .any(|dir| executable(&dir.join(program)))
+/// Whether an entry's `TryExec` program is installed, by the application
+/// catalog's rule and its host probe (ticket 173): an absolute path that is
+/// an executable file, or a name found in one of `PATH`'s directories. An
+/// entry with no `TryExec` counts as installed.
+pub(crate) fn try_exec_installed(entry: &DesktopEntry, path: Option<&std::ffi::OsStr>) -> bool {
+    let probe = app_catalog_platform::HostProbe::with_path(path.and_then(std::ffi::OsStr::to_str));
+    app_catalog_core::try_exec_found(|key| entry.get(key), &probe).unwrap_or(true)
 }
 
 /// Every startup app, by name. `chinese` picks the zh-TW names where a file
@@ -259,9 +237,7 @@ pub(crate) fn read_autostart(dirs: &AutostartDirs, chinese: bool) -> Vec<Autosta
                 enabled: entry.starts(),
                 scope,
                 for_this_desktop: entry.for_desktops(&dirs.desktops),
-                installed: entry
-                    .get("TryExec")
-                    .is_none_or(|program| program_installed(program, dirs.path.as_deref())),
+                installed: try_exec_installed(&entry, dirs.path.as_deref()),
                 path,
                 system_path,
             })

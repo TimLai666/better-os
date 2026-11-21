@@ -183,13 +183,10 @@ impl World {
 
 macro_rules! world_or_skip {
     ($follow:expr, $on_battery:expr) => {
-        match World::start($follow, $on_battery) {
-            Some(world) => world,
-            None => {
-                eprintln!("skipping: dbus-daemon is not available in this environment");
-                return;
-            }
-        }
+        test_prerequisites::require!(
+            "dbus-daemon",
+            World::start($follow, $on_battery).ok_or("a private dbus-daemon did not start")
+        )
     };
 }
 

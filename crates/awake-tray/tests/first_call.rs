@@ -96,10 +96,10 @@ async fn answered(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn every_published_item_answers_its_first_call() {
-    let Some(bus) = PrivateBus::start() else {
-        eprintln!("skipping: dbus-daemon is not available in this environment");
-        return;
-    };
+    let bus = test_prerequisites::require!(
+        "dbus-daemon",
+        PrivateBus::start().ok_or("a private dbus-daemon did not start")
+    );
 
     // The tray is a client of the service, so one is running on the bus.
     let directory = tempfile::tempdir().unwrap();

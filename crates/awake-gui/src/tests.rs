@@ -1137,6 +1137,106 @@ fn a_session_the_closed_lid_ended_is_named_in_history() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// Ticket 172: no key on screen
+// ---------------------------------------------------------------------------
+
+#[test]
+fn what_went_wrong_with_the_service_is_said_in_words_in_both_languages() {
+    use crate::client::ClientError;
+    for locale in [Locale::EnUs, Locale::ZhTw] {
+        let c = copy(locale);
+        for error in [
+            ClientError::ServiceUnavailable("org.freedesktop.DBus.Error.ServiceUnknown".into()),
+            ClientError::Transport("Connection reset".into()),
+            ClientError::Protocol("expected value at line 1".into()),
+            ClientError::Rejected("awake.error.too_many_sessions".into()),
+            ClientError::Rejected(
+                "awake.ipc.error.invalid_rule:awake.rule.error.empty_group".into(),
+            ),
+            ClientError::UnexpectedReply,
+        ] {
+            let said = c.client_error(&error);
+            assert!(!said.contains("awake."), "{locale:?} {error}: {said}");
+            assert!(
+                !said.contains("Unknown reason") && !said.contains("原因不明"),
+                "{said}"
+            );
+        }
+    }
+    let c = copy(Locale::EnUs);
+    assert_eq!(
+        c.client_error(&ClientError::Rejected(
+            "awake.error.too_many_sessions".into()
+        )),
+        "Too many sessions are running at once. End one before starting another."
+    );
+    assert_eq!(
+        c.client_error(&ClientError::Transport("Connection reset".into())),
+        "The connection to the Better Awake service failed. The system said: Connection reset"
+    );
+    // One statement, punctuated, never the banner's title again.
+    let missing =
+        ClientError::ServiceUnavailable("org.freedesktop.DBus.Error.ServiceUnknown".into());
+    assert_eq!(
+        c.client_error(&missing),
+        "The Better Awake service is not running. The system said: org.freedesktop.DBus.Error.ServiceUnknown"
+    );
+    assert_eq!(
+        copy(Locale::ZhTw).client_error(&missing),
+        "Better Awake 服務沒有在執行。系統回報：org.freedesktop.DBus.Error.ServiceUnknown"
+    );
+    let banner = c.banner_detail(&missing).unwrap();
+    assert_eq!(
+        banner,
+        "The system said: org.freedesktop.DBus.Error.ServiceUnknown"
+    );
+    assert!(!banner.contains(c.service_unreachable));
+    assert_eq!(
+        c.banner_detail(&ClientError::ServiceUnavailable(String::new())),
+        None
+    );
+    assert_eq!(
+        copy(Locale::ZhTw).client_error(&ClientError::Transport("Connection reset".into())),
+        "和 Better Awake 服務的連線中斷了。系統回報：Connection reset"
+    );
+}
+
+#[test]
+fn the_backend_detail_and_attention_are_sentences() {
+    assert_eq!(
+        copy(Locale::EnUs).said("awake.backend.denied:no"),
+        "The system refused to keep the computer awake. (no)"
+    );
+    assert_eq!(
+        copy(Locale::ZhTw).said("awake.backend.denied:no"),
+        "系統拒絕讓電腦保持清醒。（no）"
+    );
+    assert_eq!(
+        copy(Locale::EnUs).said("awake.backend.lease_lost"),
+        "The system stopped keeping the computer awake, so Better Awake is asking it again."
+    );
+}
+
+#[test]
+fn a_service_nobody_runs_is_not_running_rather_than_a_broken_connection() {
+    use crate::client::{ClientError, call_error};
+    let unknown = zbus::Error::MethodError(
+        zbus::names::OwnedErrorName::try_from("org.freedesktop.DBus.Error.ServiceUnknown").unwrap(),
+        Some("The name org.betteros.Awake1 was not provided by any .service files".into()),
+        zbus::message::Message::method_call("/", "Ping")
+            .unwrap()
+            .build(&())
+            .unwrap(),
+    );
+    assert!(matches!(
+        call_error(unknown),
+        ClientError::ServiceUnavailable(_)
+    ));
+    let broken = zbus::Error::InputOutput(std::sync::Arc::new(std::io::Error::other("reset")));
+    assert!(matches!(call_error(broken), ClientError::Transport(_)));
+}
+
 /// The Battery section's power row says what every battery icon in Better
 /// OS says (ticket 170): held at the limit on the owner's machine of
 /// 2026-11-21, and only the service's word when the window has no reading.

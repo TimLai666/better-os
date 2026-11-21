@@ -437,6 +437,27 @@ pub enum RunError {
     TooLarge,
 }
 
+impl RunError {
+    /// The stable key the window says in words (`errors::explain`), never
+    /// this type's debug shape (ticket 172).
+    pub fn key(&self) -> String {
+        match self {
+            RunError::NotTrusted(path) => {
+                format!("files.plugin.error.not_trusted:{}", path.display())
+            }
+            RunError::NotFound(program) if program.is_empty() => {
+                "files.plugin.error.no_program".to_string()
+            }
+            RunError::NotFound(program) => format!("files.plugin.error.not_found:{program}"),
+            RunError::Failed { last_error, .. } => {
+                format!("files.plugin.error.failed:{last_error}")
+            }
+            RunError::TimedOut => "files.plugin.error.timed_out".to_string(),
+            RunError::TooLarge => "files.plugin.error.too_large".to_string(),
+        }
+    }
+}
+
 impl Plugin {
     /// The program a command names: one with a `/` that is not absolute is
     /// in the plugin's folder and must be trusted, as must its folders.
