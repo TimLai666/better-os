@@ -857,7 +857,14 @@ pub fn reason_sentence(reason: &str, locale: Locale) -> Option<&'static str> {
         "touchpad.integration_disabled" => {
             pick("Better Touchpad is turned off.", "Better Touchpad 已關閉。")
         }
-        _ => None,
+        "gnome.database_beneath_unreadable" => pick(
+            "One of the settings databases this session reads from can't be read, so this value is unknown.",
+            "這個工作階段讀取的其中一個設定資料庫讀不到，所以不知道這個值。",
+        ),
+        // Which dconf database the session reads, and why it could not be
+        // decided: the sentences Better Defaults shows too.
+        other => touchpad_platform::dconf_profile::sentence(other)
+            .map(|(en, zh_tw)| if zh { zh_tw } else { en }),
     }
 }
 
@@ -939,6 +946,30 @@ mod tests {
             Some("GNOME 沒有這個設定，捲動距離會跟著游標速度。")
         );
         assert_eq!(reason_sentence("mock.no_key", Locale::EnUs), None);
+    }
+
+    // Review finding 4: a session whose dconf database could not be decided
+    // says why and what to do, in both languages, rather than "not available".
+    #[test]
+    fn every_dconf_refusal_has_a_sentence_in_both_languages() {
+        for key in [
+            "dconf.profile_missing",
+            "dconf.profile_unreadable",
+            "dconf.profile_not_writable",
+            "dconf.profile_invalid_database_name",
+            "dconf.session_profile_not_in_environment",
+            "dconf.profile_nfs_dconf_version_unknown",
+            "gnome.database_beneath_unreadable",
+        ] {
+            let en = reason_sentence(key, Locale::EnUs).unwrap_or_else(|| panic!("{key}"));
+            let zh = reason_sentence(key, Locale::ZhTw).unwrap_or_else(|| panic!("{key}"));
+            assert_ne!(en, zh, "{key}");
+        }
+        assert!(
+            reason_sentence("dconf.session_profile_not_in_environment", Locale::EnUs)
+                .unwrap()
+                .contains("sign out")
+        );
     }
 
     use super::*;

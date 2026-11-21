@@ -1,26 +1,13 @@
-//! The few glyphs the kit's icon set does not have, drawn in the same 24px,
-//! 2px-stroke grid as the rest (Lucide's shapes, ISC), and served beside
-//! the kit's own icons: a trash can, and one icon for each of the person's
-//! own folders so a compact sidebar tells them apart, and the file operations
-//! panel (two arrows passing, where the kit's nearest was a spinner). The
-//! shared ones every window has (Refresh) come from `better_ui::fluent::glyphs`.
+//! Better Files' icons. Every place, device and folder is a picture from
+//! `better_ui::icon_set` (ticket 147); the window keeps only the developer
+//! folder's two glyphs, which the content area draws over the desktop
+//! theme's folder pictures.
 
 use std::borrow::Cow;
 
+use better_ui::icon_set::Picture;
 use gpui::{AssetSource, Result, SharedString};
 
-pub const TRASH: &str = "better-files/trash.svg";
-pub const DOCUMENTS: &str = "better-files/documents.svg";
-pub const DOWNLOADS: &str = "better-files/downloads.svg";
-pub const PICTURES: &str = "better-files/pictures.svg";
-pub const MUSIC: &str = "better-files/music.svg";
-pub const VIDEOS: &str = "better-files/videos.svg";
-pub const DESKTOP: &str = "better-files/desktop.svg";
-pub const OPERATIONS: &str = "better-files/operations.svg";
-pub const HOME: &str = "better-files/home.svg";
-pub const TEMPLATES: &str = "better-files/templates.svg";
-pub const PUBLIC: &str = "better-files/public.svg";
-pub const DEVELOPER: &str = "better-files/developer.svg";
 /// The developer glyph's brackets alone, the mark the content view puts on a
 /// full-colour folder.
 pub const CODE_MARK: &str = "better-files/code-mark.svg";
@@ -29,112 +16,35 @@ pub const CODE_MARK: &str = "better-files/code-mark.svg";
 /// never stacks a mark on a folder. Adwaita's folder colours, which the
 /// themes' small folders share.
 pub const CODE_FOLDER_SMALL: &str = "better-files/code-folder-16.svg";
-/// "This PC": a monitor on its stand (ticket 122).
-pub const COMPUTER: &str = "better-files/computer.svg";
-/// The drive the running system lives on: a drive with a power mark, so it
-/// reads apart from every other internal drive at a glance.
-pub const SYSTEM_DRIVE: &str = "better-files/system-drive.svg";
-/// An external hard disk or SSD: a drive box with its cable.
-pub const EXTERNAL_DRIVE: &str = "better-files/external-drive.svg";
-/// A memory card.
-pub const MEMORY_CARD: &str = "better-files/memory-card.svg";
-/// A removable drive: a USB stick.
-pub const USB_DRIVE: &str = "better-files/usb-drive.svg";
-/// A disc in an optical drive.
-pub const DISC: &str = "better-files/disc.svg";
-/// A phone or a camera.
-pub const PHONE: &str = "better-files/phone.svg";
-/// The kit's own, named here so every folder glyph is a path.
-pub const FOLDER: &str = "icons/folder.svg";
-pub const DEVICE: &str = "icons/hard-drive.svg";
-pub const NETWORK: &str = "icons/globe.svg";
-
-const OPEN: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">"#;
+/// "This PC" (ticket 122).
+pub const COMPUTER: Picture = Picture::Computer;
+/// The file operations panel: things moving between two places.
+pub const OPERATIONS: Picture = Picture::Transfers;
 
 /// [`CODE_FOLDER_SMALL`]: drawn on the 16px grid, full colour.
 const CODE_FOLDER_SMALL_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16"><path d="M1 3.5A1.5 1.5 0 0 1 2.5 2h3.3l1.5 1.5h6.2A1.5 1.5 0 0 1 15 5v.5H1z" fill="#438de6"/><rect x="1" y="4.5" width="14" height="9.5" rx="1.5" fill="#a4caee"/><path d="M6.4 7.1 4.5 9.25l1.9 2.15M9.6 7.1l1.9 2.15-1.9 2.15" fill="none" stroke="#1c71d8" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>"##;
 
-fn svg(path: &str) -> Option<String> {
-    if path == CODE_FOLDER_SMALL {
-        return Some(CODE_FOLDER_SMALL_SVG.to_string());
+/// [`CODE_MARK`], in the 24px, 2px-stroke grid (Lucide's shape, ISC).
+const CODE_MARK_SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m8 7-5 5 5 5"/><path d="m16 7 5 5-5 5"/><path d="m14 4-4 16"/></svg>"#;
+
+fn svg(path: &str) -> Option<&'static str> {
+    match path {
+        CODE_FOLDER_SMALL => Some(CODE_FOLDER_SMALL_SVG),
+        CODE_MARK => Some(CODE_MARK_SVG),
+        _ => None,
     }
-    let body = match path {
-        TRASH => {
-            r#"<path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M10 11v6"/><path d="M14 11v6"/>"#
-        }
-        DOCUMENTS => {
-            r#"<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M16 13H8"/><path d="M16 17H8"/><path d="M10 9H8"/>"#
-        }
-        DOWNLOADS => {
-            r#"<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/>"#
-        }
-        PICTURES => {
-            r#"<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="M21 15l-3.1-3.1a2 2 0 0 0-2.8 0L6 21"/>"#
-        }
-        MUSIC => {
-            r#"<path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>"#
-        }
-        VIDEOS => {
-            r#"<path d="M16 13l5.2 3.5a.5.5 0 0 0 .8-.4V7.9a.5.5 0 0 0-.8-.4L16 11"/><rect x="2" y="6" width="14" height="12" rx="2"/>"#
-        }
-        DESKTOP => {
-            r#"<rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/>"#
-        }
-        // Lucide's arrow-right-left: things moving between two places.
-        OPERATIONS => {
-            r#"<path d="m16 3 4 4-4 4"/><path d="M20 7H4"/><path d="m8 21-4-4 4-4"/><path d="M4 17h16"/>"#
-        }
-        // A house: a roof and a door.
-        HOME => {
-            r#"<path d="M3 10.5 12 3l9 7.5"/><path d="M5 9v10.5a1.5 1.5 0 0 0 1.5 1.5h11a1.5 1.5 0 0 0 1.5-1.5V9"/><path d="M10 21v-6h4v6"/>"#
-        }
-        // A sheet laid out in blocks.
-        TEMPLATES => {
-            r#"<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M4 9h16"/><path d="M11 9v12"/>"#
-        }
-        // A folder with a person on it: what is shared.
-        PUBLIC => {
-            r#"<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><circle cx="12" cy="11.5" r="2"/><path d="M8.5 17.5a3.5 3.5 0 0 1 7 0"/>"#
-        }
-        // A folder with angle brackets on it: where code lives.
-        DEVELOPER => {
-            r#"<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="m10 11-2.5 2.5L10 16"/><path d="m14 11 2.5 2.5L14 16"/>"#
-        }
-        COMPUTER => {
-            r#"<rect x="2" y="4" width="20" height="13" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/>"#
-        }
-        SYSTEM_DRIVE => {
-            r#"<rect x="2" y="14" width="20" height="7" rx="2"/><path d="M6 17.5h.01"/><path d="M10 17.5h.01"/><path d="M12 2v5"/><path d="M8.5 4.2a5 5 0 1 0 7 0"/>"#
-        }
-        EXTERNAL_DRIVE => {
-            r#"<rect x="2" y="6" width="15" height="11" rx="2"/><path d="M6 13.5h.01"/><path d="M9.5 13.5h.01"/><path d="M17 11.5h2a2 2 0 0 1 2 2V21"/><rect x="19.5" y="20" width="3" height="2"/>"#
-        }
-        MEMORY_CARD => {
-            r#"<path d="M7 2h8l4 4v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z"/><path d="M9 6v3"/><path d="M12 6v3"/><path d="M15 6v3"/>"#
-        }
-        USB_DRIVE => {
-            r#"<rect x="7" y="9" width="10" height="13" rx="2"/><path d="M9 9V3h6v6"/><path d="M11 5.5h.01"/><path d="M13 5.5h.01"/>"#
-        }
-        DISC => {
-            r#"<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2.5"/><path d="M7.5 8.5a6 6 0 0 1 3-2.2"/>"#
-        }
-        PHONE => r#"<rect x="6" y="2" width="12" height="20" rx="2.5"/><path d="M11 18h2"/>"#,
-        CODE_MARK => r#"<path d="m8 7-5 5 5 5"/><path d="m16 7 5 5-5 5"/><path d="m14 4-4 16"/>"#,
-        _ => return None,
-    };
-    Some(format!("{OPEN}{body}</svg>"))
 }
 
-/// The kit's icons and the window's own.
+/// The icon set, the window's two developer glyphs, and the kit's icons.
 pub struct FilesAssets;
 
 impl AssetSource for FilesAssets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
-        if let Some(svg) = svg(path) {
-            return Ok(Some(Cow::Owned(svg.into_bytes())));
-        }
-        if let Some(svg) = better_ui::fluent::glyphs::load(path) {
+        if let Some(svg) = better_ui::icon_set::load(path) {
             return Ok(Some(Cow::Borrowed(svg)));
+        }
+        if let Some(svg) = svg(path) {
+            return Ok(Some(Cow::Borrowed(svg.as_bytes())));
         }
         gpui_component_assets::Assets.load(path)
     }
@@ -201,23 +111,23 @@ impl FolderGlyph {
         FolderGlyph::Folder,
     ];
 
-    /// The monochrome glyph the sidebar, path bar and tabs draw.
-    pub fn svg(self) -> &'static str {
+    /// The picture the sidebar, path bar and tabs draw.
+    pub fn picture(self) -> Picture {
         match self {
-            FolderGlyph::Home => HOME,
-            FolderGlyph::Desktop => DESKTOP,
-            FolderGlyph::Documents => DOCUMENTS,
-            FolderGlyph::Downloads => DOWNLOADS,
-            FolderGlyph::Music => MUSIC,
-            FolderGlyph::Pictures => PICTURES,
-            FolderGlyph::Videos => VIDEOS,
-            FolderGlyph::Templates => TEMPLATES,
-            FolderGlyph::Public => PUBLIC,
-            FolderGlyph::Trash => TRASH,
-            FolderGlyph::Device => DEVICE,
-            FolderGlyph::Network => NETWORK,
-            FolderGlyph::Developer => DEVELOPER,
-            FolderGlyph::Folder => FOLDER,
+            FolderGlyph::Home => Picture::Home,
+            FolderGlyph::Desktop => Picture::Desktop,
+            FolderGlyph::Documents => Picture::Documents,
+            FolderGlyph::Downloads => Picture::Downloads,
+            FolderGlyph::Music => Picture::Music,
+            FolderGlyph::Pictures => Picture::Pictures,
+            FolderGlyph::Videos => Picture::Videos,
+            FolderGlyph::Templates => Picture::Templates,
+            FolderGlyph::Public => Picture::Public,
+            FolderGlyph::Trash => Picture::Trash,
+            FolderGlyph::Device => Picture::Drive,
+            FolderGlyph::Network => Picture::Network,
+            FolderGlyph::Developer => Picture::Developer,
+            FolderGlyph::Folder => Picture::Folder,
         }
     }
 
@@ -327,26 +237,26 @@ pub fn folder_glyph(
 }
 
 /// A drive's icon: its kind, and for a removable drive what it is.
-pub fn drive_row_icon(drive: &crate::drives::Drive) -> &'static str {
+pub fn drive_row_icon(drive: &crate::drives::Drive) -> Picture {
     use crate::drives::RemovableForm as F;
     match drive.form {
-        Some(F::Stick) => USB_DRIVE,
-        Some(F::Card) => MEMORY_CARD,
-        Some(F::Disk) => EXTERNAL_DRIVE,
+        Some(F::Stick) => Picture::UsbDrive,
+        Some(F::Card) => Picture::MemoryCard,
+        Some(F::Disk) => Picture::ExternalDrive,
         None => drive_icon(drive.kind),
     }
 }
 
 /// A drive's icon by its kind (ticket 122).
-pub fn drive_icon(kind: crate::drives::DriveKind) -> &'static str {
+pub fn drive_icon(kind: crate::drives::DriveKind) -> Picture {
     use crate::drives::DriveKind as K;
     match kind {
-        K::System => SYSTEM_DRIVE,
-        K::Internal => DEVICE,
-        K::Removable => USB_DRIVE,
-        K::Optical => DISC,
-        K::Phone => PHONE,
-        K::Network => NETWORK,
+        K::System => Picture::SystemDrive,
+        K::Internal => Picture::Drive,
+        K::Removable => Picture::UsbDrive,
+        K::Optical => Picture::Disc,
+        K::Phone => Picture::Phone,
+        K::Network => Picture::Network,
     }
 }
 
@@ -359,9 +269,9 @@ mod tests {
     #[test]
     fn the_system_drive_and_a_usb_stick_have_their_own_icons() {
         use crate::drives::DriveKind as K;
-        assert_eq!(drive_icon(K::System), SYSTEM_DRIVE);
-        assert_eq!(drive_icon(K::Internal), DEVICE);
-        assert_eq!(drive_icon(K::Removable), USB_DRIVE);
+        assert_eq!(drive_icon(K::System), Picture::SystemDrive);
+        assert_eq!(drive_icon(K::Internal), Picture::Drive);
+        assert_eq!(drive_icon(K::Removable), Picture::UsbDrive);
         assert_ne!(drive_icon(K::System), drive_icon(K::Internal));
     }
 
@@ -380,7 +290,13 @@ mod tests {
         assert_eq!(removable_form(&with(&["flash_sd"], "usb")), F::Card);
         assert_eq!(removable_form(&with(&[], "sdio")), F::Card);
         assert_eq!(removable_form(&with(&[], "usb")), F::Disk);
-        let icons = [USB_DRIVE, MEMORY_CARD, EXTERNAL_DRIVE, DEVICE, SYSTEM_DRIVE];
+        let icons = [
+            Picture::UsbDrive,
+            Picture::MemoryCard,
+            Picture::ExternalDrive,
+            Picture::Drive,
+            Picture::SystemDrive,
+        ];
         for (i, a) in icons.iter().enumerate() {
             for b in &icons[i + 1..] {
                 assert_ne!(a, b);
@@ -390,29 +306,7 @@ mod tests {
 
     #[test]
     fn every_glyph_is_served_and_is_an_svg() {
-        for path in [
-            TRASH,
-            DOCUMENTS,
-            DOWNLOADS,
-            PICTURES,
-            MUSIC,
-            VIDEOS,
-            DESKTOP,
-            OPERATIONS,
-            HOME,
-            TEMPLATES,
-            PUBLIC,
-            DEVELOPER,
-            CODE_MARK,
-            COMPUTER,
-            USB_DRIVE,
-            SYSTEM_DRIVE,
-            EXTERNAL_DRIVE,
-            MEMORY_CARD,
-            DISC,
-            PHONE,
-            CODE_FOLDER_SMALL,
-        ] {
+        for path in [CODE_MARK, CODE_FOLDER_SMALL] {
             let bytes = FilesAssets.load(path).unwrap().expect(path);
             let text = std::str::from_utf8(&bytes).unwrap();
             assert!(
@@ -420,20 +314,24 @@ mod tests {
                 "{path}"
             );
         }
-        // Every folder glyph is served, the kit's ones included.
-        for glyph in FolderGlyph::ALL {
+        // Every folder's picture, and every other picture the window draws,
+        // is served from the icon set.
+        let pictures = FolderGlyph::ALL
+            .iter()
+            .map(|glyph| glyph.picture())
+            .chain([COMPUTER, OPERATIONS]);
+        for picture in pictures {
             assert!(
-                FilesAssets.load(glyph.svg()).unwrap().is_some(),
-                "{glyph:?}"
+                FilesAssets.load(picture.path()).unwrap().is_some(),
+                "{picture:?}"
             );
         }
-        // The shared ones and the kit's own still come through.
+        // The kit's own still come through.
         assert!(
             FilesAssets
-                .load(better_ui::fluent::glyphs::REFRESH)
+                .load("icons/chevron-down.svg")
                 .unwrap()
                 .is_some()
         );
-        assert!(FilesAssets.load("icons/folder.svg").unwrap().is_some());
     }
 }

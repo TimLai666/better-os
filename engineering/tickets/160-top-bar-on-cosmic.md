@@ -67,3 +67,7 @@ OS's own services instead of GNOME Shell.
       and dark, zh-TW and English, in
       `/home/tim/Developer/better-os-evidence/160/`.
 - [ ] fmt, clippy on stable, and the crates' tests pass.
+
+## Notes
+
+Ticket 229 (`design/system-settings-spec.md`) moves these settings into Better Manager: each settings link here opens the Better Manager page (section 4.3's `--page` names) once its ticket (232, 234, 236, 237) lands, and COSMIC Settings only until then. The clock format the bar reads in the session stays `com.system76.CosmicAppletTime`, which Better Manager's Date and time page writes (ticket 237).

@@ -228,6 +228,17 @@ contract.
   a fact.
 - A container check runs without network: anything APT needs at test time is
   installed into the image when it is built.
+- A sandbox desktop's private bus is started with the sandbox's own `HOME`
+  and settings backend, or with `GTK_THEME` set. A bus from
+  `dbus-run-session` starts the host's services (the portal, `dconf-service`,
+  Better OS's own services) with the environment it was launched with, so
+  they read the person's real settings, and a screenshot then shows the
+  person's theme and accent, not the sandbox's. When the sandbox ends, every
+  process on that bus is found by the bus address in its environment and
+  ended by PID.
+- Run the whole workspace's tests with `--no-fail-fast`. Without it
+  `cargo test --workspace` stops at the first crate that fails and the
+  failures after it are never seen.
 
 ## Handoff
 
@@ -328,9 +339,33 @@ GUI or dependency compiles when the relevant command was not executed.
   has it draw the frame, shadow, header, and window buttons from the current
   theme, as Chromium does; without GTK the kit draws Adwaita's frame. Do not
   paint a background on a view's root (the frame paints it with the desktop's
-  corners), and do not draw frames or window buttons in an app. The frame was
-  compared pixel by pixel with GNOME Text Editor in a headless GNOME Shell 46
-  only, not on the owner's desktop. Better Launcher is the one deliberate exception, recorded
+  corners), and do not draw frames or window buttons in an app. Since ticket
+  141 all four corners are rounded with the theme's radius, measured from
+  GTK's drawing top and bottom (ZorinBlue 15px, Adwaita 12px), and square
+  maximized, fullscreen, or tiled on any edge; the input region follows the
+  curve grown by GTK's 12px handle, and the theme's `outline` (libadwaita's
+  1px inner line) is drawn over the content as GTK draws it. GPUI clips only
+  to rectangles (`ContentMask` at `ae394f3` and on Zed's `main` of 2026-11-20),
+  so content keeps inside the curve by one kit rule (`system_frame::corners`):
+  a surface that reaches a corner paints its fill into it with
+  `window_chrome::corner_fill`; a list that scrolls past a bottom corner is
+  painted with `corner_clip(inset)`, which raises only its bottom by the
+  curve's depth at the rows' side inset, and ends its scroll extent with
+  `corner_depth` so the last row scrolls fully above the curve; a scrollbar
+  there uses `corner_scrollbar`; tooltips, menus, and panels go through
+  `inside_window`. Nothing is inset along a side. `NavigationView`, dialogs,
+  toasts, menus, and the staged-changes bar follow it; a new window or panel
+  that reaches a corner must too. Two limits follow from GPUI clipping only to
+  rectangles, at the pinned revision and on Zed's `main`: a scrolling surface
+  whose rows run its full width (Better Git's diff) gives up a band the height
+  of the corner's radius along the bottom, where its rows are not drawn while
+  they scroll past and the wheel and presses do nothing (at the end of the
+  list they are whole above it); and the gallery's samples wider than a
+  narrow window are cut at the page's padding. The frame was compared pixel
+  by pixel with GNOME Text Editor in a headless GNOME Shell 46 only (ticket
+  108; ticket 141 for all four corners and the outline, on ZorinBlue-Dark
+  and Adwaita light and dark, at scale 1 and 2, evidence in
+  `better-os-evidence/141`), not on the owner's desktop. Better Launcher is the one deliberate exception, recorded
   in code: a Start-menu panel (ticket 82) dismissed by Escape gets no titlebar, but
   it still sets `app_id` like every other window, which is what lets a dock or
   an application grid match a window to its desktop entry. Escape on Better
@@ -444,7 +479,12 @@ GUI or dependency compiles when the relevant command was not executed.
   the package, and with `--undo` if the daemon then refuses. It never blocks a
   removal: exit 3 is a warning in Activity, exit 4 means no session and a
   pending restore Better Manager finishes at its next start. Better Touchpad's
-  puts its captured touchpad settings back. The gesture service's first run puts the Mac-style preset in
+  puts its captured touchpad settings back. Better Manager's own (it undoes
+  the fixes it applied, ticket 90) is run by its maintainer scripts instead,
+  as each person in the login range, because Better Manager cannot remove
+  itself (`packaging/maintainer/before-removal-accounts.sh`, sharing
+  `accounts.sh` and `account-step.sh` with the autostart postrm: accounts
+  from `getent passwd`, each person's step under `timeout -s KILL 30`). The gesture service's first run puts the Mac-style preset in
   force when no gesture file exists yet. Without both processes the Gestures
   screen and the `touchpad.gesture_bridge` health check say which is missing:
   the service owns `org.betteros.TouchpadGestures1` while it runs, and an
@@ -561,6 +601,39 @@ GUI or dependency compiles when the relevant command was not executed.
   `packaging/tests/touchpad-scroll-hardware-check.sh` is the owner's check.
   Smooth scrolling stays unavailable, because it is each application's drawing
   decision and not an input setting.
+- The keyboard's colour (ticket 136, ADR 0034) is set through
+  `manager-daemon`, for the built-in keyboard only (an I2C LampArray, or
+  asus-wmi's `kbd_rgb_mode`; USB and Bluetooth LampArrays are out of
+  scope): a LampArray by a helper unit whose private `/dev` holds its one
+  hidraw node and which drops to `nobody` once it is open (`--lamp-array`),
+  `kbd_rgb_mode` by ADR 0029's attribute helper. Both helpers share
+  `hardware::helper_sandbox()`; `ProtectKernelTunables=`,
+  `ProtectControlGroups=`, `ProtectProc=`, and `PrivateNetwork=` are left
+  out on purpose, because each brings the whole of `/sys` back (ADR 0034;
+  `IPAddressDeny=any` closes the network instead). No session
+  process opens a hidraw node and no udev rule grants one;
+  `hardware_core::lamparray` is the only parser of report descriptors and
+  `manager_daemon::keyboard_lighting` the only code with hidraw ioctls. The
+  vendor report 0x5F and the 0xFF59 copy are never written. CI's
+  `packaging/hardware-unit/check.sh` runs both helpers' units on a real
+  systemd in a container with the property lists the release daemon prints
+  (`--helper-properties`), but has no hidraw device, so no feature report
+  has gone through the sandboxed helper; the
+  lamp count, `LampArrayKind`, and level counts of the owner's M5406WA,
+  whether its intensity and the WMI backlight levels 0–3 multiply or
+  override each other, and whether the colour survives suspend are unread.
+  Level counts follow HID Usage Tables 1.4 section 26.9 (N is off plus N
+  levels). Ticket 136's notes hold the owner's check, done on a released
+  build through Better Manager. No LampArray effect is offered, by design;
+  only `kbd_rgb_mode`'s four firmware effects are, and that path has run
+  against fixture sysfs only.
+- Removing `better-manager` or `better-manager-daemon` gives the hardware
+  back (`better-manager-daemon --release-hardware` in both prerms): the
+  keyboard's colour as above, and the battery's charge limit to what it
+  read before Better OS's first write, recorded in
+  `/var/lib/better-os/hardware-before.json`. A limit set by a version
+  before that record existed, or recorded outside 60, 80, and 100, is left
+  as it is (the removal says so) until the firmware resets it.
 - Restore checks the shared application catalog and writes nothing for an
   application that is gone; the person chooses another or clears the default.
   Two limits: an entry whose `TryExec` program is missing still counts as
@@ -577,6 +650,29 @@ GUI or dependency compiles when the relevant command was not executed.
   all three and `packaging/tests/cosmic-nested.sh`, the nested `cosmic-comp`
   every session ticket tests in; it has one output, so anything about
   several outputs runs on its headless sway until ticket 201's VM.
+- Better Patch, the Fixes page (ticket 90, `engineering/specs/better-patch.md`),
+  has run its two entries only against fixture machines in scratch
+  directories: no agent session may rebuild the person's font cache or write
+  their Flatpak overrides. Nobody has watched it find, fix, or undo either
+  fault on a real desktop; the Mutter scale read has been seen only in a
+  headless GNOME Shell. The Electron fix is offered only at one whole-number
+  scale above 1 (the case ticket 76 verified) and covers every Electron
+  version's way of choosing Wayland; that the override puts an Electron 38
+  or later app on X11 is read from Electron's and Flatpak's sources, not
+  seen. Removing Better Manager with apt undoes every applied fix that has an
+  undo, as each person `getent passwd` lists in the login range, each step
+  under `timeout -s KILL 30`, through the package's before-removal program
+  run by its maintainer scripts (a key the person changed afterwards is left
+  and named, a fix whose undo failed stays recorded), and deletes the record;
+  the rebuilt font cache stays. An encrypted home that is not mounted keeps
+  its fixes. The container check in `packaging/test-daemon-e2e.sh` runs that
+  removal under a real dpkg and `setpriv`; its first run is CI's. Maintainer
+  scripts that act in people's homes keep the account library in a variable,
+  never a temporary file, and reach only plain-named accounts on mounted
+  local homes (or with a session), within 30 s each and 120 s in all
+  (`packaging/maintainer/accounts.sh` documents the interface). The Electron
+  fix may limit the app's screen sharing to X11 windows (read from
+  Chromium's source, not tried), and the card says so before Fix.
 - The login screen watch (ticket 140, ADR 0033) has run against a real
   systemd, logind, and journal only in CI's container check
   (`packaging/boot-watch/run.sh`, a stand-in `gdm.service` that never opens
@@ -802,3 +898,18 @@ GUI or dependency compiles when the relevant command was not executed.
   with dpkg's own version string, and the component page explains it in place
   of an install button. `better-manager-cli plan` is a simulation and still
   prints a plan for it; `run` refuses.
+- Every battery icon and battery line goes through
+  `hardware_core::charge_state::battery_look` (ticket 170,
+  `engineering/specs/battery-charge-state.md`); a window never maps the
+  kernel's `status` to a picture or words of its own, never decides by hand
+  whether a charger is online (`charge_state::charger_online`) or whether the
+  machine is on battery (`ChargeState::on_battery`), and
+  `crates/hardware-core/tests/one_battery_rule.rs` fails when one does. The
+  held state's five-point window under the limit is a starting value nobody
+  has watched firmware fall through, and a start threshold opens the window
+  only when it is within 20 points of the limit. GNOME's own battery indicator
+  (42 to 48) draws a battery held at its limit like one running the machine,
+  and nothing outside the shell's code can change that; the System page's
+  charge limit card says so while it is true, until the top bar (ticket 157)
+  draws the desktop's battery. None of it has been seen on the owner's desktop
+  yet.

@@ -16,11 +16,26 @@
 //! works even when the configuration itself is the thing that is broken.
 
 use gpui::*;
-use gpui_component_assets::Assets;
 use touchpad_core::TouchpadStore;
 use touchpad_gui::{
     Locale, MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH, Page, Startup, StartupOptions, TouchpadApp,
 };
+
+/// The icon set before the kit's icons (ticket 147).
+struct Assets;
+
+impl gpui::AssetSource for Assets {
+    fn load(&self, path: &str) -> gpui::Result<Option<std::borrow::Cow<'static, [u8]>>> {
+        if let Some(svg) = better_ui::icon_set::load(path) {
+            return Ok(Some(std::borrow::Cow::Borrowed(svg)));
+        }
+        gpui_component_assets::Assets.load(path)
+    }
+
+    fn list(&self, path: &str) -> gpui::Result<Vec<gpui::SharedString>> {
+        gpui_component_assets::Assets.list(path)
+    }
+}
 
 fn main() {
     let arguments: Vec<String> = std::env::args().skip(1).collect();

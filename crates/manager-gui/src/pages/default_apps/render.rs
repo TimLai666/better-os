@@ -16,10 +16,10 @@ use better_ui::fluent::progress::{Progress, ProgressRing};
 use better_ui::fluent::settings_card::{SettingsCard, SettingsExpander, SettingsRow};
 use better_ui::fluent::toggle::{CheckBox, CheckState};
 use better_ui::fluent::{BODY, CAPTION, TITLE, label, palette};
+use better_ui::icon_set::Picture;
 use better_ui::{StatusPill, StatusTone};
 use defaults_core::{AggregateState, PlanKind, Selection};
 use gpui::*;
-use gpui_component::IconName;
 
 use super::card;
 use super::copy::page_copy;
@@ -35,16 +35,14 @@ use crate::i18n::{copy, shell};
 use crate::model::Page;
 use crate::render::{CARD_GAP, FIRST_CARD_GAP, GROUP_GAP, Row};
 
-/// Keeps a press on a control in a card's header from also opening or
-/// closing the card.
+/// Lays out the controls in a card's header. The kit keeps a press on them
+/// from also opening or closing the card (`settings_card::header_content`).
 fn inside_header(element: impl IntoElement) -> Div {
     div()
         .flex()
         .flex_wrap()
         .items_center()
         .gap(px(8.0))
-        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .child(element)
 }
 
@@ -251,21 +249,21 @@ impl ManagerApp {
             CommandBar::new("default-apps-commands")
                 .locale(locale.words())
                 .command(
-                    Command::new(c.use_better_defaults, IconName::Star)
+                    Command::new(c.use_better_defaults, Picture::SetDefault)
                         .disabled(none)
                         .on_click(Self::act(cx, move |this, _, cx| {
                             this.review_defaults(PlanKind::Apply, apply.clone(), cx)
                         })),
                 )
                 .command(
-                    Command::new(c.restore_previous_defaults, IconName::Undo)
+                    Command::new(c.restore_previous_defaults, Picture::Restore)
                         .disabled(none)
                         .on_click(Self::act(cx, move |this, _, cx| {
                             this.review_defaults(PlanKind::Restore, restore.clone(), cx)
                         })),
                 )
                 .command(
-                    Command::new(c.verify_again, IconName::Redo)
+                    Command::new(c.verify_again, Picture::Refresh)
                         .disabled(none)
                         .on_click(Self::act(cx, move |this, _, cx| {
                             this.verify_defaults(verify.clone(), cx)
@@ -467,7 +465,7 @@ impl ManagerApp {
             w.review_summary,
             !self.defaults.summary_closed,
         )
-        .icon(IconName::Info)
+        .icon(Picture::About)
         .description(if elevation.requested {
             c.skip_requires_administrator
         } else {

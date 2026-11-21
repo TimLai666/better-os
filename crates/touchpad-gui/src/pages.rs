@@ -8,19 +8,18 @@
 //! - Both a requested and an effective value are shown for every control, side
 //!   by side, because they can differ and the difference is the point.
 
+use better_ui::fluent::navigation::{NavItem, NavigationView};
+use better_ui::icon_set::Picture;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
-    ActiveTheme, Icon, IconName,
+    ActiveTheme, Disableable as _, Sizable as _, StyledExt as _,
     button::{Button, ButtonVariants},
+    h_flex,
     scroll::ScrollableElement,
-    sidebar::{
-        Sidebar, SidebarCollapsible, SidebarFooter, SidebarGroup, SidebarHeader, SidebarMenu,
-        SidebarMenuItem,
-    },
     slider::Slider,
     switch::Switch,
-    *,
+    v_flex,
 };
 use touchpad_core::{
     AccelerationProfile, ClickMethod, RestoreScope, RunState, Section, SettingId, SettingValue,
@@ -31,91 +30,61 @@ use crate::app::TouchpadApp;
 use crate::i18n::copy;
 use crate::model::{Control, Page, SettingRow};
 
-fn page_icon(page: Page) -> IconName {
+/// Each page's picture in the navigation pane (ticket 147).
+pub(crate) fn page_picture(page: Page) -> Picture {
     match page {
-        Page::Overview => IconName::LayoutDashboard,
-        Page::Pointer => IconName::Frame,
-        Page::Scrolling => IconName::ChevronsUpDown,
-        Page::Clicking => IconName::CircleCheck,
-        Page::Gestures => IconName::Maximize,
-        Page::Devices => IconName::HardDrive,
-        Page::Diagnostics => IconName::Inspector,
+        Page::Overview => Picture::Dashboard,
+        Page::Pointer => Picture::Pointer,
+        Page::Scrolling => Picture::Scrolling,
+        Page::Clicking => Picture::Click,
+        Page::Gestures => Picture::Gesture,
+        Page::Devices => Picture::Touchpad,
+        Page::Diagnostics => Picture::Diagnostics,
     }
 }
 
 impl TouchpadApp {
-    fn sidebar(&self, compact: bool, cx: &mut Context<Self>) -> AnyElement {
+    /// The kit's navigation pane, as Better Manager draws the same Touchpad
+    /// pages: every page, and `content` beside them. In a `narrow` window it
+    /// is compact until opened, and an open pane floats over the content as
+    /// Better Manager's does; in a wide one it is open until closed
+    /// (`PaneChoice::layout`).
+    fn navigation(&self, content: AnyElement, narrow: bool, cx: &mut Context<Self>) -> AnyElement {
+        let layout = self.pane.layout(narrow);
         let c = copy(self.model.locale());
-        let menu = SidebarMenu::new().children(Page::ALL.map(|page| {
-            SidebarMenuItem::new(page.label(c))
-                .icon(page_icon(page))
-                .active(self.page == page)
-                .on_click(cx.listener(move |this, _, _, cx| this.navigate(page, cx)))
-        }));
-
-        Sidebar::new("touchpad-sidebar")
-            .collapsible(SidebarCollapsible::Icon)
-            .collapsed(compact)
-            .w(px(232.0))
-            .header(
-                SidebarHeader::new()
-                    .child(
-                        div()
-                            .size_8()
-                            .flex_shrink_0()
-                            .rounded(cx.theme().radius)
-                            .bg(cx.theme().primary)
-                            .text_color(cx.theme().primary_foreground)
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .child(Icon::new(IconName::Frame)),
-                    )
-                    .when(!compact, |header| {
-                        header.child(
-                            v_flex()
-                                .flex_1()
-                                .min_w_0()
-                                .child(div().font_semibold().child(c.brand))
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child(c.application),
-                                ),
-                        )
-                    }),
-            )
-            .child(SidebarGroup::new(c.nav_overview).child(menu))
-            .footer(
-                SidebarFooter::new().child(
-                    h_flex()
-                        .min_w_0()
-                        .items_center()
-                        .gap_2()
-                        .child(Icon::new(IconName::Settings).small())
-                        .when(!compact, |row| {
-                            row.child(
-                                v_flex()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .child(
-                                        div()
-                                            .text_sm()
-                                            .font_semibold()
-                                            .child(self.model.session().describe()),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(cx.theme().muted_foreground)
-                                            .child(self.model.backend_status().name),
-                                    ),
-                            )
-                        }),
-                ),
-            )
+        let entries = Page::ALL
+            .iter()
+            .map(|page| NavItem::new(page.label(c), page_picture(*page)).entry())
+            .collect();
+        let selected = Page::ALL.iter().position(|page| *page == self.page);
+        let select = cx.entity().downgrade();
+        let toggle = select.clone();
+        NavigationView::new("touchpad-nav", entries, selected)
+            .compact(layout.compact)
+            .overlay(layout.overlay)
+            .title(c.application)
+            .locale(self.kit_locale())
+            .on_select(move |index, _, cx| {
+                if let Some(page) = Page::ALL.get(index).copied() {
+                    let _ = select.update(cx, |app, cx| app.navigate(page, cx));
+                }
+            })
+            .on_toggle(move |compact, _, cx| {
+                let _ = toggle.update(cx, |app, cx| {
+                    app.pane.toggle(compact, narrow);
+                    cx.notify();
+                });
+            })
+            .content(content)
             .into_any_element()
+    }
+
+    /// The kit's words in this window's language.
+    fn kit_locale(&self) -> better_ui::fluent::words::Locale {
+        match self.model.locale().resolved() {
+            crate::i18n::Locale::ZhTw => better_ui::fluent::words::Locale::TraditionalChinese,
+            _ => better_ui::fluent::words::Locale::English,
+        }
     }
 
     fn top_bar(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -134,11 +103,33 @@ impl TouchpadApp {
             .border_color(cx.theme().border)
             .bg(cx.theme().background)
             .child(
-                div()
+                // The title takes the row's free width, as Better Awake's
+                // does. Left at an automatic basis, this column made the
+                // whole top bar as tall as the content area under it and
+                // the page got no height at all (seen in a sandbox, ticket
+                // 147); `flex_1` or a block both keep the bar at its own
+                // height.
+                v_flex()
+                    .flex_1()
                     .min_w_0()
-                    .text_lg()
-                    .font_semibold()
-                    .child(format!("{} {}", c.brand, c.application)),
+                    .child(
+                        div()
+                            .min_w_0()
+                            .text_lg()
+                            .font_semibold()
+                            .child(format!("{} {}", c.brand, c.application)),
+                    )
+                    .child(
+                        div()
+                            .min_w_0()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(format!(
+                                "{} · {}",
+                                self.model.session().describe(),
+                                self.model.backend_status().name
+                            )),
+                    ),
             )
             .child(
                 h_flex()
@@ -938,8 +929,12 @@ impl TouchpadApp {
 
 impl Render for TouchpadApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let page_scroll = window
+            .use_keyed_state("page-scroll", cx, |_, _| ScrollHandle::new())
+            .read(cx)
+            .clone();
         let c = copy(self.model.locale());
-        let compact = window.viewport_size().width < px(COMPACT_VIEWPORT_WIDTH);
+        let narrow = window.viewport_size().width < px(COMPACT_VIEWPORT_WIDTH);
         let banner = self.model.result_banner();
         let page = self.render_page(cx);
 
@@ -949,72 +944,92 @@ impl Render for TouchpadApp {
             .relative()
             .size_full()
             .child(better_ui::window_chrome::title_bar(
-                Icon::new(IconName::Frame).small(),
+                better_ui::icon_set::picture(better_ui::icon_set::Picture::Touchpad, 16.0),
                 format!("{} {}", c.brand, c.application),
                 cx.theme().foreground,
             ))
-            .child(
-                div().relative().flex_1().min_h_0().child(
-                    h_flex()
+            .child(div().relative().flex_1().min_h_0().child({
+                // The page keeps 20px from its sides, clear of the window's
+                // bottom trailing corner it reaches; its scrollbar's track
+                // ends above the curve (ticket 141).
+                let content =
+                    v_flex()
                         .size_full()
                         .min_w_0()
-                        .bg(cx.theme().secondary)
-                        .child(self.sidebar(compact, cx))
+                        .child(self.top_bar(cx))
+                        .when(self.model.safe_mode(), |this| {
+                            this.child(
+                                div()
+                                    .w_full()
+                                    .px_5()
+                                    .py_2()
+                                    .bg(cx.theme().warning)
+                                    .text_sm()
+                                    .text_color(cx.theme().warning_foreground)
+                                    .child(c.safe_mode_banner),
+                            )
+                        })
+                        .when_some(banner, |this, (state, text)| {
+                            let background = match state {
+                                RunState::Failed => cx.theme().danger,
+                                RunState::PartiallySupported | RunState::AwaitingSignOut => {
+                                    cx.theme().warning
+                                }
+                                _ => cx.theme().success,
+                            };
+                            this.child(
+                                div()
+                                    .w_full()
+                                    .px_5()
+                                    .py_2()
+                                    .bg(background)
+                                    .text_sm()
+                                    .child(text),
+                            )
+                        })
                         .child(
-                            v_flex()
-                                .h_full()
+                            div()
+                                .relative()
                                 .flex_1()
-                                .min_w_0()
-                                .child(self.top_bar(cx))
-                                .when(self.model.safe_mode(), |this| {
-                                    this.child(
-                                        div()
-                                            .w_full()
-                                            .px_5()
-                                            .py_2()
-                                            .bg(cx.theme().warning)
-                                            .text_sm()
-                                            .text_color(cx.theme().warning_foreground)
-                                            .child(c.safe_mode_banner),
-                                    )
-                                })
-                                .when_some(banner, |this, (state, text)| {
-                                    let background = match state {
-                                        RunState::Failed => cx.theme().danger,
-                                        RunState::PartiallySupported
-                                        | RunState::AwaitingSignOut => cx.theme().warning,
-                                        _ => cx.theme().success,
-                                    };
-                                    this.child(
-                                        div()
-                                            .w_full()
-                                            .px_5()
-                                            .py_2()
-                                            .bg(background)
-                                            .text_sm()
-                                            .child(text),
-                                    )
-                                })
+                                .min_h_0()
                                 .child(
-                                    div().flex_1().min_h_0().overflow_y_scrollbar().p_5().child(
-                                        div()
-                                            .w_full()
-                                            .flex()
-                                            .justify_center()
-                                            .child(div().w_full().max_w(px(1160.0)).child(page)),
-                                    ),
-                                ),
-                        ),
-                ),
-            )
-            .children(self.update_restart.toast_layer(
-                match self.model.locale().resolved() {
-                    crate::i18n::Locale::ZhTw => {
-                        better_ui::fluent::words::Locale::TraditionalChinese
-                    }
-                    _ => better_ui::fluent::words::Locale::English,
-                },
-                cx,
-            ))
+                                    div()
+                                        .id("page-scroll")
+                                        .size_full()
+                                        .overflow_y_scroll()
+                                        .track_scroll(&page_scroll)
+                                        .p_5()
+                                        .child(
+                                            div().w_full().flex().justify_center().child(
+                                                div().w_full().max_w(px(1160.0)).child(page),
+                                            ),
+                                        ),
+                                )
+                                .child(better_ui::window_chrome::corner_scrollbar(
+                                    &page_scroll,
+                                    window,
+                                    cx,
+                                )),
+                        );
+                let content =
+                    better_ui::window_chrome::corner_clip(px(20.0), content).into_any_element();
+                self.navigation(content, narrow, cx)
+            }))
+            .children(self.update_restart.toast_layer(self.kit_locale(), cx))
+    }
+}
+
+#[cfg(test)]
+mod navigation_tests {
+    use std::collections::HashSet;
+
+    use super::page_picture;
+    use crate::model::Page;
+
+    /// Every page has a picture of its own in the navigation pane.
+    #[test]
+    fn every_page_has_its_own_picture() {
+        let pictures: HashSet<_> = Page::ALL.iter().map(|page| page_picture(*page)).collect();
+        assert_eq!(pictures.len(), Page::ALL.len());
     }
 }

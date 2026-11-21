@@ -14,6 +14,7 @@
 
 use std::rc::Rc;
 
+use crate::icon_set::{Glyph, Placement};
 use gpui::{
     AnyElement, App, AppContext as _, ClickEvent, ElementId, Entity, FocusHandle,
     InteractiveElement, IntoElement, ParentElement, RenderOnce, SharedString,
@@ -35,7 +36,7 @@ pub enum MenuEntry {
     Separator,
     Submenu {
         label: SharedString,
-        icon: Option<IconName>,
+        icon: Option<Glyph>,
         disabled: bool,
         entries: Vec<MenuEntry>,
     },
@@ -45,10 +46,9 @@ pub enum MenuEntry {
 #[derive(Clone)]
 pub struct MenuItem {
     pub label: SharedString,
-    pub icon: Option<IconName>,
-    /// The window's own SVG, drawn instead of `icon` (a command bar
-    /// command that moved behind `…` keeps the glyph it had in the bar).
-    pub icon_path: Option<SharedString>,
+    /// A symbol, a window's own SVG, or a picture (drawn as beside a
+    /// label: DESIGN.md's Icons).
+    pub icon: Option<Glyph>,
     /// The keyboard shortcut text, such as `Ctrl+C`. It is shown, not bound:
     /// the window binds the shortcut itself.
     pub shortcut: Option<SharedString>,
@@ -65,7 +65,6 @@ impl MenuItem {
         Self {
             label: label.into(),
             icon: None,
-            icon_path: None,
             shortcut: None,
             disabled: false,
             shown: ShownState::Live,
@@ -80,14 +79,14 @@ impl MenuItem {
         self
     }
 
-    pub fn icon(mut self, icon: IconName) -> Self {
-        self.icon = Some(icon);
+    pub fn icon(mut self, icon: impl Into<Glyph>) -> Self {
+        self.icon = Some(icon.into());
         self
     }
 
     /// Draws the window's own SVG at `path` instead of a kit icon.
     pub fn icon_path(mut self, path: impl Into<SharedString>) -> Self {
-        self.icon_path = Some(path.into());
+        self.icon = Some(Glyph::Path(path.into()));
         self
     }
 
@@ -147,14 +146,13 @@ impl MenuEntry {
         self.icon().is_some() || matches!(self, MenuEntry::Item(item) if item.checked.is_some())
     }
 
-    fn icon(&self) -> Option<Icon> {
+    fn icon(&self) -> Option<Glyph> {
         match self {
-            MenuEntry::Item(item) => match (item.checked, &item.icon_path) {
-                (Some(true), _) => Some(Icon::new(IconName::Check)),
-                (_, Some(path)) => Some(Icon::empty().path(path.clone())),
-                _ => item.icon.clone().map(Icon::new),
+            MenuEntry::Item(item) => match item.checked {
+                Some(true) => Some(Glyph::Symbol(IconName::Check)),
+                _ => item.icon.clone(),
             },
-            MenuEntry::Submenu { icon, .. } => icon.clone().map(Icon::new),
+            MenuEntry::Submenu { icon, .. } => icon.clone(),
             MenuEntry::Separator => None,
         }
     }
@@ -472,12 +470,13 @@ impl MenuPanel {
 fn row(
     id: ElementId,
     label: SharedString,
-    icon: Option<Icon>,
+    icon: Option<Glyph>,
     icon_column: bool,
     trailing: Option<AnyElement>,
     state: Option<Interaction>,
     p: &Palette,
 ) -> gpui::Stateful<gpui::Div> {
+    let disabled = state == Some(Interaction::Disabled);
     let (background, foreground) = item_colors(state.unwrap_or(Interaction::Rest), p);
     // The inset shape is drawn inside a hit area that fills the row, so the
     // pixels between two items belong to one of them (`hit_area`).
@@ -500,12 +499,9 @@ fn row(
         look = group_look(look, hover, pressed);
     }
     if icon_column {
-        look = look.child(
-            div()
-                .size(super::size::ICON)
-                .flex_none()
-                .children(icon.map(|icon| icon.size(super::size::ICON))),
-        );
+        look = look.child(div().size(super::size::ICON).flex_none().children(
+            icon.map(|icon| icon.element(super::size::ICON, Placement::Labelled, p, disabled)),
+        ));
     }
     let look = look
         .child(div().flex_1().whitespace_nowrap().child(label))
@@ -514,8 +510,9 @@ fn row(
 }
 
 impl RenderOnce for MenuPanel {
-    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let p = palette(cx);
+        let max_height = super::window_frame::overlay_max_height(window, cx);
         let (highlight, submenu, sub_highlight) = match &self.state {
             Some(state) => {
                 let s = state.read(cx);
@@ -534,8 +531,11 @@ impl RenderOnce for MenuPanel {
         // Drawn before its items, so a submenu (drawn with them) counts as
         // a panel opened from this one (`light_dismiss`).
         let order = PanelOrder::default();
+        // A menu taller than the window scrolls rather than being cut.
         let mut panel = panel_frame(div().id(self.id.clone()), p)
             .py(px(2.0))
+            .max_h(max_height)
+            .overflow_y_scroll()
             .occlude()
             .child(panel_marker(&order));
         if let Some(state) = state.clone() {
@@ -676,7 +676,7 @@ impl RenderOnce for MenuPanel {
                     let mut element = row(
                         ElementId::named_usize("submenu", index),
                         label.clone(),
-                        icon.clone().map(Icon::new),
+                        icon.clone(),
                         icon_column,
                         Some(chevron),
                         shown_state,
@@ -721,12 +721,20 @@ impl RenderOnce for MenuPanel {
                         // back inside the window when the menu already sits
                         // at its edge, so a submenu of a menu opened at the
                         // right edge stays on screen.
-                        element = element.child(
-                            div().absolute().top(px(-2.0)).left(relative(1.0)).child(
-                                deferred(anchored().snap_to_window_with_margin(px(8.0)).child(sub))
+                        // Beside the row when it fits, on the parent's
+                        // other side when it does not, inside the window's
+                        // rounded shape either way (ticket 141).
+                        let span = super::window_frame::RowSpan::default();
+                        element = element
+                            .child(super::window_frame::row_span_probe(span.clone()))
+                            .child(
+                                div().absolute().top(px(-2.0)).left(relative(1.0)).child(
+                                    deferred(anchored().child(
+                                        super::window_frame::inside_window(sub).beside(span),
+                                    ))
                                     .with_priority(2),
-                            ),
-                        );
+                                ),
+                            );
                     }
                     element.into_any_element()
                 }
@@ -746,12 +754,15 @@ struct SubmenuPanel {
 }
 
 impl RenderOnce for SubmenuPanel {
-    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let p = palette(cx);
+        let max_height = super::window_frame::overlay_max_height(window, cx);
         let entries = self.panel.entries;
         let icon_column = entries.iter().any(MenuEntry::needs_icon_column);
         let mut panel = panel_frame(div().id(self.panel.id), p)
             .py(px(2.0))
+            .max_h(max_height)
+            .overflow_y_scroll()
             .occlude()
             .child(panel_marker(&PanelOrder::default()));
         for (index, entry) in entries.into_iter().enumerate() {
@@ -925,13 +936,9 @@ impl ContextMenu {
 impl RenderOnce for ContextMenu {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
         let panel = MenuPanel::new(self.id, self.entries).state(self.state, self.return_focus);
-        deferred(
-            anchored()
-                .position(self.position)
-                .snap_to_window_with_margin(px(8.0))
-                .child(panel),
-        )
-        .with_priority(1)
+        // Inside the window's rounded shape, not the shadow around it
+        // (ticket 141).
+        super::window_frame::float_at(self.position, panel)
     }
 }
 

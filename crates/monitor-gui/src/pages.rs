@@ -19,9 +19,9 @@ use better_ui::fluent::{
     BODY, BODY_STRONG, CAPTION, Interaction, Palette, SUBTITLE, label, palette, radius, spacing,
     text, with_alpha,
 };
+use better_ui::icon_set::{self, Picture};
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
-use gpui_component::{Icon, IconName};
 use monitor_core::CollectorHealth;
 use monitor_views::overview::ResourceVerdict;
 use monitor_views::{ProcessColumn, ProcessKey, SortDirection};
@@ -182,7 +182,7 @@ impl MonitorApp {
         &self,
         id: &'static str,
         title: &'static str,
-        icon: IconName,
+        icon: Picture,
         status: Option<(String, Rgba)>,
         figure: Option<String>,
         chart: Option<(Vec<ChartSeries>, f64)>,
@@ -231,7 +231,7 @@ impl MonitorApp {
                     .items_center()
                     .gap(spacing::SM)
                     .min_w_0()
-                    .child(Icon::new(icon).size(px(16.0)).text_color(p.text_secondary))
+                    .child(icon_set::picture(icon, 16.0))
                     .child(label(title, BODY_STRONG, p.text_primary).flex_1().min_w_0())
                     .children(status.map(|(word, color)| {
                         text(div(), CAPTION)
@@ -267,7 +267,7 @@ impl MonitorApp {
         self.resource_card(
             "card-cpu",
             c.cpu,
-            IconName::Cpu,
+            Picture::Cpu,
             Some((
                 i18n::verdict_word(verdict, self.locale).to_string(),
                 verdict_color(verdict, p),
@@ -302,7 +302,7 @@ impl MonitorApp {
         self.resource_card(
             "card-memory",
             c.memory,
-            IconName::MemoryStick,
+            Picture::Memory,
             Some((
                 i18n::verdict_word(verdict, self.locale).to_string(),
                 verdict_color(verdict, p),
@@ -342,7 +342,7 @@ impl MonitorApp {
         self.resource_card(
             "card-disk",
             c.disk,
-            IconName::HardDrive,
+            Picture::Drive,
             Some((
                 i18n::verdict_word(verdict, self.locale).to_string(),
                 verdict_color(verdict, p),
@@ -395,7 +395,7 @@ impl MonitorApp {
         self.resource_card(
             "card-network",
             c.network,
-            IconName::Network,
+            Picture::Network,
             status,
             figure,
             chart,
@@ -418,7 +418,7 @@ impl MonitorApp {
             return self.resource_card(
                 "card-gpu",
                 c.gpu,
-                IconName::Frame,
+                Picture::Gpu,
                 None,
                 None,
                 None,
@@ -446,7 +446,7 @@ impl MonitorApp {
         self.resource_card(
             "card-gpu",
             c.gpu,
-            IconName::Frame,
+            Picture::Gpu,
             None,
             gpu.utilization.map(share),
             Some((
@@ -474,7 +474,7 @@ impl MonitorApp {
             return self.resource_card(
                 "card-battery",
                 c.battery,
-                IconName::Battery,
+                Picture::Battery,
                 None,
                 None,
                 None,
@@ -488,15 +488,15 @@ impl MonitorApp {
             );
         };
         let p = palette(cx);
+        let look = i18n::battery_look(&self.readings, self.locale);
+        // The header says the state in short, the figure is every battery's
+        // charge together, and the foot says what the header does not.
         self.resource_card(
             "card-battery",
             c.battery,
-            IconName::Battery,
-            Some((
-                i18n::battery_status(battery.status.as_deref(), self.locale).to_string(),
-                p.text_secondary,
-            )),
-            battery.charge.map(share),
+            i18n::battery_picture(&look),
+            Some((look.short, p.text_secondary)),
+            self.readings.battery_charge().map(share),
             Some((
                 vec![ChartSeries::new(
                     self.live
@@ -505,7 +505,7 @@ impl MonitorApp {
                 )],
                 100.0,
             )),
-            i18n::battery_line(&battery, self.locale),
+            i18n::battery_card_line(&self.readings, &battery, self.locale),
             Resource::Battery,
             cx,
         )
@@ -956,11 +956,12 @@ impl MonitorApp {
             tiles.push((
                 Resource::Battery,
                 c.battery.to_string(),
-                match battery.charge {
+                match r.battery_charge() {
+                    // The short words: the row is narrow.
                     Some(charge) => format!(
                         "{} · {}",
                         share(charge),
-                        i18n::battery_status(battery.status.as_deref(), self.locale)
+                        i18n::battery_look(r, self.locale).short
                     ),
                     None => c.not_available.to_string(),
                 },
@@ -1964,7 +1965,8 @@ impl MonitorApp {
             .span_label(self.span_label())
             .minimum_label("0"),
         );
-        let charging = battery.status.as_deref() == Some("charging");
+        let look = i18n::battery_look(&self.readings, self.locale);
+        let charging = look.state == hardware_core::charge_state::ChargeState::Charging;
         let stats = div()
             .flex()
             .flex_wrap()
@@ -1978,26 +1980,30 @@ impl MonitorApp {
             ))
             .child(crate::shell::stat(
                 c.column_state,
-                i18n::battery_status(battery.status.as_deref(), self.locale).to_string(),
+                look.words.clone(),
                 true,
                 p,
             ))
-            .child(stat_or_missing(
-                if charging {
-                    c.time_to_full
-                } else {
-                    c.time_left
-                },
-                if charging {
-                    battery.time_to_full
-                } else {
-                    battery.time_remaining
-                }
-                .map(|s| i18n::hours_minutes(s, self.locale)),
-                true,
-                c,
-                p,
-            ))
+            // A time to empty or to full only while the charge moves: held
+            // or full, "not available" would read as a fault.
+            .when(look.state.has_time(), |stats| {
+                stats.child(stat_or_missing(
+                    if charging {
+                        c.time_to_full
+                    } else {
+                        c.time_left
+                    },
+                    if charging {
+                        battery.time_to_full
+                    } else {
+                        battery.time_remaining
+                    }
+                    .map(|s| i18n::hours_minutes(s, self.locale)),
+                    true,
+                    c,
+                    p,
+                ))
+            })
             .child(stat_or_missing(
                 if charging { c.charging_at } else { c.drawing },
                 battery.power_watts.map(crate::tables::watts),
@@ -2072,7 +2078,7 @@ impl MonitorApp {
             .gap(spacing::LG)
             .child(self.detail_header(
                 c.battery.to_string(),
-                Some(i18n::battery_line(&battery, self.locale)),
+                Some(i18n::battery_line(&self.readings, &battery, self.locale)),
                 p,
             ))
             .child(chart)
@@ -2089,7 +2095,7 @@ impl MonitorApp {
     fn battery_use_section(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let p = palette(cx);
         let c = copy(self.locale);
-        let on_battery = self.readings.on_battery == Some(true);
+        let on_battery = self.readings.on_battery() == Some(true);
         let now: AnyElement = if on_battery {
             self.top_apps_table(
                 "battery-now",
@@ -2386,7 +2392,7 @@ impl MonitorApp {
             }));
 
         let mut grouping = SettingsExpander::new("grouping", c.grouping_title, self.grouping_open)
-            .icon(IconName::GalleryVerticalEnd)
+            .icon(Picture::ProcessList)
             .description(c.grouping_description)
             .on_toggle(Self::act_with(cx, |this, open: bool, _, _| {
                 this.grouping_open = open
@@ -2409,7 +2415,7 @@ impl MonitorApp {
             crate::app::Collection::Unavailable { .. } => c.collection_unavailable,
         };
         let mut sources = SettingsExpander::new("sources", c.data_sources, self.sources_open)
-            .icon(IconName::CircleCheck)
+            .icon(Picture::Health)
             .description(source)
             .on_toggle(Self::act_with(cx, |this, open: bool, _, _| {
                 this.sources_open = open
@@ -2445,20 +2451,20 @@ impl MonitorApp {
             .child(section_title(c.appearance_and_language, p))
             .child(
                 SettingsCard::new("appearance-card", c.appearance)
-                    .icon(IconName::Palette)
+                    .icon(Picture::Palette)
                     .description(c.appearance_description)
                     .content(appearance),
             )
             .child(
                 SettingsCard::new("language-card", c.language)
-                    .icon(IconName::Globe)
+                    .icon(Picture::Globe)
                     .description(c.language_description)
                     .content(language),
             )
             .child(section_title(c.privacy, p))
             .child(
                 SettingsCard::new("command-lines-card", c.show_command_lines)
-                    .icon(IconName::SquareTerminal)
+                    .icon(Picture::Terminal)
                     .description(c.privacy_description)
                     .content(command_lines),
             )
@@ -2467,12 +2473,12 @@ impl MonitorApp {
             .child(sources)
             .child(
                 SettingsCard::new("sampling-card", c.sampling)
-                    .icon(IconName::Loader)
+                    .icon(Picture::Timer)
                     .description(c.sampling_description),
             )
             .child(
                 SettingsCard::new("about-card", c.app_name)
-                    .icon(IconName::Info)
+                    .icon(Picture::About)
                     .description(i18n::version_line(env!("CARGO_PKG_VERSION"), self.locale)),
             )
             .into_any_element()

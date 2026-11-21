@@ -1,16 +1,13 @@
 //! The frame every section is drawn inside: the sidebar, the top bar, and the
 //! keyboard bindings that reach each section without a pointing device.
 
-use gpui::prelude::FluentBuilder as _;
+use better_ui::fluent::navigation::{NavItem, NavigationView};
+use better_ui::icon_set::Picture;
 use gpui::*;
 use gpui_component::{
-    ActiveTheme, Icon, IconName,
+    ActiveTheme, StyledExt as _,
     button::{Button, ButtonVariants},
-    sidebar::{
-        Sidebar, SidebarCollapsible, SidebarFooter, SidebarGroup, SidebarHeader, SidebarMenu,
-        SidebarMenuItem,
-    },
-    *,
+    h_flex, v_flex,
 };
 
 use crate::{app::AwakeApp, i18n::copy, model::Section};
@@ -58,86 +55,79 @@ pub(crate) fn key_bindings() -> Vec<KeyBinding> {
     ]
 }
 
-fn section_icon(section: Section) -> IconName {
+/// Each section's picture in the navigation pane (ticket 147).
+pub(crate) fn section_picture(section: Section) -> Picture {
     match section {
-        Section::Status => IconName::LayoutDashboard,
-        Section::QuickSessions => IconName::Play,
-        Section::Rules => IconName::Bot,
-        Section::SessionDefaults => IconName::Settings2,
-        Section::Battery => IconName::Battery,
-        Section::History => IconName::Inspector,
-        Section::Diagnostics => IconName::Cpu,
-        Section::Settings => IconName::Settings,
+        Section::Status => Picture::Dashboard,
+        Section::QuickSessions => Picture::Timer,
+        Section::Rules => Picture::Automation,
+        Section::SessionDefaults => Picture::Checklist,
+        Section::Battery => Picture::Battery,
+        Section::History => Picture::History,
+        Section::Diagnostics => Picture::Diagnostics,
+        Section::Settings => Picture::Settings,
     }
 }
 
+/// The section a pane index stands for: the sections in [`Section::ALL`]'s
+/// order, Settings last in the pane's footer, which the kit numbers after
+/// the list.
+pub(crate) fn section_at(index: usize) -> Option<Section> {
+    Section::ALL.get(index).copied()
+}
+
 impl AwakeApp {
-    fn nav_item(&self, section: Section, cx: &mut Context<Self>) -> SidebarMenuItem {
+    /// The kit's navigation pane, as Better Manager draws the same Keep
+    /// awake pages: the sections, Settings in the footer, and `content`
+    /// beside them. In a `narrow` window it is compact until opened, and an
+    /// open pane floats over the content as Better Manager's does; in a wide
+    /// one it is open until closed (`PaneChoice::layout`).
+    pub(crate) fn navigation(
+        &self,
+        content: AnyElement,
+        narrow: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let layout = self.pane.layout(narrow);
         let c = copy(self.locale);
-        SidebarMenuItem::new(section.title(c))
-            .icon(section_icon(section))
-            .active(self.section == section)
-            .on_click(cx.listener(move |this, _, _, cx| this.navigate(section, cx)))
+        let item = |section: Section| NavItem::new(section.title(c), section_picture(section));
+        let entries = Section::ALL
+            .iter()
+            .filter(|section| **section != Section::Settings)
+            .map(|section| item(*section).entry())
+            .collect();
+        let selected = Section::ALL
+            .iter()
+            .position(|section| *section == self.section);
+        let select = cx.entity().downgrade();
+        let toggle = select.clone();
+        NavigationView::new("awake-nav", entries, selected)
+            .footer(vec![item(Section::Settings)])
+            .compact(layout.compact)
+            .overlay(layout.overlay)
+            .title(c.application_name)
+            .locale(self.kit_locale())
+            .on_select(move |index, _, cx| {
+                if let Some(section) = section_at(index) {
+                    let _ = select.update(cx, |app, cx| app.navigate(section, cx));
+                }
+            })
+            .on_toggle(move |compact, _, cx| {
+                let _ = toggle.update(cx, |app, cx| {
+                    app.pane.toggle(compact, narrow);
+                    cx.notify();
+                });
+            })
+            .content(content)
+            .into_any_element()
     }
 
-    pub(crate) fn sidebar(&self, compact: bool, cx: &mut Context<Self>) -> AnyElement {
-        let c = copy(self.locale);
-        let menu =
-            SidebarMenu::new().children(Section::ALL.map(|section| self.nav_item(section, cx)));
-
-        Sidebar::new("awake-sidebar")
-            .collapsible(SidebarCollapsible::Icon)
-            .collapsed(compact)
-            .w(px(248.0))
-            .header(
-                SidebarHeader::new()
-                    .child(
-                        div()
-                            .size_8()
-                            .flex_shrink_0()
-                            .rounded(cx.theme().radius)
-                            .bg(cx.theme().primary)
-                            .text_color(cx.theme().primary_foreground)
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .child(Icon::new(IconName::Sun)),
-                    )
-                    .when(!compact, |header| {
-                        header.child(
-                            v_flex()
-                                .flex_1()
-                                .min_w_0()
-                                .child(div().font_semibold().child(c.application_name))
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child(c.application_tagline),
-                                ),
-                        )
-                    }),
-            )
-            .child(SidebarGroup::new(c.navigation).child(menu))
-            .footer(
-                SidebarFooter::new().child(
-                    h_flex()
-                        .min_w_0()
-                        .items_center()
-                        .gap_2()
-                        .child(Icon::new(IconName::Info).small())
-                        .when(!compact, |row| {
-                            row.child(
-                                div()
-                                    .min_w_0()
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(c.keyboard_hint),
-                            )
-                        }),
-                ),
-            )
-            .into_any_element()
+    /// The kit's words in this window's language.
+    pub(crate) fn kit_locale(&self) -> better_ui::fluent::words::Locale {
+        match self.locale.resolved() {
+            crate::i18n::Locale::ZhTw => better_ui::fluent::words::Locale::TraditionalChinese,
+            _ => better_ui::fluent::words::Locale::English,
+        }
     }
 
     pub(crate) fn top_bar(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -177,16 +167,62 @@ impl AwakeApp {
                             .text_sm()
                             .text_color(cx.theme().muted_foreground)
                             .child(summary),
+                    )
+                    .child(
+                        h_flex()
+                            .min_w_0()
+                            .gap_2()
+                            .items_center()
+                            .child(better_ui::icon_set::picture(Picture::Keyboard, 16.0))
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(c.keyboard_hint),
+                            ),
                     ),
             )
             .child(
+                // The kit's loading ring takes the icon's place while busy.
                 Button::new("refresh")
                     .primary()
-                    .icon(Icon::empty().path(better_ui::fluent::glyphs::REFRESH))
+                    .icon(crate::components::action_icon(
+                        better_ui::icon_set::Picture::Refresh,
+                        true,
+                        false,
+                        cx,
+                    ))
                     .label(c.refresh)
                     .loading(self.busy)
                     .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
             )
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod navigation_tests {
+    use std::collections::HashSet;
+
+    use super::{section_at, section_picture};
+    use crate::model::Section;
+
+    /// The kit numbers the pane's items in order and its footer after them,
+    /// so every index the pane reports names one section, Settings is the
+    /// footer's, and every section has a picture of its own.
+    #[test]
+    fn every_pane_index_names_its_section_and_settings_is_the_footer() {
+        let list = Section::ALL
+            .iter()
+            .filter(|section| **section != Section::Settings)
+            .count();
+        assert_eq!(section_at(list), Some(Section::Settings));
+        for (index, section) in Section::ALL.iter().enumerate() {
+            assert_eq!(section_at(index), Some(*section));
+        }
+        assert_eq!(section_at(Section::ALL.len()), None);
+        let pictures: HashSet<_> = Section::ALL.iter().map(|s| section_picture(*s)).collect();
+        assert_eq!(pictures.len(), Section::ALL.len());
     }
 }

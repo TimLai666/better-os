@@ -112,6 +112,7 @@ export RUST_FONTCONFIG_DLOPEN="${RUST_FONTCONFIG_DLOPEN:-1}"
 "$ROOT_DIR/packaging/generate-third-party-notices.sh" --check
 cargo build --release \
     -p manager-gui \
+    -p patch-platform \
     -p manager-cli \
     -p manager-daemon \
     -p monitor-gui \
@@ -173,22 +174,61 @@ PACKAGE_AUTOSTART_OVERRIDES=""
 # only files carrying it.
 AUTOSTART_OVERRIDE_MARK='X-BetterOS-HiddenBy=better-touchpad'
 
+# The block a maintainer script uses to act for each person (see the top of
+# packaging/maintainer/accounts.sh). The library (its header, accounts.sh,
+# account-step.sh, and one fragment) is kept in a shell variable, never in a
+# file: nothing in /tmp or $TMPDIR can be swapped for root to run, and a
+# missing or full temporary directory cannot fail the script. It is built
+# only for the actions in $4, and neither building it nor the call can fail
+# the script. $1 the fragment's name under packaging/maintainer, $2 its
+# header lines, $3 the call, $4 the case pattern of the actions that need it.
+account_block() {
+    local fragment="$1"
+    local header="$2"
+    local call="$3"
+    local actions="$4"
+    printf '\n# Acting for each person (packaging/maintainer/accounts.sh).\n'
+    # shellcheck disable=SC2016 # expanded by the maintainer script
+    printf 'case "${1:-}" in\n'
+    printf '    %s)\n' "$actions"
+    printf "        better_os_account_library=\"\$(cat <<'BETTER_OS_ACCOUNT_LIB'\n"
+    printf "better_os_login_defs='/etc/login.defs'\n"
+    printf "better_os_getent='getent'\n"
+    printf "better_os_setpriv='setpriv'\n"
+    printf "better_os_mounts='/proc/self/mounts'\n"
+    printf "better_os_session_root='/run/user'\n"
+    printf "better_os_step_seconds='30'\n"
+    printf "better_os_total_seconds='120'\n"
+    printf '%s\n' "$header"
+    cat "$ROOT_DIR/packaging/maintainer/accounts.sh"
+    cat "$ROOT_DIR/packaging/maintainer/account-step.sh"
+    cat "$ROOT_DIR/packaging/maintainer/$fragment.sh"
+    printf 'BETTER_OS_ACCOUNT_LIB\n'
+    printf ')" || better_os_account_library=""\n'
+    # shellcheck disable=SC2016 # expanded by the maintainer script
+    printf '        if [ -n "$better_os_account_library" ]; then\n'
+    # shellcheck disable=SC2016 # expanded by the maintainer script
+    printf '            { eval "$better_os_account_library" && %s; } || true\n' "$call"
+    printf '        fi\n'
+    printf '        ;;\n'
+    printf 'esac\n'
+}
+
 # A package whose window can hide another program's autostart entry gets a
 # postrm built from packaging/maintainer/autostart-overrides.sh, which removes
 # those overrides when the package is removed: nothing a component added
 # outlives it.
 write_autostart_override_postrm() {
     local staging_dir="$1"
-    {
-        printf '#!/bin/sh\nset -e\n\n'
-        printf "better_os_passwd_file='/etc/passwd'\n"
-        printf "better_os_login_defs='/etc/login.defs'\n"
+    local header
+    header="$(
         printf "better_os_override_mark='%s'\n" "$AUTOSTART_OVERRIDE_MARK"
-        printf "better_os_override_files='%s'\n\n" "$PACKAGE_AUTOSTART_OVERRIDES"
-        cat "$ROOT_DIR/packaging/maintainer/autostart-overrides.sh"
-        printf '\n'
+        printf "better_os_override_files='%s'" "$PACKAGE_AUTOSTART_OVERRIDES"
+    )"
+    {
+        printf '#!/bin/sh\nset -e\n'
         # shellcheck disable=SC2016 # expanded by the maintainer script
-        printf 'better_os_forget_autostart_overrides "$1" || true\n'
+        account_block autostart-overrides "$header" 'better_os_forget_autostart_overrides "$1"' 'remove | purge'
     } > "$staging_dir/DEBIAN/postrm"
     chmod 0755 "$staging_dir/DEBIAN/postrm"
 }
@@ -198,10 +238,24 @@ PACKAGE_SYSTEM_FRAGMENT=""
 #                      adapter packages built beside it, and its postinst
 #                      starts the handoff
 PACKAGE_DAEMON_HANDOFF=0
+#   PACKAGE_RELEASES_KEYBOARD  1 for better-manager: its prerm on removal
+#                      gives a keyboard whose colour the System page set back
+#                      to its firmware, gives the battery back the charge
+#                      limit it had before Better OS, and forgets both choices
+#                      (ADR 0034), so none outlives the page; the daemon
+#                      package, which Better Manager only recommends, may stay
+PACKAGE_RELEASES_KEYBOARD=0
 #   PACKAGE_HANDOFF_RETRY  1 for better-shell-adapter: its postinst starts the
 #                      handoff Better Manager installed, which is how a failed
 #                      handoff is retried once Better Manager is current
 PACKAGE_HANDOFF_RETRY=0
+#   PACKAGE_BEFORE_REMOVAL_ACCOUNTS  1 for better-manager: Better Manager cannot
+#                      remove itself, so its before-removal program is run by
+#                      the maintainer scripts, as each person, when apt removes
+#                      the package: prerm runs it, postinst abort-remove runs
+#                      it with --undo, postrm deletes what it set aside
+#                      (ticket 90, packaging/maintainer/before-removal-accounts.sh)
+PACKAGE_BEFORE_REMOVAL_ACCOUNTS=0
 
 reset_package_inputs() {
     PACKAGE_BINARIES=()
@@ -213,7 +267,73 @@ reset_package_inputs() {
     PACKAGE_AUTOSTART_OVERRIDES=""
     PACKAGE_SYSTEM_FRAGMENT=""
     PACKAGE_DAEMON_HANDOFF=0
+    PACKAGE_RELEASES_KEYBOARD=0
     PACKAGE_HANDOFF_RETRY=0
+    PACKAGE_BEFORE_REMOVAL_ACCOUNTS=0
+}
+
+# Appends the before-removal fragment to the package's prerm, postinst, and
+# postrm, creating each that does not exist yet.
+add_before_removal_accounts() {
+    local staging_dir="$1"
+    local package_name="$2"
+    local run_file="/run/better-os/$package_name-removal-run"
+    local script header actions
+    header="$(
+        printf "better_os_before_removal_program='/usr/lib/better-os/before-removal/%s'\n" "$package_name"
+        printf "better_os_before_removal_leftovers='%s'\n" \
+            ".local/state/better-os/fixes-removal-undo.json .local/state/better-os/fixes-removal-undo.json.tmp .local/state/better-os/.fixes.json.tmp .local/state/better-os/fixes-location.json .local/state/better-os/fixes-location.json.tmp"
+        printf "better_os_run_file='%s'" "$run_file"
+    )"
+    for script in prerm postinst postrm; do
+        if [[ ! -f "$staging_dir/DEBIAN/$script" ]]; then
+            printf '#!/bin/sh\nset -e\n' > "$staging_dir/DEBIAN/$script"
+            chmod 0755 "$staging_dir/DEBIAN/$script"
+        fi
+        case "$script" in
+            prerm) actions='remove' ;;
+            postinst) actions='abort-remove' ;;
+            postrm) actions='remove | purge' ;;
+        esac
+        {
+            printf "\n# Ticket 90: what %s changed in the people's files goes back on removal.\n" "$package_name"
+            account_block before-removal-accounts "$header" "better_os_before_removal_$script \"\$1\"" "$actions"
+        } >> "$staging_dir/DEBIAN/$script"
+    done
+    # The prerm's first action, before any other fragment can fail: an older
+    # removal's stamp goes, so an abort-remove can only ever read this run's.
+    if [[ "$(sed -n 2p "$staging_dir/DEBIAN/prerm")" != "set -e" ]]; then
+        printf 'The %s prerm does not start with set -e\n' "$package_name" >&2
+        exit 1
+    fi
+    {
+        sed -n 1,2p "$staging_dir/DEBIAN/prerm"
+        printf '# Ticket 90: no stamp of an older removal outlives this one.\n'
+        printf 'if [ "${1:-}" = remove ]; then rm -f %s 2>/dev/null || true; fi\n' "$run_file"
+        sed -n '3,$p' "$staging_dir/DEBIAN/prerm"
+    } > "$staging_dir/DEBIAN/prerm.new"
+    mv "$staging_dir/DEBIAN/prerm.new" "$staging_dir/DEBIAN/prerm"
+    chmod 0755 "$staging_dir/DEBIAN/prerm"
+    # /run/better-os exists from boot, so a running Better Manager can watch
+    # it for a removal's stamp (ticket 90).
+    printf 'if [ "${1:-}" = configure ]; then systemd-tmpfiles --create %s >/dev/null 2>&1 || true; fi\n' \
+        "/usr/lib/tmpfiles.d/$package_name.conf" >> "$staging_dir/DEBIAN/postinst"
+}
+
+# The prerm lines that give the keyboard back when the page that set its
+# colour is removed (ADR 0034). The privileged service does the work: it is
+# root under dpkg, and the same code runs at its own removal.
+add_keyboard_release() {
+    local staging_dir="$1"
+    if [[ ! -f "$staging_dir/DEBIAN/prerm" ]]; then
+        printf '#!/bin/sh\nset -e\n' > "$staging_dir/DEBIAN/prerm"
+        chmod 0755 "$staging_dir/DEBIAN/prerm"
+    fi
+    {
+        printf '\n# ADR 0034: the keyboard and the charge limit go back with the page that set them.\n'
+        # shellcheck disable=SC2016 # expanded by the maintainer script
+        printf 'if [ "$1" = remove ] && [ -x /usr/libexec/better-manager-daemon ]; then\n    /usr/libexec/better-manager-daemon --release-hardware || true\nfi\n'
+    } >> "$staging_dir/DEBIAN/prerm"
 }
 
 # The GPUI toolkit dlopens fontconfig and the Wayland client libraries, so they
@@ -486,8 +606,14 @@ make_package() {
     if ((PACKAGE_DAEMON_HANDOFF == 1)); then
         add_daemon_handoff "$staging_dir"
     fi
+    if ((PACKAGE_RELEASES_KEYBOARD == 1)); then
+        add_keyboard_release "$staging_dir"
+    fi
     if ((PACKAGE_HANDOFF_RETRY == 1)); then
         add_handoff_hook "$staging_dir"
+    fi
+    if ((PACKAGE_BEFORE_REMOVAL_ACCOUNTS == 1)); then
+        add_before_removal_accounts "$staging_dir" "$package_name"
     fi
 
     add_installed_size "$staging_dir"
@@ -694,6 +820,10 @@ PRERM
 if [ "$1" = "remove" ]; then
     if [ -x /usr/libexec/better-manager-daemon ]; then
         /usr/libexec/better-manager-daemon --remove-drive-entries || true
+        # ADR 0034: a keyboard whose colour Better OS set goes back to its
+        # firmware's own lighting, and the battery to the charge limit it had
+        # before Better OS. Nothing is touched when nothing was set.
+        /usr/libexec/better-manager-daemon --release-hardware || true
     fi
     if command -v deb-systemd-helper >/dev/null 2>&1; then
         deb-systemd-helper disable better-hardware-restore.service >/dev/null 2>&1 || true
@@ -714,6 +844,11 @@ set -e
 # and the person ticked nothing to keep them.
 if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
     rm -rf /var/lib/better-os/boot-watch
+    # The keyboard colour and the charge limit (ADR 0034): the prerm gave
+    # both back, so the choices and the limit recorded before Better OS go
+    # too, and the boot-time restore finds nothing to write.
+    rm -f /var/lib/better-os/keyboard-lighting.json \
+        /var/lib/better-os/hardware.json /var/lib/better-os/hardware-before.json
 fi
 
 if [ "$1" = "purge" ]; then
@@ -793,12 +928,14 @@ PACKAGE_BINARIES=(
     "manager-gui:usr/bin/better-manager"
     "manager-cli:usr/bin/better-manager-cli"
     "better-window-attention:usr/libexec/better-window-attention"
+    "better-manager-before-removal:usr/lib/better-os/before-removal/better-manager"
 )
 PACKAGE_DATA=(
     "packaging/manager/io.betteros.Manager.desktop:usr/share/applications/io.betteros.Manager.desktop"
     "packaging/icons/better-manager.svg:usr/share/icons/hicolor/scalable/apps/better-manager.svg"
     "packaging/manager/better-window-attention.service:usr/lib/systemd/user/better-window-attention.service"
     "packaging/manager/org.betteros.WindowAttention1.service:usr/share/dbus-1/services/org.betteros.WindowAttention1.service"
+    "packaging/manager/better-manager.tmpfiles:usr/lib/tmpfiles.d/better-manager.conf"
 )
 # libsecret-tools is a desktop helper Better OS installs with the manager so
 # that everyday tools work without the person hunting for a package: its
@@ -821,6 +958,10 @@ PACKAGE_RECOMMENDS="better-manager-daemon (= $VERSION), better-shell-adapter (= 
 # it stops and disables it, so nothing it started outlives it.
 PACKAGE_ALWAYS_ON_UNITS="better-window-attention.service"
 PACKAGE_DAEMON_HANDOFF=1
+PACKAGE_RELEASES_KEYBOARD=1
+# Removing Better Manager undoes every fix it applied that has an undo
+# (ticket 90); apt is the only way it is removed.
+PACKAGE_BEFORE_REMOVAL_ACCOUNTS=1
 make_package better-manager \
     'Better OS manager desktop application' \
     'Better OS desktop application built with the shared manager and monitor contracts.'

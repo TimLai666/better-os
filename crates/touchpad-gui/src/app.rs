@@ -36,6 +36,11 @@ pub struct TouchpadApp {
     pub(crate) backend: Box<dyn TouchpadBackend>,
     pub(crate) store: TouchpadStore,
     pub(crate) page: Page,
+    /// The navigation pane's own button opened or closed it; until then it
+    /// follows the window's width.
+    /// The person's own choice about the navigation pane, kept apart for a
+    /// wide and a narrow window, and carried across an update restart.
+    pub(crate) pane: better_ui::fluent::navigation::PaneChoice,
     pub(crate) pointer: PointerTrace,
     /// The test surface's bounds, refreshed every frame by a canvas element so
     /// a pointer position can be turned into a fraction of the surface.
@@ -207,6 +212,10 @@ impl TouchpadApp {
             backend,
             store,
             page,
+            pane: restored
+                .as_ref()
+                .map(|view| view.pane())
+                .unwrap_or_default(),
             pointer: PointerTrace::idle(),
             surface: Rc::new(Cell::new(Bounds::default())),
             sliders,
@@ -364,6 +373,7 @@ impl TouchpadApp {
     }
 
     pub fn navigate(&mut self, page: Page, cx: &mut Context<Self>) {
+        self.pane.page_chosen();
         self.page = page;
         cx.notify();
     }
@@ -565,6 +575,8 @@ impl better_ui::restart::Restartable for TouchpadApp {
             gesture_device: self.gestures.active_device().map(str::to_string),
             export_path: Some(self.export_path.read(cx).value().to_string()),
             import_path: Some(self.import_path.read(cx).value().to_string()),
+            wide_collapsed: self.pane.wide_collapsed,
+            narrow_open: self.pane.narrow_open,
         }
     }
 }

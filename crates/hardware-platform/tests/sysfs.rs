@@ -149,3 +149,220 @@ fn a_fan_with_a_writable_pwm_is_not_a_mode_switch_and_an_unknown_device_is_ignor
     std::fs::write(&asus, "128\n").unwrap();
     assert_eq!(sysfs::fan_mode_attribute(&root), None);
 }
+
+/// Ticket 136: the owner's keyboard is `hidraw1`, an I2C LampArray, found by
+/// its report descriptor; the touchpad's `hidraw0`, a multitouch descriptor,
+/// is not one.
+#[test]
+fn the_owners_keyboard_is_found_as_a_lamp_array_by_its_descriptor() {
+    use hardware_core::lighting::{HintInterface, LightingHint};
+    let root = fixture("owner");
+    let nodes = sysfs::lamp_array_nodes(&root);
+    assert_eq!(
+        nodes,
+        vec![sysfs::LampArrayNode {
+            node: "hidraw1".into(),
+            bus: Some(sysfs::BUS_I2C),
+            vendor: Some(0x0B05),
+            product: Some(0x5570),
+        }]
+    );
+    assert!(nodes[0].built_in());
+    assert_eq!(nodes[0].device().label(), "0018:0B05:5570");
+    assert_eq!(sysfs::keyboard_rgb_mode_attribute(&root), None);
+    assert_eq!(
+        sysfs::lighting_hint(&root),
+        Presence::Present(LightingHint {
+            interface: Some(HintInterface::LampArray {
+                node: "hidraw1".into()
+            }),
+            backlight: true,
+        })
+    );
+    let touchpad = sysfs::report_descriptor(&root, "hidraw0").unwrap();
+    assert!(!hardware_core::lamparray::is_lamp_array(&touchpad));
+    assert_eq!(sysfs::report_descriptor(&root, "../hidraw1"), None);
+    assert_eq!(sysfs::report_descriptor(&root, "hidraw1/../x"), None);
+}
+
+#[test]
+fn a_tuf_laptop_is_found_by_kbd_rgb_mode_and_a_plain_laptop_by_its_backlight_alone() {
+    use hardware_core::lighting::{HintInterface, LightingHint};
+    let tuf = fixture("tuf");
+    assert!(
+        sysfs::keyboard_rgb_mode_attribute(&tuf)
+            .unwrap()
+            .ends_with("asus::kbd_backlight/kbd_rgb_mode")
+    );
+    assert_eq!(
+        sysfs::lighting_hint(&tuf),
+        Presence::Present(LightingHint {
+            interface: Some(HintInterface::AsusWmi),
+            backlight: true,
+        })
+    );
+    // A backlight and no colour interface: one colour.
+    let dir = tempfile::tempdir().unwrap();
+    let led = dir.path().join("sys/class/leds/dell::kbd_backlight");
+    std::fs::create_dir_all(&led).unwrap();
+    std::fs::write(led.join("max_brightness"), "2\n").unwrap();
+    assert_eq!(
+        sysfs::lighting_hint(&SysRoot::at(dir.path())),
+        Presence::Present(LightingHint {
+            interface: None,
+            backlight: true,
+        })
+    );
+    assert_eq!(sysfs::lighting_hint(&fixture("nothing")), Presence::Absent);
+}
+
+#[test]
+fn hidraw_nodes_are_judged_by_name_size_and_descriptor_never_trusted() {
+    let dir = tempfile::tempdir().unwrap();
+    let class = dir.path().join("sys/class/hidraw");
+    let lamp = std::fs::read(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../hardware-core/tests/fixtures/m5406wa-ite5570.rdesc"),
+    )
+    .unwrap();
+    for (name, descriptor, bus) in [
+        // A USB LampArray, names that are not nodes, a descriptor too long,
+        // one cut short, and the built-in one.
+        ("hidraw7", lamp.clone(), "0003"),
+        ("hidraw12345", lamp.clone(), "0018"),
+        ("hidrawx", lamp.clone(), "0018"),
+        ("hidraw3", [lamp.clone(), vec![0; 4096]].concat(), "0018"),
+        ("hidraw4", lamp[..300].to_vec(), "0018"),
+        ("hidraw2", lamp.clone(), "0018"),
+    ] {
+        let device = class.join(name).join("device");
+        std::fs::create_dir_all(&device).unwrap();
+        std::fs::write(device.join("report_descriptor"), descriptor).unwrap();
+        std::fs::write(
+            device.join("uevent"),
+            format!("HID_ID={bus}:00000B05:00005570\n"),
+        )
+        .unwrap();
+    }
+    let nodes: Vec<(String, Option<u16>)> = sysfs::lamp_array_nodes(&SysRoot::at(dir.path()))
+        .into_iter()
+        .map(|n| (n.node, n.bus))
+        .collect();
+    // The built-in (I2C) one first.
+    assert_eq!(
+        nodes,
+        vec![
+            ("hidraw2".to_string(), Some(0x18)),
+            ("hidraw7".to_string(), Some(0x03))
+        ]
+    );
+    // Only the built-in one is ever the keyboard: a USB Dynamic Lighting
+    // keyboard is not, even alone.
+    let built_in: Vec<String> = sysfs::built_in_lamp_arrays(&SysRoot::at(dir.path()))
+        .into_iter()
+        .map(|n| n.node)
+        .collect();
+    assert_eq!(built_in, vec!["hidraw2".to_string()]);
+    std::fs::remove_dir_all(class.join("hidraw2")).unwrap();
+    assert!(sysfs::built_in_lamp_arrays(&SysRoot::at(dir.path())).is_empty());
+    assert_eq!(
+        sysfs::lighting_hint(&SysRoot::at(dir.path())),
+        Presence::Absent,
+        "a USB LampArray alone gives the page no keyboard colour card"
+    );
+    assert!(sysfs::is_hidraw_name("hidraw0"));
+    assert!(!sysfs::is_hidraw_name("hidraw"));
+    assert!(!sysfs::is_hidraw_name("hidraw-1"));
+    assert!(!sysfs::is_hidraw_name("event3"));
+}
+
+/// The owner's machine on 2026-11-21: the charger online, the battery
+/// `Not charging` at 80% with the limit at 80 (ticket 170).
+#[test]
+fn the_owners_machine_held_at_its_limit_reads_as_held() {
+    use hardware_core::charge_state::{ChargeLimit, ChargeState, charge_state};
+    let root = fixture("held");
+    assert_eq!(sysfs::charger_online(&root), Some(true));
+    let readings = sysfs::charge_readings(&root).expect("BAT1 is a system battery");
+    assert_eq!(readings.batteries.len(), 1);
+    let bat = &readings.batteries[0];
+    assert_eq!(bat.status, Some(BatteryStatus::NotCharging));
+    assert_eq!(bat.percent, Some(80));
+    assert_eq!(
+        bat.limit,
+        ChargeLimit::Percent {
+            end: 80,
+            start: None
+        }
+    );
+    assert_eq!(
+        charge_state(&readings),
+        ChargeState::Holding {
+            limit: 80,
+            percent: Some(80)
+        }
+    );
+}
+
+/// Two batteries with start thresholds: the firmware charges BAT1 while BAT0
+/// rests at its limit, which is charging, never a fault; each reports its own
+/// window, and the charge is weighted by energy (27.6 Wh of 46).
+#[test]
+fn a_thinkpad_with_two_batteries_reads_each_with_its_own_window() {
+    use hardware_core::charge_state::{ChargeLimit, ChargeState, charge_state};
+    let root = fixture("thinkpad");
+    let readings = sysfs::charge_readings(&root).expect("two system batteries");
+    assert_eq!(readings.charger_online, Some(true));
+    assert_eq!(readings.batteries.len(), 2);
+    for bat in &readings.batteries {
+        assert_eq!(
+            bat.limit,
+            ChargeLimit::Percent {
+                end: 80,
+                start: Some(75)
+            }
+        );
+    }
+    assert_eq!(readings.percent(), Some(60));
+    assert_eq!(charge_state(&readings), ChargeState::Charging);
+    // The System page's own card shows the first battery.
+    assert!(sysfs::system_battery(&root).unwrap().ends_with("BAT0"));
+}
+
+#[test]
+fn the_charger_is_offline_on_the_owners_discharging_fixture_and_unknown_without_one() {
+    assert_eq!(sysfs::charger_online(&fixture("owner")), Some(false));
+    assert_eq!(sysfs::charger_online(&fixture("nothing")), None);
+    assert_eq!(sysfs::charge_readings(&fixture("nothing")), None);
+}
+
+/// A UPS the kernel lists beside the battery is not a charger, and an
+/// unreadable limit is unknown rather than "no limit".
+#[test]
+fn a_ups_is_not_a_charger_and_an_unreadable_limit_is_unreadable() {
+    use hardware_core::charge_state::ChargeLimit;
+    let dir = tempfile::tempdir().unwrap();
+    let ps = dir.path().join("sys/class/power_supply");
+    for (name, files) in [
+        ("ups", vec![("type", "UPS"), ("online", "1")]),
+        ("AC", vec![("type", "Mains"), ("online", "0")]),
+        (
+            "BAT0",
+            vec![
+                ("type", "Battery"),
+                ("status", "Not charging"),
+                ("capacity", "80"),
+                ("charge_control_end_threshold", "garbage"),
+            ],
+        ),
+    ] {
+        std::fs::create_dir_all(ps.join(name)).unwrap();
+        for (file, text) in files {
+            std::fs::write(ps.join(name).join(file), format!("{text}\n")).unwrap();
+        }
+    }
+    let root = SysRoot::at(dir.path());
+    assert_eq!(sysfs::charger_online(&root), Some(false));
+    let readings = sysfs::charge_readings(&root).unwrap();
+    assert_eq!(readings.batteries[0].limit, ChargeLimit::Unreadable);
+}

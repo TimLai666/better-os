@@ -57,6 +57,11 @@ pub(crate) struct RuleDraft {
 
 pub(crate) struct AwakeApp {
     pub(crate) section: Section,
+    /// The navigation pane's own button opened or closed it; until then it
+    /// follows the window's width.
+    /// The person's own choice about the navigation pane, kept apart for a
+    /// wide and a narrow window, and carried across an update restart.
+    pub(crate) pane: better_ui::fluent::navigation::PaneChoice,
     pub(crate) locale: Locale,
     pub(crate) preferences: Preferences,
     pub(crate) store: PreferencesStore,
@@ -65,6 +70,12 @@ pub(crate) struct AwakeApp {
     pub(crate) preferences_saved: bool,
 
     pub(crate) status: Option<StatusView>,
+    /// What the battery is doing, read from sysfs each time the service's
+    /// status arrives, for the Battery section's power row
+    /// (`hardware_core::charge_state`, ticket 170). The service's status
+    /// carries only "on AC power", which cannot tell a battery held at its
+    /// charge limit from one charging.
+    pub(crate) charge: Option<hardware_core::charge_state::ChargeReadings>,
     pub(crate) rules: Vec<RuleView>,
     /// The rules exactly as the service reported them. The presented rows carry
     /// localized sentences rather than operands, so the editor is opened from
@@ -105,17 +116,18 @@ impl AwakeApp {
         let locale = preferences.locale();
         apply_theme(preferences.theme, window, cx);
 
-        let section = handoff
+        let view = handoff
             .and_then(|h| h.state::<crate::restart::AwakeView>())
-            .map(|view| view.section())
-            .unwrap_or(Section::Status);
+            .unwrap_or_default();
         let mut app = Self {
-            section,
+            section: view.section(),
+            pane: view.pane(),
             locale,
             preferences,
             store,
             preferences_saved: readable,
             status: None,
+            charge: None,
             rules: Vec::new(),
             raw_rules: Vec::new(),
             rules_suppression: None,
@@ -142,12 +154,40 @@ impl AwakeApp {
             ),
         };
         app.refresh(cx);
+        app.follow(cx);
         app
+    }
+
+    /// Reads again whenever the service signals or a charger or the battery
+    /// changes, so the Battery section's power row is current without
+    /// polling (ticket 170).
+    fn follow(&mut self, cx: &mut Context<Self>) {
+        let (sender, receiver) = std::sync::mpsc::channel::<()>();
+        std::thread::spawn(move || crate::client::follow(move || sender.send(()).is_ok()));
+        let receiver = std::sync::Arc::new(std::sync::Mutex::new(receiver));
+        cx.spawn(async move |this, cx| {
+            loop {
+                let receiver = receiver.clone();
+                let got = cx
+                    .background_spawn(async move {
+                        receiver
+                            .lock()
+                            .map(|receiver| receiver.recv().is_ok())
+                            .unwrap_or(false)
+                    })
+                    .await;
+                if !got || this.update(cx, |this, cx| this.refresh(cx)).is_err() {
+                    return;
+                }
+            }
+        })
+        .detach();
     }
 
     // ---- Navigation ----------------------------------------------------
 
     pub(crate) fn navigate(&mut self, section: Section, cx: &mut Context<Self>) {
+        self.pane.page_chosen();
         if self.section != section {
             self.section = section;
             // A test result belongs to the screen it was asked for on.
@@ -185,6 +225,7 @@ impl AwakeApp {
                     .map(ProviderRow::from_wire)
                     .collect();
                 self.status = Some(StatusView::from_status(&status));
+                self.charge = snapshot.charge;
                 self.connection_error = None;
             }
             Err(error) => {
@@ -834,6 +875,6 @@ impl better_ui::restart::Restartable for AwakeApp {
     }
 
     fn restart_state(&self, _window: &Window, _cx: &App) -> crate::restart::AwakeView {
-        crate::restart::AwakeView::of(self.section)
+        crate::restart::AwakeView::of(self.section, self.pane)
     }
 }

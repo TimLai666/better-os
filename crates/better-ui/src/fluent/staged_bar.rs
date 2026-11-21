@@ -129,6 +129,7 @@ impl RenderOnce for StagedChangesBar {
         }
         div()
             .id(self.id)
+            .relative()
             .w_full()
             .flex_none()
             .flex()
@@ -138,9 +139,18 @@ impl RenderOnce for StagedChangesBar {
             .gap(spacing::MD)
             .px(spacing::LG)
             .py(spacing::MD)
+            // The bar meets the window's bottom corners: its fill and rule
+            // are one fill that follows them (ticket 141); the rule's width
+            // stays in the layout.
             .border_t_1()
-            .border_color(p.card_stroke)
-            .bg(p.layer)
+            .border_color(gpui::transparent_black())
+            .child(super::window_frame::corner_fill(p.layer).border(
+                gpui::Edges {
+                    top: px(1.0),
+                    ..gpui::Edges::default()
+                },
+                p.card_stroke,
+            ))
             .child(
                 text(div().flex_1().min_w_0(), BODY)
                     .text_color(p.text_primary)

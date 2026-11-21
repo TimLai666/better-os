@@ -7,6 +7,8 @@ license.workspace = true
 
 [dependencies]
 awake-core.workspace = true
+# Which power supplies count as a charger: one rule for the suite (ticket 170).
+hardware-core.workspace = true
 # The one local-time conversion (`better_core::local_time`, ticket 146).
 better-core.workspace = true
 notify.workspace = true

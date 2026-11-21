@@ -2,13 +2,13 @@
 //! settings: every setting comes from [`FixedSettings`].
 
 use super::{
-    ADWAITA_DARK, ADWAITA_LIGHT, Bitmap, ButtonLayout, ColorScheme, DRAG_THRESHOLD,
+    ADWAITA_DARK, ADWAITA_LIGHT, Bitmap, ButtonLayout, ColorScheme, CornerRadii, DRAG_THRESHOLD,
     DesktopSettings, Edge, FixedSettings, GSettingsListing, INTERFACE_SCHEMA, Insets,
     RESIZE_CORNER, RESIZE_HANDLE, SettingsSource as _, Tiled, TitlebarAction, TitlebarClick,
-    TitlebarResponse, WM_SCHEMA, WindowButton, WindowState, X11_MAX_INSET, client_inset,
-    fallback_look, fallback_requested, frame_insets, frame_thickness, gsettings_string,
-    input_region, is_drag, monitored_key, render_scale, resize_edge, resize_zones, sticky_inset,
-    strip_image_span, top_corner_radius,
+    TitlebarResponse, WM_SCHEMA, WindowButton, WindowState, X11_MAX_INSET, bottom_corner_radius,
+    client_inset, fallback_look, fallback_requested, frame_insets, frame_thickness,
+    gsettings_string, input_region, is_drag, monitored_key, render_scale, resize_edge,
+    resize_zones, sticky_inset, strip_image_span, top_corner_radius,
 };
 
 use WindowButton::{Close, Maximize, Minimize};
@@ -297,7 +297,16 @@ fn inset() -> Insets {
 }
 
 fn edge_at(x: f32, y: f32) -> Option<Edge> {
-    resize_edge(x, y, SIZE, SIZE, inset(), Tiled::default(), false)
+    resize_edge(
+        x,
+        y,
+        SIZE,
+        SIZE,
+        inset(),
+        Tiled::default(),
+        false,
+        CornerRadii::SQUARE,
+    )
 }
 
 #[test]
@@ -331,11 +340,29 @@ fn every_edge_and_corner_resizes_within_gtks_handle() {
 #[test]
 fn a_maximized_window_or_a_tiled_side_does_not_resize() {
     assert_eq!(
-        resize_edge(39.0, 500.0, SIZE, SIZE, inset(), Tiled::default(), true),
+        resize_edge(
+            39.0,
+            500.0,
+            SIZE,
+            SIZE,
+            inset(),
+            Tiled::default(),
+            true,
+            CornerRadii::SQUARE
+        ),
         None
     );
     assert_eq!(
-        resize_edge(500.0, 39.0, SIZE, SIZE, inset(), Tiled::ALL, false),
+        resize_edge(
+            500.0,
+            39.0,
+            SIZE,
+            SIZE,
+            inset(),
+            Tiled::ALL,
+            false,
+            CornerRadii::SQUARE
+        ),
         None
     );
     let left = Tiled {
@@ -343,15 +370,42 @@ fn a_maximized_window_or_a_tiled_side_does_not_resize() {
         ..Tiled::default()
     };
     assert_eq!(
-        resize_edge(39.0, 500.0, SIZE, SIZE, inset(), left, false),
+        resize_edge(
+            39.0,
+            500.0,
+            SIZE,
+            SIZE,
+            inset(),
+            left,
+            false,
+            CornerRadii::SQUARE
+        ),
         None
     );
     assert_eq!(
-        resize_edge(39.0, 39.0, SIZE, SIZE, inset(), left, false),
+        resize_edge(
+            39.0,
+            39.0,
+            SIZE,
+            SIZE,
+            inset(),
+            left,
+            false,
+            CornerRadii::SQUARE
+        ),
         None
     );
     assert_eq!(
-        resize_edge(961.0, 500.0, SIZE, SIZE, inset(), left, false),
+        resize_edge(
+            961.0,
+            500.0,
+            SIZE,
+            SIZE,
+            inset(),
+            left,
+            false,
+            CornerRadii::SQUARE
+        ),
         Some(Edge::Right)
     );
 }
@@ -360,18 +414,43 @@ fn a_maximized_window_or_a_tiled_side_does_not_resize() {
 fn the_handle_never_reaches_past_the_surface() {
     let narrow = Insets::uniform(5.0);
     assert_eq!(
-        resize_edge(0.0, 500.0, SIZE, SIZE, narrow, Tiled::default(), false),
+        resize_edge(
+            0.0,
+            500.0,
+            SIZE,
+            SIZE,
+            narrow,
+            Tiled::default(),
+            false,
+            CornerRadii::SQUARE
+        ),
         Some(Edge::Left)
     );
     assert_eq!(
-        resize_edge(-1.0, 500.0, SIZE, SIZE, narrow, Tiled::default(), false),
+        resize_edge(
+            -1.0,
+            500.0,
+            SIZE,
+            SIZE,
+            narrow,
+            Tiled::default(),
+            false,
+            CornerRadii::SQUARE
+        ),
         None
     );
 }
 
 #[test]
 fn every_resize_zone_resizes_from_its_own_edge() {
-    let zones = resize_zones(SIZE, SIZE, inset(), Tiled::default(), false);
+    let zones = resize_zones(
+        SIZE,
+        SIZE,
+        inset(),
+        Tiled::default(),
+        false,
+        CornerRadii::SQUARE,
+    );
     let mut edges: Vec<Edge> = zones.iter().map(|(edge, _)| *edge).collect();
     edges.dedup();
     for edge in [
@@ -401,19 +480,29 @@ fn every_resize_zone_resizes_from_its_own_edge() {
             assert_eq!(found, Some(*edge), "inside the {edge:?} zone");
         }
     }
-    assert!(resize_zones(SIZE, SIZE, inset(), Tiled::default(), true).is_empty());
-    assert!(resize_zones(SIZE, SIZE, inset(), Tiled::ALL, false).is_empty());
+    assert!(
+        resize_zones(
+            SIZE,
+            SIZE,
+            inset(),
+            Tiled::default(),
+            true,
+            CornerRadii::SQUARE
+        )
+        .is_empty()
+    );
+    assert!(resize_zones(SIZE, SIZE, inset(), Tiled::ALL, false, CornerRadii::SQUARE).is_empty());
 }
 
 #[test]
 fn input_reaches_only_the_window_and_its_handles() {
     assert_eq!(
-        input_region(SIZE, SIZE, inset()),
-        (28.0, 28.0, 944.0, 944.0)
+        input_region(SIZE, SIZE, inset(), CornerRadii::SQUARE),
+        vec![(28.0, 28.0, 944.0, 944.0)]
     );
     assert_eq!(
-        input_region(SIZE, SIZE, Insets::ZERO),
-        (0.0, 0.0, SIZE, SIZE)
+        input_region(SIZE, SIZE, Insets::ZERO, CornerRadii::SQUARE),
+        vec![(0.0, 0.0, SIZE, SIZE)]
     );
 }
 
@@ -569,7 +658,14 @@ fn every_resize_zone_lies_outside_the_window_and_is_one_handle_thick() {
             SIZE - inset.bottom,
         );
         let handle = inset.left.min(RESIZE_HANDLE);
-        for (edge, (x, y, w, h)) in resize_zones(SIZE, SIZE, inset, Tiled::default(), false) {
+        for (edge, (x, y, w, h)) in resize_zones(
+            SIZE,
+            SIZE,
+            inset,
+            Tiled::default(),
+            false,
+            CornerRadii::SQUARE,
+        ) {
             // Entirely outside the content rectangle.
             let outside = x + w <= l || x >= r || y + h <= t || y >= b;
             assert!(outside, "{edge:?} zone {x},{y} {w}x{h} overlaps the window");
@@ -592,7 +688,14 @@ fn a_tiled_side_has_no_zone() {
         left: true,
         ..Tiled::default()
     };
-    let zones = resize_zones(SIZE, SIZE, frame_insets(40.0, left, false), left, false);
+    let zones = resize_zones(
+        SIZE,
+        SIZE,
+        frame_insets(40.0, left, false),
+        left,
+        false,
+        CornerRadii::SQUARE,
+    );
     assert!(
         zones
             .iter()
@@ -710,4 +813,94 @@ fn a_strip_is_sampled_only_at_its_middle_texel() {
     let texel = length / super::STRIP_TEXELS as f32;
     assert_eq!((30.0 - start) / texel, 1.5);
     assert_eq!((40.0 - start) / texel, 2.5);
+}
+
+#[test]
+fn a_press_outside_a_rounded_corner_resizes_from_it() {
+    let radii = CornerRadii::uniform(12.0);
+    let at =
+        |x: f32, y: f32| resize_edge(x, y, SIZE, SIZE, inset(), Tiled::default(), false, radii);
+    // The window's own corner pixels, outside the curve.
+    assert_eq!(at(40.5, 959.5), Some(Edge::BottomLeft));
+    assert_eq!(at(959.5, 959.5), Some(Edge::BottomRight));
+    assert_eq!(at(40.5, 40.5), Some(Edge::TopLeft));
+    assert_eq!(at(959.5, 40.5), Some(Edge::TopRight));
+    // Inside the curve it is the window's.
+    assert_eq!(at(52.0, 948.0), None);
+    assert_eq!(at(500.0, 959.5), None);
+    // A square window's corner pixel is the window's too.
+    assert_eq!(
+        resize_edge(
+            40.5,
+            959.5,
+            SIZE,
+            SIZE,
+            inset(),
+            Tiled::default(),
+            false,
+            CornerRadii::SQUARE
+        ),
+        None
+    );
+    // The bottom corners still resize from the handle outside.
+    assert_eq!(at(39.0, 961.0), Some(Edge::BottomLeft));
+    assert_eq!(at(961.0, 961.0), Some(Edge::BottomRight));
+}
+
+#[test]
+fn the_rows_outside_a_rounded_corner_are_resize_zones_of_that_corner() {
+    let radii = CornerRadii::uniform(12.0);
+    let zones = resize_zones(SIZE, SIZE, inset(), Tiled::default(), false, radii);
+    let inner: Vec<_> = zones
+        .iter()
+        .filter(|(_, (x, y, w, h))| *x >= 40.0 && *y >= 40.0 && x + w <= 960.0 && y + h <= 960.0)
+        .collect();
+    assert!(!inner.is_empty());
+    for (edge, (x, y, w, h)) in inner {
+        let found = resize_edge(
+            x + w / 2.0,
+            y + h / 2.0,
+            SIZE,
+            SIZE,
+            inset(),
+            Tiled::default(),
+            false,
+            radii,
+        );
+        assert_eq!(found, Some(*edge), "{x},{y} {w}x{h}");
+    }
+    assert!(resize_zones(SIZE, SIZE, inset(), Tiled::default(), true, radii).is_empty());
+}
+
+#[test]
+fn the_bottom_corner_radius_is_measured_from_the_bottom_row() {
+    let size = 32;
+    let radius = 12.0f32;
+    let mut sample = Bitmap::new(size, size);
+    for y in 0..size {
+        for x in 0..size {
+            let from_bottom = size - 1 - y;
+            let (dx, dy) = (radius - x as f32, radius - from_bottom as f32);
+            let outside = x < radius as u32
+                && from_bottom < radius as u32
+                && (dx * dx + dy * dy).sqrt() > radius;
+            let at = ((y * size + x) * 4 + 3) as usize;
+            sample.rgba[at] = if outside { 0 } else { 255 };
+        }
+    }
+    assert_eq!(bottom_corner_radius(&sample), 12);
+    // The same drawing flipped is a top corner of the same radius.
+    let mut flipped = Bitmap::new(size, size);
+    for y in 0..size {
+        for x in 0..size {
+            flipped.rgba[((y * size + x) * 4 + 3) as usize] = sample.alpha(x, size - 1 - y);
+        }
+    }
+    assert_eq!(top_corner_radius(&flipped), 12);
+    let square = Bitmap {
+        width: 4,
+        height: 4,
+        rgba: vec![255; 64],
+    };
+    assert_eq!(bottom_corner_radius(&square), 0);
 }

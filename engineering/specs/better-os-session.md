@@ -130,7 +130,10 @@ until the session meets the bar in "Ready to become the default".
   machine-wide `activation_policy` and no urgent state (ADR 0038); the page
   says so. Reconsidered when upstream offers a per-application hook.
 - **Moving COSMIC Settings' pages into Better Manager now** (C9). Ticket 229
-  designs it.
+  designed it: `design/system-settings-spec.md`, tickets 231 to 252, and the
+  owner's decisions M1 to M9 at its top. Its M2 proposes an eighth item for
+  "Ready to become the default" (the wave 1 pages); the list below changes
+  only if the owner accepts it.
 - **Title bars drawn in Better OS's style by a compositor built with
   `cosmic_comp::run(Hooks)`.** The hooks are "an _unstable_ interface" and draw
   in libcosmic, not GPUI. C5 takes the compositor's own title bar.
@@ -211,7 +214,7 @@ checks it by logging out of one and into the other in the VM).
 | Blanking, idle, suspend on idle; `org.freedesktop.ScreenSaver` | `cosmic-idle` | COSMIC | honours only `org.freedesktop.ScreenSaver.Inhibit` (ADR 0038) |
 | Wallpaper, also on the lock screen | `cosmic-bg` | COSMIC | — |
 | Display configuration | `cosmic-randr`, COSMIC Settings' Displays page (C9) | COSMIC | — |
-| System settings: display, network, Bluetooth, sound, users, region | COSMIC Settings (C9) | COSMIC | Better OS's links to "… Settings" open its pages (ticket 160) |
+| System settings: display, network, Bluetooth, sound, users, region | COSMIC Settings (C9) | COSMIC | Better OS's links to "… Settings" open its pages (ticket 160) until each Better Manager page of `design/system-settings-spec.md` lands; COSMIC Settings has no night light, printers, notifications, privacy, or hotspot, and GNOME Settings refuses to run outside GNOME (that file's F1, F2) |
 | Input method | Fcitx 5 with `fcitx5-chewing` over `zwp_input_method_v2` and text-input-v3; XIM for X11 clients | Ubuntu (C4) | Zhuyin seen typed into Better Launcher in Pop; the four upstream faults: **unverified**, ticket 201 |
 | Network secrets, Bluetooth pairing | Better OS's top bar: a NetworkManager secret agent and a BlueZ agent | Better OS, new (ticket 217) | COSMIC keeps these in its panel applets and Settings (ADR 0038, read, not run) |
 | Notifications (`org.freedesktop.Notifications`) | Better OS's notification service, island and center | Better OS, new (tickets 215, 216) | `cosmic-notifications` is not installed |
@@ -403,8 +406,25 @@ start.
 (`dconf_writer.rs`, `dconf.rs`). In a session whose `DCONF_PROFILE` puts
 another writable database first, a key it writes lands in GNOME's database and
 is hidden by any value the session's database holds (ADR 0038). Ticket 207
-makes the adapter write and read the first `user-db` of the profile the
-target session uses.
+made the adapter write and read the first `user-db` of the profile the
+target session uses: `defaults_platform::dconf_profile` follows dconf's own
+lookup (a mandatory profile, then `DCONF_PROFILE`, then the runtime and `user`
+profiles, then `user-db:user`; names through `/etc/dconf/profile/` and then
+`XDG_DATA_DIRS`), and the GNOME adapters and Better Touchpad's backend read
+that database and write through its writer object (`/ca/desrt/dconf/Writer/<name>`,
+or `/ca/desrt/dconf/<name>` for a `service-db`, and the safe writer dconf 51
+uses for a home on NFS). A value shown from a `user-db` beneath the session's
+own is displayed (launcher lists, tool entries, Better Touchpad's settings and
+its shortcut check) but captured as not held, so a restore resets the
+session's key instead of copying the value into it. Every defaults record
+names the database it was captured from and written to (a 0.2.16 record names
+none and means GNOME's), and status, verify, and restore use that database in
+whichever session they run. A first `system-db` or `file-db`, a named profile
+that cannot be read, and a process whose `XDG_CURRENT_DESKTOP` names COSMIC or
+Better OS with no `DCONF_PROFILE` (both sessions set it, so such a process does
+not have the session's environment) are reported with a sentence that says
+what to do, and nothing is written; an unreadable `user` profile falls back to
+`user-db:user` as dconf does.
 
 ## Gestures
 

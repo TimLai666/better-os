@@ -1,0 +1,25 @@
+[package]
+name = "patch-platform"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+# The session's desktop, read the one way the suite reads it.
+better-core.workspace = true
+patch-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# The display scale comes from Mutter over the session bus. Blocking API on
+# the default async-io flavor, like every client here.
+zbus.workspace = true
+
+[[bin]]
+# Run by the better-manager package's prerm as each person before removal,
+# and with --undo when that removal is abandoned (ticket 90).
+name = "better-manager-before-removal"
+path = "src/bin/before_removal.rs"
+
+[dev-dependencies]
+tempfile.workspace = true

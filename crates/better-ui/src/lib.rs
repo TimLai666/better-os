@@ -4,6 +4,7 @@
 
 pub mod command_line;
 pub mod fluent;
+pub mod icon_set;
 pub mod layer;
 pub mod pane_edge;
 pub mod restart;
@@ -14,7 +15,7 @@ use gpui::{
     AnyElement, App, Hsla, IntoElement, ParentElement, Pixels, SharedString, Styled, StyledImage,
     Window, WindowDecorations, WindowOptions, div,
 };
-use gpui_component::*;
+use gpui_component::StyledExt as _;
 
 /// The window chrome every first-party Better OS window draws for itself.
 ///
@@ -28,7 +29,11 @@ use gpui_component::*;
 pub mod window_chrome {
     use super::*;
 
-    pub use crate::fluent::window_frame::{follow_desktop_accent, root, watch_desktop};
+    pub use crate::fluent::window_frame::{
+        corner_clip, corner_depth, corner_fill, corner_scrollbar, float_at, follow_desktop_accent,
+        inside_window, root, watch_desktop, window_shape,
+    };
+    pub use crate::system_frame::CornerRadii;
 
     /// The titlebar for a window whose header is its glyph and title: the
     /// kit's [`fluent::chrome::TitleBar`], with the desktop's buttons.

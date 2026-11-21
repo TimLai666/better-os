@@ -12,11 +12,12 @@ use better_ui::fluent::tabs::{SelectorBar, SelectorItem};
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
-    ActiveTheme,
+    ActiveTheme, Disableable as _, Sizable as _, StyledExt as _,
     button::{Button, ButtonVariants},
+    h_flex,
     input::Input,
     switch::Switch,
-    *,
+    v_flex,
 };
 use touchpad_gestures::{ConflictResolution, Direction, GestureId, GestureShape, ShortcutCheck};
 

@@ -633,7 +633,7 @@ impl AppChooser {
                     row = row.trailing(
                         Button::icon_button(
                             ElementId::named_usize("why", index),
-                            IconName::Info,
+                            better_ui::icon_set::Picture::Properties,
                             c.why,
                         )
                         .checked(explained)
@@ -865,7 +865,7 @@ impl AppChooser {
                                     .map(|name| name.to_string_lossy().into_owned())
                                     .unwrap_or_else(|| path.display().to_string());
                                 ListRow::new(ElementId::named_usize("program", index), name)
-                                    .glyph(IconName::SquareTerminal)
+                                    .glyph(better_ui::icon_set::Picture::Window)
                                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                                         this.choose_executable_path(path.clone(), cx)
                                     }))
@@ -959,7 +959,10 @@ impl Render for AppChooser {
             .flex()
             .flex_col()
             .items_center()
-            .bg(p.window_background)
+            // The chooser is the whole window: its fill keeps inside the
+            // window's rounded corners (ticket 141).
+            .relative()
+            .child(better_ui::window_chrome::corner_fill(p.window_background))
             .text_color(p.text_primary)
             // Up and Down are the search box's own cursor actions; they are
             // taken on their way down and walk the list instead.

@@ -257,6 +257,10 @@ pub(crate) struct BatteryReadings {
     pub(crate) cycles: Option<u64>,
     pub(crate) voltage: Option<f64>,
     pub(crate) charge_limit: Option<f64>,
+    /// The battery has a charge limit and it could not be read.
+    pub(crate) charge_limit_unreadable: bool,
+    /// `charge_control_start_threshold`, `0.0..=1.0`.
+    pub(crate) charge_start: Option<f64>,
     pub(crate) technology: Option<String>,
     pub(crate) model: Option<String>,
     pub(crate) manufacturer: Option<String>,
@@ -322,8 +326,6 @@ pub(crate) struct Readings {
     pub(crate) batteries: Vec<BatteryReadings>,
     pub(crate) power_sources: Vec<PowerSourceReadings>,
     pub(crate) sensors: Vec<SensorReadings>,
-    /// Whether the machine runs on its battery now; `None` without one.
-    pub(crate) on_battery: Option<bool>,
     /// Whether the round carried each collector at all, so a page can tell
     /// "nothing reported" from "nothing to report".
     pub(crate) has_cpu: bool,
@@ -519,7 +521,6 @@ impl Readings {
         }
         if let Some(battery) = report(reports, "linux.battery") {
             readings.has_battery = true;
-            readings.on_battery = boolean(&battery.metrics, "power.on_battery");
             readings.batteries = battery
                 .entities_of(EntityKind::Battery)
                 .map(|entity| {
@@ -538,6 +539,11 @@ impl Readings {
                         cycles: unsigned(m, "battery.cycles"),
                         voltage: number(m, "battery.voltage"),
                         charge_limit: number(m, "battery.charge.limit"),
+                        charge_limit_unreadable: matches!(
+                            m.get(&id("battery.charge.limit")),
+                            Some(monitor_core::Observation::Unsupported(_))
+                        ),
+                        charge_start: number(m, "battery.charge.start"),
                         technology: text(m, "battery.technology"),
                         model: text(m, "battery.model"),
                         manufacturer: text(m, "battery.manufacturer"),
@@ -589,6 +595,59 @@ impl Readings {
                 .collect();
         }
         readings
+    }
+
+    /// What every battery icon reads: whether a charger is online and each
+    /// of this machine's batteries (not a mouse's) with its own limit
+    /// (`hardware_core::charge_state`).
+    pub(crate) fn charge_readings(&self) -> hardware_core::charge_state::ChargeReadings {
+        use hardware_core::charge_state::{
+            BatteryPart, ChargeLimit, ChargeReadings, charger_online,
+        };
+        let percent = |ratio: f64| (ratio * 100.0).round().clamp(0.0, 100.0) as u8;
+        ChargeReadings {
+            charger_online: charger_online(
+                self.power_sources
+                    .iter()
+                    .map(|s| (s.kind.as_deref().unwrap_or(""), s.online)),
+            ),
+            batteries: self
+                .batteries
+                .iter()
+                .filter(|battery| !battery.peripheral)
+                .map(|battery| BatteryPart {
+                    status: battery
+                        .status
+                        .as_deref()
+                        .and_then(hardware_core::battery::BatteryStatus::from_key),
+                    percent: battery.charge.map(percent),
+                    energy_now: battery.energy_now,
+                    energy_full: battery.energy_full,
+                    limit: match battery.charge_limit {
+                        Some(end) => ChargeLimit::Percent {
+                            end: percent(end),
+                            start: battery.charge_start.map(percent),
+                        },
+                        None if battery.charge_limit_unreadable => ChargeLimit::Unreadable,
+                        None => ChargeLimit::NotSupported,
+                    },
+                })
+                .collect(),
+        }
+    }
+
+    /// Whether the machine draws from its battery now, from the battery
+    /// state rule: `None` without a battery or when the state is unknown.
+    pub(crate) fn on_battery(&self) -> Option<bool> {
+        self.system_battery()?;
+        hardware_core::charge_state::charge_state(&self.charge_readings()).on_battery()
+    }
+
+    /// The charge of all this machine's batteries together, as a share.
+    pub(crate) fn battery_charge(&self) -> Option<f64> {
+        self.charge_readings()
+            .percent()
+            .map(|percent| f64::from(percent) / 100.0)
     }
 
     /// This machine's own battery: the first that is not a peripheral's.

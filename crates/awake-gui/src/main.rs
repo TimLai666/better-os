@@ -27,13 +27,12 @@ use better_ui::command_line::WindowCommandLine;
 use gpui::*;
 use layout::{MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH};
 
-/// The kit's icons and the glyphs every Better OS window shares
-/// (`better_ui::fluent::glyphs`).
+/// The icon set before the kit's icons (ticket 147).
 struct Assets;
 
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> Result<Option<std::borrow::Cow<'static, [u8]>>> {
-        if let Some(svg) = better_ui::fluent::glyphs::load(path) {
+        if let Some(svg) = better_ui::icon_set::load(path) {
             return Ok(Some(std::borrow::Cow::Borrowed(svg)));
         }
         gpui_component_assets::Assets.load(path)

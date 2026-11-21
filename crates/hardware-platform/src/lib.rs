@@ -48,8 +48,10 @@ pub fn read_machine(
         power_mode,
         charge_limit: sysfs::charge_limit(root),
         battery: sysfs::battery(root),
+        charge: sysfs::charge_readings(root),
         brightness,
         keyboard,
+        lighting: sysfs::lighting_hint(root),
         fan: sysfs::fan_mode(root),
         sensors: sysfs::sensors(root),
     }

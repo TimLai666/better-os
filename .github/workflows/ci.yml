@@ -25,9 +25,12 @@ jobs:
         # The runners have lost name resolution for the Ubuntu mirrors for minutes
         # at a time, which failed this step and so the whole run. `apt-get update`
         # exits 0 with stale lists in that state, so the retry is around both.
+        # `dconf-service` is what the private-bus dconf tests run against
+        # (`defaults_platform::test_support`); under CI they fail without it
+        # rather than skip.
         run: |
           for attempt in 1 2 3 4 5; do
-            if sudo apt-get update && sudo apt-get install -y libfontconfig1-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-base gstreamer1.0-plugins-good dbus locales language-pack-gnome-zh-hant-base; then
+            if sudo apt-get update && sudo apt-get install -y libfontconfig1-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-base gstreamer1.0-plugins-good dbus dconf-service locales language-pack-gnome-zh-hant-base; then
               exit 0
             fi
             echo "apt attempt $attempt failed; waiting before the next" >&2
@@ -189,8 +192,16 @@ jobs:
           shellcheck --shell=sh packaging/maintainer/autostart-overrides.sh
           shellcheck packaging/tests/autostart-overrides.test.sh
           bash packaging/tests/autostart-overrides.test.sh
+          sh -n packaging/maintainer/accounts.sh packaging/maintainer/account-step.sh packaging/maintainer/before-removal-accounts.sh
+          shellcheck --shell=sh packaging/maintainer/accounts.sh packaging/maintainer/account-step.sh packaging/maintainer/before-removal-accounts.sh
+          shellcheck packaging/tests/before-removal-accounts.test.sh
+          bash packaging/tests/before-removal-accounts.test.sh
+          shellcheck packaging/tests/account-scripts.test.sh
+          bash packaging/tests/account-scripts.test.sh
           bash -n packaging/boot-watch/run.sh packaging/boot-watch/check.sh
           shellcheck packaging/boot-watch/run.sh packaging/boot-watch/check.sh
+          bash -n packaging/hardware-unit/run.sh packaging/hardware-unit/check.sh
+          shellcheck packaging/hardware-unit/run.sh packaging/hardware-unit/check.sh
           sh -n packaging/maintainer/greeter-watch.sh
           shellcheck --shell=sh packaging/maintainer/greeter-watch.sh
           shellcheck packaging/tests/greeter-watch.test.sh
@@ -342,6 +353,17 @@ jobs:
       - name: The login screen watch restarts a GDM that shows nothing, once
         run: |
           bash packaging/boot-watch/run.sh target/release/better-manager-daemon
+      # ADR 0029 and ADR 0034: the hardware helpers' transient units against
+      # a real systemd as PID 1, with the property list read from the release
+      # daemon itself (`--helper-properties`). The attribute helper writes
+      # its one stand-in file and nothing else, the restore unit and the
+      # removal path work, and the LampArray helper's unit starts and fails
+      # cleanly on a node that is absent or not hidraw (the container has no
+      # hidraw device). It runs in a throwaway container because it covers
+      # parts of /sys with stand-ins.
+      - name: The hardware helpers run in their sandbox on a real systemd
+        run: |
+          bash packaging/hardware-unit/run.sh target/release/better-manager-daemon
       - name: Upload Debian packages
         uses: actions/upload-artifact@v7
         with:

@@ -255,6 +255,30 @@ impl DefaultsValue {
     }
 }
 
+/// The dconf database a value was read from and written to, as the defaults
+/// record keeps it: the database's name in its profile line (`user`,
+/// `betteros`, `safe/user`) and the writer object the dconf service serves it
+/// at. A record written by Better Manager 0.2.16 or older carries none; those
+/// versions always wrote GNOME's database, [`DconfDatabase::gnome_user`].
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+pub struct DconfDatabase {
+    pub name: String,
+    pub writer_path: String,
+}
+
+impl DconfDatabase {
+    /// The writer object of GNOME's own database.
+    pub const GNOME_USER_WRITER: &'static str = "/ca/desrt/dconf/Writer/user";
+
+    /// GNOME's own database, `user-db:user`.
+    pub fn gnome_user() -> Self {
+        Self {
+            name: "user".to_string(),
+            writer_path: Self::GNOME_USER_WRITER.to_string(),
+        }
+    }
+}
+
 /// What an adapter saw when it read the system. The states are kept apart on
 /// purpose: a setting that is unset, a setting an adapter is not allowed to
 /// read, and a setting whose effective value cannot be determined are three

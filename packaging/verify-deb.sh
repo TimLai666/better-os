@@ -25,13 +25,29 @@ EXTENSION_UUID="touchpad-adapter@betteros.org"
 # inferred from the package name because most of these packages install more
 # than one binary, and a package that quietly stopped shipping its service or
 # its recovery entry point would otherwise still pass.
+# A maintainer script that acts for each person (packaging/maintainer/
+# accounts.sh) lists them through getent and gives each person's step its own
+# time limit, so one hung home cannot hold dpkg's lock.
+verify_account_block() {
+    local what="$1"
+    local script="$2"
+    grep -qF 'eval "$better_os_account_library"' "$script" &&
+        grep -qF 'timeout -s KILL "$seconds" sh -c "$better_os_account_library"' "$script" &&
+        ! grep -qF 'mktemp' "$script" &&
+        grep -qxF "better_os_getent='getent'" "$script" || {
+        printf '%s does not act for each person through the timed account library\n' "$what" >&2
+        exit 1
+    }
+}
+
 required_executables() {
     case "$1" in
         better-manager)
             printf '%s\n' \
                 usr/bin/better-manager \
                 usr/libexec/better-window-attention \
-                usr/libexec/better-os/daemon-handoff
+                usr/libexec/better-os/daemon-handoff \
+                usr/lib/better-os/before-removal/better-manager
             ;;
         better-monitor)
             printf '%s\n' \
@@ -55,7 +71,7 @@ required_executables() {
             printf '%s\n' \
                 usr/bin/better-touchpad \
                 usr/bin/better-touchpad-gestured \
-                usr/lib/better-os/before-removal/better-touchpad
+                usr/lib/better-os/before-removal/better-touchpad \
                 usr/libexec/better-touchpad-scrolld
             ;;
         better-awake)
@@ -78,7 +94,8 @@ required_data_files() {
                 usr/share/applications/io.betteros.Manager.desktop \
                 usr/share/icons/hicolor/scalable/apps/better-manager.svg \
                 usr/lib/systemd/user/better-window-attention.service \
-                usr/share/dbus-1/services/org.betteros.WindowAttention1.service
+                usr/share/dbus-1/services/org.betteros.WindowAttention1.service \
+                usr/lib/tmpfiles.d/better-manager.conf
             ;;
         better-monitor)
             printf '%s\n' \
@@ -460,6 +477,36 @@ for package_name in \
                 printf 'The Better Manager prerm does not stop and disable the window attention service\n' >&2
                 exit 1
             }
+            # ADR 0034: removing Better Manager gives the keyboard back to
+            # its firmware and forgets the colour, whether or not the
+            # privileged service package stays.
+            grep -qF '/usr/libexec/better-manager-daemon --release-hardware || true' "$control/prerm" || {
+                printf 'The Better Manager prerm does not give the keyboard back to its firmware\n' >&2
+                exit 1
+            }
+            sh -n "$control/prerm" || {
+                printf 'The Better Manager prerm does not parse as sh\n' >&2
+                exit 1
+            }
+            # Ticket 90: removing Better Manager undoes the fixes it applied,
+            # as each person, through its before-removal program; an
+            # abandoned removal puts them back; the postrm deletes what was
+            # set aside.
+            for script in prerm postinst postrm; do
+                grep -qF "&& better_os_before_removal_$script \"\$1\"; } || true" "$control/$script" || {
+                    printf 'The Better Manager %s does not run the before-removal step\n' "$script" >&2
+                    exit 1
+                }
+                grep -qxF "better_os_before_removal_program='/usr/lib/better-os/before-removal/better-manager'" "$control/$script" || {
+                    printf 'The Better Manager %s names another before-removal program\n' "$script" >&2
+                    exit 1
+                }
+                sh -n "$control/$script" || {
+                    printf 'The Better Manager %s does not parse as sh\n' "$script" >&2
+                    exit 1
+                }
+                verify_account_block "Better Manager $script" "$control/$script"
+            done
             # ADR 0028: the handoff for a privileged service too old to
             # install its own successor. The postinst starts it, and it hands
             # over only the exact packages this build made beside it.
@@ -544,8 +591,9 @@ for package_name in \
                 printf 'The Better Touchpad postrm does not parse as sh\n' >&2
                 exit 1
             }
+            verify_account_block "Better Touchpad postrm" "$control/postrm"
             grep -qxF "better_os_override_files='touchegg.desktop fusuma.desktop'" "$control/postrm" &&
-                grep -qxF 'better_os_forget_autostart_overrides "$1" || true' "$control/postrm" || {
+                grep -qF '&& better_os_forget_autostart_overrides "$1"; } || true' "$control/postrm" || {
                 printf 'The Better Touchpad postrm does not remove its autostart overrides\n' >&2
                 exit 1
             }
@@ -1034,6 +1082,42 @@ dpkg-deb --ctrl-tarfile "$daemon_path" | tar -xO ./prerm \
     printf "The daemon's prerm does not remove the drive entries it wrote\n" >&2
     exit 1
 }
+# Ticket 136 (ADR 0034): the keyboard colour has its own polkit action, the
+# boot-time restore starts for a stored colour as well as a stored limit, and
+# removal gives the keyboard back to its firmware and deletes the choice.
+grep -q 'org.betteros.manager.keyboard-lighting' \
+    "$daemon_extract/usr/share/polkit-1/actions/org.betteros.manager.policy" || {
+    printf 'The polkit policy does not declare org.betteros.manager.keyboard-lighting\n' >&2
+    exit 1
+}
+for condition in hardware.json keyboard-lighting.json; do
+    grep -qx "ConditionPathExists=|/var/lib/better-os/$condition" \
+        "$daemon_extract/usr/lib/systemd/system/better-hardware-restore.service" || {
+        printf 'The restore unit does not start for a stored %s\n' "$condition" >&2
+        exit 1
+    }
+done
+dpkg-deb --ctrl-tarfile "$daemon_path" | tar -xO ./prerm \
+    | grep -q -- '/usr/libexec/better-manager-daemon --release-hardware' || {
+    printf "The daemon's prerm does not give the keyboard back to its firmware\n" >&2
+    exit 1
+}
+dpkg-deb --ctrl-tarfile "$daemon_path" | tar -xO ./postrm \
+    | grep -q -- 'rm -f /var/lib/better-os/keyboard-lighting.json' || {
+    printf "The daemon's postrm does not delete the keyboard colour it kept\n" >&2
+    exit 1
+}
+dpkg-deb --ctrl-tarfile "$daemon_path" | tar -xO ./postrm \
+    | grep -q -- '/var/lib/better-os/hardware.json /var/lib/better-os/hardware-before.json' || {
+    printf "The daemon's postrm does not delete the charge limit it kept on removal\n" >&2
+    exit 1
+}
+# No udev rule hands a hidraw node to anyone (ADR 0034: the daemon's helper
+# opens it, never the session).
+if find "$daemon_extract" -path '*/udev/rules.d/*' -type f -print -quit | grep -q .; then
+    printf 'The daemon package ships a udev rule; ADR 0034 grants no hidraw access\n' >&2
+    exit 1
+fi
 for unit in better-manager-daemon.service better-hardware-restore.service better-greeter-watch.service; do
     unit_file="$daemon_extract/usr/lib/systemd/system/$unit"
     if ! grep -qx 'BindReadOnlyPaths=/sys' "$unit_file" \

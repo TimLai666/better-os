@@ -104,3 +104,23 @@ paths:
   # The System page's "Switch power mode with the charger" choice (ticket 86),
   # the person's own data, read by better-window-attention at each plug event.
   - ~/.config/better-os/power-follow.json
+  # The keyboard colour the person chose on the System page (ticket 136, ADR
+  # 0034). Machine state like the charge limit, kept by better-manager-daemon
+  # for its boot-time restore; the daemon package's removal gives the
+  # keyboard back to its firmware and deletes it.
+  - /var/lib/better-os/keyboard-lighting.json
+  # Better Patch, the Fixes page (ticket 90). The before-removal program the
+  # package's prerm runs as each person undoes every applied fix that has an
+  # undo and deletes the record; the set-aside file is what an abandoned
+  # removal puts back, deleted by the postrm; the location file says where
+  # the record and the overrides are when XDG_STATE_HOME or XDG_DATA_HOME is
+  # not the default.
+  - /usr/lib/better-os/before-removal/better-manager
+  - ~/.local/state/better-os/fixes.json
+  - ~/.local/state/better-os/fixes-removal-undo.json
+  - ~/.local/state/better-os/fixes-location.json
+  # What an interrupted write of each can leave beside it; the postrm
+  # deletes these too.
+  - ~/.local/state/better-os/.fixes.json.tmp
+  - ~/.local/state/better-os/fixes-removal-undo.json.tmp
+  - ~/.local/state/better-os/fixes-location.json.tmp

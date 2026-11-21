@@ -16,6 +16,7 @@ use better_ui::fluent::tabs::{SelectorBar, SelectorItem};
 use better_ui::fluent::text_box::TextBox;
 use better_ui::fluent::toggle::{CheckBox, CheckState};
 use better_ui::fluent::{BODY, CAPTION, TITLE, label, palette};
+use better_ui::icon_set::Picture;
 use gpui::*;
 use gpui_component::IconName;
 use manager_core::catalog::now_unix_seconds;
@@ -34,16 +35,10 @@ use crate::model::{
 use crate::pages;
 use crate::render::{CARD_GAP, FIRST_CARD_GAP, GROUP_GAP, Row};
 
-/// Keeps a press on a control inside a clickable card from also opening
-/// the card's page.
+/// Lays out the controls inside a clickable card. The kit keeps a press on
+/// them from also opening the card's page (`settings_card::header_content`).
 fn inside_card(element: impl IntoElement) -> Div {
-    div()
-        .flex()
-        .items_center()
-        .gap(px(8.0))
-        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .child(element)
+    div().flex().items_center().gap(px(8.0)).child(element)
 }
 
 fn element_id(prefix: &str, id: &ComponentId) -> ElementId {
@@ -332,9 +327,9 @@ impl ManagerApp {
                 link.card,
                 SettingsCard::new(link.card, link.header)
                     .icon(match link.page {
-                        Page::Updates => IconName::ArrowDown,
-                        Page::Health => IconName::CircleCheck,
-                        _ => IconName::Inspector,
+                        Page::Updates => Picture::Updates,
+                        Page::Health => Picture::Health,
+                        _ => Picture::History,
                     })
                     .description(link.description)
                     .on_click(Self::act(cx, move |this, _, cx| {
@@ -586,20 +581,20 @@ impl ManagerApp {
             DetailTab::Overview => {
                 cards.push(
                     SettingsCard::new("what-it-does", c.what_it_does)
-                        .icon(IconName::Info)
+                        .icon(Picture::About)
                         .description(self.declared_or_not(&component.detail))
                         .into_any_element(),
                 );
                 let pill = Self::status_pill(self.locale, component.state, false);
                 cards.push(
                     SettingsCard::new("component-status", a.status)
-                        .icon(IconName::CircleCheck)
+                        .icon(Picture::Health)
                         .content(label(pill.label, BODY, p.text_secondary))
                         .into_any_element(),
                 );
                 cards.push(
                     SettingsCard::new("component-kind", a.kind)
-                        .icon(IconName::Inbox)
+                        .icon(Picture::Package)
                         .content(label(
                             Self::kind_pill(self.locale, component.kind).label,
                             BODY,
@@ -609,13 +604,13 @@ impl ManagerApp {
                 );
                 cards.push(
                     SettingsCard::new("component-replaces", c.replaces_label)
-                        .icon(IconName::Replace)
+                        .icon(Picture::Apps)
                         .description(none(&component.replaces))
                         .into_any_element(),
                 );
                 cards.push(
                     SettingsCard::new("component-enhances", c.enhances_label)
-                        .icon(IconName::Plus)
+                        .icon(Picture::Enhance)
                         .description(none(&component.enhances))
                         .into_any_element(),
                 );
@@ -628,13 +623,13 @@ impl ManagerApp {
                 {
                     cards.push(
                         SettingsCard::new("component-restart", c.restart_requirement)
-                            .icon(IconName::Redo)
+                            .icon(Picture::Restart)
                             .description(effect)
                             .into_any_element(),
                     );
                 }
                 let mut checks = SettingsExpander::new("health-checks", a.health_checks, false)
-                    .icon(IconName::CircleCheck);
+                    .icon(Picture::Health);
                 if component.health_checks.is_empty() {
                     checks = checks.description(a.health_checks_none);
                 }
@@ -643,7 +638,7 @@ impl ManagerApp {
                 }
                 cards.push(checks.into_any_element());
                 let mut files = SettingsExpander::new("files-touched", c.files_touched, false)
-                    .icon(IconName::Folder)
+                    .icon(Picture::Folder)
                     .description(c.no_privileged_actions);
                 for path in &component.paths {
                     files = files.row(SettingsRow::new(path.clone()));
@@ -653,7 +648,7 @@ impl ManagerApp {
                     let defaults = id.clone();
                     cards.push(
                         SettingsCard::new("component-defaults", a.default_apps)
-                            .icon(IconName::Star)
+                            .icon(Picture::Star)
                             .description(a.default_apps_description)
                             .on_click(Self::act(cx, move |this, _, cx| {
                                 this.navigate(Page::DefaultsComponent(defaults.clone()), cx)
@@ -664,7 +659,7 @@ impl ManagerApp {
             }
             DetailTab::Versions => {
                 let mut installed = SettingsCard::new("installed-version", c.current_version)
-                    .icon(IconName::Inbox)
+                    .icon(Picture::Package)
                     .content(label(
                         component.installed_label(c.not_installed),
                         BODY,
@@ -676,7 +671,7 @@ impl ManagerApp {
                 cards.push(installed.into_any_element());
                 cards.push(
                     SettingsCard::new("available-version", c.available_version)
-                        .icon(IconName::ArrowDown)
+                        .icon(Picture::Updates)
                         .content(label(
                             component.available_version.clone(),
                             BODY,
@@ -685,7 +680,7 @@ impl ManagerApp {
                         .into_any_element(),
                 );
                 let mut notes = SettingsExpander::new("release-notes", c.release_notes, true)
-                    .icon(IconName::BookOpen);
+                    .icon(Picture::Book);
                 if component.release_notes.is_empty() {
                     notes = notes.description(c.no_release_notes);
                 }
@@ -708,25 +703,25 @@ impl ManagerApp {
         let plannable = unorderable.is_none()
             && component.drift.is_none()
             && component.state != ComponentStatus::Incompatible;
-        let mut actions: Vec<(DesiredOperation, &'static str, IconName)> = Vec::new();
+        let mut actions: Vec<(DesiredOperation, &'static str, Picture)> = Vec::new();
         if plannable && installed {
             if component.enabled {
-                actions.push((DesiredOperation::Disable, c.disable, IconName::CircleX));
+                actions.push((DesiredOperation::Disable, c.disable, Picture::Disable));
             } else {
-                actions.push((DesiredOperation::Enable, c.enable, IconName::CircleCheck));
+                actions.push((DesiredOperation::Enable, c.enable, Picture::Enable));
             }
-            actions.push((DesiredOperation::Verify, c.retry_check, IconName::Search));
+            actions.push((DesiredOperation::Verify, c.retry_check, Picture::Verify));
         }
         if plannable && component.restore_available {
             actions.push((
                 DesiredOperation::Restore,
                 c.restore_previous,
-                IconName::Undo,
+                Picture::Restore,
             ));
         }
         let is_self = is_self_component(id);
         if plannable && installed && !is_self {
-            actions.push((DesiredOperation::Remove, c.remove, IconName::Delete));
+            actions.push((DesiredOperation::Remove, c.remove, Picture::Delete));
         }
         if !actions.is_empty() || (installed && is_self) {
             rows.push(self.group_header(a.actions_header, cx));
@@ -760,7 +755,7 @@ impl ManagerApp {
             rows.push(Row::new(
                 gap,
                 SettingsCard::new("cannot-remove-self", c.remove)
-                    .icon(IconName::Delete)
+                    .icon(Picture::Delete)
                     .description(c.cannot_remove_self)
                     .disabled(true),
             ));
@@ -815,7 +810,7 @@ impl ManagerApp {
             (UpdateCheck::Running, _) => summary
                 .leading(ProgressRing::new("check-ring", Progress::Indeterminate).size(px(20.0))),
             (_, Some(_)) => summary.status(Severity::Warning),
-            (UpdateCheck::Found(_), None) => summary.icon(IconName::ArrowDown),
+            (UpdateCheck::Found(_), None) => summary.icon(Picture::Updates),
             _ => summary.status(Severity::Success),
         };
         // While a change runs, its card above says what is happening; a
@@ -1201,7 +1196,7 @@ impl ManagerApp {
         };
         let mut rows = Vec::new();
         let mut expander = SettingsExpander::new(login_watch::CARD, w.title, state.expanded)
-            .icon(IconName::Eye)
+            .icon(Picture::LoginScreen)
             .description(match report.events.first() {
                 Some(event) => login_watch::summary(
                     self.locale,

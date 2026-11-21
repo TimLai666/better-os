@@ -299,7 +299,14 @@ fn known_shortcuts(options: &StartupOptions) -> KnownShortcuts {
     if options.in_memory {
         return KnownShortcuts::unavailable("gestures.shortcuts_not_read_in_test_mode");
     }
-    match keybindings::read(&GnomeBackend::user_database_path()) {
+    let database = match GnomeBackend::session_database() {
+        Ok(database) => database,
+        Err(error) => return KnownShortcuts::unavailable(error.reason()),
+    };
+    let stacked: Vec<_> = std::iter::once(database.path)
+        .chain(database.beneath)
+        .collect();
+    match keybindings::read_stacked(&stacked) {
         KeybindingReading::Recorded(bindings) => KnownShortcuts::from_bindings(
             bindings
                 .into_iter()
@@ -320,10 +327,7 @@ fn build_backend(
         .select(None)
         .map(|device| device.capabilities.clone());
     if options.offline {
-        return Box::new(GnomeBackend::read_only(
-            GnomeBackend::user_database_path(),
-            device.as_ref(),
-        ));
+        return Box::new(GnomeBackend::read_only_session(device.as_ref()));
     }
     Box::new(GnomeBackend::connect(device.as_ref()))
 }

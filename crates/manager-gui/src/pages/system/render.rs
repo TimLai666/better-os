@@ -8,6 +8,7 @@ use better_ui::fluent::selection::{ComboBox, ComboItem, Slider, SliderModel};
 use better_ui::fluent::settings_card::{SettingsCard, SettingsExpander, SettingsRow};
 use better_ui::fluent::toggle::{RadioButtons, RadioOption, ToggleSwitch};
 use better_ui::fluent::{BODY, CAPTION, label, palette};
+use better_ui::icon_set::{Glyph, Picture};
 use gpui::*;
 use gpui_component::IconName;
 use hardware_core::Card;
@@ -24,6 +25,7 @@ use super::copy::copy;
 use super::decide::{self, outcome_state};
 use super::state::{Group, Writing};
 use crate::app::ManagerApp;
+use crate::home;
 use crate::i18n::shell;
 use crate::pages::states::{PageState, describe};
 use crate::render::{CARD_GAP, FIRST_CARD_GAP, Row};
@@ -151,7 +153,7 @@ impl ManagerApp {
                     gap,
                     card::POWER_MODE,
                     SettingsCard::new(card::POWER_MODE, c.power_mode)
-                        .icon(IconName::BatteryFull)
+                        .icon(Picture::Gauge)
                         .description(self.unreadable())
                         .disabled(true),
                 ));
@@ -167,7 +169,7 @@ impl ManagerApp {
                     .selected
                     .and_then(|s| options.iter().position(|o| *o == s));
                 let mut card_ = SettingsCard::new(card::POWER_MODE, c.power_mode)
-                    .icon(IconName::BatteryFull)
+                    .icon(Picture::Gauge)
                     .description(c.power_mode_description)
                     .content(
                         ComboBox::new("system-power-mode-box", items, selected)
@@ -194,6 +196,13 @@ impl ManagerApp {
             }
         }
 
+        // The battery's picture follows its state on both battery cards, as
+        // every battery icon does (ticket 170).
+        let charge_icon = power
+            .charge
+            .as_ref()
+            .map(|charge| home::battery_picture(&home::battery_look(charge, self.locale)))
+            .unwrap_or(Picture::Battery);
         match &power.charge_limit {
             Card::Hidden => {}
             Card::Disabled { .. } => {
@@ -201,7 +210,7 @@ impl ManagerApp {
                     gap,
                     card::CHARGE_LIMIT,
                     SettingsCard::new(card::CHARGE_LIMIT, c.charge_limit)
-                        .icon(IconName::BatteryMedium)
+                        .icon(charge_icon)
                         .description(self.unreadable())
                         .disabled(true),
                 ));
@@ -217,19 +226,20 @@ impl ManagerApp {
                             .disabled(matches!(choice, ChargeChoice::SetElsewhere(_)))
                     })
                     .collect();
-                let description = decide::sentences(
-                    self.locale,
-                    &[
-                        c.charge_limit_description,
-                        c.charge_at_startup,
-                        c.charge_auth_note,
-                    ],
+                let lines = decide::charge_limit_lines(
+                    power.charge.as_ref(),
+                    self.system.desktop_icon_note,
+                    c,
                 );
+                let mut parts: Vec<&str> = vec![c.charge_limit_description];
+                parts.extend(lines.iter().map(String::as_str));
+                parts.extend([c.charge_at_startup, c.charge_auth_note]);
+                let description = decide::sentences(self.locale, &parts);
                 rows.push(Row::card(
                     gap,
                     card::CHARGE_LIMIT,
                     SettingsCard::new(card::CHARGE_LIMIT, c.charge_limit)
-                        .icon(IconName::BatteryMedium)
+                        .icon(charge_icon)
                         .description(description)
                         .content(
                             ComboBox::new("system-charge-limit-box", items, Some(view.selected))
@@ -253,7 +263,7 @@ impl ManagerApp {
                     gap,
                     card::BATTERY,
                     SettingsCard::new(card::BATTERY, c.battery)
-                        .icon(IconName::Battery)
+                        .icon(Picture::Battery)
                         .description(self.unreadable())
                         .disabled(true),
                 ));
@@ -261,13 +271,14 @@ impl ManagerApp {
             Card::Live(battery) => {
                 let mut expander =
                     SettingsExpander::new(card::BATTERY, c.battery, self.system.battery_open)
-                        .icon(match battery.capacity {
-                            Some(p) if p >= 90 => IconName::BatteryFull,
-                            Some(p) if p >= 40 => IconName::BatteryMedium,
-                            Some(_) => IconName::BatteryLow,
-                            None => IconName::Battery,
-                        })
-                        .description(decide::battery_description(battery, self.locale))
+                        .icon(charge_icon)
+                        .description(
+                            power
+                                .charge
+                                .as_ref()
+                                .map(|charge| decide::battery_description(charge, self.locale))
+                                .unwrap_or_default(),
+                        )
                         .on_toggle(Self::act_with(cx, |this, open: bool, _, cx| {
                             this.system.battery_open = open;
                             cx.notify();
@@ -293,7 +304,7 @@ impl ManagerApp {
         let busy = self.system.writing == Some(Writing::Follow);
         let mut expander =
             SettingsExpander::new(card::FOLLOW, c.follow_header, self.system.follow_open)
-                .icon(IconName::BatteryCharging)
+                .icon(Picture::BatteryCharging)
                 .description(if broken {
                     c.follow_unreadable
                 } else {
@@ -377,7 +388,7 @@ impl ManagerApp {
                     gap,
                     card::BRIGHTNESS,
                     SettingsCard::new(card::BRIGHTNESS, c.brightness)
-                        .icon(IconName::Sun)
+                        .icon(Picture::Brightness)
                         .description(self.unreadable())
                         .disabled(true),
                 ));
@@ -389,7 +400,7 @@ impl ManagerApp {
                     gap,
                     card::BRIGHTNESS,
                     SettingsCard::new(card::BRIGHTNESS, c.brightness)
-                        .icon(IconName::Sun)
+                        .icon(Picture::Brightness)
                         .description(c.brightness_description)
                         .content(
                             div()
@@ -424,7 +435,7 @@ impl ManagerApp {
                     gap,
                     card::KEYBOARD,
                     SettingsCard::new(card::KEYBOARD, c.keyboard)
-                        .icon(IconName::SquareTerminal)
+                        .icon(Picture::Keyboard)
                         .description(self.unreadable())
                         .disabled(true),
                 ));
@@ -446,7 +457,7 @@ impl ManagerApp {
                     gap,
                     card::KEYBOARD,
                     SettingsCard::new(card::KEYBOARD, c.keyboard)
-                        .icon(IconName::SquareTerminal)
+                        .icon(Picture::Keyboard)
                         .description(decide::keyboard_description(&levels, c))
                         .content(
                             div()
@@ -476,6 +487,13 @@ impl ManagerApp {
                 ));
             }
         }
+        // The keyboard's colour (ticket 136), right under its backlight.
+        let gap = if rows.is_empty() {
+            FIRST_CARD_GAP
+        } else {
+            CARD_GAP
+        };
+        rows.extend(self.lighting_rows(&display.lighting, gap, cx));
         rows
     }
 
@@ -490,7 +508,7 @@ impl ManagerApp {
                     gap,
                     card::FAN_MODE,
                     SettingsCard::new(card::FAN_MODE, c.fan_mode)
-                        .icon(IconName::Settings)
+                        .icon(Picture::Fan)
                         .description(self.unreadable())
                         .disabled(true),
                 ));
@@ -505,7 +523,7 @@ impl ManagerApp {
                     .map(|m| RadioOption::new(decide::fan_label(*m, c)))
                     .collect();
                 let mut card_ = SettingsCard::new(card::FAN_MODE, c.fan_mode)
-                    .icon(IconName::Settings)
+                    .icon(Picture::Fan)
                     .description(decide::sentences(
                         self.locale,
                         &[c.fan_mode_description, c.fan_after_restart],
@@ -540,7 +558,7 @@ impl ManagerApp {
         if !cooling.sensors.is_empty() {
             let mut expander =
                 SettingsExpander::new(card::SENSORS, c.sensors, self.system.sensors_open)
-                    .icon(IconName::Cpu)
+                    .icon(Picture::Thermometer)
                     .description(decide::sensors_description(&summary(&cooling.sensors), c))
                     .on_toggle(Self::act_with(cx, |this, open: bool, _, cx| {
                         this.system.sensors_open = open;
@@ -563,7 +581,7 @@ impl ManagerApp {
     fn about_expander(&self, cx: &mut Context<Self>) -> SettingsExpander {
         let c = copy(self.locale);
         let mut expander = SettingsExpander::new(card::ABOUT, c.about, self.system.about_open)
-            .icon(IconName::Info)
+            .icon(Picture::About)
             .description(
                 self.system
                     .about
@@ -586,9 +604,9 @@ impl ManagerApp {
                     Button::icon_button(
                         ElementId::named_usize("system-about-copy", index),
                         if copied {
-                            IconName::Check
+                            Glyph::from(IconName::Check)
                         } else {
-                            IconName::Copy
+                            Glyph::from(Picture::Copy)
                         },
                         if copied { c.copied } else { c.copy },
                     )
@@ -621,7 +639,7 @@ impl ManagerApp {
             .selected
             .and_then(|s| options.iter().position(|o| *o == s));
         let mut card_ = SettingsCard::new("home-power-mode", c.power_mode)
-            .icon(IconName::BatteryFull)
+            .icon(Picture::Gauge)
             .description(c.power_mode_description)
             .content(
                 ComboBox::new("home-power-mode-box", items, selected)

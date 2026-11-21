@@ -2,12 +2,14 @@
 //! with no GPUI in it.
 //!
 //! The view is the page, the device whose gesture profile is being edited,
-//! and the two file paths on the Gestures screen. A setting moved but not yet
+//! the two file paths on the Gestures screen, and the navigation pane's open
+//! or closed choice. A setting moved but not yet
 //! applied, a preset preview, an import waiting for its plan, an open gesture
 //! editor, and a live test are all input with no saved form, so a restart
 //! waits for each of them to be applied, cancelled, or finished, as it does
 //! while settings are being applied.
 
+use better_ui::fluent::navigation::PaneChoice;
 use better_ui::restart::Blocker;
 use serde::{Deserialize, Serialize};
 
@@ -22,9 +24,21 @@ pub struct TouchpadView {
     pub gesture_device: Option<String>,
     pub export_path: Option<String>,
     pub import_path: Option<String>,
+    /// The pane closed with its button in a wide window.
+    pub wide_collapsed: bool,
+    /// The pane opened with its button in a narrow window.
+    pub narrow_open: bool,
 }
 
 impl TouchpadView {
+    /// The pane as the person left it.
+    pub fn pane(&self) -> PaneChoice {
+        PaneChoice {
+            wide_collapsed: self.wide_collapsed,
+            narrow_open: self.narrow_open,
+        }
+    }
+
     /// The page to open, or the overview when this build has no such page.
     pub fn page(&self) -> Page {
         Page::parse(&self.page).unwrap_or(Page::Overview)
@@ -60,8 +74,40 @@ impl InFlight {
 
 #[cfg(test)]
 mod tests {
-    use super::{InFlight, TouchpadView};
+    use super::{InFlight, PaneChoice, TouchpadView};
     use crate::model::Page;
+
+    /// The pane's open or closed choice survives an update restart, for a
+    /// wide and a narrow window alike, and a hand-off written by a version
+    /// that had no such field still reads, with the pane as a new window
+    /// draws it.
+    #[test]
+    fn the_panes_choice_comes_back_and_an_older_handoff_still_reads() {
+        for (wide_collapsed, narrow_open) in
+            [(false, false), (true, false), (false, true), (true, true)]
+        {
+            let view = TouchpadView {
+                page: Page::Gestures.key().to_string(),
+                wide_collapsed,
+                narrow_open,
+                ..TouchpadView::default()
+            };
+            let read: TouchpadView =
+                serde_json::from_str(&serde_json::to_string(&view).unwrap()).unwrap();
+            assert_eq!(
+                read.pane(),
+                PaneChoice {
+                    wide_collapsed,
+                    narrow_open
+                }
+            );
+            assert_eq!(read.page(), Page::Gestures);
+        }
+        let older: TouchpadView =
+            serde_json::from_str(r#"{"page":"gestures","gesture_device":null}"#).unwrap();
+        assert_eq!(older.page(), Page::Gestures);
+        assert_eq!(older.pane(), PaneChoice::default());
+    }
 
     #[test]
     fn every_page_comes_back_as_itself() {

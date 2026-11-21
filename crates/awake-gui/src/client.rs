@@ -175,6 +175,10 @@ impl ServiceClient {
 /// rather than one per section.
 pub(crate) struct Snapshot {
     pub(crate) status: Result<StatusDocument, ClientError>,
+    /// What the battery is doing, read from sysfs in the same round off the
+    /// UI thread: the service's status says only "on AC power", which cannot
+    /// tell a battery held at its limit from one charging (ticket 170).
+    pub(crate) charge: Option<hardware_core::charge_state::ChargeReadings>,
     pub(crate) rules: Result<RulesDocument, ClientError>,
     pub(crate) history: Result<HistoryDocument, ClientError>,
     pub(crate) protocol_version: Option<u32>,
@@ -194,12 +198,14 @@ impl Snapshot {
             Err(error) => return Self::unreachable(ClientError::Transport(error.to_string())),
         };
 
+        let charge = read_charge();
         runtime.block_on(async move {
             let client = match ServiceClient::connect().await {
                 Ok(client) => client,
                 Err(error) => return Self::unreachable(error),
             };
             Self {
+                charge,
                 protocol_version: client.protocol_version().await.ok(),
                 status: client.status().await,
                 rules: client.rules().await,
@@ -210,10 +216,58 @@ impl Snapshot {
 
     fn unreachable(error: ClientError) -> Self {
         Self {
+            charge: None,
             status: Err(error.clone()),
             rules: Err(error.clone()),
             history: Err(error),
             protocol_version: None,
+        }
+    }
+}
+
+/// The battery's readings for the power row: none in a test build, which
+/// never reads the machine's sysfs.
+fn read_charge() -> Option<hardware_core::charge_state::ChargeReadings> {
+    if cfg!(test) {
+        return None;
+    }
+    hardware_platform::sysfs::charge_readings(&hardware_platform::sysfs::SysRoot::for_window())
+}
+
+/// Calls `changed` whenever Better Awake's service signals or UPower says a
+/// charger or the battery changed, until `changed` returns `false`. Blocks:
+/// run it on a thread of its own.
+pub(crate) fn follow(changed: impl FnMut() -> bool + Send + 'static) {
+    let (merged, events) = std::sync::mpsc::channel::<()>();
+    let power = merged.clone();
+    std::thread::spawn(move || {
+        if let Ok(system) = zbus::blocking::Connection::system() {
+            hardware_platform::bus::follow(
+                &system,
+                &hardware_platform::bus::POWER_SUPPLY_CHANGES,
+                || power.send(()).is_ok(),
+            );
+        }
+    });
+    std::thread::spawn(move || {
+        if let Ok(session) = zbus::blocking::Connection::session() {
+            hardware_platform::bus::follow(
+                &session,
+                &[hardware_platform::bus::Endpoint {
+                    name: "org.betteros.Awake1",
+                    path: "/org/betteros/Awake1",
+                    interface: "org.betteros.Awake1",
+                }],
+                || merged.send(()).is_ok(),
+            );
+        }
+    });
+    let mut changed = changed;
+    while events.recv().is_ok() {
+        // A burst of signals is one read.
+        while events.try_recv().is_ok() {}
+        if !changed() {
+            return;
         }
     }
 }

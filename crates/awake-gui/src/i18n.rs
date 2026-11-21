@@ -63,14 +63,14 @@ impl Locale {
 pub(crate) struct Copy {
     // ---- Shell ---------------------------------------------------------
     pub(crate) application_name: &'static str,
-    pub(crate) application_tagline: &'static str,
-    pub(crate) navigation: &'static str,
     pub(crate) keyboard_hint: &'static str,
     pub(crate) refresh: &'static str,
     pub(crate) cancel: &'static str,
     pub(crate) save: &'static str,
     pub(crate) edit: &'static str,
     pub(crate) delete: &'static str,
+    /// The Play button on a Quick Sessions row, which has no words of its own.
+    pub(crate) start_this_session: &'static str,
     pub(crate) duplicate: &'static str,
     pub(crate) enable: &'static str,
     pub(crate) disable: &'static str,
@@ -267,8 +267,8 @@ pub(crate) struct Copy {
     pub(crate) no_battery: &'static str,
     pub(crate) no_battery_detail: &'static str,
     pub(crate) current_charge: &'static str,
-    pub(crate) on_ac_power: &'static str,
-    pub(crate) on_battery_power: &'static str,
+    /// The Battery section's power row, whose value is the battery's state.
+    pub(crate) power_state: &'static str,
     pub(crate) on_battery_rule: &'static str,
     pub(crate) on_battery_rule_detail: &'static str,
     pub(crate) quit_warning: &'static str,
@@ -371,14 +371,13 @@ impl Copy {
 
 static EN_US: Copy = Copy {
     application_name: "Better Awake",
-    application_tagline: "Keep this machine awake, on purpose",
-    navigation: "Sections",
     keyboard_hint: "Press Ctrl and a number to jump to a section",
     refresh: "Refresh",
     cancel: "Cancel",
     save: "Save",
     edit: "Edit",
     delete: "Delete",
+    start_this_session: "Start this session",
     duplicate: "Duplicate",
     enable: "Enable",
     disable: "Disable",
@@ -567,8 +566,7 @@ static EN_US: Copy = Copy {
     no_battery: "This machine has no battery",
     no_battery_detail: "A battery stop threshold could never fire here, so none is offered. Sessions end on their own condition instead.",
     current_charge: "Current charge",
-    on_ac_power: "On AC power",
-    on_battery_power: "On battery",
+    power_state: "Power",
     on_battery_rule: "Stop sessions on battery by default",
     on_battery_rule_detail: "A new session takes the default battery stop unless the preset or rule that started it says otherwise.",
     quit_warning: "Quitting the service ends every running session",
@@ -648,14 +646,13 @@ static EN_US: Copy = Copy {
 
 static ZH_TW: Copy = Copy {
     application_name: "Better Awake",
-    application_tagline: "讓這台電腦有理由地保持清醒",
-    navigation: "區段",
     keyboard_hint: "按 Ctrl 加數字可直接切換區段",
     refresh: "重新讀取",
     cancel: "取消",
     save: "儲存",
     edit: "編輯",
     delete: "刪除",
+    start_this_session: "開始這個工作階段",
     duplicate: "複製",
     enable: "啟用",
     disable: "停用",
@@ -844,8 +841,7 @@ static ZH_TW: Copy = Copy {
     no_battery: "這台機器沒有電池",
     no_battery_detail: "電量停止門檻在這裡永遠不會觸發，所以不提供。工作階段依照自己的結束條件停止。",
     current_charge: "目前電量",
-    on_ac_power: "使用外接電源",
-    on_battery_power: "使用電池",
+    power_state: "電源",
     on_battery_rule: "使用電池時預設會停止工作階段",
     on_battery_rule_detail: "新的工作階段會採用預設電量門檻，除非開始它的預設項目或規則另有指定。",
     quit_warning: "關閉服務會結束所有執行中的工作階段",
@@ -946,4 +942,12 @@ pub(crate) fn limit_words(locale: Locale, minutes: u32) -> String {
 /// string replacement.
 pub(crate) fn fill(template: &str, name: &str, value: &str) -> String {
     template.replace(&format!("{{{name}}}"), value)
+}
+
+/// The battery state's language for this choice, after `system` is resolved.
+pub(crate) fn language(locale: Locale) -> hardware_core::charge_state::Language {
+    match locale.resolved() {
+        Locale::ZhTw => hardware_core::charge_state::Language::TraditionalChinese,
+        Locale::EnUs | Locale::System => hardware_core::charge_state::Language::English,
+    }
 }

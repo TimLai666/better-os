@@ -2,9 +2,10 @@
 //! (GNOME Shell's favourites, which the dash and Zorin's taskbar show) and a
 //! tool entry point.
 //!
-//! Both read the user's dconf database first and, where the user never set
-//! the key, the default the compiled GSettings schema gives it — the value
-//! GNOME itself is using. Unlike [`crate::DconfAdapter`], a launcher entry has
+//! Both read the session's dconf databases first (its own, then the user
+//! databases its profile lists beneath it, [`crate::dconf_profile`]) and,
+//! where none of them holds the key, the default the compiled GSettings
+//! schema gives it — the value the session itself is using. Unlike [`crate::DconfAdapter`], a launcher entry has
 //! to know that default: adding one application to a list the user never
 //! touched means writing the whole list GNOME was showing plus that one, and
 //! writing the application alone would empty the dock.
@@ -19,12 +20,15 @@
 
 use std::path::PathBuf;
 
-use better_core::defaults::{AdapterId, DefaultsValue, KeyObservation, ObservedValue};
+use better_core::defaults::{
+    AdapterId, DconfDatabase, DefaultsValue, KeyObservation, ObservedValue,
+};
 
-use crate::dconf::{ChangesetSender, load_user_database, user_database_path};
+use crate::dconf::{ChangesetSender, DatabaseTarget, Layers, session_sender, session_with_dirs};
+use crate::dconf_profile::{ProfileError, SessionDatabase};
 use crate::gvariant::{ChangeValue, Changeset};
-use crate::gvdb::{GVariantValue, GvdbDatabase, schema_default};
-use crate::{AdapterRequest, DefaultsAdapter, WriteOutcome, WriteValue, collapse};
+use crate::gvdb::{GVariantValue, schema_default};
+use crate::{AdapterRequest, DefaultsAdapter, VerifyOutcome, WriteOutcome, WriteValue, collapse};
 
 /// The reason a key no schema defines is reported with.
 pub const NO_SUCH_KEY: &str = "gsettings.no_such_key";
@@ -83,12 +87,34 @@ impl Effective {
 }
 
 struct Keys {
-    database: PathBuf,
+    target: DatabaseTarget,
     schemas: Vec<PathBuf>,
 }
 
 impl Keys {
-    fn effective(&self, database: &GvdbDatabase, key: &str) -> Result<Effective, ObservedValue> {
+    /// The session's own database and the ones beneath it, with the
+    /// installed schemas.
+    fn for_session() -> (Self, Option<Box<dyn ChangesetSender>>) {
+        let (database, dirs) = session_with_dirs();
+        let sender = session_sender(&database, &dirs);
+        (
+            Self::for_database(database, Some(dirs), schema_files()),
+            sender,
+        )
+    }
+
+    fn for_database(
+        database: Result<SessionDatabase, ProfileError>,
+        dirs: Option<(PathBuf, PathBuf)>,
+        schemas: Vec<PathBuf>,
+    ) -> Self {
+        Self {
+            target: DatabaseTarget::session(database, dirs),
+            schemas,
+        }
+    }
+
+    fn effective(&self, database: &Layers, key: &str) -> Result<Effective, ObservedValue> {
         // A key no schema defines is not one the session reads, whatever the
         // user's database happens to hold under that path.
         let Some(default) = default_of(&self.schemas, key) else {
@@ -96,14 +122,63 @@ impl Keys {
                 reason: NO_SUCH_KEY.to_string(),
             });
         };
-        Ok(match database.get(key) {
+        Ok(match database.get(key)? {
             Some(value) => Effective::User(value.clone()),
             None => Effective::Default(default),
         })
     }
 
-    fn load(&self) -> Result<GvdbDatabase, ObservedValue> {
-        load_user_database(&self.database)
+    /// The databases the request is about: the session's, or the one its
+    /// record names.
+    fn load(&self, request: &AdapterRequest<'_>) -> Result<Layers, ObservedValue> {
+        self.target.for_request(request).load()
+    }
+
+    /// The capture: each key as read when the session's own database holds
+    /// it, and unset when the value shown comes from a database beneath or
+    /// from the schema, so a restore resets the key instead of writing a copy.
+    fn capture(
+        &self,
+        request: &AdapterRequest<'_>,
+        read: impl Fn(&AdapterRequest<'_>) -> ObservedValue,
+    ) -> ObservedValue {
+        let layers = match self.load(request) {
+            Ok(layers) => layers,
+            Err(observed) => return observed,
+        };
+        collapse(
+            request
+                .keys()
+                .iter()
+                .map(|key| KeyObservation {
+                    key: key.clone(),
+                    observed: if layers.top.get(key).is_none() {
+                        ObservedValue::Unset
+                    } else {
+                        match request.narrowed_to(key) {
+                            Some(narrowed) => read(&narrowed),
+                            None => ObservedValue::Unknown {
+                                reason: "gsettings.key_not_declared".to_string(),
+                            },
+                        }
+                    },
+                })
+                .collect(),
+        )
+    }
+}
+
+/// A verify that compares "nothing held" against the capture's own view, so
+/// a key reset in the session's database verifies as unset although the
+/// session still shows the value beneath it.
+fn verify_against(observed: ObservedValue, expected: &ObservedValue) -> VerifyOutcome {
+    if !observed.is_determinate() || !expected.is_determinate() {
+        return VerifyOutcome::Indeterminate { observed };
+    }
+    if &observed == expected {
+        VerifyOutcome::Matches { observed }
+    } else {
+        VerifyOutcome::Differs { observed }
     }
 }
 
@@ -122,10 +197,15 @@ fn wrong_type(value: &GVariantValue) -> ObservedValue {
 }
 
 fn send(
+    keys: &Keys,
     sender: &mut Option<Box<dyn ChangesetSender>>,
     request: &AdapterRequest<'_>,
     changeset: &Changeset,
 ) -> WriteOutcome {
+    let target = keys.target.for_request(request);
+    if let Some(refusal) = target.write_refusal() {
+        return refusal;
+    }
     let Some(sender) = sender.as_mut() else {
         return WriteOutcome::manual(
             NO_WRITE_PATH,
@@ -135,7 +215,7 @@ fn send(
             ),
         );
     };
-    match sender.send(changeset) {
+    match sender.send_to(target.writer_path(), changeset) {
         Ok(()) => WriteOutcome::Written,
         Err(detail) => WriteOutcome::failed("dconf.write_failed", detail),
     }
@@ -158,7 +238,7 @@ impl LauncherEntryAdapter {
     pub fn new(database: impl Into<PathBuf>, schemas: Vec<PathBuf>) -> Self {
         Self {
             keys: Keys {
-                database: database.into(),
+                target: DatabaseTarget::file(database.into()),
                 schemas,
             },
             sender: None,
@@ -176,24 +256,31 @@ impl LauncherEntryAdapter {
         }
     }
 
-    /// The user's own database and schemas, written through the session's
-    /// dconf service when this build has the write path.
-    pub fn for_user() -> Self {
-        #[cfg(feature = "dconf-write")]
-        {
-            Self::with_sender(
-                user_database_path(),
-                schema_files(),
-                Box::new(crate::dconf::SessionSender::default()),
-            )
-        }
-        #[cfg(not(feature = "dconf-write"))]
-        {
-            Self::new(user_database_path(), schema_files())
+    /// The session's databases and schemas, written through the writer
+    /// object of the session's own database when this build has the write
+    /// path.
+    pub fn for_session() -> Self {
+        let (keys, sender) = Keys::for_session();
+        Self { keys, sender }
+    }
+
+    /// A session database decided by the caller, with `schemas`, written
+    /// through `sender` (pointed at that database's writer object). `dirs`
+    /// (`$XDG_CONFIG_HOME`, `$XDG_RUNTIME_DIR`) is where a database a record
+    /// names is opened.
+    pub fn for_database(
+        database: Result<SessionDatabase, ProfileError>,
+        dirs: Option<(PathBuf, PathBuf)>,
+        schemas: Vec<PathBuf>,
+        sender: Option<Box<dyn ChangesetSender>>,
+    ) -> Self {
+        Self {
+            keys: Keys::for_database(database, dirs, schemas),
+            sender,
         }
     }
 
-    fn list(&self, database: &GvdbDatabase, key: &str) -> Result<Vec<String>, ObservedValue> {
+    fn list(&self, database: &Layers, key: &str) -> Result<Vec<String>, ObservedValue> {
         let effective = self.keys.effective(database, key)?;
         match effective.value() {
             GVariantValue::TextList(values) => Ok(values.clone()),
@@ -207,13 +294,30 @@ impl DefaultsAdapter for LauncherEntryAdapter {
         AdapterId::DesktopLauncherEntry
     }
 
+    fn dconf_database(&self) -> Option<DconfDatabase> {
+        self.keys.target.id()
+    }
+
+    fn capture(&self, request: &AdapterRequest<'_>) -> Option<ObservedValue> {
+        Some(self.keys.capture(request, |narrowed| self.read(narrowed)))
+    }
+
+    fn verify(&self, request: &AdapterRequest<'_>, expected: &ObservedValue) -> VerifyOutcome {
+        let observed = if expected == &ObservedValue::Unset {
+            self.keys.capture(request, |narrowed| self.read(narrowed))
+        } else {
+            self.read(request)
+        };
+        verify_against(observed, expected)
+    }
+
     fn read(&self, request: &AdapterRequest<'_>) -> ObservedValue {
         let DefaultsValue::DesktopEntry(entry) = request.desired() else {
             return ObservedValue::Unknown {
                 reason: "gsettings.launcher_entry_needs_a_desktop_entry".to_string(),
             };
         };
-        let database = match self.keys.load() {
+        let database = match self.keys.load(request) {
             Ok(database) => database,
             Err(observed) => return observed,
         };
@@ -238,7 +342,7 @@ impl DefaultsAdapter for LauncherEntryAdapter {
     }
 
     fn write(&mut self, request: &AdapterRequest<'_>, value: &WriteValue) -> WriteOutcome {
-        let database = match self.keys.load() {
+        let database = match self.keys.load(request) {
             Ok(database) => database,
             Err(observed) => {
                 return WriteOutcome::failed(
@@ -275,14 +379,14 @@ impl DefaultsAdapter for LauncherEntryAdapter {
                 WriteValue::Set {
                     value: DefaultsValue::TextList(list),
                 } => {
-                    if matches!(database.get(key), Some(GVariantValue::TextList(held)) if held == list)
+                    if matches!(database.top.get(key), Some(GVariantValue::TextList(held)) if held == list)
                     {
                         continue;
                     }
                     changeset.set_path(key, ChangeValue::TextList(list.clone()))
                 }
                 WriteValue::Clear => {
-                    if database.get(key).is_none() {
+                    if database.top.get(key).is_none() {
                         continue;
                     }
                     changeset.reset_path(key)
@@ -302,7 +406,7 @@ impl DefaultsAdapter for LauncherEntryAdapter {
         if changes == 0 {
             return WriteOutcome::AlreadyCorrect;
         }
-        send(&mut self.sender, request, &changeset)
+        send(&self.keys, &mut self.sender, request, &changeset)
     }
 }
 
@@ -321,7 +425,7 @@ impl ToolEntryPointAdapter {
     pub fn new(database: impl Into<PathBuf>, schemas: Vec<PathBuf>) -> Self {
         Self {
             keys: Keys {
-                database: database.into(),
+                target: DatabaseTarget::file(database.into()),
                 schemas,
             },
             sender: None,
@@ -339,18 +443,23 @@ impl ToolEntryPointAdapter {
         }
     }
 
-    pub fn for_user() -> Self {
-        #[cfg(feature = "dconf-write")]
-        {
-            Self::with_sender(
-                user_database_path(),
-                schema_files(),
-                Box::new(crate::dconf::SessionSender::default()),
-            )
-        }
-        #[cfg(not(feature = "dconf-write"))]
-        {
-            Self::new(user_database_path(), schema_files())
+    /// The session's databases and schemas, as
+    /// [`LauncherEntryAdapter::for_session`].
+    pub fn for_session() -> Self {
+        let (keys, sender) = Keys::for_session();
+        Self { keys, sender }
+    }
+
+    /// As [`LauncherEntryAdapter::for_database`].
+    pub fn for_database(
+        database: Result<SessionDatabase, ProfileError>,
+        dirs: Option<(PathBuf, PathBuf)>,
+        schemas: Vec<PathBuf>,
+        sender: Option<Box<dyn ChangesetSender>>,
+    ) -> Self {
+        Self {
+            keys: Keys::for_database(database, dirs, schemas),
+            sender,
         }
     }
 }
@@ -360,8 +469,25 @@ impl DefaultsAdapter for ToolEntryPointAdapter {
         AdapterId::ToolEntryPoint
     }
 
+    fn dconf_database(&self) -> Option<DconfDatabase> {
+        self.keys.target.id()
+    }
+
+    fn capture(&self, request: &AdapterRequest<'_>) -> Option<ObservedValue> {
+        Some(self.keys.capture(request, |narrowed| self.read(narrowed)))
+    }
+
+    fn verify(&self, request: &AdapterRequest<'_>, expected: &ObservedValue) -> VerifyOutcome {
+        let observed = if expected == &ObservedValue::Unset {
+            self.keys.capture(request, |narrowed| self.read(narrowed))
+        } else {
+            self.read(request)
+        };
+        verify_against(observed, expected)
+    }
+
     fn read(&self, request: &AdapterRequest<'_>) -> ObservedValue {
-        let database = match self.keys.load() {
+        let database = match self.keys.load(request) {
             Ok(database) => database,
             Err(observed) => return observed,
         };
@@ -431,7 +557,7 @@ impl DefaultsAdapter for ToolEntryPointAdapter {
                 return WriteOutcome::failed("dconf.invalid_key", error.to_string());
             }
         }
-        send(&mut self.sender, request, &changeset)
+        send(&self.keys, &mut self.sender, request, &changeset)
     }
 }
 
@@ -501,6 +627,59 @@ mod tests {
 
     fn list(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| value.to_string()).collect()
+    }
+
+    fn session_over(root: &std::path::Path) -> SessionDatabase {
+        SessionDatabase {
+            name: "betteros".to_string(),
+            path: root.join("config/dconf/betteros"),
+            writer_path: "/ca/desrt/dconf/Writer/betteros".to_string(),
+            beneath: vec![root.join("config/dconf/user")],
+            origin: crate::dconf_profile::ProfileOrigin::BuiltIn,
+            notes: Vec::new(),
+        }
+    }
+
+    // Review finding 6: a damaged database beneath is reported as that, for
+    // the key that needed it.
+    #[test]
+    fn a_damaged_database_beneath_is_reported_for_a_key_that_needs_it() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(directory.path().join("config/dconf")).unwrap();
+        std::fs::write(directory.path().join("config/dconf/user"), b"damaged").unwrap();
+        let adapter = LauncherEntryAdapter::for_database(
+            Ok(session_over(directory.path())),
+            None,
+            vec![SCHEMAS.into()],
+            None,
+        );
+        let declared = launcher(FAVORITES);
+        let ObservedValue::Unknown { reason } =
+            adapter.read(&AdapterRequest::new(&component(), &declared))
+        else {
+            panic!("a value that needs a damaged database is not known");
+        };
+        assert!(
+            reason.starts_with("dconf.database_beneath_unreadable:"),
+            "{reason}"
+        );
+    }
+
+    // Review finding 2: a value the session's own database does not hold is
+    // captured as unset, so a restore resets the key rather than copying the
+    // value shown into the session's database, and that reset verifies.
+    #[test]
+    fn a_value_not_held_by_the_session_s_database_is_captured_as_unset() {
+        let adapter = LauncherEntryAdapter::new(EMPTY_DATABASE, vec![SCHEMAS.into()]);
+        let declared = launcher(FAVORITES);
+        let component = component();
+        let request = AdapterRequest::new(&component, &declared);
+        assert!(matches!(adapter.read(&request), ObservedValue::Set { .. }));
+        assert_eq!(adapter.capture(&request), Some(ObservedValue::Unset));
+        assert!(matches!(
+            adapter.verify(&request, &ObservedValue::Unset),
+            VerifyOutcome::Matches { .. }
+        ));
     }
 
     #[test]

@@ -721,6 +721,8 @@ dependencies = [
  "gpui-component",
  "gpui-component-assets",
  "gpui_platform",
+ "hardware-core",
+ "hardware-platform",
  "serde",
  "serde_json",
  "tempfile",
@@ -745,6 +747,7 @@ version = "0.2.16"
 dependencies = [
  "awake-core",
  "better-core",
+ "hardware-core",
  "notify",
  "tempfile",
 ]
@@ -1737,6 +1740,7 @@ dependencies = [
  "app-catalog-platform",
  "app-chooser-core",
  "better-core",
+ "libc",
  "serde",
  "serde_json",
  "tempfile",
@@ -4592,6 +4596,8 @@ dependencies = [
  "manager-core",
  "manager-platform",
  "manager-store",
+ "patch-core",
+ "patch-platform",
  "semver",
  "serde",
  "serde_json",
@@ -4830,6 +4836,7 @@ dependencies = [
 name = "monitor-collectors-linux"
 version = "0.2.16"
 dependencies = [
+ "hardware-core",
  "libc",
  "monitor-core",
  "serde",
@@ -4867,6 +4874,7 @@ dependencies = [
  "gpui-component",
  "gpui-component-assets",
  "gpui_platform",
+ "hardware-core",
  "monitor-actions-linux",
  "monitor-collectors-linux",
  "monitor-core",
@@ -4927,6 +4935,7 @@ dependencies = [
 name = "monitor-tray"
 version = "0.2.16"
 dependencies = [
+ "hardware-core",
  "monitor-core",
  "monitor-ipc",
  "monitor-service",
@@ -4940,6 +4949,7 @@ dependencies = [
 name = "monitor-views"
 version = "0.2.16"
 dependencies = [
+ "better-core",
  "monitor-collectors-linux",
  "monitor-core",
 ]
@@ -5710,6 +5720,26 @@ name = "pastey"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2ee67f1008b1ba2321834326597b8e186293b049a023cdef258527550b9935b4"
+
+[[package]]
+name = "patch-core"
+version = "0.2.16"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "patch-platform"
+version = "0.2.16"
+dependencies = [
+ "better-core",
+ "patch-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "zbus",
+]
 
 [[package]]
 name = "pathfinder_geometry"

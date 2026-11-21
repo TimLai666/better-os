@@ -2,7 +2,7 @@
 //! could decide; this file routes and lays out.
 
 use gpui::*;
-use gpui_component::{ActiveTheme, scroll::ScrollableElement, *};
+use gpui_component::{ActiveTheme, StyledExt as _, v_flex};
 
 use crate::{
     app::AwakeApp, i18n::copy, layout::COMPACT_VIEWPORT_WIDTH, model::Section, shell::actions,
@@ -25,7 +25,11 @@ impl AwakeApp {
 
 impl Render for AwakeApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let compact = window.viewport_size().width < px(COMPACT_VIEWPORT_WIDTH);
+        let page_scroll = window
+            .use_keyed_state("page-scroll", cx, |_, _| ScrollHandle::new())
+            .read(cx)
+            .clone();
+        let narrow = window.viewport_size().width < px(COMPACT_VIEWPORT_WIDTH);
         let section = self.render_section(window, cx);
 
         div()
@@ -66,43 +70,46 @@ impl Render for AwakeApp {
             // window draws its own or it cannot be closed, minimized,
             // maximized or moved.
             .child(better_ui::window_chrome::title_bar(
-                Icon::new(IconName::Sun).small(),
+                better_ui::icon_set::picture(better_ui::icon_set::Picture::KeepAwake, 16.0),
                 copy(self.locale).application_name,
                 cx.theme().foreground,
             ))
-            .child(
-                div().flex_1().min_h_0().child(
-                    h_flex()
+            .child(div().flex_1().min_h_0().child({
+                // The page keeps 20px from its sides, clear of the window's
+                // bottom trailing corner it reaches; its scrollbar's track
+                // ends above the curve (ticket 141).
+                let page = better_ui::window_chrome::corner_clip(
+                    px(20.0),
+                    v_flex()
                         .size_full()
                         .min_w_0()
-                        .bg(cx.theme().secondary)
-                        .child(self.sidebar(compact, cx))
+                        .child(self.top_bar(cx))
                         .child(
-                            v_flex()
-                                .h_full()
+                            div()
+                                .relative()
                                 .flex_1()
-                                .min_w_0()
-                                .child(self.top_bar(cx))
+                                .min_h_0()
                                 .child(
-                                    div().flex_1().min_h_0().overflow_y_scrollbar().p_5().child(
-                                        div()
-                                            .w_full()
-                                            .flex()
-                                            .justify_center()
-                                            .child(div().w_full().max_w(px(1320.0)).child(section)),
-                                    ),
-                                ),
+                                    div()
+                                        .id("page-scroll")
+                                        .size_full()
+                                        .overflow_y_scroll()
+                                        .track_scroll(&page_scroll)
+                                        .p_5()
+                                        .child(div().w_full().flex().justify_center().child(
+                                            div().w_full().max_w(px(1320.0)).child(section),
+                                        )),
+                                )
+                                .child(better_ui::window_chrome::corner_scrollbar(
+                                    &page_scroll,
+                                    window,
+                                    cx,
+                                )),
                         ),
-                ),
-            )
-            .children(self.update_restart.toast_layer(
-                match self.locale.resolved() {
-                    crate::i18n::Locale::ZhTw => {
-                        better_ui::fluent::words::Locale::TraditionalChinese
-                    }
-                    _ => better_ui::fluent::words::Locale::English,
-                },
-                cx,
-            ))
+                )
+                .into_any_element();
+                self.navigation(page, narrow, cx)
+            }))
+            .children(self.update_restart.toast_layer(self.kit_locale(), cx))
     }
 }

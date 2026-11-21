@@ -31,7 +31,6 @@ mod window_attention_page;
 use app::ManagerApp;
 use better_ui::command_line::WindowCommandLine;
 use gpui::*;
-use gpui_component_assets::Assets;
 use layout::{MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH};
 
 /// The window's application id: the desktop entry's name without its suffix.
@@ -108,6 +107,22 @@ no second window opens.
 const UNANSWERED: &str = "\
 better-manager：已經開著的視窗沒有回應，所以沒有切換頁面。
 better-manager: the window that is already open did not answer, so no page was shown.";
+
+/// The icon set before the kit's icons (ticket 147).
+struct Assets;
+
+impl gpui::AssetSource for Assets {
+    fn load(&self, path: &str) -> gpui::Result<Option<std::borrow::Cow<'static, [u8]>>> {
+        if let Some(svg) = better_ui::icon_set::load(path) {
+            return Ok(Some(std::borrow::Cow::Borrowed(svg)));
+        }
+        gpui_component_assets::Assets.load(path)
+    }
+
+    fn list(&self, path: &str) -> gpui::Result<Vec<gpui::SharedString>> {
+        gpui_component_assets::Assets.list(path)
+    }
+}
 
 fn main() {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
