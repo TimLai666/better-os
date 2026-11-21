@@ -1,4 +1,4 @@
-# Ticket 257 — Evaluate moving to GPUI Kit 0.10 and GPUI Fast
+# Ticket 257 — Upgrade GPUI Kit to its current release, on the GPUI that suits Better OS
 
 **Blocked by:** none
 
@@ -25,7 +25,33 @@ The owner's intent is to go back to an upstream once it carries the fix. With
 GPUI Fast as that upstream, going back means building on GPUI Kit's current
 stack, which is a move of every window.
 
-## What to find out (no product code until the owner decides)
+## Owner's decision (2026-11-21)
+
+GPUI Kit is upgraded to its latest release. This is an upgrade of the
+component library Better OS already uses (it was called `gpui-component` when
+the workspace pinned it), not a change of toolkit. Which GPUI it sits on is
+chosen from the measurements below: `gpui-pre` (Zed's GPUI, unchanged, from
+crates.io) or GPUI Fast (longbridge's GPUI with retained views).
+
+One fact weighs on that choice: Better OS's layer-shell surfaces need the
+viewport fix of ADR 0043. `gpui-pre` carries no behavioural patches, so it
+has the defect until Zed fixes it; GPUI Fast has it once
+longbridge/gpui-fast#173 is merged. Whichever is chosen must have the fix, or
+the fork of ADR 0043 stays.
+
+## What to build
+
+- First the measurements and facts in the next section, written into an ADR
+  with a recommendation; the owner confirms the GPUI choice before the
+  windows move.
+- Then the upgrade itself, in one branch after the open pull requests have
+  landed: `better-ui` and every window on GPUI Kit's current release, the
+  workspace's GPUI from the chosen source, ADR 0043's fork dropped if the
+  chosen source has the fix, the licence review and inventory redone, the
+  packaging and CI caches adjusted, and every window looked at in light and
+  dark, zh-TW and English, against screenshots taken before the upgrade.
+
+## What to find out first
 
 - What the move changes: every API difference between the pinned
   `gpui-component` revision and GPUI Kit 0.10 that `better-ui` and the windows
@@ -45,11 +71,13 @@ stack, which is a move of every window.
 - The risk: GPUI Fast calls itself experimental; how it tracks upstream, how
   often its API breaks, who maintains it, and what Better OS does if it
   stops.
-- An ADR with the options (stay on Zed's GPUI through the fork; GPUI Kit with
-  `gpui-pre`; GPUI Kit with GPUI Fast) and the work each needs, for the owner
-  to decide.
+- An ADR with the two GPUI choices under the upgraded GPUI Kit (`gpui-pre`;
+  GPUI Fast) and the work each needs, with a recommendation.
 
 ## Done when
 
-- The ADR is written with measurements from this machine, and the build
-  tickets that follow the owner's choice exist.
+- The ADR is written with measurements from this machine and the owner has
+  confirmed the GPUI choice.
+- Every window builds and runs on the upgraded GPUI Kit, with the workspace
+  gate and CI green, and before-and-after screenshots that show no window
+  lost anything.
