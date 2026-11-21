@@ -39,3 +39,10 @@ a keyboard silently fails.
       `/home/tim/Developer/better-os-evidence/217/`. Bluetooth pairing seen on
       the owner's machine in ticket 227.
 - [ ] fmt, clippy on stable, and the crates' tests pass.
+
+## Found by ticket 201
+
+`nm-applet`'s XDG autostart entry (`NotShowIn=KDE;GNOME;`) starts in the
+session on Ubuntu 24.04 and Zorin OS 18 and registers as NetworkManager's
+secret agent, so this ticket's agent would be the second one. Keeping it out
+is ticket 255's.

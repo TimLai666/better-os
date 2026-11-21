@@ -8,8 +8,9 @@ says what the session is, every process it runs and who provides it, how
 Better Manager installs it, switches to it, and removes it in one action each,
 how every existing component behaves in it, how gestures follow the fingers,
 and when the session is ready to become the default. The work is cut into
-tickets 200 to 229, together with the existing tickets 149, 152, 156 to 158,
-160, 94, 100, 142, 144, 161, and 174.
+tickets 200 to 229 and 253 to 256 (the gaps ticket 201's inventory found),
+together with the existing tickets 149, 152, 156 to 158, 160, 94, 100, 142,
+144, 161, and 174.
 
 Every fact below comes from ADR 0038 and the sources it names, read on
 2026-11-21. A statement marked **unverified** is one ADR 0038 lists as not run;
@@ -190,51 +191,65 @@ better-os-session.target   BindsTo=graphical-session.target
 | `XDG_SESSION_DESKTOP`, `DESKTOP_SESSION` | `better-os` | names the session; `better_core::desktop` reads `DESKTOP_SESSION` only as a fallback |
 | `XDG_SESSION_TYPE` | `wayland` | set by GDM; checked, not set |
 | `DCONF_PROFILE` | `betteros` | `/usr/share/dconf/profile/betteros` is `user-db:betteros` then `user-db:user`: every GSettings write in the session, `cosmic-settings-daemon`'s GTK theme and font syncing included, goes to `~/.config/dconf/betteros`, and GNOME's database is only read. This is COSMIC's own arrangement (`DCONF_PROFILE=cosmic`, ADR 0038) with Better OS's name |
-| `XDG_DATA_DIRS` | `/usr/share/better-os/session` prepended | the session's defaults for COSMIC's configuration are package data there, if `cosmic-config` reads system defaults through `XDG_DATA_DIRS` (**unverified**, ticket 201; otherwise ticket 203 writes them per person through the cosmic-config adapter with capture and restore) |
-| `GTK_IM_MODULE`, `QT_IM_MODULE`, `XMODIFIERS` | `fcitx`, `fcitx`, `@im=fcitx` | Fcitx 5 for GTK, Qt, and X11 clients (C4). Not set for Wayland-native text-input-v3 clients, which do not need it |
+| `XDG_DATA_DIRS` | `/usr/share/better-os/session` prepended | the session's defaults for COSMIC's configuration are package data there: `cosmic-config` looks a key up in `~/.config/cosmic/` first, then `$XDG_DATA_HOME/cosmic/`, then `cosmic/` under each `XDG_DATA_DIRS` entry in order, key by key, so a default under the first entry wins over `/usr/share/cosmic/` and a key it does not hold still comes from `/usr/share/cosmic/` (ticket 201, both bases: `cosmic-bg` traced with `strace` read `is_dark` from a probe directory placed first and `CosmicBackground.Light/v1/all` from `/usr/share/cosmic/`; `ubuntu/out/osd.strace`, `bg2.strace`) |
+| `QT_IM_MODULE`, `XMODIFIERS` | `fcitx`, `@im=fcitx` | Fcitx 5 for Qt and X11 clients (C4) |
+| `GTK_IM_MODULE` | **not set** | Wayland GTK 3 and 4 clients reach Fcitx 5 through text-input-v3 without it. Setting it to `fcitx` takes Chinese input away from every snap GTK application: the snap's `im-fcitx5.so` talks D-Bus to Fcitx 5 and AppArmor denies the call (`apparmor="DENIED" … interface="org.fcitx.Fcitx.InputMethod1" … label="snap.firefox.firefox"`), and Firefox then has no input context at all; with it unset, the same Firefox typed Zhuyin through text-input-v3 (ticket 201, Ubuntu, screenshots 19 to 22). Ticket 203 re-checks GTK applications on XWayland (Electron's default) without it, where GTK falls back to XIM through `XMODIFIERS` (**unverified**) |
 
 Nothing the launcher imports outlives the session in the user manager: it is
 unset on exit, as sway's systemd integration does, so a GNOME login after a
-Better OS one starts with GNOME's own environment (**unverified**, ticket 203
-checks it by logging out of one and into the other in the VM).
+Better OS one starts with GNOME's own environment (ticket 201's stand-in did
+this and the GNOME login after it showed no `DCONF_PROFILE` or
+`GTK_IM_MODULE` and GNOME's own `XDG_CURRENT_DESKTOP`, `QT_IM_MODULE`, and
+`XMODIFIERS` on both bases; ticket 203 checks the real launcher). The
+launcher also ends what it started: when the compositor ends, the session's
+scope stays in `stop-sigterm` until every child has gone, and ticket 201 saw
+`cosmic-settings-daemon` still there after 34 s of one logout (systemd killed
+it at 90 s); the launcher stops its children and does not rely on logind.
 
 ### Every process the session runs, and who provides it
 
 | Duty | Provided by | Kind | Evidence |
 | --- | --- | --- | --- |
-| Compositor, XWayland (rootless), window clipping to one radius, the four-finger workspace switch | `cosmic-comp` | COSMIC as released (C8), later Better OS's patched build (ticket 223) | ADR 0038: seen in Pop's image; on Zorin's libraries **unverified**, ticket 201 |
-| Login screen | GDM | Zorin's / Ubuntu's, unchanged (C3) | GDM starting a non-GNOME session: **unverified**, ticket 201 |
+| Compositor, XWayland (rootless), window clipping to one radius, the four-finger workspace switch | `cosmic-comp` | COSMIC as released (C8), later Better OS's patched build (ticket 223) | Ticket 201, both bases: System76's `cosmic-comp 0.1~1795167359~24.04~6968c5d` ran from GDM on Ubuntu 24.04 (Mesa 25.2.8, Wayland 1.22.0, PipeWire 1.0.5, glib 2.80.0) and on Zorin OS 18.1 (the same Mesa from Ubuntu's archive, `gnome-shell 46.0-0ubuntu6~24.04.13+zorin2`, `gdm3 46.2-1ubuntu1~24.04.7+zorin1`); `ldd` finds every library of the ten ELF programs of the closure, and the journal has no symbol-lookup or missing-library line (`*/out/inv1/ldd.txt`, `journal-missing-symbols.txt`). XWayland starts eagerly with the compositor (`Xwayland :0 -rootless -terminate`, before any X11 client), and `DISPLAY=:0` reaches clients because `cosmic-comp` puts it in the environment of the program it runs, which imports it into the user manager and D-Bus activation (`xwayland.txt`) |
+| Login screen | GDM | Zorin's / Ubuntu's, unchanged (C3) | Ticket 201, both bases: GDM lists 「Better OS」 from `/usr/share/wayland-sessions/better-os.desktop`, starts it through `gdm-wayland-session`, preselects it at the next login from AccountsService's `Session=better-os`, and `display-manager.service` stays `gdm.service` through install and removal. Two limits: a greeter that was already running when the file appeared did not list it until GDM restarted (Ubuntu, screenshots 03 and 04), so whether the greeter a person sees after logging out of GNOME lists a session installed during that GNOME session is **unverified** (ticket 205); and after removal AccountsService still said `Session=better-os` until GDM fell back to the default session at the next login, so removal's step 2 is needed (Zorin) |
 | Session start and stop, environment, systemd target | `better-os-session` (`/usr/libexec/better-os/session/start`) | Better OS, new (ticket 203) | — |
-| Settings daemon (theme, fonts, GTK and Qt sync, brightness keys) | `cosmic-settings-daemon` | COSMIC | seen running in Pop |
-| Portals: FileChooser, Screenshot, ScreenCast, RemoteDesktop, Settings, Access | `xdg-desktop-portal-cosmic` | COSMIC | file chooser seen opening for a GPUI window |
-| Portals COSMIC lacks | `xdg-desktop-portal-gtk` | Ubuntu | Pop's `cosmic-portals.conf`: `default=cosmic;gtk;`; Better OS ships `betteros-portals.conf` with the same order (ticket 203), and ticket 100 later puts Better Files first for FileChooser |
-| Secret portal and keyring | `gnome-keyring` (unlocked at login by GDM's PAM stack), `oo7-portal` where installed | Ubuntu | PAM unlocking in a non-GNOME session: **unverified**, ticket 201 |
-| Polkit agent, volume and brightness pop-ups | `cosmic-osd` | COSMIC | `src/subscriptions/polkit_agent.rs` |
-| Screen lock | the locker in `cosmic-greeter` over `ext_session_lock_manager_v1`; `loginctl lock-session` locks | COSMIC | seen in Pop; which process answers logind's `Lock` outside `cosmic-session`: **unverified**, ticket 201 |
-| Blanking, idle, suspend on idle; `org.freedesktop.ScreenSaver` | `cosmic-idle` | COSMIC | honours only `org.freedesktop.ScreenSaver.Inhibit` (ADR 0038) |
-| Wallpaper, also on the lock screen | `cosmic-bg` | COSMIC | — |
-| Display configuration | `cosmic-randr`, COSMIC Settings' Displays page (C9) | COSMIC | — |
+| Settings daemon (theme, fonts, GTK and Qt sync, brightness keys) | `cosmic-settings-daemon` | COSMIC | ran on both bases; its GSettings writes went to `~/.config/dconf/betteros` (font, icon theme, `button-layout`, window keybindings), and GNOME's `~/.config/dconf/user` kept its checksum through a Better OS login and logout (Ubuntu `home/`, Zorin `dconf-user-*-better-os-*.txt`) |
+| Portals: FileChooser, Screenshot, ScreenCast, RemoteDesktop, Settings, Access | `xdg-desktop-portal-cosmic` | COSMIC | Ticket 201, both bases: `xdg-desktop-portal` 1.18 ran with `XDG_CURRENT_DESKTOP=BetterOS:COSMIC`, read `betteros-portals.conf`, and started both backends. `xdg-desktop-portal-cosmic` segfaulted once when the compositor ended at logout (Ubuntu, `_usr_libexec_xdg-desktop-portal-cosmic.1000.crash`; apport then showed a crash dialog at the next login) |
+| Portals COSMIC lacks | `xdg-desktop-portal-gtk` | Ubuntu | serves its interfaces although its `.portal` file says `UseIn=gnome`, because `betteros-portals.conf` names it (both bases). No backend serves `Background`, `GlobalShortcuts`, `Wallpaper`, or `InputCapture` in the session (GNOME's backend has them; `portals.txt`): ticket 254 |
+| Secret portal and keyring | `gnome-keyring` (unlocked at login by GDM's PAM stack, again at unlock by `cosmic-greeter`'s), `oo7-portal` where installed | Ubuntu | Ticket 201, both bases: `gkr-pam: unlocked login keyring` from `gdm-password` at login and from `cosmic-greeter` at unlock, and the `login` collection's `Locked` is false. The Secret portal is offered only when `betteros-portals.conf` has `org.freedesktop.impl.portal.Secret=gnome-keyring;` as COSMIC's own file does (`gnome-keyring.portal` is `UseIn=gnome`): without the line `org.freedesktop.portal.Secret` did not exist, with it its version was 1 |
+| Polkit agent, volume and brightness pop-ups | `cosmic-osd` | COSMIC | `pkexec` showed `cosmic-osd`'s authentication dialog on both bases (screenshots `42-polkit-agent-cosmic-osd.png`, `60-polkit-agent.png`) |
+| Screen lock | `cosmic-greeter` run inside the session's own scope, where in a user session it is the locker; it answers logind's `Lock` over `ext_session_lock_manager_v1` | COSMIC | Ticket 201, both bases: with no locker running, `loginctl lock-session` did nothing. `cosmic-greeter` started as a systemd user unit exits at once (`logind error: org.freedesktop.login1.NoSessionForPID`: it finds its session by its own PID, and a user unit is outside the session), so the launcher starts it as its own child (ticket 203). Started that way it locked on `loginctl lock-session` and unlocked with the password through PAM; it never set logind's `LockedHint` |
+| Blanking, idle, suspend on idle; `org.freedesktop.ScreenSaver` | `cosmic-idle` | COSMIC | owns `org.freedesktop.ScreenSaver` on both bases; honours only `org.freedesktop.ScreenSaver.Inhibit` (ADR 0038). In ticket 201's hour of use on Ubuntu (applications started by script, no keyboard or mouse input), the machine suspended 30 minutes after the last input; logind's journal does not name the caller, and `cosmic-idle`'s compiled-in default is the likely one (**unverified**). On Zorin, with a sleep inhibitor held through the hour, the session locked itself on idle (the locker above) and at 30 minutes a client of the person's asked logind to suspend ignoring the inhibitor, so polkit asked for an administrator's password behind the lock screen (`FAILED to authenticate … login1.suspend-ignore-inhibit`, every 30 minutes); on Ubuntu, a logout while such a request was pending once crashed `systemd-logind` (an assertion in `bus-polkit.c`) and left no login screen: ticket 256. GNOME's power settings are not carried over (ticket 256 adds them to ticket 208's table) |
+| Wallpaper, also on the lock screen | `cosmic-bg` | COSMIC | drew COSMIC's default wallpaper on both bases and under the locker |
+| Display configuration | `cosmic-randr`, COSMIC Settings' Displays page (C9) | COSMIC | `cosmic-comp` keeps outputs in `~/.local/state/cosmic-comp/outputs.ron`, a RON map from `(connector, make, model)` to a list of `(mode: ((w, h), Some(mHz)), vrr, scale, transform, position, enabled, xwayland_primary)` (ticket 201, both bases; the carry-over from `monitors.xml` is ticket 208's) |
 | System settings: display, network, Bluetooth, sound, users, region | COSMIC Settings (C9) | COSMIC | Better OS's links to "… Settings" open its pages (ticket 160) until each Better Manager page of `design/system-settings-spec.md` lands; COSMIC Settings has no night light, printers, notifications, privacy, or hotspot, and GNOME Settings refuses to run outside GNOME (that file's F1, F2) |
-| Input method | Fcitx 5 with `fcitx5-chewing` over `zwp_input_method_v2` and text-input-v3; XIM for X11 clients | Ubuntu (C4) | Zhuyin seen typed into Better Launcher in Pop; the four upstream faults: **unverified**, ticket 201 |
-| Network secrets, Bluetooth pairing | Better OS's top bar: a NetworkManager secret agent and a BlueZ agent | Better OS, new (ticket 217) | COSMIC keeps these in its panel applets and Settings (ADR 0038, read, not run) |
-| Notifications (`org.freedesktop.Notifications`) | Better OS's notification service, island and center | Better OS, new (tickets 215, 216) | `cosmic-notifications` is not installed |
-| Tray watcher (`org.kde.StatusNotifierWatcher`) and old X11 icons | the top bar's watcher (ticket 156) and `top-bar-xembed` (ticket 149) | Better OS | — |
+| Input method | Fcitx 5 with `fcitx5-chewing` over `zwp_input_method_v2` and text-input-v3; its D-Bus frontend for GTK and Qt modules; XIM for X11 clients | Ubuntu (C4) | Ticket 201, both bases: Zhuyin (`su3cl3` to 你好) typed and committed with Enter into a GTK window (zenity, the text read back from its output), Qt 5 on XWayland and on Wayland (Zorin ships no `qtwayland5`, so only XWayland there), xterm over XIM on XWayland (the bytes read back), Firefox through text-input-v3 (Ubuntu's snap; Zorin OS 18.1 Core has no Firefox), Brave (Zorin), and Electron 33 both on XWayland and on Wayland (`--enable-wayland-ime --wayland-text-input-version=3`; with the default text-input version Electron on Wayland got no input context). Shift alone switches between Chewing and English and back (`你abc好`), Fcitx 5's own default `AltTriggerKeys`. The four upstream faults were not reproduced: letters and Enter reached GTK, Electron, and Firefox with Chewing active (2947, 2952); a GTK menu bar and Electron's menu opened while Fcitx 5 ran (2778); locking with 你好 in composition and typing the password unlocked, the keys going to the locker and not to the input method (2702). `GTK_IM_MODULE` must not be set (the environment table) |
+| Network secrets, Bluetooth pairing | Better OS's top bar: a NetworkManager secret agent and a BlueZ agent | Better OS, new (ticket 217) | Until then `nm-applet` starts from its XDG autostart entry (`NotShowIn=KDE;GNOME;`) on both bases and is NetworkManager's secret agent, with a tray icon nobody shows; nothing is a BlueZ agent. Neither prompt was exercised in the VM (wired network, no Bluetooth adapter). Two secret agents once ticket 217 lands: ticket 255 |
+| Notifications (`org.freedesktop.Notifications`) | Better OS's notification service, island and center | Better OS, new (tickets 215, 216) | no owner on both bases; `notify-send` fails with `ServiceUnknown`, and `update-notifier`, Evolution's alarm notifier, and (Zorin) Déjà Dup's monitor all run and have nobody to notify |
+| Tray watcher (`org.kde.StatusNotifierWatcher`) and old X11 icons | the top bar's watcher (ticket 156) and `top-bar-xembed` (ticket 149) | Better OS | no owner on both bases; Zorin's `xapp-sn-watcher` autostart entry stayed inactive |
 | Top bar | `better-top-bar` on layer-shell | Better OS (tickets 152, 156–158, 160) | — |
 | Taskbar | `better-taskbar` on layer-shell | Better OS, new (ticket 213) | — |
-| Launcher (Super, Super+Space) and the application grid (Super+A) | Better Launcher, resident, on layer-shell | Better OS (tickets 94, 210) | — |
-| Window switcher (Alt+Tab) | Better OS's switcher on layer-shell | Better OS, new (ticket 211) | COSMIC's switcher is part of `cosmic-launcher`, not installed (to confirm in ticket 201's inventory) |
+| Launcher (Super, Super+Space) and the application grid (Super+A) | Better Launcher, resident, on layer-shell | Better OS (tickets 94, 210) | COSMIC's defaults bind these to `cosmic-launcher` and `cosmic-app-library`, neither installed (`system_actions` below) |
+| Window switcher (Alt+Tab) | Better OS's switcher on layer-shell | Better OS, new (ticket 211) | confirmed: `system_actions` names `cosmic-launcher alt-tab`, and `cosmic-launcher` is not in the closure, so Alt+Tab does nothing until ticket 211 |
 | Overview and workspaces | Better OS's overview on layer-shell, windows through `ext-image-copy-capture`, workspaces through `ext_workspace_v1` | Better OS, new (ticket 212) | `cosmic-workspaces` is not installed |
-| Desktop icons and stacks, `org.freedesktop.FileManager1` | Better Files on the background layer (C6) | Better OS (tickets 214, 144, 129) | COSMIC Files' desktop process is not started |
-| Gestures | `better-touchpad-gestured` with a `cosmic-comp` backend (tickets 223, 224); the edge swipe through the scroll pass-through (ticket 225) | Better OS | — |
-| File search index | `tracker-miner-fs-3`, started by the session target when installed | Ubuntu | Zorin runs it; Pop has none. How it is started outside GNOME: **unverified**, ticket 201 |
-| Accessibility | Orca over AT-SPI, `cosmic_a11y_manager_v1` | Ubuntu, COSMIC | depth not assessed (ADR 0038); a Better OS window read by Orca in the session: ticket 222 |
-| Screen sharing | `xdg-desktop-portal-cosmic` ScreenCast over `ext-image-copy-capture` and PipeWire | COSMIC, Ubuntu | on noble's PipeWire 1.0.5: **unverified**, ticket 201 |
-| XDG autostart | `systemd-xdg-autostart-generator`'s `xdg-desktop-autostart.target`, entries filtered by `OnlyShowIn`/`NotShowIn` against `XDG_CURRENT_DESKTOP` | systemd | which of Zorin's entries start: **unverified**, ticket 201 |
+| Desktop icons and stacks, `org.freedesktop.FileManager1` | Better Files on the background layer (C6) | Better OS (tickets 214, 144, 129) | COSMIC Files' desktop process is not started; `FileManager1` had no owner on both bases |
+| Gestures | `better-touchpad-gestured` with a `cosmic-comp` backend (tickets 223, 224); the edge swipe through the scroll pass-through (ticket 225) | Better OS | Zorin's `touchegg` client starts from its autostart entry and connects to the system `touchegg` daemon; it acts only on X11 (ticket 255) |
+| File search index | `tracker-miner-fs-3`, started by the session target when installed | Ubuntu | Ticket 201, both bases: its unit is `WantedBy=gnome-session.target` and its autostart entry is `OnlyShowIn=GNOME;KDE;XFCE;X-IVI;Unity;`, so nothing starts it in the session; the session target `Wants=` it (ticket 203) |
+| Accessibility | Orca over AT-SPI, `cosmic_a11y_manager_v1` | Ubuntu, COSMIC | the AT-SPI bus starts from its autostart entry; Orca started by hand read a GTK dialog's title and field (`SPEECH OUTPUT: 'OrcaCheck dialog'`, `'ReadMe text.'`, both bases); Orca's own autostart entry is `OnlyShowIn=GNOME;…`, so turning the screen reader on in the session is ticket 244's; a Better OS window read by Orca: ticket 222 |
+| Screen sharing | `xdg-desktop-portal-cosmic` ScreenCast over `ext-image-copy-capture` and PipeWire | COSMIC, Ubuntu | Ticket 201, both bases on PipeWire 1.0.5: `CreateSession`, `SelectSources`, and `Start` answered 0 after COSMIC's picker, `OpenPipeWireRemote` gave a descriptor, and GStreamer's `pipewiresrc` took a 1920×1080 frame from the node (`screencast-check.py`, `41-screencast-frame-from-pipewire.png`, `51-screencast-frame.png`) |
+| XDG autostart | `systemd-xdg-autostart-generator`'s `xdg-desktop-autostart.target`, entries filtered by `OnlyShowIn`/`NotShowIn` against `XDG_CURRENT_DESKTOP` | systemd | Ticket 201: on Ubuntu `at-spi-dbus-bus`, `geoclue-demo-agent`, `nm-applet`, Evolution's alarm notifier, `update-notifier`, and (first login) Ubuntu's release-upgrade check ran; on Zorin also `touchegg` and Déjà Dup's monitor; every `org.gnome.SettingsDaemon.*`, `gnome-keyring-*`, Orca, Tracker, and `ibus-mozc` entry stayed out (`autostart.txt`). The ones that should not run in the session: ticket 255 |
 | Power: lid, suspend, battery | logind, UPower, power-profiles-daemon | Ubuntu, unchanged | — |
-| Media keys (volume, brightness, screenshot) | `cosmic-comp`'s shortcuts and `system_actions` | COSMIC | that every action the session binds names an installed program: ticket 201's inventory, ticket 203's test |
+| Media keys (volume, brightness, screenshot) | `cosmic-comp`'s shortcuts and `system_actions` | COSMIC | COSMIC's default `system_actions` (`/usr/share/cosmic/com.system76.CosmicSettings.Shortcuts/v1/system_actions`) names five programs the closure does not install: `cosmic-app-library` (AppLibrary), `cosmic-launcher` (Launcher, WindowSwitcher), `cosmic-screenshot` (Screenshot), `cosmic-term` (Terminal), `cosmic-workspaces` (WorkspaceOverview); every other entry names an installed program (`busctl`, `cosmic-osd`, `xdg-open`, `loginctl`, `wpctl`, `playerctl`, `systemctl`). The session's defaults replace each (ticket 203's test); the screenshot key has no provider: ticket 253 |
+| Screenshot (Print Screen, the Screenshot portal's interactive dialog) | nobody yet | — | gap found by ticket 201: `cosmic-screenshot` is not in the closure; ticket 253 |
+| Terminal key | the person's default terminal | Ubuntu | gap found by ticket 201: `cosmic-term` is not installed; `~/.config/BetterOS-xdg-terminals.list` names `org.gnome.Terminal.desktop` after a session start (the files table below); the session's `Terminal` action names the person's terminal (ticket 203) |
 
-Ticket 201 also records every duty it finds that this table misses; each gap
-it finds gets its own ticket in the same change.
+The last two rows, and the portal, autostart, second-secret-agent, and
+idle-suspend gaps in the rows above, are the duties ticket 201's inventory
+found that the table missed; each has its own ticket (253, 254, 255, 256) or
+is ticket 203's. Every
+record is in `/home/tim/Developer/better-os-evidence/201/` (`ubuntu/`,
+`zorin/`, `common/`), and the scripts that made them are
+`packaging/tests/session-vm/`.
 
 ### How Better OS's existing user units bind to the session
 
@@ -260,9 +275,14 @@ The session's own surfaces are units of their own packages, enabled by
 and `WantedBy=better-os-session.target`, so they never start under GNOME.
 GNOME's own units (`org.gnome.Shell@wayland.service`, `gnome-session-*.target`,
 `org.gnome.SettingsDaemon.*`) are wanted by GNOME's targets, not by
-`graphical-session.target`, so they do not start in the session; which other
-packages' units on Zorin are `WantedBy=graphical-session.target` and start in
-the session is **unverified**, ticket 201.
+`graphical-session.target`, so they do not start in the session. The other
+packages' units that `graphical-session.target` wants are, on both Ubuntu
+24.04 and Zorin OS 18.1, `update-notifier-crash.path` and
+`update-notifier-release.path` (`/usr/lib/systemd/user/graphical-session.target.wants/`);
+the units that are only `PartOf=graphical-session.target` (gvfs, the portals,
+`gnome-terminal-server`, `at-spi-dbus-bus`, and on Zorin the Flatpak portal
+and session helper) start on demand and stop with the session (ticket 201,
+`*/out/inv1/autostart.txt`).
 
 ## Installing, switching, and removing
 
@@ -270,13 +290,16 @@ the session is **unverified**, ticket 201.
 
 | Packages | Source | How |
 | --- | --- | --- |
-| The 14-package closure: `adw-gtk3`, `cosmic-bg`, `cosmic-comp`, `cosmic-greeter`, `cosmic-greeter-daemon`, `cosmic-icons`, `cosmic-idle`, `cosmic-osd`, `cosmic-randr`, `cosmic-settings`, `cosmic-settings-daemon`, `cosmic-theme-bundles`, `pop-sound-theme`, `xdg-desktop-portal-cosmic` | System76's `https://apt.pop-os.org/release` `noble`, signed by `63C4 6DF0 140D 7389 6142 9F4E 204D D8AE C33A 7AFF` | one deb822 source file, one keyring holding only that key, and a pin: every package from that origin at priority −1 except the 14 names at 500. Every other dependency resolves to the host's own `noble` versions (ADR 0038, `session-closure-on-host-noble.txt`). Declared metadata only: the binaries running on Zorin's Wayland 1.22, Mesa 25.2, and PipeWire 1.0.5 is **unverified**, ticket 201 |
+| The 14-package closure: `adw-gtk3`, `cosmic-bg`, `cosmic-comp`, `cosmic-greeter`, `cosmic-greeter-daemon`, `cosmic-icons`, `cosmic-idle`, `cosmic-osd`, `cosmic-randr`, `cosmic-settings`, `cosmic-settings-daemon`, `cosmic-theme-bundles`, `pop-sound-theme`, `xdg-desktop-portal-cosmic` | System76's `https://apt.pop-os.org/release` `noble`, signed by `63C4 6DF0 140D 7389 6142 9F4E 204D D8AE C33A 7AFF` | one deb822 source file, one keyring holding only that key, and a pin: every package from that origin at priority −1 except the 14 names at 500. Every other dependency resolves to the host's own `noble` versions (ADR 0038, `session-closure-on-host-noble.txt`). Ticket 201 installed exactly this on Ubuntu 24.04 and Zorin OS 18.1: the specific stanza first (APT uses the first record that matches), then `Package: *` at −1; `apt-cache policy` then showed the 14 at 500 and every other package of the origin, `cosmic-session` and Pop's `libwayland-client0` and `mesa-vulkan-drivers` included, at −1. The transaction added 101 packages on Ubuntu and 80 on Zorin (Fcitx 5, Qt, `greetd`, which stays disabled, and the icon themes from Ubuntu's archive), removed none, changed the version of none, took exactly the 14 from System76, and left `apt-get -s dist-upgrade` taking nothing from System76; `display-manager.service` stayed GDM. Purging the added packages, the source, the key, and the pin gave back a package list identical to the one before (`*/out/closure/summary.txt`, `removal-summary.txt`). The binaries run on both bases' libraries (the process table) |
 | `fcitx5`, `fcitx5-chewing`, `fcitx5-frontend-gtk3`, `fcitx5-frontend-gtk4`, `fcitx5-frontend-qt5`, `fcitx5-config-qt` | Ubuntu's archive (`universe`) | ordinary dependencies of the session package |
 | `better-os-session` (launcher, session file, targets, dconf profile, portal configuration, the session's COSMIC defaults) and the surfaces' packages | Better OS's release assets, verified by checksum like every component | as every component |
 | `cosmic-comp` with the gesture patch, once ticket 223 ships | Better OS's release assets (ADR 0039) | `cosmic-comp` leaves the pin's list in the same release, so System76's build can never replace it |
 
-Whether System76 publishes `arm64` for these 14 in `noble` is **unverified**;
-ticket 201 reads it, and the manifest lists `arm64` only if it does.
+System76 publishes all 14 for `arm64` in `noble`, at the same versions as
+`amd64` (`adw-gtk3` and `pop-sound-theme` are `Architecture: all`), read from
+the `InRelease` signed by the key above on 2026-11-21 (ticket 201,
+`common/`); so the manifest lists `arm64`. Nobody has run them on an arm64
+machine.
 
 The privileged steps (source, key, pin, display-manager preseed, installing
 and purging the closure) are `manager-daemon`'s, with the source, the key's
@@ -334,7 +357,7 @@ the person left it (owner decision S1 below):
 | --- | --- | --- |
 | Wallpaper | `org.gnome.desktop.background picture-uri`, `picture-uri-dark` | `cosmic-bg`'s configuration |
 | Dark or light | `org.gnome.desktop.interface color-scheme` | `com.system76.CosmicTheme.Mode` `is_dark` |
-| Display scale | `~/.config/monitors.xml` | `cosmic-comp`'s output configuration (its path and format: ticket 201) |
+| Display scale | `~/.config/monitors.xml` | `cosmic-comp`'s `~/.local/state/cosmic-comp/outputs.ron`: per `(connector, make, model)`, `scale` with the mode, position, transform, `vrr`, `enabled`, and `xwayland_primary` (ticket 201; the process table's display row) |
 | Keyboard layouts | `org.gnome.desktop.input-sources sources`, its `xkb` entries | `com.system76.CosmicComp` `xkb_config` |
 | Input sources | `sources`' `ibus` entries (`chewing` on the owner's machine) | Fcitx 5's profile, Chewing for `ibus:chewing`, each engine with no Fcitx 5 counterpart listed on the page rather than dropped silently |
 | Input-source switch key | ticket 94's `<Alt>Shift_L` | Fcitx 5's trigger and enumerate keys (**unverified** where Fcitx 5 reads them, ticket 208) |
@@ -356,10 +379,33 @@ the person left it (owner decision S1 below):
 
 GNOME's dconf database is never written by the session's daemons (their
 profile writes to `~/.config/dconf/betteros`), so GNOME comes back as it was.
-Whether COSMIC's daemons or COSMIC Settings write any file GNOME reads (for
-example `~/.config/gtk-4.0/` or `~/.config/gtk-3.0/settings.ini`) is
-**unverified**; acceptance flow 3's home comparison settles it (ticket 205),
-and the session's defaults turn such syncing off where it can be turned off.
+What the session wrote in the person's home, from ticket 201's snapshots
+before the first Better OS login and after the GNOME login that followed
+(both bases; files of the test applications themselves left out):
+
+| File | Written by | Read by GNOME? |
+| --- | --- | --- |
+| `~/.config/dconf/betteros` | every GSettings write in the session (`cosmic-settings-daemon`'s font, icon theme, `button-layout`, keybindings; Orca's `toolkit-accessibility`; `update-notifier`'s check time) | no: GNOME reads `~/.config/dconf/user`, whose checksum a Better OS login and logout left unchanged (Zorin, `dconf-user-*-better-os-*.txt`; Ubuntu, `home/`) |
+| `~/.config/cosmic/…`, `~/.local/state/cosmic/…`, `~/.local/state/cosmic-comp/outputs.ron` | COSMIC's daemons | no; in `paths` |
+| `~/.config/fcitx5/…` | Fcitx 5 | no; in `paths` when the install created it |
+| `~/.chewing/chewing.sqlite3` | `fcitx5-chewing` (libchewing's user phrases) | **yes, by IBus Chewing**, which uses the same libchewing file: phrases learned in one session appear in the other. Not in `paths`; removal leaves it unless the install created it |
+| `~/.config/ibus/bus/<machine-id>-unix-wayland-1` and `-unix-0` | Fcitx 5's IBus frontend, emptied (`IBUS_ADDRESS=`) when Fcitx 5 exits; `-unix-0` is the same file GNOME's IBus writes for XWayland's `:0` | by IBus clients in GNOME; GNOME's IBus rewrites both at its next start (Ubuntu, after the hour), so a GNOME login after a Better OS one was not affected. Removal deletes `-unix-wayland-1` if GNOME does not use that display name (ticket 205) |
+| `~/.config/xdg-terminals.list`, `COSMIC-xdg-terminals.list`, `BetterOS-xdg-terminals.list` | at the stand-in's start, when it launched `gnome-terminal` (Zorin's home already had `GNOME-` and `zorin-xdg-terminals.list` from its own sessions, so the writer is per desktop name and most likely `gnome-terminal`; **unverified**) | `xdg-terminals.list` by any `xdg-terminal-exec` in any desktop; Ubuntu 24.04 and Zorin OS 18 do not ship one. Removal deletes the two desktop-named files and the plain one only if the install created it (ticket 205) |
+| `~/.config/qt5ct/qt5ct.conf`, `~/.config/qt6ct/qt6ct.conf` | the session (Qt theme sync; `qt5ct`, `qt6ct` came in with the closure) | only with `QT_QPA_PLATFORMTHEME=qt5ct`, which GNOME on either base does not set |
+| `~/.local/share/session_migration-better-os` | Ubuntu's `session-migration`, per desktop name | no |
+
+No file under `~/.config/gtk-3.0/` or `~/.config/gtk-4.0/` was written on
+either base, including after an hour in the session on each base with the
+appearance switched to light and another theme, COSMIC Settings' appearance,
+display, keyboard, input, sound and power pages opened 28 and 29 times,
+editors, terminals, the file chooser, Firefox or Brave, and a Qt window
+started and closed (`packaging/tests/session-vm/guest/hour-of-use.sh`;
+`*/out-hour/`); GNOME's `~/.config/dconf/user` kept its checksum through each
+hour, the logout, and the GNOME login after it. Files the test applications
+wrote themselves (the browsers' profiles, `~/.config/enchant/`, an empty
+`~/.local/share/applications/mimeapps.list` from Brave's first start) are left
+out of the table. Acceptance flow 3's comparison (ticket 205) repeats it with
+the real package.
 
 #### Removing from inside the session
 
@@ -612,8 +658,8 @@ recorded:
 
 ## Constraints
 
-- Ubuntu 24.04 bases only (Zorin OS 18, Ubuntu 24.04); amd64, and arm64 if
-  ticket 201 finds System76's builds.
+- Ubuntu 24.04 bases only (Zorin OS 18, Ubuntu 24.04); amd64 and arm64
+  (System76 publishes the 14 for both, ticket 201; only amd64 has been run).
 - Better OS's code is Rust (AGENTS.md). The session uses no GJS. COSMIC's
   programs are upstream packages taken as released, not first-party code.
 - No privileged change outside `manager-daemon`; the third-party source is the
@@ -625,17 +671,17 @@ recorded:
 
 ## Assumptions and risks
 
-- **Pop's binaries run on Zorin's libraries** — **unverified**; ticket 201. If
-  not, the session needs Better OS to build the closure itself, which C2
-  avoided: the line stops and goes back to the owner.
-- **GDM starts the session** — **unverified**; ticket 201. If not, C3 goes back
-  to the owner.
+- **Pop's binaries run on Zorin's libraries** — held on Ubuntu 24.04 and
+  Zorin OS 18.1 in ticket 201 (amd64, a QEMU virtio GPU; no real GPU tried).
+- **GDM starts the session** — held on both bases in ticket 201, with the
+  greeter-refresh limit in the process table.
 - **GPUI's layer-shell surface works on `cosmic-comp`** — nobody has run a
   Better OS window as one; ticket 200. If not, every surface ticket stops.
 - **The gesture patch is feasible within budget** — ticket 202. If not, C8 and
   S6 go back to the owner before any surface is built to follow fingers.
-- **Chinese input faults upstream** (issues 2947, 2952, 2702, 2778) —
-  ticket 201 checks them before the session is offered.
+- **Chinese input faults upstream** (issues 2947, 2952, 2702, 2778) — none
+  reproduced in ticket 201 on either base (the process table's input row);
+  they stay open upstream, so ticket 222 types again with the real session.
 - **A pin written wrong replaces the base system** — ticket 204 tests the pin
   against Pop's real `Packages` file and the host's policy.
 - **COSMIC moves fast** (twelve releases in eleven months; the decoration
