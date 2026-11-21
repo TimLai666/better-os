@@ -33,6 +33,13 @@ the workspace pinned it), not a change of toolkit. Which GPUI it sits on is
 chosen from the measurements below: `gpui-pre` (Zed's GPUI, unchanged, from
 crates.io) or GPUI Fast (longbridge's GPUI with retained views).
 
+The owner's preference, stated the same day, is GPUI Fast. So GPUI Fast is
+the choice unless the measurements below find something that rules it out (a
+window that cannot be made to work on it, a defect with no fix in reach); in
+that case the finding goes back to the owner rather than being worked
+around. A component library always needs one of the two underneath it:
+GPUI Kit draws nothing by itself.
+
 One fact weighs on that choice: Better OS's layer-shell surfaces need the
 viewport fix of ADR 0043. `gpui-pre` carries no behavioural patches, so it
 has the defect until Zed fixes it; GPUI Fast has it once
@@ -42,8 +49,8 @@ the fork of ADR 0043 stays.
 ## What to build
 
 - First the measurements and facts in the next section, written into an ADR
-  with a recommendation; the owner confirms the GPUI choice before the
-  windows move.
+  that records GPUI Fast as the owner's choice with what was measured, or
+  takes a finding that rules it out back to the owner.
 - Then the upgrade itself, in one branch after the open pull requests have
   landed: `better-ui` and every window on GPUI Kit's current release, the
   workspace's GPUI from the chosen source, ADR 0043's fork dropped if the
@@ -76,8 +83,7 @@ the fork of ADR 0043 stays.
 
 ## Done when
 
-- The ADR is written with measurements from this machine and the owner has
-  confirmed the GPUI choice.
+- The ADR is written with measurements from this machine.
 - Every window builds and runs on the upgraded GPUI Kit, with the workspace
   gate and CI green, and before-and-after screenshots that show no window
   lost anything.
