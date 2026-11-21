@@ -151,3 +151,34 @@ cannot start ending in the backstop's text login on tty2 in 6 to 7 s. What needs
 greetd, the real greeter, the package or the VM is in the notes of
 tickets 264, 265 and 281.
 
+2026-11-22, the second review's round (all fourteen items, evidence in
+`/home/tim/Developer/better-os-evidence/267/review-2026-11-22.md`):
+
+- The greeter's session scope is found, remembered, killed 4 s into every
+  stop and waited for with the card free (ADR 0047, **proposed**: it widens
+  the supervisor's reach, so the owner accepts or refuses it).
+- Card classes, the no-screen path, the timer's ordering, the drop-ins for
+  `getty@tty1` and `plymouth-quit`, the markers after the text login is
+  active, the failed supervisor's backstop, the 120 s start limit, the
+  T0 + 68 s cut-off, the start again, the unknown cases and the lenient
+  records are built and tested (`rules/tests.rs`, `tests/property.rs` with
+  slow calls, restart downtime and a 1500-seed randomized run,
+  `tests/units.rs`); sixteen deliberate breaks of the rules across both
+  rounds each failed the tests.
+- The two investigations: the text logins moved to tty8 and tty9, past
+  logind's automatic VTs; `chvt` with tty1 in process mode under a hung
+  logind is bounded in the backstops and stated as a limit, with the
+  check written into ticket 281.
+- For the owner: the property's bound when the supervisor itself restarts
+  during an appearance is 80 s plus its downtime (about 81 s for a crash,
+  up to 96 s for a hang, 90 s at boot where the timer caps it); the spec
+  states it. The text login is on tty8, not tty1.
+- CI run 44957725115 passed the container check on all four runners: the
+  text login on tty8 39 s after T0 with every greeter session killed, the
+  restart mid-attempt continuing (40 s), a display manager started again
+  beginning anew, tty8 refused moving to tty9 (43 s), getty on tty1 and
+  plymouth-quit standing aside, the timer right before the supervisor, and
+  the failed supervisor's backstop on tty9 in 6 to 7 s with its present-tense
+  conditions. That run's `installer` job failed on one shellcheck note in
+  `login-path.sh`, fixed in the commit that moved this ticket here.
+

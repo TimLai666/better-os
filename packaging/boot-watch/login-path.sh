@@ -144,7 +144,7 @@ greeter_uid="$(id -u _better-greeter)"
 # would: the unit's stop never reaches it, only the supervisor's kill does.
 printf '%s\n' '#!/bin/sh' \
     "systemd-run --scope --quiet --slice=user-$greeter_uid.slice --unit=session-g\$\$.scope \\" \
-    '    setpriv --reuid=_better-greeter --regid=_better-greeter --clear-groups \' \
+    "    setpriv --reuid=_better-greeter --regid=_better-greeter --clear-groups \\" \
     "    /bin/sh -c 'trap \"\" TERM; while :; do sleep 1; done' &" \
     'wait' > /login/greeter-stand-in.sh
 chmod 755 /login/greeter-stand-in.sh
