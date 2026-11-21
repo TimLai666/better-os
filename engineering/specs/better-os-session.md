@@ -122,7 +122,10 @@ until the session meets the bar in "Ready to become the default".
   Files' desktop are not installed: they are not in the 14-package closure.
 - **`cosmic-greeter` as the login screen** (C3: GDM stays). Its package is
   installed because the locker is in it and `cosmic-settings` depends on it;
-  its display-manager question is preseeded to `gdm3`.
+  its display-manager question is preseeded to `gdm3`. Better OS's own login
+  and lock screens are designed in `design/login-screen-spec.md` (ticket
+  259); whether and when its greeter may replace GDM is ADR 0044
+  (proposed), and until the owner answers it this line stands.
 - **A compositor written from nothing** (ticket 143).
 - **Better OS's own APT repository or signing implementation.** C2 allows
   exactly System76's source with its one key and a pin limited to the closure;

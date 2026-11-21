@@ -1,6 +1,7 @@
 # Ticket 259 — A Better OS login screen laid out like Luma's lock screen
 
 **Blocked by:** 203 (the session package) for running it; none for the design
+**Blocked:** on the owner's answers to L1 to L7 at the top of `design/login-screen-spec.md` (L1, L2 and L7 are ADR 0044's)
 
 ## Why
 
@@ -55,3 +56,51 @@ decisions at the top):
 
 - The design, the mockups, the ADR and the follow-up tickets are in the
   repository, and the owner has answered the decisions the design lists.
+
+## Notes
+
+Design delivered on 2026-11-21; the ticket stays open for the owner's
+answers.
+
+- **The spec**, `design/login-screen-spec.md`: the owner's decisions L1 to L7
+  first, each with a recommendation and its costs; the sources read on the
+  machine and upstream; Luma's screens measured from its source (section
+  1); what Better OS follows and does not take; every state of the login
+  screen and the lock screen with the zh-TW and English copy; how both are
+  built (greetd's IPC, `cosmic-comp` or Cage, GPUI, the session lock
+  protocol and a crash of the lock program, the Debian display-manager
+  switch); installing, switching and removing.
+- **The security review**, `engineering/specs/login-screen-security.md`, in
+  the form of the touchpad pass-through review: accounts, reach, the
+  password's path, crashes and hangs, ADR 0033's watch (it does not cover
+  greetd), and the way back to GDM and into a locked session as numbered
+  steps.
+- **ADR 0044** (proposed): the lock screen now, the greeter as a choice in
+  Better Manager later, not by default while GNOME is offered; switching on
+  and off as one action each with GDM put back exactly.
+- **Mockups**, `design/login-screen/`: nine views in light and dark, zh-TW,
+  rendered in `/home/tim/Developer/better-os-evidence/259/`.
+- **Tickets 260 to 269, 278 and 279** (270 to 277 were already taken on another branch).
+
+Findings that changed the design:
+
+- Luma's desktop login and lock screen is GNOME's GDM and unlock dialog,
+  restyled by GNOME Shell patches ("Poster"); its greetd greeter is the
+  phone's. Its desktop login shows one person and no session menu.
+- No image of Luma's lock or login screen is published (site, gallery, blog,
+  repository), and "Try Luma" is a desktop application running a virtual
+  machine, not a browser preview; it was not downloaded or run. The
+  description is from source only; the `Try` page itself is captured in
+  `/home/tim/Developer/better-os-evidence/259/reference/`.
+- GNOME Shell 46 has no lock screen unless GDM runs (read from
+  `js/misc/loginManager.js`), and greetd runs one session at a time: both
+  are costs of replacing GDM, and are why ADR 0044 does not recommend the
+  greeter by default.
+- GPUI at the workspace's revision has no session lock window and no
+  password content purpose (L6).
+
+Not done: nothing was run (no greetd, no `cosmic-comp` greeter, no VM); the
+mockups' wallpaper is a gradient stand-in for ticket 279's artwork. The
+Luma clone used for reading is in the session scratch directory, not under
+`~/.cache/better-os/orch/luma-ref/`: the worktree guard refused a clone
+there.
