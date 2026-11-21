@@ -228,6 +228,10 @@ echo 0x0c0330 > "$xhci/class"
 # the modules tree is readable, /proc/sys is read-only, and the only
 # capability left is CAP_SYS_MODULE (bit 16). The helper itself is started
 # only with an argument it refuses before any system call.
+# A minimal container image ships no kernel modules, so the tree the unit
+# has to leave readable is made here; the probe then shows the sandbox does
+# not hide it.
+mkdir -p /usr/lib/modules
 props_for ucsi-reload
 printf '%s\n' "${probe_props[@]}" | grep -qx 'ProtectKernelModules=yes' \
     && fail "the reload helper's list takes module loading away"
