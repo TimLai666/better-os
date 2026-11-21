@@ -421,7 +421,7 @@ pub mod pixels {
         for row in 0..height {
             let source = if y_invert { height - 1 - row } else { row };
             let line = &data[source * stride..source * stride + width * 4];
-            for pixel in line.chunks_exact(4) {
+            for pixel in line.as_chunks::<4>().0 {
                 let (red, green, blue) = match format {
                     Format::Bgra => (pixel[2], pixel[1], pixel[0]),
                     Format::Rgba => (pixel[0], pixel[1], pixel[2]),
@@ -442,7 +442,7 @@ pub mod pixels {
     ) -> Option<(usize, usize, usize, usize)> {
         let close = |a: u8, b: u8| a.abs_diff(b) <= tolerance;
         let mut found: Option<(usize, usize, usize, usize)> = None;
-        for (index, pixel) in rgba.chunks_exact(4).enumerate() {
+        for (index, pixel) in rgba.as_chunks::<4>().0.iter().enumerate() {
             if close(pixel[0], color[0]) && close(pixel[1], color[1]) && close(pixel[2], color[2]) {
                 let (x, y) = (index % width, index / width);
                 found = Some(match found {
@@ -607,5 +607,11 @@ mod tests {
             Some((1, 0, 2, 2))
         );
         assert_eq!(bounding_box(&rgba, 3, [200, 0, 0], 2), None);
+        // A trailing partial pixel is ignored, as chunks_exact did.
+        rgba.extend_from_slice(&[47, 111, 223]);
+        assert_eq!(
+            bounding_box(&rgba, 3, [47, 111, 223], 2),
+            Some((1, 0, 2, 2))
+        );
     }
 }
