@@ -1,0 +1,9 @@
+[portal]
+# Better Screenshot serves the Screenshot portal in the Better OS session
+# (engineering/specs/screenshot.md). The session's betteros-portals.conf
+# names it: org.freedesktop.impl.portal.Screenshot=betteros-screenshot;
+# (the name is this file's base name). UseIn is deprecated and ignored
+# where a portals.conf names a backend; it keeps GNOME from ever picking it.
+DBusName=org.freedesktop.impl.portal.desktop.betteros.Screenshot
+Interfaces=org.freedesktop.impl.portal.Screenshot
+UseIn=BetterOS

@@ -104,6 +104,13 @@ patch-core ──> patch-platform ──> manager-gui        Fixes page (ticket 
    known-fault entries: detect,   Flatpak files, Mutter's scale, the closed
    describe, plan, check, undo;   command list, the record of applied fixes,
    no I/O                         a fixture machine for the demo and sandboxes
+
+screenshot-core ──> screenshot-capture ──> screenshot-gui (better-screenshot)
+   area selector, interface    ext-image-copy-capture,   the session's Print Screen
+   state and keys, layout,     window list, clipboard,   on layer surfaces, the
+   compose, names, words,      WebM recording through    Screenshot portal backend,
+   portal answers; no I/O      GStreamer; a fake         org.betteros.Screenshot1
+   (engineering/specs/screenshot.md, ticket 253; ships in ticket 203's package)
 ```
 
 `better-ui` provides GPUI presentation primitives to every GUI crate in the

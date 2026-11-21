@@ -120,8 +120,9 @@ MISSING_METADATA_COUNT="$(jq '[.packages[] | select(.license == null and .licens
         '' \
         '| Library | Distribution packages | License | Used by |' \
         '| --- | --- | --- | --- |' \
-        '| GStreamer core, base and app/video libraries | `libgstreamer1.0-0`, `libgstreamer-plugins-base1.0-0` | `LGPL-2.1-or-later` | `better-files-preview`: audio and video playback, through the `gstreamer`, `gstreamer-app` and `gstreamer-video` bindings (`MIT OR Apache-2.0`) |' \
-        '| GStreamer base plugins | `gstreamer1.0-plugins-base` | `LGPL-2.1-or-later` | `better-files-preview`: `playbin` and the format converters, loaded at run time |' \
+        '| GStreamer core, base and app/video libraries | `libgstreamer1.0-0`, `libgstreamer-plugins-base1.0-0` | `LGPL-2.1-or-later` | `better-files-preview`: audio and video playback; `better-screenshot`: screen recording and the shutter sound; both through the `gstreamer`, `gstreamer-app` and `gstreamer-video` bindings (`MIT OR Apache-2.0`) |' \
+        '| GStreamer base plugins | `gstreamer1.0-plugins-base` | `LGPL-2.1-or-later` | `better-files-preview` and `better-screenshot`: `playbin`, `appsrc`, and the format converters, loaded at run time |' \
+        '| GStreamer good plugins | `gstreamer1.0-plugins-good` | `LGPL-2.1-or-later` | `better-screenshot`: `vp8enc` and `webmmux` for screen recordings, loaded at run time |' \
         '| GLib and GObject | `libglib2.0-0` (`libglib2.0-0t64` on Ubuntu 24.04) | `LGPL-2.1-or-later` | the GStreamer bindings above, and GTK 4 below |' \
         '| GTK 4 | `libgtk-4-1` (recommended) | `LGPL-2.1-or-later` | every window (`better-ui`): loaded at run time with `dlopen`, never linked, to draw the window frame, shadow, and window buttons from the desktop theme; without it the window draws Adwaita'"'"'s frame itself |' \
         '| libadwaita | `libadwaita-1-0` (recommended) | `LGPL-2.1-or-later` | every window (`better-ui`): loaded at run time with `dlopen` when installed, so the frame matches GNOME'"'"'s own applications |' \
@@ -162,6 +163,25 @@ MISSING_METADATA_COUNT="$(jq '[.packages[] | select(.license == null and .licens
         | sort_by([(.name | ascii_downcase), .version])[]
         | "| `\(.name | escape)` | `\(.version | escape)` | \(source_reference) | Pinned upstream Zed workspace package has no package-level license metadata; retain the upstream GPL/APACHE notices and review file-level markings. |"
     ' "$METADATA_FILE"
+    printf '%s\n' \
+        '' \
+        '## Files copied into the source tree' \
+        '' \
+        'These files are copied verbatim from other projects and compiled into the' \
+        'programs named. Each keeps its own license; the notice each carries is' \
+        'reproduced here as that license requires.'
+    while IFS= read -r vendored; do
+        relative="${vendored#"$ROOT_DIR"/}"
+        printf '\n### `%s`\n\n' "$relative"
+        case "$relative" in
+            crates/screenshot-capture/protocols/*)
+                printf '%s\n\n' 'From `cosmic-protocols` (https://github.com/pop-os/cosmic-protocols), compiled into `better-screenshot`.'
+                ;;
+        esac
+        printf '```text\n'
+        awk '/<copyright>/ {inside = 1; next} /<\/copyright>/ {inside = 0} inside {sub(/^    /, ""); print}' "$vendored"
+        printf '```\n'
+    done < <(find "$ROOT_DIR/crates" -path '*/target' -prune -o -path '*/protocols/*.xml' -print | LC_ALL=C sort)
 } >"$GENERATED_FILE"
 
 if ((CHECK_ONLY)); then
