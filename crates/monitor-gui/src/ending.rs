@@ -1,6 +1,7 @@
 //! Ending processes: whether an End task or a Force stop may be asked at
-//! all, and carrying a confirmed one out. GPUI-free, so every refusal and
-//! every outcome is tested against a fake controller.
+//! all, how many processes it will really reach, and carrying a confirmed
+//! one out. GPUI-free, so every refusal and every outcome is tested against
+//! a fake controller.
 //!
 //! The window hands over the targets as the list last saw them; the
 //! controller (`monitor-actions-linux` in the window) decides each one
@@ -10,13 +11,17 @@ use monitor_core::{
     ActionError, ActionOutcome, ActionRefusal, ProcessAction, ProcessController, ProcessTarget,
 };
 
-use crate::app::{ActionReport, EndHow};
+use crate::app::{ActionReport, EndHow, Shortfall};
 
 /// Why nothing of `targets` may be ended this way, or `None` when it may be
 /// asked. One process that may be ended is enough to ask, except that a
 /// force stop is refused whole when any of them is something the session
 /// stands on, as a tree is: killing one of those ends far more than the
 /// person pointed at.
+///
+/// Every place that offers End task or Force stop (the page commands and
+/// both row menus) asks this, so a disabled command and the refusal after a
+/// click always agree.
 pub(crate) fn refusal(
     controller: &impl ProcessController,
     targets: &[ProcessTarget],
@@ -41,9 +46,23 @@ pub(crate) fn refusal(
     }
 }
 
-/// Carry out a confirmed end. Every target is decided again; one that may
-/// not be ended (another user's, a protected one) is skipped, and one that
-/// has already gone is not a failure of the whole.
+/// How many of `targets` the end will really be sent to: the confirmation
+/// counts these, not the processes it will skip.
+pub(crate) fn reachable(
+    controller: &impl ProcessController,
+    targets: &[ProcessTarget],
+    how: EndHow,
+) -> usize {
+    targets
+        .iter()
+        .filter(|target| controller.availability(target, how.action()).is_available())
+        .count()
+}
+
+/// Carry out a confirmed end. Every target is decided again. One that has
+/// already gone is not counted either way; one that may not be ended now,
+/// or that the kernel refused, is reported beside the ones that were sent,
+/// never folded into a plain success.
 pub(crate) fn carry_out(
     controller: &mut impl ProcessController,
     name: String,
@@ -55,36 +74,47 @@ pub(crate) fn carry_out(
         return ActionReport::Refused { name, refusal };
     }
     let action = how.action();
+    let signal = action
+        .signal()
+        .expect("ending a process is always a signal");
     let mut sent = 0;
-    let mut failure = None;
+    let mut missed = 0;
+    let mut why: Option<Shortfall> = None;
     for target in targets {
-        if controller.availability(target, action).refusal().is_some() {
+        if let Some(refusal) = controller.availability(target, action).refusal() {
+            missed += 1;
+            why.get_or_insert_with(|| Shortfall::Refused(refusal.clone()));
             continue;
         }
         match controller.perform(target, action) {
             Ok(_) => sent += 1,
             Err(ActionError::ProcessDisappeared { .. }) => {}
             Err(error) => {
-                failure.get_or_insert(error);
+                missed += 1;
+                why.get_or_insert(Shortfall::Failed(error));
             }
         }
     }
-    match (sent, failure) {
-        (0, Some(error)) => ActionReport::Failed { name, error },
+    match (sent, why) {
+        (0, Some(Shortfall::Failed(error))) => ActionReport::Failed { name, error },
+        (0, Some(Shortfall::Refused(refusal))) => ActionReport::Refused { name, refusal },
         (0, None) => ActionReport::Failed {
             name,
             error: ActionError::ProcessDisappeared {
                 pid: targets.first().map(|target| target.pid).unwrap_or_default(),
             },
         },
-        (count, _) => ActionReport::Succeeded {
+        (count, None) => ActionReport::Succeeded {
             name,
-            outcome: ActionOutcome::SignalAccepted {
-                signal: action
-                    .signal()
-                    .expect("ending a process is always a signal"),
-            },
+            outcome: ActionOutcome::SignalAccepted { signal },
             count,
+        },
+        (sent, Some(why)) => ActionReport::Partly {
+            name,
+            signal,
+            sent,
+            missed,
+            why,
         },
     }
 }

@@ -200,7 +200,14 @@ pub(crate) struct Copy {
     pub(crate) refusal_nice_range: &'static str,
     pub(crate) refusal_priority_unknown: &'static str,
     pub(crate) refusal_protected_tree: &'static str,
-    pub(crate) refusal_session_process: &'static str,
+    pub(crate) refusal_compositor: &'static str,
+    pub(crate) refusal_message_bus: &'static str,
+    pub(crate) refusal_user_manager: &'static str,
+    pub(crate) refusal_x_server: &'static str,
+    pub(crate) refusal_session_launcher: &'static str,
+    pub(crate) refusal_session_manager: &'static str,
+    pub(crate) refusal_monitor_runs_in: &'static str,
+    pub(crate) refusal_monitor_service: &'static str,
     pub(crate) list_paused: &'static str,
     pub(crate) no_location: &'static str,
     pub(crate) switched_on: &'static str,
@@ -531,8 +538,15 @@ pub(crate) const EN: Copy = Copy {
     refusal_raise_priority: "Raising priority needs administrator permission.",
     refusal_nice_range: "Its priority is already as low as it goes.",
     refusal_priority_unknown: "Its current priority couldn't be read.",
-    refusal_protected_tree: "Its tree holds part of your session, such as the desktop, a login shell, or Better Monitor itself, so the whole tree can't be ended here.",
-    refusal_session_process: "It's part of your session, such as the desktop, a login shell, or what Better Monitor runs in, so it can't be force stopped here. End task can still ask it to close.",
+    refusal_protected_tree: "Something it started is part of your desktop, such as the desktop itself or what Better Monitor runs in. Ending the whole tree would close your session, so it can't be ended here.",
+    refusal_compositor: "It's the desktop itself: it draws every window. Ending it would close your session and every app.",
+    refusal_message_bus: "It's your session's message bus, which the desktop and your apps talk through. Ending it would close your session and every app.",
+    refusal_user_manager: "It's the service manager your session runs under. Ending it would close your session and every app.",
+    refusal_x_server: "It's the X server the desktop needs, and the desktop ends with it. Ending it would close your session and every app.",
+    refusal_session_launcher: "It started your session and keeps it open. Ending it would close your session and every app.",
+    refusal_session_manager: "It's the session manager that keeps your desktop running. Ending it would close your session and every app.",
+    refusal_monitor_runs_in: "Better Monitor runs inside it, so ending it would close Better Monitor too.",
+    refusal_monitor_service: "It's the Better Monitor service this window reads from, so it can't be ended here.",
     list_paused: "Updates are paused, so the list may show a process that has already closed. Resume updates, then end it.",
     no_location: "Its program's folder couldn't be opened. It may belong to another user or to the system.",
     switched_on: "Turned on. It starts the next time you sign in.",
@@ -856,8 +870,15 @@ pub(crate) const ZH: Copy = Copy {
     refusal_raise_priority: "提高優先順序需要系統管理員權限。",
     refusal_nice_range: "它的優先順序已經是最低了。",
     refusal_priority_unknown: "讀不到它目前的優先順序。",
-    refusal_protected_tree: "它的樹狀結構裡有你這次登入的一部分，例如桌面、登入的 shell 或系統監控本身，所以不能在這裡整個結束。",
-    refusal_session_process: "它是你這次登入的一部分，例如桌面、登入的 shell 或系統監控所在的程式，所以不能在這裡強制停止。仍然可以用「結束工作」要求它關閉。",
+    refusal_protected_tree: "它啟動的處理程序裡有桌面的一部分，例如桌面本身或系統監控所在的程式。整個結束會關閉這次登入，所以不能在這裡結束。",
+    refusal_compositor: "它就是桌面本身，負責畫出每個視窗。結束它會關閉這次登入和所有應用程式。",
+    refusal_message_bus: "它是這次登入的訊息匯流排，桌面和應用程式都透過它溝通。結束它會關閉這次登入和所有應用程式。",
+    refusal_user_manager: "它是這次登入所依靠的服務管理員。結束它會關閉這次登入和所有應用程式。",
+    refusal_x_server: "它是桌面需要的 X 伺服器，桌面會跟著它一起結束。結束它會關閉這次登入和所有應用程式。",
+    refusal_session_launcher: "它啟動了這次登入，並讓登入保持開啟。結束它會關閉這次登入和所有應用程式。",
+    refusal_session_manager: "它是讓桌面持續運作的工作階段管理員。結束它會關閉這次登入和所有應用程式。",
+    refusal_monitor_runs_in: "系統監控在它裡面執行，結束它也會關閉系統監控。",
+    refusal_monitor_service: "它是這個視窗讀取資料的系統監控服務，所以不能在這裡結束。",
     list_paused: "畫面更新已暫停，清單可能還列著已經關閉的處理程序。請先繼續更新，再結束它。",
     no_location: "無法開啟它的程式所在的資料夾，它可能屬於其他使用者或系統。",
     switched_on: "已開啟，下次登入時會啟動。",
@@ -1455,20 +1476,57 @@ pub(crate) fn version_line(version: &str, locale: Locale) -> String {
 }
 
 /// "End …?" or "Force stop …?" and what it will do.
+///
+/// `reach` is how many processes will really be sent the signal, `total`
+/// how many the application or tree holds; the ones it will not reach
+/// (another user's, one the system needs) are said to stay running rather
+/// than counted as ended.
 pub(crate) fn end_question(
     target: &EndTarget,
     how: EndHow,
-    count: usize,
+    reach: usize,
+    total: usize,
     locale: Locale,
 ) -> (String, String) {
-    match how {
-        EndHow::Close => close_question(target, count, locale),
-        EndHow::Force => force_question(target, count, locale),
+    let (title, body) = match how {
+        EndHow::Close => close_question(target, reach, total, locale),
+        EndHow::Force => force_question(target, reach, total, locale),
+    };
+    let left = total.saturating_sub(reach);
+    if left == 0 || matches!(target, EndTarget::Process { .. }) {
+        return (title, body);
     }
+    let note = match (how, zh(locale)) {
+        (EndHow::Force, true) => format!("另外 {left} 個無法從這裡停止，會繼續執行。"),
+        (EndHow::Close, true) => format!("另外 {left} 個無法從這裡結束，會繼續執行。"),
+        (EndHow::Force, false) if left == 1 => {
+            "1 other can't be stopped from here and keeps running.".to_string()
+        }
+        (EndHow::Force, false) => {
+            format!("{left} others can't be stopped from here and keep running.")
+        }
+        (EndHow::Close, false) if left == 1 => {
+            "1 other can't be ended from here and keeps running.".to_string()
+        }
+        (EndHow::Close, false) => {
+            format!("{left} others can't be ended from here and keep running.")
+        }
+    };
+    let joined = if zh(locale) {
+        format!("{body}{note}")
+    } else {
+        format!("{body} {note}")
+    };
+    (title, joined)
 }
 
 /// "Force stop …?": nothing is asked, so nothing gets to save.
-fn force_question(target: &EndTarget, count: usize, locale: Locale) -> (String, String) {
+fn force_question(
+    target: &EndTarget,
+    count: usize,
+    total: usize,
+    locale: Locale,
+) -> (String, String) {
     let z = zh(locale);
     match target {
         EndTarget::Process { name, .. } => (
@@ -1494,7 +1552,7 @@ fn force_question(target: &EndTarget, count: usize, locale: Locale) -> (String, 
                 format!(
                     "會立刻停止 {count} 個處理程序，不給它們儲存的機會，還沒儲存的內容都會遺失。"
                 )
-            } else if count <= 1 {
+            } else if total <= 1 {
                 "It started nothing else, so only it is stopped at once, with no chance to save. Anything it hasn't saved is lost.".to_string()
             } else {
                 format!(
@@ -1509,11 +1567,27 @@ fn force_question(target: &EndTarget, count: usize, locale: Locale) -> (String, 
                 format!("Force stop {name}?")
             },
             if z {
-                format!(
-                    "會立刻停止它的 {count} 個處理程序，不給它們儲存的機會，還沒儲存的內容都會遺失。"
-                )
-            } else if count == 1 {
+                if total == 1 {
+                    "會立刻停止它的處理程序，不給它儲存的機會，還沒儲存的內容都會遺失。".to_string()
+                } else if count < total {
+                    format!(
+                        "會立刻停止它 {total} 個處理程序中的 {count} 個，不給它們儲存的機會，還沒儲存的內容都會遺失。"
+                    )
+                } else {
+                    format!(
+                        "會立刻停止它的 {count} 個處理程序，不給它們儲存的機會，還沒儲存的內容都會遺失。"
+                    )
+                }
+            } else if total == 1 {
                 "Its process is stopped at once, with no chance to save. Anything it hasn't saved is lost.".to_string()
+            } else if count == 1 {
+                format!(
+                    "1 of its {total} processes is stopped at once, with no chance to save. Anything it hasn't saved is lost."
+                )
+            } else if count < total {
+                format!(
+                    "{count} of its {total} processes are stopped at once, with no chance to save. Anything they haven't saved is lost."
+                )
             } else {
                 format!(
                     "All {count} of its processes are stopped at once, with no chance to save. Anything they haven't saved is lost."
@@ -1524,7 +1598,12 @@ fn force_question(target: &EndTarget, count: usize, locale: Locale) -> (String, 
 }
 
 /// "End …?": the process is asked, and may save first.
-fn close_question(target: &EndTarget, count: usize, locale: Locale) -> (String, String) {
+fn close_question(
+    target: &EndTarget,
+    count: usize,
+    total: usize,
+    locale: Locale,
+) -> (String, String) {
     let z = zh(locale);
     match target {
         EndTarget::Process { name, .. } => (
@@ -1545,11 +1624,11 @@ fn close_question(target: &EndTarget, count: usize, locale: Locale) -> (String, 
             } else {
                 format!("End {name} and everything it started?")
             },
-            if z && count <= 1 {
+            if z && total <= 1 {
                 "它沒有啟動其他處理程序，只會要求它關閉。還沒儲存的內容可能會遺失。".to_string()
             } else if z {
                 format!("會要求 {count} 個處理程序關閉，從它啟動的開始。還沒儲存的內容可能會遺失。")
-            } else if count <= 1 {
+            } else if total <= 1 {
                 "It started nothing else, so only it is asked to close. Anything it hasn't saved may be lost.".to_string()
             } else {
                 format!(
@@ -1563,10 +1642,24 @@ fn close_question(target: &EndTarget, count: usize, locale: Locale) -> (String, 
             } else {
                 format!("End {name}?")
             },
-            if z {
+            if z && total == 1 {
+                "會要求它的處理程序關閉，還沒儲存的內容可能會遺失。".to_string()
+            } else if z && count < total {
+                format!(
+                    "會要求它 {total} 個處理程序中的 {count} 個關閉，還沒儲存的內容可能會遺失。"
+                )
+            } else if z {
                 format!("會要求它的 {count} 個處理程序全部關閉，還沒儲存的內容可能會遺失。")
-            } else if count == 1 {
+            } else if total == 1 {
                 "Its process is asked to close. Anything it hasn't saved may be lost.".to_string()
+            } else if count == 1 {
+                format!(
+                    "1 of its {total} processes is asked to close. Anything it hasn't saved may be lost."
+                )
+            } else if count < total {
+                format!(
+                    "{count} of its {total} processes are asked to close. Anything they haven't saved may be lost."
+                )
             } else {
                 format!(
                     "All {count} of its processes are asked to close. Anything they haven't saved may be lost."
@@ -1642,6 +1735,29 @@ pub(crate) fn signal_sentence(signal: SignalKind, count: usize, locale: Locale) 
         SignalKind::Kill => c.outcome_force_stopped.to_string(),
         SignalKind::Stop => c.outcome_suspended.to_string(),
         SignalKind::Continue => c.outcome_resumed.to_string(),
+    }
+}
+
+/// What a confirmed end did when it reached some processes and not others:
+/// how many were sent the signal, how many could not be, and why.
+pub(crate) fn partial_sentence(
+    signal: SignalKind,
+    sent: usize,
+    missed: usize,
+    reason: &str,
+    locale: Locale,
+) -> String {
+    match (signal == SignalKind::Kill, zh(locale)) {
+        (true, true) => {
+            format!("已要求系統立刻停止其中 {sent} 個。有 {missed} 個無法停止：{reason}")
+        }
+        (false, true) => format!("已要求其中 {sent} 個關閉。有 {missed} 個無法要求關閉：{reason}"),
+        (true, false) => format!(
+            "Told the system to stop {sent} of them at once. {missed} couldn't be stopped: {reason}"
+        ),
+        (false, false) => {
+            format!("Asked {sent} of them to close. {missed} couldn't be asked: {reason}")
+        }
     }
 }
 

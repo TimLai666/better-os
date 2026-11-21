@@ -25,6 +25,7 @@ use crate::startup::{
 use crate::tables;
 use better_ui::fluent::list::CellTone;
 use monitor_core::action::testing::RecordingController;
+use monitor_core::session::SessionRole;
 use monitor_core::{
     ActionRefusal, CollectorId, CollectorReport, Entity, EntityId, EntityKind, MetricId, MetricSet,
     Observation, ProcessAction, ProcessController, ProcessTarget, Timestamp, UnknownReason,
@@ -146,7 +147,14 @@ fn every_visible_string(c: &'static Copy) -> Vec<&'static str> {
         c.refusal_nice_range,
         c.refusal_priority_unknown,
         c.refusal_protected_tree,
-        c.refusal_session_process,
+        c.refusal_compositor,
+        c.refusal_message_bus,
+        c.refusal_user_manager,
+        c.refusal_x_server,
+        c.refusal_session_launcher,
+        c.refusal_session_manager,
+        c.refusal_monitor_runs_in,
+        c.refusal_monitor_service,
         c.no_location,
         c.switched_on,
         c.switched_off,
@@ -1365,7 +1373,7 @@ fn every_end_question_names_what_it_ends_and_warns_about_unsaved_work() {
                 pids: vec![1, 2],
             },
         ] {
-            let (title, body) = i18n::end_question(&target, EndHow::Close, 2, locale);
+            let (title, body) = i18n::end_question(&target, EndHow::Close, 2, 2, locale);
             assert!(title.contains("gedit"));
             assert!(body.contains("儲存") || body.contains("saved"), "{body}");
         }
@@ -1695,12 +1703,12 @@ fn the_tree_confirmation_says_how_many_processes_it_ends() {
         name: "make".into(),
     };
     assert!(
-        i18n::end_question(&target, EndHow::Close, 7, Locale::EnUs)
+        i18n::end_question(&target, EndHow::Close, 7, 7, Locale::EnUs)
             .1
             .contains("7 processes")
     );
     assert!(
-        i18n::end_question(&target, EndHow::Close, 7, Locale::ZhTw)
+        i18n::end_question(&target, EndHow::Close, 7, 7, Locale::ZhTw)
             .1
             .contains("7 個處理程序")
     );
@@ -2685,12 +2693,13 @@ impl ProcessController for SessionController {
     ) -> monitor_core::ActionAvailability {
         let policy = self.inner.availability(target, action);
         if policy.is_available()
-            && action == ProcessAction::ForceStop
+            && monitor_core::session::guards(action)
             && self.session.contains(&target.pid)
         {
             return monitor_core::ActionAvailability::Refused(ActionRefusal::SessionProcess {
                 pid: target.pid,
                 name: target.name.clone(),
+                role: SessionRole::Compositor,
             });
         }
         policy
@@ -2729,22 +2738,38 @@ fn a_confirmed_force_stop_reaches_every_process_it_may() {
     use crate::app::{ActionReport, EndHow};
     use crate::ending;
     let mut controller = RecordingController::new(1000, 55);
-    let targets = [
-        mine(40, "editor"),
-        // Another user's process in the same group is skipped, not failed.
-        ProcessTarget::new(41, "helper").owned_by(1001).with_nice(0),
-        mine(42, "renderer"),
-    ];
-    assert_eq!(ending::refusal(&controller, &targets, EndHow::Force), None);
-    let report = ending::carry_out(&mut controller, "Editor".into(), &targets, EndHow::Force);
+    let mut targets = vec![mine(40, "editor"), mine(42, "renderer")];
+    assert_eq!(ending::reachable(&controller, &targets, EndHow::Force), 2);
     assert_eq!(
-        report,
+        ending::carry_out(&mut controller, "Editor".into(), &targets, EndHow::Force),
         ActionReport::Succeeded {
             name: "Editor".into(),
             outcome: monitor_core::ActionOutcome::SignalAccepted {
                 signal: monitor_core::SignalKind::Kill
             },
             count: 2,
+        }
+    );
+    // Another user's process in the same group is skipped, and said so:
+    // never folded into a plain success.
+    controller.performed.clear();
+    targets.insert(
+        1,
+        ProcessTarget::new(41, "helper").owned_by(1001).with_nice(0),
+    );
+    assert_eq!(ending::refusal(&controller, &targets, EndHow::Force), None);
+    assert_eq!(ending::reachable(&controller, &targets, EndHow::Force), 2);
+    let report = ending::carry_out(&mut controller, "Editor".into(), &targets, EndHow::Force);
+    assert_eq!(
+        report,
+        ActionReport::Partly {
+            name: "Editor".into(),
+            signal: monitor_core::SignalKind::Kill,
+            sent: 2,
+            missed: 1,
+            why: crate::app::Shortfall::Refused(ActionRefusal::NotOwnedByCurrentUser {
+                owner_uid: Some(1001)
+            }),
         }
     );
     assert_eq!(
@@ -2789,45 +2814,215 @@ fn a_force_stop_is_refused_for_another_users_process_and_for_the_monitor_itself(
 }
 
 #[test]
-fn a_force_stop_that_would_reach_the_session_is_refused_whole_and_end_task_is_not() {
+fn an_end_that_would_reach_the_session_is_refused_whole_for_end_task_and_force_stop() {
     use crate::app::{ActionReport, EndHow};
     use crate::ending;
     let mut controller = SessionController {
         inner: RecordingController::new(1000, 55),
         session: vec![30],
     };
-    // A terminal whose window process is what Better Monitor runs in.
-    let terminal = [mine(30, "gnome-terminal-server"), mine(31, "bash-child")];
+    // An application group that holds the compositor.
+    let desktop = [mine(30, "gnome-shell"), mine(31, "gnome-shell-calendar")];
+    let refused = ActionRefusal::SessionProcess {
+        pid: 30,
+        name: "gnome-shell".into(),
+        role: SessionRole::Compositor,
+    };
     assert_eq!(
-        ending::refusal(&controller, &terminal, EndHow::Force),
+        ending::refusal(&controller, &desktop, EndHow::Force),
+        Some(refused.clone())
+    );
+    // End task is refused the same way (owner, 2026-11-22).
+    assert_eq!(
+        ending::refusal(&controller, &desktop, EndHow::Close),
         Some(ActionRefusal::SessionProcess {
             pid: 30,
-            name: "gnome-terminal-server".into()
+            name: "gnome-shell".into(),
+            role: SessionRole::Compositor,
         })
     );
-    assert_eq!(ending::refusal(&controller, &terminal, EndHow::Close), None);
-    // Asked again when confirmed, and still nothing is sent.
     assert_eq!(
-        ending::carry_out(&mut controller, "Terminal".into(), &terminal, EndHow::Force),
+        ending::carry_out(&mut controller, "Desktop".into(), &desktop, EndHow::Close),
         ActionReport::Refused {
-            name: "Terminal".into(),
+            name: "Desktop".into(),
             refusal: ActionRefusal::SessionProcess {
                 pid: 30,
-                name: "gnome-terminal-server".into()
-            }
+                name: "gnome-shell".into(),
+                role: SessionRole::Compositor,
+            },
+        }
+    );
+    // Asked again when confirmed, and still nothing is sent.
+    assert_eq!(
+        ending::carry_out(&mut controller, "Desktop".into(), &desktop, EndHow::Force),
+        ActionReport::Refused {
+            name: "Desktop".into(),
+            refusal: refused,
         }
     );
     assert!(controller.inner.performed.is_empty());
+}
+
+#[test]
+fn a_session_refusal_says_what_the_process_is_to_the_desktop_and_points_nowhere_else() {
+    use SessionRole as R;
+    let roles = [
+        R::Monitor,
+        R::MonitorService,
+        R::UserManager,
+        R::MessageBus,
+        R::Compositor,
+        R::XServer,
+        R::SessionLauncher,
+        R::SessionManager,
+    ];
     for locale in LOCALES {
-        let words = crate::shell::refusal_label(
-            &ActionRefusal::SessionProcess {
+        let c = copy(locale);
+        let mut seen = Vec::new();
+        for role in roles {
+            let words = crate::shell::refusal_label(
+                &ActionRefusal::SessionProcess {
+                    pid: 30,
+                    name: "x".into(),
+                    role,
+                },
+                c,
+            );
+            // No other action is offered in its place.
+            for action in [c.end_task, c.force_stop, c.end_process_tree] {
+                assert!(!words.contains(action), "{role:?}: {words}");
+            }
+            assert_eq!(words, crate::shell::session_role_label(role, c));
+            // Every part of the session is said in its own words, and each
+            // says the session closes with it.
+            assert!(!seen.contains(&words), "{role:?}");
+            seen.push(words);
+            if !matches!(role, R::Monitor | R::MonitorService) {
+                assert!(
+                    words.contains("close your session") || words.contains("關閉這次登入"),
+                    "{role:?}: {words}"
+                );
+            }
+        }
+        let tree = crate::shell::refusal_label(
+            &ActionRefusal::ProtectedTree {
                 pid: 30,
                 name: "x".into(),
+                role: R::Compositor,
             },
-            copy(locale),
+            c,
         );
-        assert!(words.contains(copy(locale).end_task), "{words}");
+        assert!(tree.contains("close your session") || tree.contains("關閉這次登入"));
     }
+}
+
+#[test]
+fn an_end_that_reaches_some_processes_says_how_many_and_why_not_the_rest() {
+    use monitor_core::SignalKind;
+    let reason = copy(Locale::EnUs).refusal_other_user;
+    assert_eq!(
+        i18n::partial_sentence(SignalKind::Kill, 2, 1, reason, Locale::EnUs),
+        format!("Told the system to stop 2 of them at once. 1 couldn't be stopped: {reason}")
+    );
+    let zh_reason = copy(Locale::ZhTw).refusal_other_user;
+    assert_eq!(
+        i18n::partial_sentence(SignalKind::Kill, 2, 1, zh_reason, Locale::ZhTw),
+        format!("已要求系統立刻停止其中 2 個。有 1 個無法停止：{zh_reason}")
+    );
+    assert_eq!(
+        i18n::partial_sentence(SignalKind::Terminate, 3, 2, reason, Locale::EnUs),
+        format!("Asked 3 of them to close. 2 couldn't be asked: {reason}")
+    );
+    assert_eq!(
+        i18n::partial_sentence(SignalKind::Terminate, 3, 2, zh_reason, Locale::ZhTw),
+        format!("已要求其中 3 個關閉。有 2 個無法要求關閉：{zh_reason}")
+    );
+}
+
+#[test]
+fn an_end_task_on_an_application_that_fails_part_way_reports_both() {
+    use crate::app::{ActionReport, EndHow, Shortfall};
+    use crate::ending;
+    let denied = monitor_core::ActionError::PermissionDenied {
+        detail: "EPERM".into(),
+    };
+    let mut controller =
+        RecordingController::new(1000, 55).fail(41, ProcessAction::Terminate, denied.clone());
+    let targets = [mine(40, "editor"), mine(41, "helper"), mine(42, "renderer")];
+    assert_eq!(
+        ending::carry_out(&mut controller, "Editor".into(), &targets, EndHow::Close),
+        ActionReport::Partly {
+            name: "Editor".into(),
+            signal: monitor_core::SignalKind::Terminate,
+            sent: 2,
+            missed: 1,
+            why: Shortfall::Failed(denied.clone()),
+        }
+    );
+    // Nothing sent and one refused by the kernel is a failure, not a
+    // success of nothing.
+    let mut alone =
+        RecordingController::new(1000, 55).fail(41, ProcessAction::Terminate, denied.clone());
+    assert_eq!(
+        ending::carry_out(
+            &mut alone,
+            "helper".into(),
+            &[mine(41, "helper")],
+            EndHow::Close
+        ),
+        ActionReport::Failed {
+            name: "helper".into(),
+            error: denied,
+        }
+    );
+}
+
+#[test]
+fn the_application_confirmation_counts_only_what_it_will_reach() {
+    use crate::app::{EndHow, EndTarget};
+    let app = EndTarget::App {
+        name: "Editor".into(),
+        pids: vec![40, 41, 42],
+    };
+    assert_eq!(
+        i18n::end_question(&app, EndHow::Force, 2, 3, Locale::EnUs).1,
+        "2 of its 3 processes are stopped at once, with no chance to save. Anything they haven't saved is lost. 1 other can't be stopped from here and keeps running."
+    );
+    assert_eq!(
+        i18n::end_question(&app, EndHow::Force, 2, 3, Locale::ZhTw).1,
+        "會立刻停止它 3 個處理程序中的 2 個，不給它們儲存的機會，還沒儲存的內容都會遺失。另外 1 個無法從這裡停止，會繼續執行。"
+    );
+    assert_eq!(
+        i18n::end_question(&app, EndHow::Close, 1, 3, Locale::EnUs).1,
+        "1 of its 3 processes is asked to close. Anything it hasn't saved may be lost. 2 others can't be ended from here and keep running."
+    );
+    assert_eq!(
+        i18n::end_question(&app, EndHow::Close, 1, 3, Locale::ZhTw).1,
+        "會要求它 3 個處理程序中的 1 個關閉，還沒儲存的內容可能會遺失。另外 2 個無法從這裡結束，會繼續執行。"
+    );
+    // Everything reached: no note.
+    assert!(
+        !i18n::end_question(&app, EndHow::Force, 3, 3, Locale::EnUs)
+            .1
+            .contains("keeps running")
+    );
+    // An application of one process is not counted as "1 process".
+    let one = EndTarget::App {
+        name: "Indexer".into(),
+        pids: vec![40],
+    };
+    assert_eq!(
+        i18n::end_question(&one, EndHow::Force, 1, 1, Locale::ZhTw).1,
+        "會立刻停止它的處理程序，不給它儲存的機會，還沒儲存的內容都會遺失。"
+    );
+    assert_eq!(
+        i18n::end_question(&one, EndHow::Close, 1, 1, Locale::ZhTw).1,
+        "會要求它的處理程序關閉，還沒儲存的內容可能會遺失。"
+    );
+    assert_eq!(
+        i18n::end_question(&one, EndHow::Force, 1, 1, Locale::EnUs).1,
+        "Its process is stopped at once, with no chance to save. Anything it hasn't saved is lost."
+    );
 }
 
 #[test]
@@ -2865,7 +3060,7 @@ fn the_force_stop_confirmation_says_unsaved_work_is_lost_in_both_languages() {
         pids: vec![40, 41, 42],
     };
     assert_eq!(
-        i18n::end_question(&process, EndHow::Force, 1, Locale::EnUs),
+        i18n::end_question(&process, EndHow::Force, 1, 1, Locale::EnUs),
         (
             "Force stop gedit?".to_string(),
             "It's stopped at once, with no chance to save. Anything it hasn't saved is lost."
@@ -2873,26 +3068,26 @@ fn the_force_stop_confirmation_says_unsaved_work_is_lost_in_both_languages() {
         )
     );
     assert_eq!(
-        i18n::end_question(&process, EndHow::Force, 1, Locale::ZhTw),
+        i18n::end_question(&process, EndHow::Force, 1, 1, Locale::ZhTw),
         (
             "要強制停止「gedit」嗎？".to_string(),
             "會立刻停止它，不給它儲存的機會，還沒儲存的內容都會遺失。".to_string()
         )
     );
     assert_eq!(
-        i18n::end_question(&app, EndHow::Force, 3, Locale::EnUs).1,
+        i18n::end_question(&app, EndHow::Force, 3, 3, Locale::EnUs).1,
         "All 3 of its processes are stopped at once, with no chance to save. Anything they haven't saved is lost."
     );
     assert_eq!(
-        i18n::end_question(&app, EndHow::Force, 3, Locale::ZhTw).1,
+        i18n::end_question(&app, EndHow::Force, 3, 3, Locale::ZhTw).1,
         "會立刻停止它的 3 個處理程序，不給它們儲存的機會，還沒儲存的內容都會遺失。"
     );
     // Unlike End task, which says work *may* be lost, a force stop says it
     // is, and never that the process is asked.
     for locale in LOCALES {
         for target in [&process, &app] {
-            let (close_title, close_body) = i18n::end_question(target, EndHow::Close, 3, locale);
-            let (force_title, force_body) = i18n::end_question(target, EndHow::Force, 3, locale);
+            let (close_title, close_body) = i18n::end_question(target, EndHow::Close, 3, 3, locale);
+            let (force_title, force_body) = i18n::end_question(target, EndHow::Force, 3, 3, locale);
             assert_ne!(close_title, force_title);
             assert!(!force_body.contains("asked") && !force_body.contains("要求"));
             assert!(force_body.contains("lost") || force_body.contains("都會遺失"));

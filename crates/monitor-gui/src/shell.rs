@@ -10,9 +10,10 @@ use better_ui::fluent::{
 };
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
+use monitor_core::session::SessionRole;
 use monitor_core::{ActionError, ActionOutcome, ActionRefusal};
 
-use crate::app::{ActionReport, Collection, MonitorApp};
+use crate::app::{ActionReport, Collection, MonitorApp, Shortfall};
 use crate::i18n::{Copy, copy};
 
 impl MonitorApp {
@@ -166,16 +167,11 @@ impl MonitorApp {
                 name.clone(),
                 refusal_label(refusal, c).to_string(),
             ),
-            ActionReport::Failed { name, error } => {
-                let reason = match error {
-                    ActionError::ProcessDisappeared { .. } => c.failure_disappeared,
-                    ActionError::PermissionDenied { .. } => c.failure_denied,
-                    ActionError::InvalidRequest { .. } => c.failure_invalid,
-                    ActionError::Unsupported { .. } => c.failure_unsupported,
-                    ActionError::Failed { .. } => c.failure_other,
-                };
-                (Severity::Error, name.clone(), reason.to_string())
-            }
+            ActionReport::Failed { name, error } => (
+                Severity::Error,
+                name.clone(),
+                failure_label(error, c).to_string(),
+            ),
             ActionReport::NoLocation { name } => {
                 (Severity::Warning, name.clone(), c.no_location.to_string())
             }
@@ -196,6 +192,23 @@ impl MonitorApp {
             ActionReport::ListPaused { name } => {
                 (Severity::Warning, name.clone(), c.list_paused.to_string())
             }
+            ActionReport::Partly {
+                name,
+                signal,
+                sent,
+                missed,
+                why,
+            } => (
+                Severity::Warning,
+                name.clone(),
+                crate::i18n::partial_sentence(
+                    *signal,
+                    *sent,
+                    *missed,
+                    shortfall_label(why, c),
+                    self.locale,
+                ),
+            ),
         }
     }
 }
@@ -210,7 +223,40 @@ pub(crate) fn refusal_label(refusal: &ActionRefusal, c: &'static Copy) -> &'stat
         ActionRefusal::NiceOutOfRange { .. } => c.refusal_nice_range,
         ActionRefusal::CurrentPriorityUnknown => c.refusal_priority_unknown,
         ActionRefusal::ProtectedTree { .. } => c.refusal_protected_tree,
-        ActionRefusal::SessionProcess { .. } => c.refusal_session_process,
+        ActionRefusal::SessionProcess { role, .. } => session_role_label(*role, c),
+    }
+}
+
+/// What a process is to the desktop, and what ending it would do.
+pub(crate) fn session_role_label(role: SessionRole, c: &'static Copy) -> &'static str {
+    match role {
+        SessionRole::Monitor => c.refusal_monitor_runs_in,
+        SessionRole::MonitorService => c.refusal_monitor_service,
+        SessionRole::UserManager => c.refusal_user_manager,
+        SessionRole::MessageBus => c.refusal_message_bus,
+        SessionRole::Compositor => c.refusal_compositor,
+        SessionRole::XServer => c.refusal_x_server,
+        SessionRole::SessionLauncher => c.refusal_session_launcher,
+        SessionRole::SessionManager => c.refusal_session_manager,
+    }
+}
+
+/// Why the kernel refused an action, in words.
+pub(crate) fn failure_label(error: &ActionError, c: &'static Copy) -> &'static str {
+    match error {
+        ActionError::ProcessDisappeared { .. } => c.failure_disappeared,
+        ActionError::PermissionDenied { .. } => c.failure_denied,
+        ActionError::InvalidRequest { .. } => c.failure_invalid,
+        ActionError::Unsupported { .. } => c.failure_unsupported,
+        ActionError::Failed { .. } => c.failure_other,
+    }
+}
+
+/// Why some of an end's processes were not reached, in words.
+pub(crate) fn shortfall_label(why: &Shortfall, c: &'static Copy) -> &'static str {
+    match why {
+        Shortfall::Refused(refusal) => refusal_label(refusal, c),
+        Shortfall::Failed(error) => failure_label(error, c),
     }
 }
 

@@ -15,6 +15,13 @@ program that ignores "End task" can only be killed from a terminal. Ticket
 
 Offer it.
 
+## Owner's decision (2026-11-22)
+
+On the processes the desktop stands on, End task is not offered at all,
+the same as Force stop. One protected-set rule governs End task, End process
+tree and Force stop; the item is disabled with its reason everywhere it
+appears, and the controller refuses again when run.
+
 ## What to build
 
 - Force stop in the row's menu and beside End task, with its own
@@ -37,17 +44,47 @@ Offer it.
   every process of an application; not a tree), with its own confirmation
   (Cancel is the default). `crate::ending` in `monitor-gui` decides and
   carries it out against any `ProcessController`.
-- The session guard: `monitor_core::force_stop_refusal` (the same rule as
-  `tree_refusal`) refuses an ancestor of Better Monitor, the user's
-  `systemd`, or a session leader as `ActionRefusal::SessionProcess`;
-  `LinuxProcessController::availability` applies it, so `perform` refuses it
-  again. An application holding such a process is refused whole.
+- Review round (2026-11-22): the first guard refused every session leader,
+  which is every systemd user service and every terminal shell. It is
+  replaced by the protected set in `monitor_core::session` (Better Monitor
+  and its ancestors and its service, the user's service manager, the
+  session bus's and the Wayland display's socket holders, the X server
+  unless mutter runs it on demand, logind's display-session leader and what
+  it started, the session managers by name), read by
+  `monitor-actions-linux` from `/proc/net/unix`, descriptors, cgroups and
+  logind's records, with names only in `session::NAMED`. The spec's
+  "Nothing the desktop stands on" bullet has the rule and its sources.
+  Run against this desktop read-only
+  (`print_what_the_guard_decides_on_this_desktop`, ignored by default):
+  gnome-shell, dbus-daemon, systemd --user, gdm-wayland-session, both
+  gnome-session-binary and better-monitor-service refused; foot, bash,
+  tracker, gvfsd, evolution, portals, pipewire and a nested gnome-shell
+  offered.
+- Per the owner's 2026-11-22 decision the same rule governs End task and End
+  process tree; leading a session no longer refuses a tree. An application
+  holding a protected process is refused whole for both actions (the spec
+  says why).
+- Every end command and menu item asks `MonitorApp::end_refusal` and shows
+  the reason as its tooltip when disabled (`better-ui` gained
+  `Command::reason` and `MenuItem::reason`). Confirmations count only what
+  will be signalled; a partial end reports both counts and the reason, for
+  End task too.
+- Xwayland on GNOME 46 (Zorin 18, Ubuntu 24.04): on demand when gnome-shell
+  runs in a systemd user unit (mutter 46.2 `meta-context-main.c`,
+  `meta-xwayland.c`); seen here with no Xwayland running and gnome-shell
+  holding both X sockets. It is offered there; under any other compositor
+  it is protected. Flatpak: `flatpak run` 1.14.6 passes no `--new-session`,
+  and a Flatpak application may be ended.
 - Found on the way: a Suspend or Resume used to report "Asked it to close.";
   the outcome sentence now follows the signal (`i18n::signal_sentence`).
 - Seen in a headless sway (wayhand sandbox) with the window on a private bus
-  that activates nothing and a scratch home, filtered to fixture processes
-  the run started (`bm272-*`, `sleep` under another name; one ignoring
-  SIGTERM, one a session leader by `setsid`): End task left the stubborn one
-  running, Force stop ended it, the session leader was refused with the
-  reason, and both are not offered while paused. Screenshots in
-  `better-os-evidence/272`, light and dark, en-US and zh-TW.
+  that activates nothing and a scratch home, on stand-in processes the run
+  started: an application of three processes in an app scope, a stand-in
+  user service (its own unit and session), a terminal shell (bash leading
+  its own session), and as protected stand-ins the sandbox's private bus
+  (message bus) and the `dbus-run-session` the window runs under. First
+  round in `better-os-evidence/272`, this round in
+  `better-os-evidence/272/round2`, light and dark, en-US and zh-TW.
+- Not seen: the guard against a real GNOME or COSMIC session's own
+  processes in a window (only read-only, by the ignored test), and a
+  COSMIC session at all (fixture trees only).

@@ -173,6 +173,23 @@ pub(crate) enum ActionReport {
     ListPaused {
         name: String,
     },
+    /// An end reached some of its processes and not others.
+    Partly {
+        name: String,
+        signal: monitor_core::SignalKind,
+        sent: usize,
+        missed: usize,
+        why: Shortfall,
+    },
+}
+
+/// Why a process an end covered was not sent the signal.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Shortfall {
+    /// It may not be ended from here (decided again when confirmed).
+    Refused(ActionRefusal),
+    /// The kernel refused the signal.
+    Failed(ActionError),
 }
 
 /// The startup apps list.
@@ -796,6 +813,29 @@ impl MonitorApp {
             .collect()
     }
 
+    /// Why `target` may not be ended `how`, or `None` when it may be
+    /// asked. The one rule every command and menu item that ends something
+    /// asks, before it is drawn and again when it is chosen.
+    pub(crate) fn end_refusal(&self, target: &EndTarget, how: EndHow) -> Option<ActionRefusal> {
+        let pids = self.end_pids(target);
+        if let EndTarget::Tree { pid, .. } = target
+            && let Some(refusal) = self.controller.tree_refusal(*pid, &pids)
+        {
+            return Some(refusal);
+        }
+        crate::ending::refusal(&self.controller, &self.end_targets(&pids), how)
+    }
+
+    /// How many processes ending `target` will really reach, and how many it
+    /// covers, for the confirmation.
+    pub(crate) fn end_reach(&self, target: &EndTarget, how: EndHow) -> (usize, usize) {
+        let targets = self.end_targets(&self.end_pids(target));
+        (
+            crate::ending::reachable(&self.controller, &targets, how),
+            targets.len(),
+        )
+    }
+
     /// The processes an end action would reach, children before parents.
     pub(crate) fn end_pids(&self, target: &EndTarget) -> Vec<u32> {
         match target {
@@ -810,23 +850,13 @@ impl MonitorApp {
     /// confirmation.
     pub(crate) fn request_end(&mut self, target: EndTarget, how: EndHow, cx: &mut Context<Self>) {
         self.menu = None;
-        let pids = self.end_pids(&target);
         if self.paused {
             // A frozen list may name a process that has closed, and its PID
             // may since belong to something else.
             self.last_action = Some(ActionReport::ListPaused {
                 name: target.name().to_string(),
             });
-        } else if let EndTarget::Tree { .. } = target
-            && let Some(refusal) = self.controller.tree_refusal(&pids)
-        {
-            self.last_action = Some(ActionReport::Refused {
-                name: target.name().to_string(),
-                refusal,
-            });
-        } else if let Some(refusal) =
-            crate::ending::refusal(&self.controller, &self.end_targets(&pids), how)
-        {
+        } else if let Some(refusal) = self.end_refusal(&target, how) {
             self.last_action = Some(ActionReport::Refused {
                 name: target.name().to_string(),
                 refusal,

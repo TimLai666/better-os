@@ -267,3 +267,29 @@ fn another_users_process_is_refused_without_a_syscall_being_attempted() {
         "the refusal must not have signalled anything"
     );
 }
+
+/// Prints what the Force stop guard decides for every process of the person
+/// running it, on the real desktop, without signalling anything. Run by hand
+/// with `--ignored --nocapture` to see the guard against a live session.
+#[test]
+#[ignore = "reads the running desktop; run by hand"]
+fn print_what_the_guard_decides_on_this_desktop() {
+    let controller = LinuxProcessController::for_current_process();
+    let uid = controller.current_uid().unwrap();
+    println!("{:?}", controller.session_facts());
+    let mut pids: Vec<u32> = std::fs::read_dir("/proc")
+        .unwrap()
+        .filter_map(|entry| entry.ok()?.file_name().to_str()?.parse().ok())
+        .collect();
+    pids.sort_unstable();
+    for pid in pids {
+        let Some(target) = controller.target_for(pid) else {
+            continue;
+        };
+        if target.owner_uid != Some(uid) {
+            continue;
+        }
+        let verdict = controller.availability(&target, ProcessAction::ForceStop);
+        println!("{pid:>8} {:<16} {verdict:?}", target.name);
+    }
+}

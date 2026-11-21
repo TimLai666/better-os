@@ -58,6 +58,8 @@ pub struct MenuItem {
     /// icon column when on, an empty icon column when off.
     pub checked: Option<bool>,
     pub on_select: Option<Handler>,
+    /// Why a disabled item cannot be chosen now, shown as its tooltip.
+    pub reason: Option<SharedString>,
 }
 
 impl MenuItem {
@@ -70,7 +72,14 @@ impl MenuItem {
             shown: ShownState::Live,
             checked: None,
             on_select: None,
+            reason: None,
         }
+    }
+
+    /// Why the item is disabled; shown as its tooltip only while it is.
+    pub fn reason(mut self, reason: Option<impl Into<SharedString>>) -> Self {
+        self.reason = reason.map(Into::into);
+        self
     }
 
     /// Makes the item a toggle item, drawn with a check mark when `checked`.
@@ -623,6 +632,11 @@ impl RenderOnce for MenuPanel {
                     )
                     // For the interaction tests; nothing outside a test build.
                     .debug_selector(move || format!("menu-item-{index}"));
+                    if item.disabled
+                        && let Some(reason) = item.reason.clone()
+                    {
+                        element = element.tooltip(super::dialog::tooltip_builder(reason));
+                    }
                     if !item.disabled
                         && let Some(state) = state.clone()
                     {
@@ -790,6 +804,11 @@ impl RenderOnce for SubmenuPanel {
                         shown,
                         p,
                     );
+                    if item.disabled
+                        && let Some(reason) = item.reason.clone()
+                    {
+                        element = element.tooltip(super::dialog::tooltip_builder(reason));
+                    }
                     if !item.disabled
                         && let Some(state) = self.state.clone()
                     {

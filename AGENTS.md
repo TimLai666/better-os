@@ -293,7 +293,11 @@ GUI or dependency compiles when the relevant command was not executed.
   `monitor-actions-linux` is the only crate that calls `kill(2)` or
   `setpriority(2)`. Process actions are own-user only; cross-user and elevated
   actions are refused with the reason shown, and the narrow polkit-reviewed
-  boundary that would allow them is not built.
+  boundary that would allow them is not built. End task, End process tree and
+  Force stop are never offered on what the desktop stands on (owner,
+  2026-11-22): `monitor_core::session` is the one rule, decided from socket
+  holders, cgroups and logind's record before names, and `session::NAMED` is
+  the only place a session process is named.
 - `monitor-service` owns collection. `monitor-gui` has no sampler: it reaches
   the service over `org.betteros.Monitor1`, and where there is no service it
   runs the same engine in-process and says so. Do not add a collector call to

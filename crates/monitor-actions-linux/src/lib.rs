@@ -40,6 +40,12 @@ use std::io;
 use std::os::fd::{FromRawFd, OwnedFd};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+pub mod session;
+
+pub use session::SessionEnv;
 
 /// `USER_HZ`, the unit `/proc/[pid]/stat` counts start time in. It is part of
 /// the kernel's user-space ABI and is 100 on every Linux architecture.
@@ -143,7 +149,21 @@ pub struct LinuxProcessController {
     current_uid: u32,
     own_pid: u32,
     proc_root: PathBuf,
+    /// Where logind keeps its records (`/run`).
+    run_root: PathBuf,
+    session_env: SessionEnv,
+    /// The session facts as last read, shared by clones, so a menu drawn
+    /// every second does not scan every descriptor each time.
+    session_cache: SessionCache,
 }
+
+/// Session facts with the moment they were read.
+type SessionCache = Arc<Mutex<Option<(Instant, Arc<monitor_core::session::SessionFacts>)>>>;
+
+/// How long session facts read once are trusted. The compositor and the bus
+/// do not change while the window runs; a new Xwayland can appear at once,
+/// and is protected or not by the compositor's policy either way.
+const SESSION_FACTS_FOR: Duration = Duration::from_secs(2);
 
 impl LinuxProcessController {
     /// A controller acting as whoever this process already is. It never
@@ -155,6 +175,9 @@ impl LinuxProcessController {
             current_uid: unsafe { libc::geteuid() },
             own_pid: std::process::id(),
             proc_root: PathBuf::from("/proc"),
+            run_root: PathBuf::from("/run"),
+            session_env: SessionEnv::from_process(),
+            session_cache: Arc::default(),
         }
     }
 
@@ -162,7 +185,58 @@ impl LinuxProcessController {
     /// a process whose recorded identity differs from the running one.
     pub fn with_proc_root(mut self, root: impl Into<PathBuf>) -> Self {
         self.proc_root = root.into();
+        self.session_cache = Arc::default();
         self
+    }
+
+    /// The same controller reading logind's records under another `/run`.
+    pub fn with_run_root(mut self, root: impl Into<PathBuf>) -> Self {
+        self.run_root = root.into();
+        self.session_cache = Arc::default();
+        self
+    }
+
+    /// The same controller finding the session's sockets from `env`
+    /// rather than its own environment.
+    pub fn with_session_env(mut self, env: SessionEnv) -> Self {
+        self.session_env = env;
+        self.session_cache = Arc::default();
+        self
+    }
+
+    /// What the guard needs to know about one process, `None` when it is
+    /// gone.
+    pub fn session_member(&self, pid: u32) -> Option<monitor_core::session::SessionMember> {
+        let live = self.live(pid)?;
+        Some(monitor_core::session::SessionMember {
+            pid,
+            name: live.name,
+            parent: live.parent,
+            cgroup: session::cgroup_of(&self.proc_root, pid),
+        })
+    }
+
+    /// What the session stands on, read at most every two seconds.
+    pub fn session_facts(&self) -> Arc<monitor_core::session::SessionFacts> {
+        let mut cache = self
+            .session_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((read_at, facts)) = cache.as_ref()
+            && read_at.elapsed() < SESSION_FACTS_FOR
+        {
+            return facts.clone();
+        }
+        let facts = Arc::new(session::read_facts(
+            &self.proc_root,
+            &self.run_root,
+            &self.session_env,
+            self.current_uid,
+            self.own_ancestors(),
+            |pid| self.session_member(pid),
+        ));
+        *cache = Some((Instant::now(), facts.clone()));
+        facts
     }
 
     /// What `/proc` says about a process now, or `None` when it is gone.
@@ -236,32 +310,25 @@ impl LinuxProcessController {
         chain
     }
 
-    /// Whether a process tree may be ended: `None`, or the first member that
-    /// the session stands on. A member that is already gone is skipped.
-    pub fn tree_refusal(&self, pids: &[u32]) -> Option<monitor_core::ActionRefusal> {
-        let members: Vec<monitor_core::TreeMember> = pids
+    /// Whether the process tree rooted at `root` (every member in `pids`)
+    /// may be ended, by the one session rule
+    /// (`monitor_core::session::tree_refusal`). A member that is already
+    /// gone is skipped.
+    pub fn tree_refusal(&self, root: u32, pids: &[u32]) -> Option<monitor_core::ActionRefusal> {
+        let members: Vec<monitor_core::session::SessionMember> = pids
             .iter()
-            .filter_map(|pid| self.live(*pid))
-            .map(|live| monitor_core::TreeMember {
-                pid: live.pid,
-                session_leader: live.session == Some(live.pid),
-                name: live.name,
-            })
+            .filter_map(|pid| self.session_member(*pid))
             .collect();
-        monitor_core::tree_refusal(&members, &self.own_ancestors())
+        monitor_core::session::tree_refusal(root, &members, &self.session_facts())
     }
 
-    /// Whether one process may be force stopped as far as the session is
-    /// concerned: `None`, or the refusal naming it. A process that is
-    /// already gone is not refused here; the identity check reports it.
-    pub fn force_stop_refusal(&self, pid: u32) -> Option<monitor_core::ActionRefusal> {
-        let live = self.live(pid)?;
-        let member = monitor_core::TreeMember {
-            pid: live.pid,
-            session_leader: live.session == Some(live.pid),
-            name: live.name,
-        };
-        monitor_core::force_stop_refusal(&member, &self.own_ancestors())
+    /// Whether one process may be ended (asked, or at once) as far as the
+    /// session is concerned: `None`, or the refusal naming the part it
+    /// plays. A process that is already gone is not refused here; the
+    /// identity check reports it.
+    pub fn session_refusal(&self, pid: u32) -> Option<monitor_core::ActionRefusal> {
+        let member = self.session_member(pid)?;
+        monitor_core::session::refusal(&member, &self.session_facts())
     }
 
     /// The folder holding a process's program, for "Open file location". It
@@ -358,10 +425,11 @@ impl ProcessController for LinuxProcessController {
         self.own_pid
     }
 
-    /// The shared policy, and for a force stop the session guard on top:
-    /// `SIGKILL` lets nothing clean up, so it never reaches a process the
-    /// session stands on. Because `perform` asks this again, the guard
-    /// cannot be stepped around by a view that skipped it.
+    /// The shared policy, and for every action that ends a process (End
+    /// task and Force stop) the session guard on top: the session ends with
+    /// these processes whichever signal it is (owner, 2026-11-22). Because
+    /// `perform` asks this again, the guard cannot be stepped around by a
+    /// view that skipped it.
     fn availability(
         &self,
         target: &ProcessTarget,
@@ -373,10 +441,10 @@ impl ProcessController for LinuxProcessController {
             target,
             action,
         );
-        if !policy.is_available() || action != ProcessAction::ForceStop {
+        if !policy.is_available() || !monitor_core::session::guards(action) {
             return policy;
         }
-        match self.force_stop_refusal(target.pid) {
+        match self.session_refusal(target.pid) {
             Some(refusal) => monitor_core::ActionAvailability::Refused(refusal),
             None => policy,
         }
@@ -612,101 +680,449 @@ mod tests {
         fake.process(40, "bash", 30, 40, 6, 1000);
         fake.process(41, "make", 40, 40, 7, 1000);
         fake.process(42, "cc", 41, 40, 8, 1000);
-        let controller = LinuxProcessController::for_current_process().with_proc_root(&fake.0);
+        let controller = LinuxProcessController::for_current_process()
+            .with_proc_root(&fake.0)
+            .with_run_root(fake.0.join("no-run"))
+            .with_session_env(SessionEnv::default());
         assert_eq!(controller.own_ancestors(), vec![30, 20, 1]);
         assert_eq!(
-            controller.tree_refusal(&[42, 41]),
+            controller.tree_refusal(41, &[42, 41]),
             None,
             "a build under a shell may end"
         );
+        // Leading a session is not the rule (owner, 2026-11-22): a shell that
+        // is not above the window may be ended with everything it started.
+        assert_eq!(controller.tree_refusal(40, &[42, 41, 40]), None);
         assert!(
             matches!(
-                controller.tree_refusal(&[42, 41, 40]),
-                Some(ActionRefusal::ProtectedTree { pid: 40, .. })
-            ),
-            "the shell leads its session"
-        );
-        assert!(
-            matches!(
-                controller.tree_refusal(&[own, 30]),
-                Some(ActionRefusal::ProtectedTree { pid: 30, .. })
+                controller.tree_refusal(30, &[42, 41, 40, own, 30]),
+                Some(ActionRefusal::SessionProcess { pid: 30, .. })
             ),
             "the monitor's own terminal"
         );
-        assert!(controller.tree_refusal(&[20]).is_some(), "systemd --user");
+        assert!(
+            controller.tree_refusal(20, &[20]).is_some(),
+            "systemd --user"
+        );
         assert_eq!(
-            controller.tree_refusal(&[9999]),
+            controller.tree_refusal(9999, &[9999]),
             None,
             "a gone process is skipped"
         );
     }
 
-    #[test]
-    fn a_force_stop_never_reaches_a_process_the_session_stands_on() {
-        let fake = FakeProc::new("force");
-        let own = std::process::id();
-        let uid = LinuxProcessController::for_current_process()
-            .current_uid()
+    /// A session laid out in a scratch `/proc` and `/run`: processes with
+    /// their cgroups, the listening sockets in `net/unix`, the descriptors
+    /// that hold them, and logind's record.
+    struct FakeSession {
+        proc: FakeProc,
+        run: PathBuf,
+        uid: u32,
+        sockets: Vec<String>,
+    }
+
+    impl FakeSession {
+        fn new(name: &str) -> Self {
+            let proc = FakeProc::new(name);
+            let run = proc.0.join("run");
+            let uid = LinuxProcessController::for_current_process()
+                .current_uid()
+                .unwrap();
+            Self {
+                proc,
+                run,
+                uid,
+                sockets: Vec::new(),
+            }
+        }
+
+        /// A process of the user's, in a cgroup under the user's slice.
+        fn process(&self, pid: u32, name: &str, parent: u32, session: u32, cgroup: &str) {
+            self.proc
+                .process(pid, name, parent, session, pid as u64, self.uid);
+            std::fs::write(
+                self.proc.0.join(pid.to_string()).join("cgroup"),
+                format!("0::/user.slice/user-{}.slice/{cgroup}\n", self.uid),
+            )
             .unwrap();
-        // The monitor runs under a terminal (30), under the user's systemd
-        // (20), under init; a shell (40) leads its own session and runs a
-        // build (41).
-        fake.process(own, "monitor-gui", 30, 10, 5, uid);
-        fake.process(30, "gnome-terminal", 20, 10, 4, uid);
-        fake.process(20, "systemd", 1, 20, 3, uid);
-        fake.process(1, "systemd", 0, 1, 1, 0);
-        fake.process(40, "bash", 30, 40, 6, uid);
-        fake.process(41, "make", 40, 40, 7, uid);
-        let mut controller = LinuxProcessController::for_current_process().with_proc_root(&fake.0);
+        }
+
+        /// A listening socket at `path`, held by `holders`.
+        fn socket(&mut self, path: &str, inode: u64, holders: &[u32]) {
+            self.sockets.push(format!(
+                "0000000000000000: 00000002 00000000 00010000 0001 01 {inode} {path}"
+            ));
+            std::fs::create_dir_all(self.proc.0.join("net")).unwrap();
+            std::fs::write(
+                self.proc.0.join("net/unix"),
+                format!(
+                    "Num       RefCount Protocol Flags    Type St Inode Path\n{}\n",
+                    self.sockets.join("\n")
+                ),
+            )
+            .unwrap();
+            for pid in holders {
+                let fd = self.proc.0.join(pid.to_string()).join("fd");
+                std::fs::create_dir_all(&fd).unwrap();
+                let slot = std::fs::read_dir(&fd).unwrap().count() + 3;
+                std::os::unix::fs::symlink(format!("socket:[{inode}]"), fd.join(slot.to_string()))
+                    .unwrap();
+            }
+        }
+
+        fn logind(&self, session: u32, leader: u32) {
+            std::fs::create_dir_all(self.run.join("systemd/users")).unwrap();
+            std::fs::create_dir_all(self.run.join("systemd/sessions")).unwrap();
+            std::fs::write(
+                self.run.join("systemd/users").join(self.uid.to_string()),
+                format!("# This is private data. Do not parse.\nDISPLAY={session}\n"),
+            )
+            .unwrap();
+            std::fs::write(
+                self.run.join("systemd/sessions").join(session.to_string()),
+                format!("UID={}\nLEADER={leader}\n", self.uid),
+            )
+            .unwrap();
+        }
+
+        fn controller(&self, env: SessionEnv) -> LinuxProcessController {
+            LinuxProcessController::for_current_process()
+                .with_proc_root(&self.proc.0)
+                .with_run_root(&self.run)
+                .with_session_env(env)
+        }
+
+        fn user(&self, unit: &str) -> String {
+            format!("user@{}.service/{unit}", self.uid)
+        }
+    }
+
+    fn session_env() -> SessionEnv {
+        SessionEnv {
+            runtime_dir: Some("/run/user/1000".into()),
+            wayland_display: Some("wayland-0".into()),
+            bus_address: Some("unix:path=/run/user/1000/bus".into()),
+            x_display: Some(":0".into()),
+        }
+    }
+
+    /// The role a force stop is refused with, or `None` when it is offered.
+    /// The role End task and Force stop are both refused with, or `None`
+    /// when both are offered; the two never disagree. Pausing is never the
+    /// guard's.
+    fn force_stop_role(
+        controller: &LinuxProcessController,
+        pid: u32,
+    ) -> Option<monitor_core::session::SessionRole> {
         // The start token matches nothing in the fake `/proc`, so even a
         // broken guard would stop at the identity check and never signal
-        // whatever really runs under these low PIDs.
-        let target = |pid: u32, name: &str| {
-            ProcessTarget::new(pid, name)
-                .owned_by(uid)
-                .started_at(1)
-                .with_nice(0)
+        // whatever really runs under these PIDs.
+        let target = ProcessTarget::new(pid, "fixture")
+            .owned_by(controller.current_uid().unwrap())
+            .started_at(1)
+            .with_nice(0);
+        let role = |action| match controller.availability(&target, action) {
+            ActionAvailability::Available => None,
+            ActionAvailability::Refused(ActionRefusal::SessionProcess { role, .. }) => Some(role),
+            other => panic!("pid {pid} {action:?}: {other:?}"),
         };
-
+        let force = role(ProcessAction::ForceStop);
+        assert_eq!(role(ProcessAction::Terminate), force, "pid {pid}: End task");
         assert!(
             controller
-                .availability(&target(41, "make"), ProcessAction::ForceStop)
+                .availability(&target, ProcessAction::Pause)
                 .is_available(),
-            "a build under a shell may be force stopped"
+            "pid {pid}: Suspend is not the guard's"
         );
-        for (pid, name, why) in [
-            (30, "gnome-terminal", "the monitor's own terminal"),
-            (20, "systemd", "systemd --user"),
-            (40, "bash", "a session leader"),
+        force
+    }
+
+    /// GNOME 46 as Ubuntu 24.04 and Zorin 18 run it, laid out from this
+    /// desktop on 2026-11-22: gnome-shell in `org.gnome.Shell@wayland.service`
+    /// holding the Wayland and X sockets, Xwayland started on demand, the
+    /// bus socket held by systemd and dbus-daemon, GDM's leader (root) with
+    /// `gdm-wayland-session` under it, and a terminal whose shell leads its
+    /// own session.
+    #[test]
+    fn a_gnome_session_keeps_its_compositor_bus_and_session_and_lets_the_rest_go() {
+        use monitor_core::session::SessionRole as Role;
+        let mut s = FakeSession::new("gnome");
+        let own = std::process::id();
+        s.process(2338, "systemd", 1, 2338, &s.user("init.scope"));
+        s.process(
+            2370,
+            "dbus-daemon",
+            2338,
+            2370,
+            &s.user("session.slice/dbus.service"),
+        );
+        let shell = s.user("session.slice/org.gnome.Shell@wayland.service");
+        s.process(2545, "gnome-shell", 2338, 2545, &shell);
+        s.process(2600, "Xwayland", 2545, 2545, &shell);
+        s.process(2408, "gdm-wayland-ses", 2321, 2408, "session-2.scope");
+        s.process(2412, "gnome-session-b", 2408, 2408, "session-2.scope");
+        s.process(
+            2480,
+            "gnome-session-b",
+            2338,
+            2480,
+            &s.user("session.slice/gnome-session-manager@gnome.service"),
+        );
+        s.process(
+            3336,
+            "better-monitor-",
+            2338,
+            3336,
+            &s.user("app.slice/better-monitor.service"),
+        );
+        // A terminal, its shell, and Better Monitor started from it.
+        let ptyxis = s.user("app.slice/app-org.gnome.Ptyxis-4000.scope");
+        s.process(4000, "ptyxis", 2338, 4000, &ptyxis);
+        s.process(4001, "ptyxis-agent", 4000, 4001, &ptyxis);
+        s.process(4002, "bash", 4001, 4002, &ptyxis);
+        s.process(own, "monitor-gui", 4002, 4002, &ptyxis);
+        // A second terminal shell, not above the window.
+        s.process(4010, "bash", 4001, 4010, &ptyxis);
+        // User services, each its own session leader.
+        s.process(
+            4100,
+            "tracker-miner-f",
+            2338,
+            4100,
+            &s.user("session.slice/tracker-miner-fs-3.service"),
+        );
+        s.process(
+            4200,
+            "gvfsd",
+            2338,
+            4200,
+            &s.user("app.slice/gvfs-daemon.service"),
+        );
+        s.process(
+            4300,
+            "xdg-desktop-por",
+            2338,
+            4300,
+            &s.user("app.slice/xdg-desktop-portal.service"),
+        );
+        // A nested gnome-shell another program runs, which is not the desktop.
+        s.process(
+            4400,
+            "gnome-shell",
+            4390,
+            4390,
+            &s.user("app.slice/run-r1.scope"),
+        );
+        s.socket("/run/user/1000/bus", 927, &[2338, 2370]);
+        s.socket("/run/user/1000/wayland-0", 31750, &[2545]);
+        s.socket("/tmp/.X11-unix/X0", 31747, &[2545, 2600]);
+        s.socket("@/tmp/.X11-unix/X0", 31746, &[2545, 2600]);
+        s.logind(2, 2321);
+        let controller = s.controller(session_env());
+
+        for (pid, role) in [
+            (2338, Some(Role::Monitor)),
+            (2370, Some(Role::MessageBus)),
+            (2545, Some(Role::Compositor)),
+            // Mutter 46 starts Xwayland on demand inside a user unit and
+            // carries on without it: only X11 windows close.
+            (2600, None),
+            (2408, Some(Role::SessionLauncher)),
+            (2412, Some(Role::SessionManager)),
+            (2480, Some(Role::SessionManager)),
+            (3336, Some(Role::MonitorService)),
+            // The terminal and the shell Better Monitor runs in.
+            (4000, Some(Role::Monitor)),
+            (4002, Some(Role::Monitor)),
+            // Everything else that leads a session may be force stopped.
+            (4010, None),
+            (4100, None),
+            (4200, None),
+            (4300, None),
+            (4400, None),
         ] {
-            assert_eq!(
-                controller.availability(&target(pid, name), ProcessAction::ForceStop),
-                ActionAvailability::Refused(ActionRefusal::SessionProcess {
-                    pid,
-                    name: name.into()
-                }),
-                "{why}"
-            );
-            // End task still lets it decide for itself.
-            assert!(
-                controller
-                    .availability(&target(pid, name), ProcessAction::Terminate)
-                    .is_available(),
-                "{why}"
-            );
-            // And `perform` asks again, so nothing reaches a syscall.
+            assert_eq!(force_stop_role(&controller, pid), role, "pid {pid}");
+        }
+        // Not above the window, the user manager is still recognised.
+        let facts = controller.session_facts();
+        assert_eq!(facts.bus_holders, Some(vec![2338, 2370]));
+        assert_eq!(facts.compositor_holders, Some(vec![2545]));
+        assert!(facts.xwayland_on_demand);
+        assert_eq!(facts.session_leader, Some(Some(2321)));
+        // `perform` asks again, so a refused End task or Force stop reaches
+        // no syscall.
+        let target = ProcessTarget::new(2545, "gnome-shell")
+            .owned_by(s.uid)
+            .started_at(1)
+            .with_nice(0);
+        for action in [ProcessAction::Terminate, ProcessAction::ForceStop] {
             assert!(matches!(
-                controller.perform(&target(pid, name), ProcessAction::ForceStop),
+                controller.clone().perform(&target, action),
                 Err(ActionError::PermissionDenied { .. })
             ));
         }
-        // The monitor itself stays protected by the shared policy.
+        // End process tree, by the same rule.
         assert!(matches!(
-            controller.availability(&target(own, "monitor-gui"), ProcessAction::ForceStop),
+            controller.tree_refusal(2338, &[2370, 2545, 2600, 4000, 2338]),
+            Some(ActionRefusal::SessionProcess {
+                pid: 2338,
+                role: Role::Monitor,
+                ..
+            })
+        ));
+        assert!(matches!(
+            controller.tree_refusal(2408, &[2412, 2408]),
+            Some(ActionRefusal::SessionProcess {
+                role: Role::SessionLauncher,
+                ..
+            })
+        ));
+        // The terminal Better Monitor runs in, from above it.
+        assert!(matches!(
+            controller.tree_refusal(4000, &[own, 4002, 4010, 4001, 4000]),
+            Some(ActionRefusal::SessionProcess {
+                pid: 4000,
+                role: Role::Monitor,
+                ..
+            })
+        ));
+        // Another shell in that terminal, a user service, and the nested
+        // shell may be ended whole.
+        assert_eq!(controller.tree_refusal(4010, &[4010]), None);
+        assert_eq!(controller.tree_refusal(4100, &[4100]), None);
+        assert_eq!(controller.tree_refusal(4400, &[4400]), None);
+        // The window itself is the shared policy's.
+        let itself = ProcessTarget::new(own, "monitor-gui")
+            .owned_by(s.uid)
+            .with_nice(0);
+        assert!(matches!(
+            controller.availability(&itself, ProcessAction::ForceStop),
             ActionAvailability::Refused(ActionRefusal::ProtectedProcess { .. })
         ));
-        // A process that has gone is left to the identity check.
-        assert_eq!(controller.force_stop_refusal(9999), None);
+        assert_eq!(controller.session_refusal(99_999), None, "gone");
+    }
+
+    /// COSMIC from a greeter: the leader starts `start-cosmic`, which starts
+    /// cosmic-session, which starts cosmic-comp, which starts Xwayland, all
+    /// in the session's scope beside the panel and an application.
+    #[test]
+    fn a_cosmic_session_keeps_its_compositor_x_server_and_session_manager() {
+        use monitor_core::session::SessionRole as Role;
+        let mut s = FakeSession::new("cosmic");
+        let scope = "session-3.scope";
+        s.process(2200, "systemd", 1, 2200, &s.user("init.scope"));
+        s.process(
+            2210,
+            "dbus-broker-lau",
+            2200,
+            2210,
+            &s.user("session.slice/dbus-broker.service"),
+        );
+        s.process(
+            2211,
+            "dbus-broker",
+            2210,
+            2210,
+            &s.user("session.slice/dbus-broker.service"),
+        );
+        s.process(2305, "start-cosmic", 2300, 2305, scope);
+        s.process(2310, "cosmic-session", 2305, 2305, scope);
+        s.process(2320, "cosmic-comp", 2310, 2305, scope);
+        s.process(2330, "Xwayland", 2320, 2305, scope);
+        s.process(2340, "cosmic-panel", 2310, 2305, scope);
+        s.process(2350, "cosmic-edit", 2310, 2305, scope);
+        s.socket("/run/user/1000/bus", 900, &[2200, 2210, 2211]);
+        s.socket("/run/user/1000/wayland-1", 901, &[2320]);
+        s.socket("/tmp/.X11-unix/X1", 902, &[2320, 2330]);
+        s.logind(3, 2300);
+        let env = SessionEnv {
+            wayland_display: Some("wayland-1".into()),
+            x_display: Some(":1".into()),
+            ..session_env()
+        };
+        let controller = s.controller(env);
+        for (pid, role) in [
+            (2200, Some(Role::UserManager)),
+            (2210, Some(Role::MessageBus)),
+            (2211, Some(Role::MessageBus)),
+            (2305, Some(Role::SessionLauncher)),
+            (2310, Some(Role::SessionManager)),
+            (2320, Some(Role::Compositor)),
+            // cosmic-comp's Xwayland policy is not known, so it stays.
+            (2330, Some(Role::XServer)),
+            (2340, None),
+            (2350, None),
+        ] {
+            assert_eq!(force_stop_role(&controller, pid), role, "pid {pid}");
+        }
+        // End process tree: the session manager's tree is its own refusal;
+        // the panel's and an application's trees may be ended.
+        assert!(matches!(
+            controller.tree_refusal(2310, &[2330, 2320, 2340, 2350, 2310]),
+            Some(ActionRefusal::SessionProcess {
+                role: Role::SessionManager,
+                ..
+            })
+        ));
+        assert_eq!(controller.tree_refusal(2340, &[2340]), None);
+        assert_eq!(controller.tree_refusal(2350, &[2350]), None);
+    }
+
+    /// `flatpak run` 1.14.6 adds no `--new-session` to bwrap (its
+    /// `common/flatpak-run.c` blocks `TIOCSTI` with seccomp instead), and on
+    /// this desktop on 2026-11-22 `flatpak run --command=sleep` left
+    /// `bwrap`, the inner `bwrap`, and `sleep` in the caller's session. The
+    /// application may be force stopped either way: leading a session is not
+    /// the rule.
+    #[test]
+    fn a_flatpak_application_may_be_force_stopped() {
+        let mut s = FakeSession::new("flatpak");
+        let scope = s.user("app.slice/app-flatpak-net.nokyan.Resources-5000.scope");
+        s.process(2338, "systemd", 1, 2338, &s.user("init.scope"));
+        s.process(5000, "bwrap", 2338, 5000, &scope);
+        s.process(5001, "bwrap", 5000, 5000, &scope);
+        s.process(5002, "resources", 5001, 5000, &scope);
+        s.process(5010, "xdg-dbus-proxy", 2338, 5010, &scope);
+        s.socket("/run/user/1000/bus", 927, &[2338]);
+        s.socket("/run/user/1000/wayland-0", 931, &[]);
+        let controller = s.controller(session_env());
+        for pid in [5000, 5001, 5002, 5010] {
+            assert_eq!(force_stop_role(&controller, pid), None, "pid {pid}");
+        }
+    }
+
+    #[test]
+    fn a_session_whose_records_cannot_be_read_keeps_every_process_that_matches_a_name() {
+        use monitor_core::session::SessionRole as Role;
+        // No net/unix, no logind record, no cgroups: nothing can be proven.
+        let fake = FakeProc::new("blind");
+        let uid = LinuxProcessController::for_current_process()
+            .current_uid()
+            .unwrap();
+        for (pid, name) in [
+            (10, "systemd"),
+            (11, "dbus-daemon"),
+            (12, "gnome-shell"),
+            (13, "Xwayland"),
+            (14, "gnome-session-b"),
+            (15, "make"),
+        ] {
+            fake.process(pid, name, 1, pid, pid as u64, uid);
+        }
+        let controller = LinuxProcessController::for_current_process()
+            .with_proc_root(&fake.0)
+            .with_run_root(fake.0.join("no-run"))
+            .with_session_env(session_env());
+        for (pid, role) in [
+            (10, Some(Role::UserManager)),
+            (11, Some(Role::MessageBus)),
+            (12, Some(Role::Compositor)),
+            (13, Some(Role::XServer)),
+            (14, Some(Role::SessionManager)),
+            (15, None),
+        ] {
+            assert_eq!(force_stop_role(&controller, pid), role, "pid {pid}");
+        }
     }
 
     #[test]

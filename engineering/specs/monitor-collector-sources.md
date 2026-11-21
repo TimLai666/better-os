@@ -413,17 +413,73 @@ Semantic differences and decisions:
   in every process and application row menu, for one process or every
   process of an application (never a tree), and it has its own confirmation
   that says unsaved work is lost, with Cancel the default button. It is
-  refused while updates are paused, as End task is, and on top of the
-  ownership rules it is refused for anything the session stands on: an
-  ancestor of Better Monitor, the user's `systemd`, or a session leader
-  (`ActionRefusal::SessionProcess`, decided by the same predicate as
-  `tree_refusal`). `LinuxProcessController::availability` applies that guard,
-  so the menu shows the refusal before anyone clicks and `perform` refuses it
-  again. An application with one such process is refused whole, as a tree
-  is. A delivered `SIGKILL` is reported as "the system was told to stop it",
-  not as an exit.
+  refused while updates are paused, as End task is. A delivered `SIGKILL` is
+  reported as "the system was told to stop it", not as an exit.
+- **Nothing the desktop stands on is offered End task, End process tree, or
+  Force stop (owner, 2026-11-22, ticket 272).** The protected set is one
+  rule, `monitor_core::session`, and all three actions ask it:
+  - Better Monitor and every process above it, and the Better Monitor
+    service (cgroup `better-monitor.service`);
+  - the user's service manager (cgroup `user@UID.service/init.scope`);
+  - the session's message bus: whoever holds the listening socket the
+    window's `DBUS_SESSION_BUS_ADDRESS` names (`/proc/net/unix` and each of
+    the user's own processes' descriptors);
+  - the compositor: whoever holds the listening socket of
+    `$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY`;
+  - the X server (whoever holds `/tmp/.X11-unix/X<n>` of `$DISPLAY`, with its
+    abstract twin), unless the compositor is known to start it on demand and
+    carry on without it. The one such compositor is GNOME Shell running in a
+    systemd user unit: mutter 46.2's `meta_context_main_get_x11_display_policy`
+    (`src/core/meta-context-main.c`) returns `ON_DEMAND` when
+    `sd_pid_get_user_unit` succeeds, and `xserver_died`
+    (`src/wayland/meta-xwayland.c`) exits mutter only under `MANDATORY`.
+    On this Zorin 18 desktop on 2026-11-22 gnome-shell runs as
+    `org.gnome.Shell@wayland.service`, holds both X sockets itself, and no
+    Xwayland was running. Every other compositor (cosmic-comp included)
+    keeps its X server protected;
+  - what logind records as the display session's leader and what that
+    leader started (`/run/systemd/users/UID` `DISPLAY=`, then
+    `/run/systemd/sessions/<id>` `LEADER=`; GDM's `gdm-wayland-session`, a
+    greeter's session command). logind marks those files private, so a file
+    it cannot read or parse is an unknown;
+  - the session manager, by name only (`gnome-session-binary`,
+    `cosmic-session`): nothing the system records names it.
 
-Tests: 14 policy tests in `monitor-core`, 12 in `monitor-actions-linux`, and 5
+  Names are used only in `session::NAMED`, each with its reason: the session
+  managers always, every other entry only when the fact that would have
+  decided could not be read, so an unknown never makes a matching process
+  safe to end. Leading a session is not part of the rule: every systemd
+  user service and every terminal shell leads its own, and they, a
+  terminal (unless Better Monitor runs in it), a nested `gnome-shell` that
+  is not this session's compositor, and a Flatpak application may be ended.
+  (`flatpak run` 1.14.6 passes no `--new-session` to bwrap; its
+  `common/flatpak-run.c` blocks `TIOCSTI` with seccomp instead, and on
+  2026-11-22 `flatpak run --command=sleep` left bwrap and the command in
+  the caller's session.) `LinuxProcessController::availability` applies the
+  rule to `Terminate` and `ForceStop`, so `perform` refuses again; Suspend
+  and Lower priority are not governed by it. End process tree is refused by
+  its root's own refusal, or by the first protected process below it
+  (`ActionRefusal::ProtectedTree`). An application holding any protected
+  process is refused whole, for End task and Force stop alike: ending the
+  rest of it while the part the session stands on stays would be neither
+  what was asked nor safe. The refusal names what the process is to the
+  desktop and that ending it would close the session, and points to no other
+  action.
+- **Every command and menu item that ends something asks the same function
+  before it is drawn** (`MonitorApp::end_refusal`): the page commands on
+  Processes and Details and both row menus are disabled when it refuses,
+  with the reason as their tooltip (`Command::reason`, `MenuItem::reason` in
+  `better-ui`), and `request_end` asks it again on a click.
+- **A confirmation counts what will really be signalled.** An application's
+  or tree's confirmation counts the processes that may be ended now and says
+  how many others keep running; a confirmed end that reached some and not
+  others reports both counts and the first reason ("Told the system to stop 2
+  of them at once. 1 couldn't be stopped: …"), never a plain success.
+
+Tests: the action policy and the session rule in `monitor-core` (`action`,
+`session`), the session facts read from fixture `/proc` and `/run` trees for a
+GNOME session, a COSMIC session, a Flatpak application, and an unreadable one
+in `monitor-actions-linux`, and 5
 integration tests in `monitor-actions-linux/tests/real_process.rs` that spawn a
 real child and assert against `/proc` that `SIGSTOP` stopped it, `SIGCONT`
 resumed it, `SIGTERM` ended it, `SIGKILL` ended one that ignores `SIGTERM`,
