@@ -30,6 +30,7 @@ members = [
     "crates/launcher-platform",
     "crates/launcher-gui",
     "crates/layer-check",
+    "crates/login-screen-core",
     "crates/defaults-core",
     "crates/drive-mounts",
     "crates/defaults-platform",
@@ -112,6 +113,7 @@ github-api = { path = "crates/github-api" }
 launcher-core = { path = "crates/launcher-core" }
 launcher-platform = { path = "crates/launcher-platform" }
 launcher-gui = { path = "crates/launcher-gui" }
+login-screen-core = { path = "crates/login-screen-core" }
 defaults-core = { path = "crates/defaults-core" }
 defaults-platform = { path = "crates/defaults-platform" }
 defaults-store = { path = "crates/defaults-store" }

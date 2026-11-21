@@ -53,9 +53,37 @@ the two GPUI programs stay thin.
 
 ## Done when
 
-- [ ] Every rule above has unit tests, including the layout numbers at 960,
+- [x] Every rule above has unit tests, including the layout numbers at 960,
       1280, 1440 and 2560 wide and at 375 and 768 for narrow, and the
       right-to-left case.
-- [ ] A test proves a `Secret`'s bytes are zero after drop and after
+- [x] A test proves a `Secret`'s bytes are zero after drop and after
       `wipe()`, and that no formatting trait is implemented.
-- [ ] `cargo fmt`, clippy on the newest stable and the crate's tests pass.
+- [x] `cargo fmt`, clippy on the newest stable and the crate's tests pass.
+
+## Notes
+
+Delivered as `crates/login-screen-core` (modules `view`, `layout`, `secret`,
+`greetd`, `wait`, `accounts`, `sessions`, `keyboard`, `pam`, `power`,
+`lock_content`, `clock`, `copy`). Choices made where the spec left a gap,
+each now written into the spec:
+
+- English needs a singular for the wait's last second and for one more
+  notification (spec 3.9, 4.2); a login with nothing in the session menu
+  says 「找不到可以啟動的工作階段。」 / "There's no session to start." (3.6).
+- Large text falls back to narrow below 1010 (560 + 1.25 × 360, spec
+  3.11); the compact time's line height is 52 (3.1).
+- The clock's names come from `LC_TIME`, the order of the parts from the
+  screen's language; `lzh_TW` uses glibc's own names and 24-hour default
+  (5.7). A notification row's time follows the clock's hour cycle, not the
+  mockups' `15:31` (4.2).
+- The two lock-screen notification settings went into ticket 238 and
+  `design/system-settings-spec.md` section 12, whose wording
+  「在鎖定畫面顯示通知」 now matches this spec's 「在鎖定畫面上顯示通知」.
+
+Unverified: the strings greetd 0.9.0 puts in an `auth_error` description
+(`pam::classify_refusal` matches both `pam_strerror`'s text and the return
+code's name); ticket 264 sees the real ones. Left to their tickets: drawing
+all of it (262, 264), the IPC socket and PAM conversation (264, 262), the
+sandbox and the log-search test for the secret (263), the on-screen
+keyboard (269), the greeter's `settings.json` and `last-start.json`
+records (264).

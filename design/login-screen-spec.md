@@ -355,7 +355,7 @@ the screen draws at 2 and is scaled down.
 | Part | Where | Size and type |
 | --- | --- | --- |
 | Wallpaper | full bleed on every output | Better OS's login artwork (L5); a gradient scrim from 45% black at the bottom start corner to clear at the middle, so white text reads on any picture |
-| Clock group | start 64, bottom 56; right-to-left mirrors it | weekday 120/120 weight 600; under it, 16 below, a row: time 56/64 weight 300 with tabular figures, the period (only for a 12-hour clock) 18/24 weight 600 at 75% white, 8 from the time and on the side the locale puts it (「下午 3:42」, "3:42 PM"), a 1 × 32 divider at 35% white 16 either side, the date 20/28 weight 400 at 90% white. White in both appearances, with a 0 2 24 shadow at 25% black. Below 1100 wide: weekday 88, time 44 |
+| Clock group | start 64, bottom 56; right-to-left mirrors it | weekday 120/120 weight 600; under it, 16 below, a row: time 56/64 weight 300 with tabular figures, the period (only for a 12-hour clock) 18/24 weight 600 at 75% white, 8 from the time and on the side the locale puts it (「下午 3:42」, "3:42 PM"), a 1 × 32 divider at 35% white 16 either side, the date 20/28 weight 400 at 90% white. White in both appearances, with a 0 2 24 shadow at 25% black. Below 1100 wide: weekday 88/88, time 44/52 |
 | Card | top 20, end 20, bottom 20 | width 480 at 1100 and wider, 440 below; radius 8 (a surface that floats, `DESIGN.md`); padding 24; fill: the flyout fill at 88% (`#f9f9f9` light, `#2c2c2c` dark) over the wallpaper blurred once at 32 px; 1 px control stroke; shadow 0 8 32 at the flyout shadow colour |
 | Status row | the card's top, end-aligned, 32 tall | 32 × 32 subtle buttons, 4 apart: keyboard layout (its short name, Body Strong 12), accessibility, network, battery with its percentage (Caption), a 1 × 16 divider, power |
 | Identity group | centred vertically in the space between the status row and the bottom row | avatar 96 round (initial in Title 28 when there is no picture, on a fill derived from the account's name); 16 below it the name in Title 28/36 weight 600, one line, ellipsized; 4 below a Caption line in secondary text (section 3.3) |
@@ -457,6 +457,8 @@ the new session by an XDG autostart entry, writes them as the person
 | Menu title (screen reader) | 選擇工作階段 | Choose a session |
 | Better OS | Better OS | Better OS |
 | A session with no translation | its `Name` | its `Name` |
+| The account's last session (Caption in its row) | 上次使用 | Last used |
+| Nothing in the menu to start (a successful login with no session listed; greetd's session is cancelled) | 找不到可以啟動的工作階段。 | There's no session to start. |
 
 ### 3.7 Keyboard layout and input method at the prompt
 
@@ -495,7 +497,7 @@ returns when the error clears.
 | State | What shows | zh-TW | English |
 | --- | --- | --- | --- |
 | Wrong password | the field is cleared and keeps focus; the message line in the critical colour | 密碼不正確，請再試一次。 | That password isn't right. Try again. |
-| The wait after a failure | PAM's own delay (3 s from `pam_faildelay` in `/etc/pam.d/login`, which greetd's PAM file includes) runs while "Checking…" shows; after the second failure in a row the greeter adds Luma's doubling wait (1, 2, 4, 8, 16, then 30 s each time), the field disabled and the message counting down (mockup `wrong-password`) | 密碼不正確。請在 {n} 秒後再試一次。 | That password isn't right. Try again in {n} seconds. |
+| The wait after a failure | PAM's own delay (3 s from `pam_faildelay` in `/etc/pam.d/login`, which greetd's PAM file includes) runs while "Checking…" shows; after the second failure in a row the greeter adds Luma's doubling wait (1, 2, 4, 8, 16, then 30 s each time), the field disabled and the message counting down in whole seconds, rounded up (mockup `wrong-password`) | 密碼不正確。請在 {n} 秒後再試一次。 (the last second: 密碼不正確。請在 1 秒後再試一次。) | That password isn't right. Try again in {n} seconds. (the last second: That password isn't right. Try again in 1 second.) |
 | Locked account (`pam_faillock`, `pam_tally`, or an administrator's lock: PAM's `acct_mgmt` fails) | title in the message line, PAM's own text below it in secondary text | 這個帳號目前無法登入。 | This account can't sign in right now. |
 | Account expired | as above | 這個帳號已停用，請聯絡系統管理員。 | This account has been turned off. Ask your administrator. |
 | Password expired (PAM asks for the current and a new password) | the identity group stays; the field's label becomes the question PAM asks, one prompt at a time; known `pam_unix` prompts get Better OS's copy, any other prompt shows PAM's text as it is | 你的密碼已過期，請設定新密碼。 / 目前的密碼 / 新密碼 / 再輸入一次新密碼 | Your password has expired. Set a new one. / Current password / New password / Type the new password again |
@@ -538,7 +540,7 @@ writes, and taken from the person's own settings on the lock screen):
 | --- | --- | --- | --- |
 | Screen reader | 螢幕閱讀器 | Screen reader | starts Orca (from Ubuntu's archive) as the greeter's account in the greeter's own D-Bus session, with an AT-SPI bus; every control has the name in section 3.15 through AccessKit. Super+Alt+S toggles it from anywhere on the screen, as on GNOME |
 | High contrast | 高對比 | High contrast | the wallpaper becomes a solid fill (black in dark, white in light), the card opaque, strokes 2 px, secondary text becomes primary |
-| Large text | 大字體 | Large text | every text size × 1.25 (GNOME's `text-scaling-factor` for large text); the card grows to 560 where the screen allows it, else the screen uses the narrow layout |
+| Large text | 大字體 | Large text | every text size × 1.25 (GNOME's `text-scaling-factor` for large text); the card grows to 560 where the screen allows it, which is 1010 wide and wider (560 for the card and 1.25 × 360 for the clock group, section 2), else the screen uses the narrow layout |
 | On-screen keyboard | 螢幕小鍵盤 | On-screen keyboard | a keyboard drawn by the program itself across the bottom 40% of the primary output, in the current layout, with Caps, Shift, Backspace and Enter; keys go straight into the field, no virtual keyboard protocol is involved. Ubuntu's archive has no `squeekboard` (`apt-cache policy`), and an external keyboard would need the compositor to accept a virtual keyboard from it before login |
 
 Menu title for the screen reader: 「協助工具」 / "Accessibility".
@@ -656,6 +658,7 @@ the screen locked, newest first, at most three (mockup
 | Heading (Caption, secondary text) | 你離開時收到的通知 | While you were away |
 | A row, 56 tall: application icon 32, title in Body Strong, one line of body in Caption, the time in Caption tabular at the end | the notification's own | the notification's own |
 | More | 還有 {n} 則通知 | {n} more notifications |
+| One more | 還有 1 則通知 | 1 more notification |
 
 A notification marked private by its sender (the
 `x-better-os-private` hint, or a desktop-entry rule the Notifications page
@@ -664,7 +667,9 @@ Notifications page (ticket 238) gets the setting 「在鎖定畫面上顯示通�
 "Show notifications on the lock screen", on by default, and under it
 「顯示內容」 / "Show their content". Under L4 (b), or with the setting off,
 the bottom of the card is empty (mockup `lock-private`). The rows are not
-buttons: nothing is opened or answered from a locked screen.
+buttons: nothing is opened or answered from a locked screen. A row's time is
+written like the clock's, on the same hour cycle (「下午3:31」 / "3:31 PM");
+the mockups' 24-hour `15:31` on a 12-hour clock is not followed.
 
 ### 4.3 Media controls
 
@@ -1069,9 +1074,25 @@ What (a) costs and what could break:
 The greeter speaks the system's language (`locale1`'s `LANG`, zh_TW on the
 owner's machine) until an account is chosen, then the account's
 (AccountsService `Language`) when it is a language Better OS ships. Dates and
-times follow `LC_TIME` as GDM's do; the owner's machine has `LC_TIME=lzh_TW`,
-whose weekday and month names were not checked (ticket 260 tests the
-formatter against it).
+times follow `LC_TIME` as GDM's do: the time locale (`LC_ALL`, then
+`LC_TIME`, then `LANG`, from `locale1`'s `Locale` on the login screen) gives
+the weekday and month names, the morning and afternoon words and the default
+hour cycle, and the screen's language gives the order of the parts, as GNOME
+fills a translated format with the `LC_TIME` locale's names. The lock screen
+takes the hour cycle from the person's `clock-format`. Figures are always
+ASCII digits. The owner's machine has `LC_TIME=lzh_TW`; glibc's `lzh_TW`
+(`/usr/share/i18n/locales/lzh_TW`) names the weekdays 週日 to 週六 and the
+months 一月 to 十二月, says 朝 and 暮, and has a 24-hour `t_fmt`, so under
+`LANG=zh_TW.UTF-8` the clock group reads 「週六」, 「15:42」, 「十一月21日」
+(ticket 260's formatter, tested). A time locale with no names in Better OS
+follows the screen's language.
+
+| Part | zh_TW | en_US | lzh_TW |
+| --- | --- | --- | --- |
+| Weekday line | 星期六 | Saturday | 週六 |
+| Time (12-hour) | 下午 3:42 | 3:42 PM | 暮 3:42 |
+| Time (24-hour, `lzh_TW`'s default) | 15:42 | 15:42 | 15:42 |
+| Date (zh-TW screen / English screen) | 11月21日 / November 21 | November 21 | 十一月21日 / 十一月 21 |
 
 ### 5.8 What the greeter reads
 
@@ -1341,7 +1362,8 @@ and the session's own removal waits for the same boot.
   stopped (`server.rs` 261 to 273, `context.rs` 389 to 403 at 0.9.0).
 - What Luma's screens look like on a screen: no image of them is published,
   and the Try application was not run (section 1.5).
-- How the `lzh_TW` time locale renders the weekday line.
+- How the `lzh_TW` time locale's weekday line looks on a screen: the
+  formatter's words are tested (section 5.7), and no screen has drawn them.
 
 ## 8. The tickets
 

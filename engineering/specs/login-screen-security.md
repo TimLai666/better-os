@@ -246,7 +246,17 @@ removed. What limits it:
   memory with `mlock`, owned by `login-screen-core`'s `Secret` type, which
   implements no `Debug`, `Display`, `Clone` or `Serialize`, and wipes itself
   with `zeroize` on drop. The GNOME unlock service uses the same type for
-  the answers the shell sends.
+  the answers the shell sends. The buffer is its own page-aligned
+  allocation, so its `munlock` never unlocks a page another value shares,
+  and is marked `MADV_DONTDUMP`. Held by ticket 260's tests: the bytes are
+  zero after `wipe()` and after a Backspace (`secret.rs`), no freed block
+  ever holds a password, for a `Secret` and for the greetd message built
+  from it (`tests/secret_wiped_on_drop.rs`, a watching global allocator,
+  with a positive control and checked to fail when the wipe on drop is
+  removed), and none of `Debug`, `Display`, `Clone` or `Serialize` is
+  implemented by either type. The view model (`login_screen_core::view`)
+  never holds a password: it only says when the field's `Secret` is sent
+  and when it is wiped.
 - **Where it goes.** In the greeter, into greetd's
   `post_auth_message_response` JSON, built directly into a second `Secret`
   buffer, written to the socket, then both are wiped. In the lock program
@@ -382,8 +392,8 @@ screen back rather than the session unlocked.
 
 ## Not proven
 
-- None of the tests named above exists yet; tickets 260 to 268, 280 and
-  281 write them.
+- Only the password buffer's tests exist (ticket 260); the others named
+  above are for tickets 261 to 268, 280 and 281.
 - That GNOME Shell 46 locks and unlocks through the unlock service as it
   does through GDM, that GDM's session worker does nothing more on
   reauthentication that the shell relies on, how `pam_gnome_keyring`

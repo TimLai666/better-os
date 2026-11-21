@@ -10,11 +10,11 @@ It does not replace the license text supplied by each upstream project.
 ## Review summary
 
 - Root project license: `GPL-3.0-or-later`.
-- Resolved Cargo packages: 984.
-- Packages with an SPDX license expression: 982.
+- Resolved Cargo packages: 985.
+- Packages with an SPDX license expression: 983.
 - Packages with only a license-file field: 0.
 - Packages without package-level license metadata: 2.
-- `Cargo.lock` SHA-256: `85e6cb21fff96617a31d15870c7b8494ca75d3eeba70c59be4a15d827f709650`.
+- `Cargo.lock` SHA-256: `c3628aa9008820812abf87987b84718685b60e610fa45f5b887a13a3b4d48cd9`.
 
 The 2 package(s) without package-level license metadata are
 listed separately below. Their pinned upstream checkout contains both
@@ -28,7 +28,7 @@ source of truth for those packages.
 | `MIT OR Apache-2.0` | 424 |
 | `MIT` | 203 |
 | `Apache-2.0 OR MIT` | 79 |
-| `GPL-3.0-or-later` | 72 |
+| `GPL-3.0-or-later` | 73 |
 | `MIT/Apache-2.0` | 41 |
 | `Apache-2.0` | 32 |
 | `Unicode-3.0` | 18 |
@@ -113,6 +113,7 @@ Better OS does not relicense or silently select a different expression.
 | `layer-check` | `0.2.16` | `GPL-3.0-or-later` | workspace |
 | `libbz2-rs-sys` | `0.2.5` | `bzip2-1.0.6` | [crates.io](https://crates.io/crates/libbz2-rs-sys/0.2.5) |
 | `libfuzzer-sys` | `0.4.13` | `(MIT OR Apache-2.0) AND NCSA` | [crates.io](https://crates.io/crates/libfuzzer-sys/0.4.13) |
+| `login-screen-core` | `0.2.16` | `GPL-3.0-or-later` | workspace |
 | `manager-cli` | `0.2.16` | `GPL-3.0-or-later` | workspace |
 | `manager-core` | `0.2.16` | `GPL-3.0-or-later` | workspace |
 | `manager-daemon` | `0.2.16` | `GPL-3.0-or-later` | workspace |
@@ -574,6 +575,7 @@ keeps its own license.
 | `litrs` | `1.0.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/litrs/1.0.0) |
 | `lock_api` | `0.4.14` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/lock_api/0.4.14) |
 | `log` | `0.4.33` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/log/0.4.33) |
+| `login-screen-core` | `0.2.16` | `GPL-3.0-or-later` | workspace |
 | `loop9` | `0.1.5` | `MIT` | [crates.io](https://crates.io/crates/loop9/0.1.5) |
 | `lru-slab` | `0.1.2` | `MIT OR Apache-2.0 OR Zlib` | [crates.io](https://crates.io/crates/lru-slab/0.1.2) |
 | `lsp-types` | `0.97.0` | `MIT` | [crates.io](https://crates.io/crates/lsp-types/0.97.0) |
