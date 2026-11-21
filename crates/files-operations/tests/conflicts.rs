@@ -199,10 +199,8 @@ fn answering_cancel_to_a_conflict_stops_the_job() {
 
 #[test]
 fn a_failed_item_can_be_retried_on_its_own_once_the_cause_is_gone() {
-    if support::running_as_root() {
-        // Root ignores the mode bits, so there is nothing to fail.
-        return;
-    }
+    // Root ignores the mode bits, so there is nothing to fail.
+    test_prerequisites::require_that!("a user other than root", !support::running_as_root());
     let root = tempfile::tempdir().unwrap();
     let source = root.path().join("source");
     fs::create_dir(&source).unwrap();
@@ -488,9 +486,7 @@ fn keeping_both_folders_copies_the_new_one_under_its_own_name() {
 
 #[test]
 fn a_replace_that_cannot_reach_the_trash_leaves_the_old_file_alone() {
-    if support::running_as_root() {
-        return;
-    }
+    test_prerequisites::require_that!("a user other than root", !support::running_as_root());
     let root = tempfile::tempdir().unwrap();
     // A trash whose parent is a file: it can never be created.
     let blocker = root.path().join("not-a-folder");

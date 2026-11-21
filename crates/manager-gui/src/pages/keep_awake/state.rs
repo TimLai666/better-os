@@ -302,10 +302,11 @@ impl ManagerApp {
             let _ = this.update(cx, |app, cx| {
                 app.keep_awake.busy = false;
                 let w = page_copy(app.locale);
+                let c = copy(app.locale);
                 app.keep_awake.failure = match outcome {
                     Outcome::Done => None,
-                    Outcome::Refused(key) => Some((w.service_refused, key)),
-                    Outcome::Failed(details) => Some((w.action_failed, details)),
+                    Outcome::Refused(key) => Some((w.service_refused, c.said(&key))),
+                    Outcome::Failed(details) => Some((w.action_failed, c.details(&details))),
                 };
                 app.refresh_keep_awake(cx);
                 cx.notify();
@@ -672,11 +673,13 @@ impl ManagerApp {
                     }
                     Err(Outcome::Refused(key)) => {
                         app.keep_awake.test = None;
-                        app.keep_awake.failure = Some((w.service_refused, key));
+                        let said = copy(app.locale).said(&key);
+                        app.keep_awake.failure = Some((w.service_refused, said));
                     }
                     Err(Outcome::Failed(details)) => {
                         app.keep_awake.test = None;
-                        app.keep_awake.failure = Some((w.action_failed, details));
+                        let said = copy(app.locale).details(&details);
+                        app.keep_awake.failure = Some((w.action_failed, said));
                     }
                     Err(Outcome::Done) => app.keep_awake.test = None,
                 }
@@ -894,9 +897,11 @@ impl ManagerApp {
             .draft
             .as_ref()
             .ok_or_else(|| c.unknown.to_string())?;
-        let invalid = |error: awake_core::RuleError| format!("{}: {error}", c.rule_invalid_input);
+        let invalid = |error: awake_core::RuleError| {
+            format!("{}: {}", c.rule_invalid_input, c.said(&error.to_string()))
+        };
         let name = Reason::new(draft.name.read(cx).value().to_string())
-            .map_err(|error| format!("{}: {error}", c.rule_invalid_input))?;
+            .map_err(|error| format!("{}: {}", c.rule_invalid_input, c.said(&error.to_string())))?;
         let mut groups = Vec::new();
         for group in &draft.groups {
             let mut conditions = Vec::new();

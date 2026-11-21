@@ -12,7 +12,7 @@ license.workspace = true
 dconf-write = ["dep:zbus", "dep:tokio"]
 # A real dconf-service on a private bus, for other crates' tests. No shipped
 # binary enables it.
-test-support = ["dconf-write", "dep:tempfile"]
+test-support = ["dconf-write", "dep:tempfile", "dep:test-prerequisites"]
 
 [dependencies]
 app-catalog-core.workspace = true
@@ -25,6 +25,8 @@ libc.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tempfile = { workspace = true, optional = true }
+# The skip rule `test_support` shares with every test (ticket 177).
+test-prerequisites = { workspace = true, optional = true }
 thiserror.workspace = true
 # The runtime is this crate's own: it blocks on the async dconf call. zbus
 # itself stays on its default async-io flavor — see the root Cargo.toml.

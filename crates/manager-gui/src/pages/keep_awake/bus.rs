@@ -138,7 +138,7 @@ pub(crate) fn read(target: &Target) -> Read {
     let status = match exchange(target, RequestBody::QueryStatus) {
         Ok(ResponseBody::Status(status)) => Ok(*status),
         Ok(ResponseBody::Rejected { error_key }) => Err(ReadError::Failed(error_key)),
-        Ok(other) => Err(ReadError::Failed(format!("unexpected reply: {other:?}"))),
+        Ok(_) => Err(ReadError::Failed(awake_ipc::UNEXPECTED_REPLY.to_string())),
         Err(error) => Err(error),
     };
     let version = protocol_version(target).ok();
@@ -151,7 +151,7 @@ pub(crate) fn read(target: &Target) -> Read {
         {
             match exchange_in(target, RequestBody::QueryStatus, older) {
                 Ok(ResponseBody::Status(status)) => Ok(*status),
-                Ok(other) => Err(ReadError::Failed(format!("unexpected reply: {other:?}"))),
+                Ok(_) => Err(ReadError::Failed(awake_ipc::UNEXPECTED_REPLY.to_string())),
                 Err(error) => Err(error),
             }
         }
@@ -213,7 +213,7 @@ pub(crate) fn test_rule(target: &Target, rule_id: u64) -> Result<RuleTestDocumen
     match exchange(target, RequestBody::TestRule { rule_id }) {
         Ok(ResponseBody::RuleTest(test)) => Ok(*test),
         Ok(ResponseBody::Rejected { error_key }) => Err(Outcome::Refused(error_key)),
-        Ok(other) => Err(Outcome::Failed(format!("unexpected reply: {other:?}"))),
+        Ok(_) => Err(Outcome::Failed(awake_ipc::UNEXPECTED_REPLY.to_string())),
         Err(error) => Err(Outcome::Failed(error.details().to_string())),
     }
 }

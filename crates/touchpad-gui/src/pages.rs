@@ -453,7 +453,14 @@ impl TouchpadApp {
                                 .child(self.fact(c.selected_touchpad, overview.device.clone(), cx))
                                 .child(self.fact(c.session, overview.session.clone(), cx))
                                 .child(self.fact(c.backend, overview.backend.clone(), cx))
-                                .child(self.fact(c.health, format!("{:?}", overview.health), cx)),
+                                .child(self.fact(
+                                    c.health,
+                                    touchpad_views::i18n::health_words(
+                                        overview.health,
+                                        self.model.locale(),
+                                    ),
+                                    cx,
+                                )),
                         )
                         .child(
                             h_flex()

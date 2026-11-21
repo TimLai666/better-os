@@ -109,8 +109,8 @@ impl AwakeApp {
                         cx,
                     ))
                 })
-                .when_some(entry.backend_failure.clone(), |view, failure| {
-                    view.child(self.key_value(c.backend_unavailable_detail, failure, cx))
+                .when_some(entry.backend_failure.as_deref(), |view, failure| {
+                    view.child(self.key_value(c.backend_unavailable_detail, c.said(failure), cx))
                 }),
             cx,
         )
@@ -141,8 +141,8 @@ impl AwakeApp {
                             status.backend.availability_label(c),
                             cx,
                         ))
-                        .when_some(status.backend.detail.clone(), |view, detail| {
-                            view.child(self.key_value(c.explanation_column, detail, cx))
+                        .when_some(status.backend.detail.as_deref(), |view, detail| {
+                            view.child(self.key_value(c.explanation_column, c.said(detail), cx))
                         })
                         .child(div().pt_2().child(self.card_title(c.capability_heading)))
                         .child(self.key_value(

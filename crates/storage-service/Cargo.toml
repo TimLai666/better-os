@@ -23,6 +23,9 @@ tokio.workspace = true
 zbus.workspace = true
 
 [dev-dependencies]
+# A missing program is a skip on a developer's machine and a failure
+# under CI (ticket 177).
+test-prerequisites.workspace = true
 better-core.workspace = true
 futures-util.workspace = true
 storage-platform = { workspace = true, features = ["test-support"] }

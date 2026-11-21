@@ -24,6 +24,7 @@ pub mod entry;
 pub mod error;
 pub mod exec;
 pub mod plan;
+pub mod reasons;
 pub mod record;
 
 pub use catalog::{Catalog, CatalogBuilder, DirectoryRank, RejectedEntry, ShadowedEntry};
@@ -35,4 +36,5 @@ pub use record::{
     ApplicationRecord, CapabilityFlags, DesktopAction, DesktopEnvironments, DesktopId, EntryScope,
     EntrySource, EntryWarning, ExclusionReason, ExecutableProbe, ExecutableStatus, IconReference,
     MimeType, NoCanonicalExecutable, NoProbe, SourceKind, Visibility, VisibilityRules,
+    try_exec_found,
 };

@@ -146,9 +146,7 @@ fn a_move_within_one_filesystem_is_a_rename_and_links_are_untouched() {
 fn a_retry_does_not_link_to_a_first_copy_that_has_changed_since() {
     let root = tempfile::tempdir().unwrap();
     let tree = linked_tree(root.path());
-    if support::running_as_root() {
-        return;
-    }
+    test_prerequisites::require_that!("a user other than root", !support::running_as_root());
     let destination = root.path().join("out");
     // The second path's folder is already there and cannot be written to,
     // so that item fails and is left for a retry while the first path's copy

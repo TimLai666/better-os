@@ -86,7 +86,10 @@ impl ManagerApp {
                 div().pb(px(12.0)).child(
                     ErrorBar::new(
                         "planning-error",
-                        ErrorReport::new(c.planning_failed_detail, self.error_details.clone()),
+                        ErrorReport::new(
+                            c.planning_failed_detail,
+                            crate::reasons::details_in_words(&self.error_details, self.locale),
+                        ),
                     )
                     .locale(self.locale.words())
                     .on_close(Self::act(cx, |this, _, cx| {
@@ -502,7 +505,11 @@ impl ManagerApp {
             )];
             details.push(format!("{}: {key}", c.failure_evidence));
             if let Some(detail) = detail {
-                details.push(format!("{}: {detail}", c.failure_technical_detail));
+                details.push(format!(
+                    "{}: {}",
+                    c.failure_technical_detail,
+                    crate::reasons::details_in_words(detail, self.locale)
+                ));
             }
             if let Some(recovery) = failure.recovery {
                 details.push(format!(

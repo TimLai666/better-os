@@ -254,3 +254,92 @@ pub fn mime_language(locale: Locale) -> Option<&'static str> {
 pub fn other_apps(locale: Locale, count: usize) -> String {
     format!("{} ({count})", copy(locale).other_apps)
 }
+
+/// A failed launch's details in this language (ticket 172): the catalog's
+/// sentence for its key, with what followed the key in parentheses; the
+/// system's own message, under a label, when it is no key.
+pub fn launch_details(text: &str, locale: Locale) -> String {
+    let zh = locale.resolved() == Locale::ZhTw;
+    let language = if zh {
+        app_catalog_core::reasons::Language::TraditionalChinese
+    } else {
+        app_catalog_core::reasons::Language::English
+    };
+    let text = text.trim();
+    let detail = app_catalog_core::reasons::detail(text);
+    match app_catalog_core::reasons::sentence(text, language) {
+        Some(sentence) if detail.is_empty() => sentence.to_string(),
+        Some(sentence) if zh => format!("{sentence}（{detail}）"),
+        Some(sentence) => format!("{sentence} ({detail})"),
+        None if zh => format!("系統回報：{text}"),
+        None => format!("The system said: {text}"),
+    }
+}
+
+/// Why the default could not be written or put back, in this language
+/// (ticket 172: these were `AssociationError`'s English sentences). The
+/// system's own words, when there are any, follow under a label.
+pub fn association_details(error: &app_chooser_core::AssociationError, locale: Locale) -> String {
+    use app_chooser_core::AssociationError as E;
+    let zh = locale.resolved() == Locale::ZhTw;
+    let pick = |en: String, zh_tw: String| if zh { zh_tw } else { en };
+    let system = |source: &dyn std::fmt::Display| {
+        if zh {
+            format!("系統回報：{source}")
+        } else {
+            format!("The system said: {source}")
+        }
+    };
+    match error {
+        E::Read { path, source } => {
+            let path = path.display();
+            let said = pick(
+                format!("{path} couldn't be read."),
+                format!("無法讀取 {path}。"),
+            );
+            format!("{said}\n{}", system(source))
+        }
+        E::Write { path, source } => {
+            let path = path.display();
+            let said = pick(
+                format!("{path} couldn't be written."),
+                format!("無法寫入 {path}。"),
+            );
+            format!("{said}\n{}", system(source))
+        }
+        E::NotUtf8 { path } => {
+            let path = path.display();
+            pick(
+                format!("{path} isn't plain text, so it was left as it is."),
+                format!("{path} 不是純文字，所以維持原樣。"),
+            )
+        }
+        E::RollbackUnreadable { path, source } => {
+            let path = path.display();
+            let said = pick(
+                format!(
+                    "The record of the change ({path}) couldn't be read, so nothing was put back."
+                ),
+                format!("無法讀取這次變更的紀錄（{path}），所以沒有復原任何東西。"),
+            );
+            format!("{said}\n{}", system(source))
+        }
+        E::RollbackSchema { found } => pick(
+            format!(
+                "The record of the change was written by a newer version (format {found}), so nothing was put back."
+            ),
+            format!("這次變更的紀錄是由較新版本寫入的（格式 {found}），所以沒有復原任何東西。"),
+        ),
+        E::RollbackStale { path } => {
+            let path = path.display();
+            pick(
+                format!("{path} changed after the default was set, so nothing was put back."),
+                format!("設定預設值之後 {path} 又被改過，所以沒有復原任何東西。"),
+            )
+        }
+        E::NoHomeDirectory => pick(
+            "No home folder is set, so your default applications can't be found.".to_string(),
+            "沒有設定個人資料夾，所以找不到你的預設應用程式設定。".to_string(),
+        ),
+    }
+}

@@ -281,9 +281,8 @@ mod tests {
 
     #[test]
     fn an_unreadable_folder_is_unreadable_and_an_unreadable_inner_folder_is_counted() {
-        if unsafe_is_root() {
-            return;
-        }
+        // Root reads a folder whatever its permissions say.
+        test_prerequisites::require_that!("a user other than root", !unsafe_is_root());
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("root");
         fs::create_dir_all(root.join("locked")).unwrap();

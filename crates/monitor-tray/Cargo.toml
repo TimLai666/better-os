@@ -25,5 +25,8 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"
 zbus = { version = "5" }
 
 [dev-dependencies]
+# A missing program is a skip on a developer's machine and a failure
+# under CI (ticket 177).
+test-prerequisites.workspace = true
 tempfile.workspace = true
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "signal", "test-util"] }

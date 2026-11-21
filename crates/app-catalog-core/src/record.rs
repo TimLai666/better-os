@@ -270,6 +270,37 @@ impl DesktopEnvironments {
     pub fn names(&self) -> &[String] {
         &self.0
     }
+
+    /// The desktop-entry specification's `OnlyShowIn`/`NotShowIn` rule, the
+    /// one Better OS has (ticket 173): an entry with an `OnlyShowIn` list is
+    /// shown only where one of its names is a current desktop, and an entry
+    /// is not shown where its `NotShowIn` names one. Names compare without
+    /// regard to ASCII case or surrounding space.
+    pub fn shows<S: AsRef<str>>(
+        &self,
+        only_show_in: &[S],
+        not_show_in: &[S],
+    ) -> Result<(), ExclusionReason> {
+        if !only_show_in.is_empty() && !only_show_in.iter().any(|name| self.contains(name.as_ref()))
+        {
+            return Err(ExclusionReason::NotInOnlyShowIn);
+        }
+        if not_show_in.iter().any(|name| self.contains(name.as_ref())) {
+            return Err(ExclusionReason::ListedInNotShowIn);
+        }
+        Ok(())
+    }
+
+    /// [`Self::shows`] for an entry read some other way than this crate's
+    /// parser (Better Monitor's autostart list): `value` gives a key's raw
+    /// value, which is split as the specification splits a list.
+    pub fn shows_entry<'a>(
+        &self,
+        value: impl Fn(&str) -> Option<&'a str>,
+    ) -> Result<(), ExclusionReason> {
+        let list = |key: &str| value(key).map(crate::entry::split_list).unwrap_or_default();
+        self.shows(&list("OnlyShowIn"), &list("NotShowIn"))
+    }
 }
 
 /// What an application can do, as declared rather than as assumed.
@@ -437,20 +468,8 @@ impl ApplicationRecord {
         if rules.try_exec_resolved == Some(false) {
             return Visibility::Excluded(ExclusionReason::TryExecMissing);
         }
-        if !rules.only_show_in.is_empty()
-            && !rules
-                .only_show_in
-                .iter()
-                .any(|name| environments.contains(name))
-        {
-            return Visibility::Excluded(ExclusionReason::NotInOnlyShowIn);
-        }
-        if rules
-            .not_show_in
-            .iter()
-            .any(|name| environments.contains(name))
-        {
-            return Visibility::Excluded(ExclusionReason::ListedInNotShowIn);
+        if let Err(reason) = environments.shows(&rules.only_show_in, &rules.not_show_in) {
+            return Visibility::Excluded(reason);
         }
         if rules.no_display {
             return Visibility::Excluded(ExclusionReason::NoDisplay);
@@ -624,6 +643,17 @@ fn detect_source_kind(group: &Group, exec: Option<&ExecLine>) -> SourceKind {
         return SourceKind::Wrapper;
     }
     SourceKind::Native
+}
+
+/// The desktop-entry specification's `TryExec` rule, the catalog's own
+/// (ticket 173), for an entry read some other way than this crate's parser
+/// (Better Monitor's autostart list): `None` when the entry names no
+/// `TryExec`, otherwise whether `probe` finds the program.
+pub fn try_exec_found<'a>(
+    value: impl Fn(&str) -> Option<&'a str>,
+    probe: &dyn ExecutableProbe,
+) -> Option<bool> {
+    value("TryExec").map(|program| resolve_program(program.trim(), probe).is_some())
 }
 
 fn resolve_program(program: &str, probe: &dyn ExecutableProbe) -> Option<PathBuf> {
@@ -1182,6 +1212,38 @@ mod tests {
             Some(IconReference::Path(PathBuf::from(
                 "/usr/share/pixmaps/app.png"
             )))
+        );
+    }
+
+    #[test]
+    fn the_show_in_rule_reads_a_raw_entry_the_way_the_catalog_reads_one() {
+        let session = DesktopEnvironments::parse("zorin:GNOME");
+        let entry = |only: Option<&'static str>, not: Option<&'static str>| {
+            move |key: &str| match key {
+                "OnlyShowIn" => only,
+                "NotShowIn" => not,
+                _ => None,
+            }
+        };
+        assert_eq!(
+            session.shows_entry(entry(Some("GNOME;Unity;"), None)),
+            Ok(())
+        );
+        assert_eq!(
+            session.shows_entry(entry(Some("KDE;"), None)),
+            Err(ExclusionReason::NotInOnlyShowIn)
+        );
+        assert_eq!(
+            session.shows_entry(entry(None, Some("zorin;"))),
+            Err(ExclusionReason::ListedInNotShowIn)
+        );
+        // Case does not matter, as it never did in either copy.
+        assert_eq!(session.shows_entry(entry(Some("gnome"), None)), Ok(()));
+        assert_eq!(session.shows_entry(entry(None, None)), Ok(()));
+        // A list is split as the specification splits one.
+        assert_eq!(
+            session.shows_entry(entry(Some("KDE\\;GNOME;"), None)),
+            Err(ExclusionReason::NotInOnlyShowIn)
         );
     }
 }

@@ -65,6 +65,9 @@ smol = "2"
 image = { version = "0.25", default-features = false }
 
 [dev-dependencies]
+# A missing program is a skip on a developer's machine and a failure
+# under CI (ticket 177).
+test-prerequisites.workspace = true
 # GPUI's test window, for the password fields' tests.
 gpui = { workspace = true, features = ["test-support"] }
 # The fake platform, so the in-process storage engine can be driven without a

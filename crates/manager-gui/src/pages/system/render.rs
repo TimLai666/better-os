@@ -126,7 +126,10 @@ impl ManagerApp {
             }
             (_, WriteOutcome::Failed { details }) => ErrorBar::new(
                 "system-bar",
-                ErrorReport::new(words.text.trim_end().to_string(), details.clone()),
+                ErrorReport::new(
+                    words.text.trim_end().to_string(),
+                    crate::reasons::details_in_words(details, locale),
+                ),
             )
             .locale(locale.words())
             .on_close(close)

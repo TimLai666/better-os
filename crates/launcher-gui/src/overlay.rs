@@ -1348,7 +1348,11 @@ impl LauncherOverlay {
         Some(match self.model.notice()? {
             Notice::LaunchFailed(key) => ErrorBar::new(
                 "launch-failed",
-                ErrorReport::new(c.launch_failed, key.clone()).advice(c.launch_failed_advice),
+                ErrorReport::new(
+                    c.launch_failed,
+                    crate::i18n::failure_details(key, self.locale),
+                )
+                .advice(c.launch_failed_advice),
             )
             .locale(self.locale.words())
             .on_close(dismiss)
