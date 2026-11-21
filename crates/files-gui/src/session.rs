@@ -24,7 +24,7 @@
 use std::sync::Arc;
 
 mod remote_tabs;
-pub use remote_tabs::{LinkState, SavedView, TabLink};
+pub use remote_tabs::{LinkState, PasteWhy, SavedView, TabLink};
 
 use files_core::{
     Entry, EntryId, LocalPath, Location, NavigationError, OpenRefusal, Pane, SortKey, SortOrder,
@@ -126,6 +126,13 @@ pub enum Notice {
     RemoteFolderGone {
         folder: String,
         server: String,
+    },
+    /// A paste held for a server folder's connection was not done, and why
+    /// (ticket 310).
+    PasteNotDone {
+        folder: String,
+        server: String,
+        why: remote_tabs::PasteWhy,
     },
     /// Retry was asked of a job the engine no longer keeps.
     RetryGone,
@@ -266,6 +273,18 @@ impl Notice {
                 .remote_folder_gone
                 .replace("{folder}", folder)
                 .replace("{server}", server),
+            Notice::PasteNotDone {
+                folder,
+                server,
+                why,
+            } => match why {
+                remote_tabs::PasteWhy::Left => c.remote_paste_left,
+                remote_tabs::PasteWhy::Gone => c.remote_paste_gone,
+                remote_tabs::PasteWhy::Failed => c.remote_paste_failed,
+                remote_tabs::PasteWhy::Cancelled => c.remote_paste_cancelled,
+            }
+            .replace("{folder}", folder)
+            .replace("{server}", server),
             Notice::RetryGone => c.retry_gone.to_string(),
             Notice::DriveFailed { drive, detail } => c
                 .drive_failed
@@ -689,7 +708,7 @@ impl FilesSession {
         reader.set_include_hidden_applications(preferences.show_hidden);
         let view = preferences.view_preferences();
         let gvfs_root = reader.gvfs_root().map(std::path::Path::to_path_buf);
-        let bookmarks = load_bookmarks(&bookmark_store, gvfs_root.as_deref());
+        let bookmarks = load_bookmarks(&bookmark_store, gvfs_root.as_deref(), true);
         let mount_list: Arc<dyn crate::remote::MountsSource> = match &gvfs_root {
             Some(root) => Arc::new(crate::remote::GvfsTracker::session(Some(root.clone()))),
             None => Arc::new(crate::remote::NoMounts),
@@ -916,24 +935,28 @@ impl FilesSession {
     // --- Navigation ------------------------------------------------------
 
     pub fn navigate_to(&mut self, location: Location) {
+        self.forget_open_folder();
         let reader = self.reader.clone();
         self.pane_mut().navigate_to(location, reader.as_ref());
         self.after_navigation();
     }
 
     pub fn go_back(&mut self) {
+        self.forget_open_folder();
         let reader = self.reader.clone();
         self.pane_mut().go_back(reader.as_ref());
         self.after_navigation();
     }
 
     pub fn go_forward(&mut self) {
+        self.forget_open_folder();
         let reader = self.reader.clone();
         self.pane_mut().go_forward(reader.as_ref());
         self.after_navigation();
     }
 
     pub fn go_to_parent(&mut self) {
+        self.forget_open_folder();
         let reader = self.reader.clone();
         self.pane_mut().go_to_parent(reader.as_ref());
         self.after_navigation();
@@ -990,6 +1013,7 @@ impl FilesSession {
         validator: &dyn PathValidator,
     ) {
         if let Some(address) = crate::network::server_address(text) {
+            self.note_address_typed(&address);
             self.mount_server(address);
             return;
         }
@@ -2593,7 +2617,11 @@ impl FilesSession {
     /// Nautilus, another window or the other half of a split is kept.
     /// `edit` says whether it changed anything.
     fn edit_bookmarks<R>(&mut self, edit: impl FnOnce(&mut BookmarkFile) -> (bool, R)) -> R {
-        let mut file = load_bookmarks(&self.bookmark_store, self.remote.gvfs_root.as_deref());
+        let mut file = load_bookmarks(
+            &self.bookmark_store,
+            self.remote.gvfs_root.as_deref(),
+            false,
+        );
         let (changed, result) = edit(&mut file);
         if changed && let Err(error) = self.bookmark_store.save(&file) {
             self.notice = Some(Notice::Key(format!(
@@ -2732,7 +2760,11 @@ impl FilesSession {
         if !touched {
             return false;
         }
-        let fresh = load_bookmarks(&self.bookmark_store, self.remote.gvfs_root.as_deref());
+        let fresh = load_bookmarks(
+            &self.bookmark_store,
+            self.remote.gvfs_root.as_deref(),
+            false,
+        );
         if fresh == self.bookmarks {
             return false;
         }
@@ -3764,9 +3796,13 @@ impl FilesSession {
     /// The folder a server this window mounted was mounted at, by the
     /// address it was asked for.
     pub fn server_folder(&self, address: &str) -> Option<&std::path::Path> {
+        // Any address of the same mount: `sftp://nas`, `sftp://nas/`.
+        let wanted = crate::remote::Remote::from_address(address)
+            .map(|remote| remote.mount_address())
+            .unwrap_or_else(|| address.to_string());
         self.server_folders
             .iter()
-            .find(|(known, _)| known == address)
+            .find(|(known, _)| *known == wanted)
             .map(|(_, folder)| folder.as_path())
     }
 
@@ -3937,20 +3973,37 @@ impl FilesSession {
     }
 }
 
-/// The folder behind a location, when it is one on this machine.
-/// Reads the bookmarks file, and rewrites a favourite an earlier version
-/// stored as a folder under GVfs's folder into its server's address, once
-/// (ticket 310). A file that cannot be written is still read migrated.
-fn load_bookmarks(store: &BookmarkStore, gvfs_root: Option<&std::path::Path>) -> BookmarkFile {
-    let mut file = store.load();
+/// Reads the bookmarks file, with a favourite an earlier version stored as a
+/// folder under GVfs's folder read as its server's address (ticket 310).
+/// With `write`, the migrated file is written: once a process (the first
+/// window's start), only if the file still holds what was read, and with the
+/// mode it had. Nothing else rewrites the shared file without the person
+/// doing something to it.
+fn load_bookmarks(
+    store: &BookmarkStore,
+    gvfs_root: Option<&std::path::Path>,
+    write: bool,
+) -> BookmarkFile {
+    // Once a process for each bookmarks file.
+    static WRITTEN: std::sync::Mutex<std::collections::BTreeSet<std::path::PathBuf>> =
+        std::sync::Mutex::new(std::collections::BTreeSet::new());
+    let text = store.text();
+    let mut file = text.as_deref().map(BookmarkFile::parse).unwrap_or_default();
     if let Some(root) = gvfs_root
         && crate::remote::migrate_bookmarks(&mut file, root)
+        && write
+        && WRITTEN
+            .lock()
+            .map(|mut written| written.insert(store.path().to_path_buf()))
+            .unwrap_or(false)
+        && let Some(text) = &text
     {
-        let _ = store.save(&file);
+        let _ = store.save_if_unchanged(&file, text);
     }
     file
 }
 
+/// The folder behind a location, when it is one on this machine.
 pub(crate) fn local_folder(location: &Location) -> Option<std::path::PathBuf> {
     match location {
         Location::Local(path) => Some(path.as_path().to_path_buf()),

@@ -413,6 +413,12 @@ impl FilesReader {
         self.gvfs_root.as_deref()
     }
 
+    /// A mount made again: a probe stuck on the one before no longer
+    /// answers for it (ticket 310).
+    pub fn forget_probe(&self, mount_folder: &Path) {
+        self.probing_remote.forget(mount_folder);
+    }
+
     #[cfg(test)]
     pub(crate) fn hold_probe_for_tests(&self, mount_folder: &Path) {
         self.probing_remote.hold(mount_folder);

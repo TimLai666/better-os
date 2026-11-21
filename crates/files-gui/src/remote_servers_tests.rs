@@ -623,8 +623,15 @@ fn state(session: &FilesSession) -> Option<LinkState> {
 
 const OPEN: Duration = Duration::from_secs(40);
 
+/// One real-server sandbox at a time: two GVfs, two FUSE mounts and four
+/// servers at once slow each other past the probes' own deadline.
+static ONE_SANDBOX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[test]
 fn real_sftp_and_smb_servers_connect_again_when_their_folder_is_opened() {
+    let _one = ONE_SANDBOX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut sandbox = test_prerequisites::require!(
         "sshd, smbd and pdbedit, GVfs with its SFTP, SMB and FUSE parts, dbus-daemon, \
          ssh-keygen, fusermount3 and /dev/fuse (packages openssh-server, samba, \
@@ -867,6 +874,47 @@ fn real_sftp_and_smb_servers_connect_again_when_their_folder_is_opened() {
         session.pane().model().selection().cursor(),
         Some(&EntryId::Name("q3.txt".into()))
     );
+
+    // --- What gvfsd-smb says for a name that does not resolve, a port
+    // nothing listens on, and a share the server does not have (ticket 310's
+    // review): each its own reason, and "the share is gone" only for a
+    // server that answered.
+    let closed = free_port();
+    for (address, expected) in [
+        (
+            "smb://no-such-host.invalid/data".to_string(),
+            Reason::NameNotFound,
+        ),
+        (format!("smb://127.0.0.1:{closed}/data"), Reason::Refused),
+        (
+            format!("smb://127.0.0.1:{}/nosuchshare", sandbox.smbd_port),
+            Reason::ShareGone,
+        ),
+    ] {
+        session.mount_server(address.clone());
+        let user = sandbox.user.clone();
+        let failed = |s: &FilesSession| matches!(state(s), Some(LinkState::Failed { .. }));
+        let deadline = Instant::now() + OPEN;
+        while !failed(&session) && Instant::now() < deadline {
+            session.pump();
+            if session.server_prompt.is_some() {
+                session.answer_server(Answer::SignIn {
+                    user: user.clone(),
+                    domain: "WORKGROUP".into(),
+                    password: crate::secret::Secret::new(SMB_PASSWORD),
+                    anonymous: false,
+                    remember: Remember::Never,
+                });
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        eprintln!("ticket-310: {address} -> {:?}", state(&session));
+        assert!(
+            matches!(state(&session), Some(LinkState::Failed { reason, .. }) if reason == expected),
+            "{address}: {:?}",
+            state(&session)
+        );
+    }
 }
 
 /// A server that silently stops answering (its processes stopped, holding
@@ -874,6 +922,9 @@ fn real_sftp_and_smb_servers_connect_again_when_their_folder_is_opened() {
 /// connecting again, and nothing waits for the dead mount.
 #[test]
 fn a_server_that_stops_answering_never_holds_the_window_up() {
+    let _one = ONE_SANDBOX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let sandbox = test_prerequisites::require!(
         "sshd, GVfs with its SFTP and FUSE parts, dbus-daemon, ssh-keygen, smbd, pdbedit, \
          fusermount3 and /dev/fuse (packages openssh-server, samba, gvfs-backends, \

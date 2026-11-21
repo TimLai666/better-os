@@ -213,7 +213,9 @@ pub struct NetworkLocation {
     pub scheme: NetworkScheme,
     /// Host, optionally with a user and port, exactly as the user entered it.
     pub authority: String,
-    /// Path on the remote, always starting with `/`.
+    /// Path on the remote, starting with `/`; empty for an address with no
+    /// folder (`sftp://nas`), which is the server's default folder, where
+    /// `/` names its root.
     pub path: String,
 }
 
@@ -223,12 +225,12 @@ impl NetworkLocation {
         authority: impl Into<String>,
         path: impl Into<String>,
     ) -> Result<Self, LocationError> {
-        let authority = authority.into();
+        let authority = without_password(&authority.into());
         if authority.trim().is_empty() {
             return Err(LocationError::MissingAuthority(scheme.as_str()));
         }
         let mut path = path.into();
-        if !path.starts_with('/') {
+        if !path.is_empty() && !path.starts_with('/') {
             path.insert(0, '/');
         }
         Ok(Self {
@@ -236,6 +238,21 @@ impl NetworkLocation {
             authority,
             path,
         })
+    }
+}
+
+/// An authority with any password taken out of its user part
+/// (`ann:secret@nas` is `ann@nas`), as GIO drops it (ticket 310): a password
+/// typed in an address is never kept in a location, so it never reaches a
+/// bookmark, the history, a restart's hand-off or the screen. The server
+/// asks for it instead.
+fn without_password(authority: &str) -> String {
+    match authority.rsplit_once('@') {
+        Some((userinfo, host)) => match userinfo.split_once(':') {
+            Some((user, _password)) => format!("{user}@{host}"),
+            None => authority.to_string(),
+        },
+        None => authority.to_string(),
     }
 }
 
@@ -450,7 +467,7 @@ impl Location {
                 Some(network_scheme) => {
                     let (authority, path) = match rest.find('/') {
                         Some(index) => rest.split_at(index),
-                        None => (rest, "/"),
+                        None => (rest, ""),
                     };
                     match NetworkLocation::new(network_scheme, authority, path) {
                         Ok(network) => Location::Network(network),

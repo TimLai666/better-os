@@ -427,6 +427,21 @@ impl BookmarkStore {
         }
     }
 
+    /// The file's text as it is now (`None`: there is none).
+    pub fn text(&self) -> Option<String> {
+        fs::read_to_string(&self.path).ok()
+    }
+
+    /// Writes `file` only if the file still holds `expected`, the text it
+    /// was made from: a line another program wrote in between is never
+    /// lost. Returns whether it wrote.
+    pub fn save_if_unchanged(&self, file: &BookmarkFile, expected: &str) -> io::Result<bool> {
+        if self.text().as_deref() != Some(expected) {
+            return Ok(false);
+        }
+        self.save(file).map(|()| true)
+    }
+
     /// Writes through a temporary file and a rename, so an interrupted save
     /// cannot leave a half-written bookmarks file for the whole desktop.
     ///
@@ -453,6 +468,11 @@ impl BookmarkStore {
             WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
         fs::write(&temporary, file.render().as_bytes())?;
+        // The shared file keeps the mode it had (ticket 310's review): a
+        // file someone made private stays private.
+        if let Ok(metadata) = fs::metadata(&target) {
+            let _ = fs::set_permissions(&temporary, metadata.permissions());
+        }
         fs::rename(&temporary, &target).inspect_err(|_| {
             let _ = fs::remove_file(&temporary);
         })

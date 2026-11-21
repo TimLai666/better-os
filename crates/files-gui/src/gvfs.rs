@@ -149,6 +149,9 @@ pub fn mount_spec(address: &str) -> Result<MountSpec, MountError> {
     }
     let host = percent_decode(host);
     let port = port.filter(|port| !port.is_empty()).map(str::to_string);
+    // A password in the address is never part of the spec: GIO drops it,
+    // and the server asks (ticket 310).
+    let userinfo = userinfo.map(|userinfo| userinfo.split(':').next().unwrap_or_default());
     let (mut user, mut domain) = (userinfo.map(percent_decode), None);
     if scheme == "smb"
         && let Some(both) = &user

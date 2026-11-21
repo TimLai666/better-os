@@ -2182,7 +2182,7 @@ fn a_server_asks_in_the_window_again_after_a_wrong_password_then_opens_its_folde
     until_asked(&mut session);
     let shown = session.server_prompt.as_ref().expect("a sign-in");
     // The mount is asked for, and the folder found in it (ticket 310).
-    assert_eq!(shown.address, "sftp://nas/");
+    assert_eq!(shown.address, "sftp://nas");
     assert!(matches!(&shown.prompt, Prompt::SignIn { again: false, user, .. } if user == "ann"));
     let answer = |password: &str| Answer::SignIn {
         user: "ann".into(),

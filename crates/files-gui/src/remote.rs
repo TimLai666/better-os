@@ -80,10 +80,16 @@ impl Remote {
         keys.sort();
         // A WebDAV address's whole path is the folder; GVfs mounts it at a
         // prefix it chooses, so the folder is kept as the address had it.
-        Some(Self {
-            keys,
-            path: spec.path,
-        })
+        //
+        // An address with no folder (`sftp://nas`) is the server's default
+        // folder; one that names the root (`sftp://nas/`) is the root, and
+        // stays the root through every form it is written in (ticket 310).
+        // GVfs's spec has no folder for either; the address's own last `/`
+        // tells them apart.
+        let path = spec
+            .path
+            .or_else(|| address.ends_with('/').then(|| "/".to_string()));
+        Some(Self { keys, path })
     }
 
     /// From a typed location: a server address.
@@ -186,26 +192,67 @@ impl Remote {
         self.path.as_deref()
     }
 
-    /// What tells one mount from another: every key, so two folders on one
-    /// server share one connection and two users on it do not.
+    /// What tells one mount from another: its whole identity
+    /// ([`Self::identity`]), so two folders on one server share one
+    /// connection, and two users, two ports or two shares on it do not.
     pub fn mount_key(&self) -> String {
-        self.keys
+        self.identity()
             .iter()
             .map(|(key, value)| format!("{key}={value}"))
             .collect::<Vec<_>>()
             .join(",")
     }
 
-    /// Whether a mount GVfs lists is this one's. A key the address did not
-    /// give (a user GVfs filled in) is not held against it.
+    /// The mount's identity: every key, the host in lower case, and a port
+    /// that is the scheme's own default written as no port (GVfs leaves it
+    /// out of the spec). A missing user is "no user given", never "any user"
+    /// (ticket 310's review).
+    fn identity(&self) -> Vec<(String, String)> {
+        let default = self.default_port();
+        let host_key = self.host_key();
+        let mut identity: Vec<(String, String)> = self
+            .keys
+            .iter()
+            .filter(|(key, value)| !(key == "port" && Some(value.as_str()) == default))
+            .map(|(key, value)| {
+                let value = if key == host_key {
+                    value.to_ascii_lowercase()
+                } else {
+                    value.clone()
+                };
+                (key.clone(), value)
+            })
+            .collect();
+        identity.sort();
+        identity
+    }
+
+    /// The port a scheme uses when none is given.
+    fn default_port(&self) -> Option<&'static str> {
+        Some(match self.kind() {
+            "sftp" => "22",
+            "ftp" => "21",
+            "smb-share" | "smb-server" => "445",
+            "dav" if self.get("ssl") == Some("true") => "443",
+            "dav" => "80",
+            "afp-volume" | "afp-server" => "548",
+            "nfs" => "2049",
+            _ => return None,
+        })
+    }
+
+    /// The port to reach the server on: the address's, or the scheme's.
+    pub fn port(&self) -> Option<u16> {
+        self.get("port")
+            .or(self.default_port())
+            .and_then(|port| port.parse().ok())
+    }
+
+    /// Whether a mount GVfs lists is this one's: the same identity, both
+    /// ways. A mount on the same host with another port, another user,
+    /// another share or another domain is another mount.
     pub fn is_mounted_as(&self, mounted: &Remote) -> bool {
-        self.keys.iter().all(|(key, value)| match mounted.get(key) {
-            Some(theirs) => {
-                theirs == value || (key == self.host_key() && theirs.eq_ignore_ascii_case(value))
-            }
-            // GVfs leaves a default port out of the spec.
-            None => key == "port",
-        }) && mounted.kind() == self.kind()
+        self.identity() == mounted.identity()
     }
 
     /// The same mount, at another folder in it.
@@ -260,8 +307,10 @@ impl Remote {
                 inside_any = true;
             }
         }
-        // A share's own root is written with its slash, as GIO writes it.
-        if path.is_empty() || !inside_any {
+        // The root, named, ends with its `/`; no folder at all (the
+        // server's default one) has none, so the two never read back as
+        // each other.
+        if self.path.is_some() && !inside_any {
             path.push('/');
         }
         format!("{scheme}://{authority}{path}")
@@ -545,6 +594,10 @@ pub fn need(location: &Location, gvfs_root: Option<&Path>, mounts: &Mounts) -> N
             let Some((name, _)) = split_gvfs_path(path.as_path(), root) else {
                 return Need::Nothing;
             };
+            // A device's mount (a phone, a camera) is not a server.
+            if !server_shaped(&name) {
+                return Need::Nothing;
+            }
             match mounts.has_folder(&root.join(&name)) {
                 Some(false) => match Remote::from_gvfs_path(path.as_path(), root) {
                     Some(remote) => Need::Connect(remote),
@@ -558,15 +611,38 @@ pub fn need(location: &Location, gvfs_root: Option<&Path>, mounts: &Mounts) -> N
 }
 
 /// Whether `location` is on a server: an address, or a folder under GVfs's
-/// folder.
+/// folder whose mount is a server's ([`server_shaped`]). A phone, a camera
+/// or an online account there is not, and keeps the availability any folder
+/// has (ticket 310's review).
 pub fn is_remote(location: &Location, gvfs_root: Option<&Path>) -> bool {
     match location {
         Location::Network(_) => true,
-        Location::Local(path) => {
-            gvfs_root.is_some_and(|root| path.as_path().starts_with(root) && path.as_path() != root)
-        }
+        Location::Local(path) => gvfs_root
+            .and_then(|root| split_gvfs_path(path.as_path(), root))
+            .is_some_and(|(name, _)| server_shaped(&name)),
         _ => false,
     }
+}
+
+/// GVfs's backends that are servers a person reaches by an address.
+const SERVER_KINDS: &[&str] = &[
+    "sftp",
+    "ftp",
+    "smb-share",
+    "smb-server",
+    "dav",
+    "dav+sd",
+    "afp-volume",
+    "afp-server",
+    "nfs",
+];
+
+/// Whether a GVfs mount's name (`sftp:host=nas`) is a server's: `mtp:`,
+/// `gphoto2:`, `afc:`, `google-drive:` and any kind not known here are not.
+pub fn server_shaped(mount_name: &str) -> bool {
+    mount_name.split_once(':').is_some_and(|(kind, _)| {
+        SERVER_KINDS.contains(&crate::network::percent_decode(kind).as_str())
+    })
 }
 
 /// The server folder a location is, when it is one.
@@ -607,28 +683,38 @@ pub enum Probed {
     NotAnswering,
 }
 
-/// Probes in flight, by mount folder, across listings: a mount whose last
-/// probe has not come back is not probed again and does not answer.
+/// Probes in flight, by mount folder, across listings: a mount whose probe
+/// has been out past its deadline is not probed again and does not answer.
 #[derive(Clone, Default)]
-pub struct Probing(Arc<Mutex<HashSet<PathBuf>>>);
+pub struct Probing(Arc<Mutex<std::collections::HashMap<PathBuf, (u64, Instant)>>>);
+
+/// Tells one probe from another, so a probe that comes back late takes out
+/// only its own entry.
+static PROBES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 impl Probing {
     pub fn is_probing(&self, mount_folder: &Path) -> bool {
-        self.0.lock().expect("probes").contains(mount_folder)
+        self.0.lock().expect("probes").contains_key(mount_folder)
+    }
+
+    /// The mount was made again (ticket 310's review): a probe still stuck on
+    /// the dead one no longer speaks for it.
+    pub fn forget(&self, mount_folder: &Path) {
+        self.0.lock().expect("probes").remove(mount_folder);
     }
 
     /// A probe that never comes back, for tests.
     #[cfg(test)]
     pub(crate) fn hold(&self, mount_folder: &Path) {
-        self.0
-            .lock()
-            .expect("probes")
-            .insert(mount_folder.to_path_buf());
+        self.0.lock().expect("probes").insert(
+            mount_folder.to_path_buf(),
+            (u64::MAX, Instant::now() - Duration::from_secs(3600)),
+        );
     }
 
     #[cfg(test)]
     pub(crate) fn release(&self, mount_folder: &Path) {
-        self.0.lock().expect("probes").remove(mount_folder);
+        self.forget(mount_folder);
     }
 }
 
@@ -636,13 +722,19 @@ impl Probing {
 /// thread of its own, and waits at most `deadline` for it. Called on a
 /// worker thread, never the window's.
 pub fn probe(folder: &Path, mount_folder: &Path, deadline: Duration, probing: &Probing) -> Probed {
-    if !probing
-        .0
-        .lock()
-        .expect("probes")
-        .insert(mount_folder.to_path_buf())
+    let token = PROBES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     {
-        return Probed::NotAnswering;
+        let mut out = probing.0.lock().expect("probes");
+        // Another probe of this mount out for longer than the deadline is
+        // stuck: the mount does not answer, and no second thread waits on it.
+        // One still within its time is just running beside this one.
+        if out
+            .get(mount_folder)
+            .is_some_and(|(_, started)| started.elapsed() >= deadline)
+        {
+            return Probed::NotAnswering;
+        }
+        out.insert(mount_folder.to_path_buf(), (token, Instant::now()));
     }
     let (sender, receiver) = channel();
     let (folder, mount) = (folder.to_path_buf(), mount_folder.to_path_buf());
@@ -651,7 +743,11 @@ pub fn probe(folder: &Path, mount_folder: &Path, deadline: Duration, probing: &P
         .name("files-remote-probe".to_string())
         .spawn(move || {
             let found = look(&folder, &mount);
-            set.lock().expect("probes").remove(&mount);
+            let mut out = set.lock().expect("probes");
+            if out.get(&mount).map(|(known, _)| *known) == Some(token) {
+                out.remove(&mount);
+            }
+            drop(out);
             let _ = sender.send(found);
         });
     if spawned.is_err() {
@@ -810,10 +906,19 @@ impl Reason {
     }
 }
 
+/// Set in a debug build's sandbox to say this computer has no network.
+pub const NO_NETWORK_VARIABLE: &str = "BETTER_FILES_TEST_NO_NETWORK";
+
 /// Whether this computer has a route to anywhere but itself: a default
 /// route in the kernel's IPv4 or IPv6 table. A file read, never a network
 /// request.
 pub fn network_up() -> bool {
+    // Debug builds only: a sandbox shows the No-network page without taking
+    // the computer's network down (ticket 310's screenshots). A release
+    // build never reads it.
+    if cfg!(debug_assertions) && std::env::var_os(NO_NETWORK_VARIABLE).is_some() {
+        return false;
+    }
     let ipv4 = std::fs::read_to_string("/proc/net/route").unwrap_or_default();
     let ipv4 = ipv4.lines().skip(1).any(|line| {
         let fields: Vec<&str> = line.split_whitespace().collect();
@@ -842,6 +947,102 @@ pub fn network_settings(installed: &dyn Fn(&str) -> bool) -> Option<(String, Vec
     .map(|(program, page)| (program.to_string(), vec![page.to_string()]))
 }
 
+/// What a look at a server's host found, after a failure or before a retry.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HostState {
+    /// Its name does not resolve.
+    Unknown,
+    /// It resolves and nothing accepted a connection on its port in time.
+    Unreachable,
+    /// Something accepted a connection on its port.
+    Reachable,
+}
+
+/// A look at a host. Called on a worker thread, never the window's.
+pub type HostCheck = dyn Fn(&Remote) -> HostState + Send + Sync;
+
+/// How long a look at a host may wait for its port to accept.
+pub const HOST_CHECK_DEADLINE: Duration = Duration::from_secs(3);
+
+/// The real look: the name resolved, then one TCP connection to the
+/// server's port, closed at once. Nothing is sent over it, so no
+/// credential goes anywhere.
+pub fn host_state(remote: &Remote) -> HostState {
+    use std::net::ToSocketAddrs;
+    let Some(port) = remote.port() else {
+        return HostState::Reachable;
+    };
+    let Ok(addresses) = (remote.server().as_str(), port).to_socket_addrs() else {
+        return HostState::Unknown;
+    };
+    let addresses: Vec<_> = addresses.collect();
+    if addresses.is_empty() {
+        return HostState::Unknown;
+    }
+    let reached = addresses
+        .iter()
+        .any(|address| std::net::TcpStream::connect_timeout(address, HOST_CHECK_DEADLINE).is_ok());
+    if reached {
+        HostState::Reachable
+    } else {
+        HostState::Unreachable
+    }
+}
+
+/// A failure GVfs reported, made exact by a look at the host (ticket 310's
+/// review): `gvfsd-smb` says "Invalid argument" for a name that does not
+/// resolve, and a share that is "not there" on a server nothing answers for
+/// was never reached. A refused sign-in, a changed key and a cancel are
+/// never second-guessed.
+fn refine(error: MountError, remote: &Remote, check: &HostCheck) -> MountError {
+    if matches!(
+        error.failure,
+        MountFailure::Cancelled
+            | MountFailure::PermissionDenied
+            | MountFailure::HostKeyChanged
+            | MountFailure::UntrustedGvfs
+            | MountFailure::NoGvfs
+            | MountFailure::HostNotFound
+    ) {
+        return error;
+    }
+    match check(remote) {
+        HostState::Unknown => MountError::new(MountFailure::HostNotFound, error.detail),
+        HostState::Unreachable if error.failure == MountFailure::ShareGone => {
+            MountError::new(MountFailure::TimedOut, error.detail)
+        }
+        _ => error,
+    }
+}
+
+/// Which network this computer is on, as the kernel's routing tables say:
+/// each default route's interface and gateway. A dropped connection is
+/// tried again by itself only while this stays the same (ticket 310's
+/// review); after a change, only a click connects.
+pub fn network_id() -> String {
+    let mut parts: Vec<String> = Vec::new();
+    let ipv4 = std::fs::read_to_string("/proc/net/route").unwrap_or_default();
+    for line in ipv4.lines().skip(1) {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        if fields.len() > 2 && fields[1] == "00000000" && fields[0] != "lo" {
+            parts.push(format!("{}>{}", fields[0], fields[2]));
+        }
+    }
+    let ipv6 = std::fs::read_to_string("/proc/net/ipv6_route").unwrap_or_default();
+    for line in ipv6.lines() {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        if fields.len() > 9
+            && fields[0] == "00000000000000000000000000000000"
+            && fields[1] == "00"
+            && fields[9] != "lo"
+        {
+            parts.push(format!("{}>{}", fields[9], fields[4]));
+        }
+    }
+    parts.sort();
+    parts.join(",")
+}
+
 /// One connection being made.
 struct Attempt {
     key: String,
@@ -856,6 +1057,8 @@ pub struct Attempts {
     mounter: Arc<dyn Mounter>,
     live: Vec<Attempt>,
     asks: (Sender<Ask>, Receiver<Ask>),
+    /// What a failed attempt asks of the host to say why it failed.
+    host_check: Arc<HostCheck>,
 }
 
 impl Attempts {
@@ -864,7 +1067,13 @@ impl Attempts {
             mounter,
             live: Vec::new(),
             asks: channel(),
+            host_check: Arc::new(host_state),
         }
+    }
+
+    /// Uses another way of looking at a host after a failure. For tests.
+    pub fn set_host_check(&mut self, check: Arc<HostCheck>) {
+        self.host_check = check;
     }
 
     pub fn set_mounter(&mut self, mounter: Arc<dyn Mounter>) {
@@ -883,10 +1092,15 @@ impl Attempts {
         let mounter = Arc::clone(&self.mounter);
         let asker = Asker::new(&address, self.asks.0.clone());
         let asked = address.clone();
+        let check = Arc::clone(&self.host_check);
+        let server = remote.clone();
         let spawned = std::thread::Builder::new()
             .name("files-server-mount".to_string())
             .spawn(move || {
-                let _ = sender.send(mounter.connect(&asked, &asker));
+                let result = mounter
+                    .connect(&asked, &asker)
+                    .map_err(|error| refine(error, &server, check.as_ref()));
+                let _ = sender.send(result);
             });
         if spawned.is_err() {
             return false;
@@ -1232,6 +1446,88 @@ mod tests {
         );
     }
 
+    /// Ticket 310's review: a favourite never takes another server's or
+    /// account's mount on the same host for its own.
+    #[test]
+    fn a_mount_on_the_same_host_with_another_port_user_or_share_is_another_mount() {
+        let mount = |name: &str| Remote::from_gvfs_path(&root().join(name), &root()).unwrap();
+        let address = |text: &str| Remote::from_address(text).unwrap();
+        // A port the favourite names is that port only.
+        assert!(!address("sftp://nas:2222/srv").is_mounted_as(&mount("sftp:host=nas")));
+        // A favourite with no port is the scheme's own port, never "any".
+        assert!(!address("sftp://nas/srv").is_mounted_as(&mount("sftp:host=nas,port=2222")));
+        assert!(address("sftp://nas/srv").is_mounted_as(&mount("sftp:host=nas")));
+        assert!(address("sftp://nas:22/srv").is_mounted_as(&mount("sftp:host=nas")));
+        // A favourite with no user is "no user given", never "any user".
+        assert!(!address("sftp://nas/srv").is_mounted_as(&mount("sftp:host=nas,user=root")));
+        assert!(!address("sftp://ann@nas/srv").is_mounted_as(&mount("sftp:host=nas,user=root")));
+        assert!(!address("sftp://ann@nas/srv").is_mounted_as(&mount("sftp:host=nas")));
+        // Another share, another domain, another scheme.
+        assert!(
+            !address("smb://nas/photos").is_mounted_as(&mount("smb-share:server=nas,share=music"))
+        );
+        assert!(!address("smb://WORK;ann@nas/photos").is_mounted_as(&mount(
+            "smb-share:domain=HOME,server=nas,share=photos,user=ann"
+        )));
+        assert!(!address("ftp://nas/pub").is_mounted_as(&mount("sftp:host=nas")));
+        assert!(
+            address("smb://nas/photos").is_mounted_as(&mount("smb-share:server=nas,share=photos"))
+        );
+        assert!(
+            address("smb://nas:445/photos")
+                .is_mounted_as(&mount("smb-share:server=nas,share=photos"))
+        );
+        // The rule never lists a folder on such a mount for the favourite.
+        let mounts = Mounts::listed(vec![KnownMount {
+            remote: mount("sftp:host=nas,port=2222").at(None),
+            folder: Some(root().join("sftp:host=nas,port=2222")),
+        }]);
+        assert!(matches!(
+            need(
+                &Location::parse_uri("sftp://nas/srv"),
+                Some(&root()),
+                &mounts
+            ),
+            Need::Connect(_)
+        ));
+    }
+
+    /// Ticket 310's review: a password typed in an address is never kept.
+    #[test]
+    fn a_password_in_an_address_never_reaches_the_location_or_the_spec() {
+        let location = Location::parse_uri("sftp://ann:secret@nas/srv");
+        assert_eq!(location.to_uri(), "sftp://ann@nas/srv");
+        let remote = address_of("ftp://ann:secret@host/pub");
+        assert!(!remote.address().contains("secret"));
+        assert_eq!(remote.address(), "ftp://ann@host/pub");
+    }
+
+    fn address_of(text: &str) -> Remote {
+        Remote::from_address(text).unwrap()
+    }
+
+    /// An explicit root stays the root through every form (ticket 310's
+    /// review): a favourite of a mount's root never becomes its home.
+    #[test]
+    fn a_mount_root_favourite_stays_the_root() {
+        let gvfs = root();
+        let folder = Location::local(gvfs.join("sftp:host=nas")).unwrap();
+        let stored = stored_form(&folder, Some(&gvfs));
+        assert_eq!(stored.to_uri(), "sftp://nas/");
+        let back = remote_of(&Location::parse_uri(&stored.to_uri()), None).unwrap();
+        assert_eq!(back.path(), Some("/"));
+        assert_eq!(
+            back.local_in(
+                &gvfs.join("sftp:host=nas"),
+                &gvfs.join("sftp:host=nas/home/ann")
+            ),
+            LocalPath::new(gvfs.join("sftp:host=nas")).ok()
+        );
+        // With no folder at all, it is the server's own default one.
+        let default = remote_of(&Location::parse_uri("sftp://nas"), None).unwrap();
+        assert_eq!(default.path(), None);
+    }
+
     #[test]
     fn an_address_round_trips_through_its_own_text() {
         for address in [
@@ -1246,11 +1542,18 @@ mod tests {
             assert_eq!(Remote::from_address(&remote.address()).unwrap(), remote);
         }
         assert_eq!(
-            Remote::from_address("sftp://machine.tailnet.ts.net/")
+            Remote::from_address("sftp://machine.tailnet.ts.net")
                 .unwrap()
                 .path(),
             None,
             "an address with no folder opens the server's default folder"
+        );
+        assert_eq!(
+            Remote::from_address("sftp://machine.tailnet.ts.net/")
+                .unwrap()
+                .path(),
+            Some("/"),
+            "one that names the root is the root"
         );
     }
 
@@ -1291,15 +1594,29 @@ mod tests {
         // An address with no folder is its default one, which only a
         // connection names.
         assert!(matches!(
-            need(&Location::parse_uri("sftp://ann@nas/"), gvfs, &up),
+            need(&Location::parse_uri("sftp://ann@nas"), gvfs, &up),
             Need::Connect(_)
         ));
 
-        let odd = Location::local(root().join("mystery-backend:x=1/a")).unwrap();
+        // A server's mount whose name is not understood asks for its address.
+        let odd = Location::local(root().join("dav+sd:host=Cloud._webdav._tcp.local/a")).unwrap();
         assert_eq!(
             need(&odd, gvfs, &down),
-            Need::Address(root().join("mystery-backend:x=1/a"))
+            Need::Address(root().join("dav+sd:host=Cloud._webdav._tcp.local/a"))
         );
+        // A device's mount (a phone, a camera, an online account) is not a
+        // server's, whatever its name: it keeps any folder's behaviour.
+        for device in [
+            "mtp:host=Phone/DCIM",
+            "gphoto2:host=Camera",
+            "afc:host=1234",
+            "google-drive:host=gmail.com,user=ann",
+            "mystery-backend:x=1/a",
+        ] {
+            let location = Location::local(root().join(device)).unwrap();
+            assert_eq!(need(&location, gvfs, &down), Need::Nothing, "{device}");
+            assert!(!is_remote(&location, gvfs), "{device}");
+        }
         // Anything else needs nothing, and GVfs's folder itself is a folder.
         for location in [
             Location::local("/home/ann").unwrap(),
@@ -1428,13 +1745,26 @@ mod tests {
             Probed::NotMounted
         );
         // A probe still out on a mount answers for it.
-        probing.0.lock().unwrap().insert(mount.clone());
+        probing.hold(&mount);
         let started = Instant::now();
         assert_eq!(
             probe(&mount.join("in"), &mount, PROBE_DEADLINE, &probing),
             Probed::NotAnswering
         );
         assert!(started.elapsed() < Duration::from_millis(100));
+        // A probe still within its time is only running beside this one: two
+        // listings of one mount at once both get their answer (seen in the
+        // sandbox: a refresh and a navigation side by side).
+        probing.forget(&mount);
+        probing
+            .0
+            .lock()
+            .unwrap()
+            .insert(mount.clone(), (7, Instant::now()));
+        assert_eq!(
+            probe(&mount.join("in"), &mount, PROBE_DEADLINE, &probing),
+            Probed::Folder
+        );
     }
 
     /// A tracker that never answers: the list stands as it was, and nobody

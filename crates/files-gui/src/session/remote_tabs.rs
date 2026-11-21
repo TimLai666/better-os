@@ -18,7 +18,8 @@ use files_core::{EntryId, ListingError, ListingStatus, Location, TabId};
 
 use crate::network::{Ask, MountError, MountFailure};
 use crate::remote::{
-    Attempts, MOUNT_LIST_AGE, MountWatch, Mounted, MountsSource, Need, RETRY_EVERY, Reason, Remote,
+    Attempts, HostState, MOUNT_LIST_AGE, MountWatch, Mounted, MountsSource, Need, RETRY_EVERY,
+    Reason, Remote,
 };
 
 use super::{FilesSession, Notice};
@@ -72,6 +73,36 @@ pub struct TabLink {
     /// How many times the tab's pane had read its folder when the wait
     /// began: a reading that completes after that ends the wait.
     readings: u64,
+    /// The connection dropped while the folder was open: it is tried again
+    /// by itself, within [`RemoteSide::retry_limit`], while the network is
+    /// the one it dropped on.
+    dropped: bool,
+    /// The host was looked at once since the drop.
+    checked_once: bool,
+    /// The network (`remote::network_id`) when it dropped.
+    network: String,
+}
+
+/// A paste whose connection came: it goes in once the folder is listed,
+/// and is never dropped without a word.
+#[derive(Clone, Debug)]
+pub(crate) struct PendingPaste {
+    tab: TabId,
+    location: Location,
+    clipboard: crate::commands::Clipboard,
+}
+
+/// Why a held paste was not done.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PasteWhy {
+    /// The tab left the folder, or closed, before it connected.
+    Left,
+    /// The folder is not on the server any more.
+    Gone,
+    /// The folder could not be listed.
+    Failed,
+    /// The connection was cancelled, or will not be made by itself.
+    Cancelled,
 }
 
 impl TabLink {
@@ -103,6 +134,19 @@ pub(crate) struct RemoteSide {
     pub(crate) scroll_to_restore: Option<f32>,
     /// The front tab's scroll, as the window last said it.
     pub(crate) scroll_now: f32,
+    /// The address typed on the Address-needed page, and the mount folder
+    /// of the favourite it is for.
+    pub(crate) typed_for: Option<(Location, PathBuf)>,
+    /// Looks at a host before a dropped connection is tried again.
+    pub(crate) reach: Arc<crate::remote::HostCheck>,
+    /// Names the network this computer is on.
+    pub(crate) network_id: Arc<dyn Fn() -> String + Send + Sync>,
+    /// How long after a drop it is tried again by itself.
+    pub(crate) retry_limit: Duration,
+    /// Looks at hosts running, by tab.
+    pub(crate) reach_checks: Vec<(TabId, std::sync::mpsc::Receiver<HostState>)>,
+    /// Pastes whose connection came, waiting for their folder's listing.
+    pub(crate) pending_pastes: Vec<PendingPaste>,
 }
 
 impl RemoteSide {
@@ -123,6 +167,12 @@ impl RemoteSide {
             climbing: Vec::new(),
             scroll_to_restore: None,
             scroll_now: 0.0,
+            typed_for: None,
+            reach: Arc::new(crate::remote::host_state),
+            network_id: Arc::new(crate::remote::network_id),
+            retry_limit: RETRY_LIMIT,
+            reach_checks: Vec::new(),
+            pending_pastes: Vec::new(),
         }
     }
 }
@@ -130,6 +180,13 @@ impl RemoteSide {
 /// How long a dropped connection keeps saying "connecting again" before it
 /// says why, while it goes on trying.
 const DROPPED_LIMIT: Duration = crate::network::MOUNT_TIMEOUT;
+
+/// How long after a drop it is tried again by itself; after that, only a
+/// click connects.
+pub const RETRY_LIMIT: Duration = Duration::from_secs(120);
+
+/// How soon a folder that was slow to answer is listed again the first time.
+const FIRST_RELIST: Duration = Duration::from_secs(1);
 
 impl FilesSession {
     // --- What the window reads ---------------------------------------------
@@ -224,6 +281,22 @@ impl FilesSession {
         self.remote.network_up = up;
     }
 
+    /// Says how a host looks, before a retry and after a failure. For tests.
+    pub fn set_host_check(&mut self, check: Arc<crate::remote::HostCheck>) {
+        self.remote.reach = Arc::clone(&check);
+        self.remote.attempts.set_host_check(check);
+    }
+
+    /// Says which network this computer is on. For tests.
+    pub fn set_network_id(&mut self, id: Arc<dyn Fn() -> String + Send + Sync>) {
+        self.remote.network_id = id;
+    }
+
+    /// How long after a drop it is tried again by itself. For tests.
+    pub fn set_retry_limit(&mut self, limit: Duration) {
+        self.remote.retry_limit = limit;
+    }
+
     // --- What the person does ---------------------------------------------
 
     /// Opens a server address typed in the path bar, clicked as a machine,
@@ -245,6 +318,27 @@ impl FilesSession {
         }
     }
 
+    /// An address typed in the address bar: when the front tab shows the
+    /// Address-needed page for a favourite under GVfs's folder, that
+    /// address is the one its favourites take once it connects.
+    pub(crate) fn note_address_typed(&mut self, address: &str) {
+        let tab = self.active_tab();
+        let root = self.remote.gvfs_root.clone();
+        self.remote.typed_for = self
+            .remote
+            .links
+            .iter()
+            .find(|link| link.tab == tab && link.state == LinkState::NeedsAddress)
+            .and_then(|link| match (&link.location, root.as_deref()) {
+                (Location::Local(path), Some(root)) => {
+                    crate::remote::split_gvfs_path(path.as_path(), root)
+                        .map(|(name, _)| root.join(name))
+                }
+                _ => None,
+            })
+            .map(|mount| (Location::parse_uri(address), mount));
+    }
+
     /// Cancel on the connecting page or the sign-in: every tab waiting on
     /// that server is left "Not connected".
     pub fn cancel_connecting(&mut self) {
@@ -253,18 +347,49 @@ impl FilesSession {
         };
         self.remote.attempts.cancel(&key);
         self.withdraw_questions(&key);
+        self.leave_not_connected(&key);
+    }
+
+    /// Every tab waiting on `key`'s server is left "Not connected": no
+    /// retry, and a paste it held is said not to be done.
+    fn leave_not_connected(&mut self, key: &str) {
+        let mut dropped = Vec::new();
         for link in &mut self.remote.links {
-            if link.key().as_deref() == Some(key.as_str()) {
+            if link.key().as_deref() == Some(key) {
                 link.state = LinkState::Cancelled;
                 link.retry_at = None;
-                link.paste = None;
+                link.dropped = false;
+                if link.paste.take().is_some() {
+                    dropped.push(link.location.clone());
+                }
             }
         }
+        for location in dropped {
+            self.paste_not_done(&location, PasteWhy::Cancelled);
+        }
+    }
+
+    /// Says a held paste into `location` was not done, and why.
+    fn paste_not_done(&mut self, location: &Location, why: PasteWhy) {
+        let remote = crate::remote::remote_of(location, self.remote.gvfs_root.as_deref());
+        self.notice = Some(Notice::PasteNotDone {
+            folder: remote
+                .as_ref()
+                .map(Remote::folder_name)
+                .unwrap_or_else(|| location.display_name()),
+            server: remote.map(|remote| remote.server()).unwrap_or_default(),
+            why,
+        });
     }
 
     /// Try again, or Connect after a cancel.
     pub fn retry_connecting(&mut self) {
         let tab = self.active_tab();
+        // A click: connected now, and not tried again by itself after.
+        if let Some(link) = self.remote.links.iter_mut().find(|link| link.tab == tab) {
+            link.dropped = false;
+            link.since = Instant::now();
+        }
         self.reconnect(tab);
     }
 
@@ -290,12 +415,7 @@ impl FilesSession {
             if cancelled && let Some(key) = key {
                 self.remote.attempts.cancel(&key);
                 self.withdraw_questions(&key);
-                for link in &mut self.remote.links {
-                    if link.key().as_deref() == Some(key.as_str()) {
-                        link.state = LinkState::Cancelled;
-                        link.retry_at = None;
-                    }
-                }
+                self.leave_not_connected(&key);
             }
         }
     }
@@ -337,6 +457,14 @@ impl FilesSession {
         true
     }
 
+    /// The front tab goes somewhere (not a reload): the folder it goes to is
+    /// opened, never "dropped", even when it is the one it showed a moment
+    /// ago.
+    pub(crate) fn forget_open_folder(&mut self) {
+        let tab = self.active_tab();
+        self.remote.good.retain(|(id, _, _)| *id != tab);
+    }
+
     // --- The rule, applied --------------------------------------------------
 
     /// After a navigation: a location the rule already knows needs its
@@ -346,21 +474,15 @@ impl FilesSession {
     pub(crate) fn link_after_navigation(&mut self) {
         let tab = self.active_tab();
         let location = self.location().clone();
+        // Only an address typed on the Address-needed page, for the folder
+        // that page was about, may later rewrite favourites (ticket 310's
+        // review): any other navigation leaves them alone.
         let replaces = self
             .remote
-            .links
-            .iter()
-            .find(|link| link.tab == tab && link.state == LinkState::NeedsAddress)
-            .and_then(|link| match &link.location {
-                Location::Local(path) => self
-                    .remote
-                    .gvfs_root
-                    .as_deref()
-                    .and_then(|root| crate::remote::split_gvfs_path(path.as_path(), root))
-                    .zip(self.remote.gvfs_root.clone())
-                    .map(|((name, _), root)| root.join(name)),
-                _ => None,
-            });
+            .typed_for
+            .take()
+            .filter(|(typed, _)| *typed == location)
+            .map(|(_, mount)| mount);
         self.remote
             .links
             .retain(|link| link.tab != tab || link.location == location);
@@ -399,6 +521,7 @@ impl FilesSession {
             None => LinkState::NeedsAddress,
         };
         let readings = self.readings_of(tab);
+        let held = self.held_paste(tab, location);
         self.remote.links.retain(|link| link.tab != tab);
         self.remote.links.push(TabLink {
             tab,
@@ -406,16 +529,146 @@ impl FilesSession {
             remote: remote.clone(),
             state,
             saved,
-            paste: None,
+            paste: held,
             since: Instant::now(),
             retry_at: None,
             answering_only: false,
             replaces,
             readings,
+            dropped: false,
+            checked_once: false,
+            network: String::new(),
         });
         if let Some(remote) = remote {
             self.remote.attempts.connect(&remote);
         }
+    }
+
+    /// A connection that went while its folder was open: the tab says it is
+    /// connecting again, and the host is looked at first (ticket 310's
+    /// review). A server that answers at once was let go on purpose
+    /// (unmounted elsewhere): the tab is left "Not connected", and nothing
+    /// is mounted again without a click. One that does not answer is tried
+    /// again by itself, within the retry limit, on the same network.
+    fn begin_drop(&mut self, tab: TabId, location: &Location) {
+        let remote = crate::remote::remote_of(location, self.remote.gvfs_root.as_deref());
+        let saved = self.saved_view(tab, location);
+        let readings = self.readings_of(tab);
+        let paste = self
+            .remote
+            .links
+            .iter()
+            .find(|link| link.tab == tab)
+            .and_then(|link| link.paste.clone());
+        self.remote.links.retain(|link| link.tab != tab);
+        self.remote.links.push(TabLink {
+            tab,
+            location: location.clone(),
+            remote,
+            state: LinkState::Connecting { again: true },
+            saved,
+            paste,
+            since: Instant::now(),
+            retry_at: None,
+            answering_only: false,
+            replaces: None,
+            readings,
+            dropped: true,
+            checked_once: false,
+            network: (self.remote.network_id)(),
+        });
+        self.look_at_host(tab);
+    }
+
+    /// Looks at the tab's host on a thread of its own.
+    fn look_at_host(&mut self, tab: TabId) {
+        if self.remote.reach_checks.iter().any(|(id, _)| *id == tab) {
+            return;
+        }
+        let Some(remote) = self
+            .remote
+            .links
+            .iter()
+            .find(|link| link.tab == tab)
+            .and_then(|link| link.remote.clone())
+        else {
+            return;
+        };
+        let reach = Arc::clone(&self.remote.reach);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let spawned = std::thread::Builder::new()
+            .name("files-remote-host".to_string())
+            .spawn(move || {
+                let _ = sender.send(reach(&remote));
+            });
+        if spawned.is_ok() {
+            self.remote.reach_checks.push((tab, receiver));
+        }
+    }
+
+    /// What the looks at hosts found: connect, wait and look again, or stop.
+    fn finish_host_looks(&mut self) -> bool {
+        let mut found = Vec::new();
+        self.remote
+            .reach_checks
+            .retain(|(tab, receiver)| match receiver.try_recv() {
+                Ok(state) => {
+                    found.push((*tab, state));
+                    false
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => true,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => false,
+            });
+        let changed = !found.is_empty();
+        let network = (self.remote.network_id)();
+        for (tab, state) in found {
+            let Some(link) = self.remote.links.iter_mut().find(|link| link.tab == tab) else {
+                continue;
+            };
+            let first = !link.checked_once;
+            link.checked_once = true;
+            let Some(key) = link.key() else {
+                continue;
+            };
+            if link.network != network || (first && state == HostState::Reachable) {
+                // Another network, or a server that let the mount go while
+                // answering: only a click connects.
+                self.leave_tab_not_connected(tab);
+            } else if state == HostState::Reachable {
+                if let Some(remote) = link.remote.clone()
+                    && !self.remote.attempts.is_connecting(&key)
+                {
+                    self.remote.attempts.connect(&remote);
+                }
+            } else {
+                schedule_retry(link, self.remote.retry_limit);
+            }
+        }
+        changed
+    }
+
+    /// One tab left "Not connected", its held paste said not done.
+    fn leave_tab_not_connected(&mut self, tab: TabId) {
+        let Some(link) = self.remote.links.iter_mut().find(|link| link.tab == tab) else {
+            return;
+        };
+        link.state = LinkState::Cancelled;
+        link.retry_at = None;
+        link.dropped = false;
+        if link.paste.take().is_some() {
+            let location = link.location.clone();
+            self.paste_not_done(&location, PasteWhy::Cancelled);
+        }
+    }
+
+    /// The paste a tab's wait for `location` holds, carried into the wait
+    /// that replaces it.
+    fn held_paste(&self, tab: TabId, location: &Location) -> Option<crate::commands::Clipboard> {
+        self.remote
+            .links
+            .iter()
+            .find(|link| link.tab == tab && link.location == *location)
+            .and_then(|link| link.paste.clone())
     }
 
     fn readings_of(&self, tab: TabId) -> u64 {
@@ -490,10 +743,12 @@ impl FilesSession {
             self.remote.watch.refresh_if_older(MOUNT_LIST_AGE);
         }
         changed |= self.follow_listings();
+        changed |= self.settle_pastes();
         changed |= self.follow_mount_list();
         changed |= self.take_questions();
         changed |= self.land_attempts();
         changed |= self.retry_due();
+        changed |= self.finish_host_looks();
         changed |= self.finish_climbs();
         changed
     }
@@ -503,6 +758,14 @@ impl FilesSession {
     fn follow_listings(&mut self) -> bool {
         let root = self.remote.gvfs_root.clone();
         let mut needing: Vec<(TabId, Location, ListingError)> = Vec::new();
+        // A folder counts as open only while its tab stays on it: one the
+        // person comes back to is opened, not dropped.
+        let panes = &self.panes;
+        self.remote.good.retain(|(tab, at, _)| {
+            panes
+                .iter()
+                .any(|(id, pane)| id == tab && pane.location() == at)
+        });
         for (tab, pane) in &self.panes {
             let location = pane.location();
             if !crate::remote::is_remote(location, root.as_deref()) {
@@ -529,8 +792,9 @@ impl FilesSession {
         // leaving the folder or closing the tab.
         let panes = &self.panes;
         let before = self.remote.links.len();
+        let mut ended: Vec<TabLink> = Vec::new();
         self.remote.links.retain(|link| {
-            panes
+            let keep = panes
                 .iter()
                 .find(|(id, _)| *id == link.tab)
                 .is_some_and(|(_, pane)| {
@@ -539,12 +803,34 @@ impl FilesSession {
                             && !pane.is_listing()
                             && !pane.is_refreshing()
                             && pane.readings() > link.readings)
-                })
+                });
+            if !keep {
+                ended.push(link.clone());
+            }
+            keep
         });
+        // A paste the wait held is never lost without a word: one whose
+        // folder came back by its listing goes in now; one whose tab left
+        // says so.
+        for link in ended {
+            let Some(clipboard) = link.paste else {
+                continue;
+            };
+            let there = self
+                .panes
+                .iter()
+                .any(|(id, pane)| *id == link.tab && pane.location() == &link.location);
+            if there {
+                self.remote.pending_pastes.push(PendingPaste {
+                    tab: link.tab,
+                    location: link.location.clone(),
+                    clipboard,
+                });
+            } else {
+                self.paste_not_done(&link.location, PasteWhy::Left);
+            }
+        }
         let mut changed = before != self.remote.links.len();
-        self.remote
-            .good
-            .retain(|(tab, _, _)| panes.iter().any(|(id, _)| id == tab));
         for (tab, location, error) in needing {
             let existing = self
                 .remote
@@ -559,12 +845,19 @@ impl FilesSession {
                 .any(|(id, at, _)| *id == tab && *at == location);
             match error {
                 ListingError::NotConnected { .. } => match existing {
+                    // A folder that was open: a drop. Anything else: the
+                    // person opened it, and it connects now.
+                    None if was_open => {
+                        self.begin_drop(tab, &location);
+                        changed = true;
+                    }
                     None => {
-                        self.begin_link(tab, &location, was_open, None);
+                        self.begin_link(tab, &location, false, None);
                         changed = true;
                     }
                     // Waiting by listing again, and the mount turned out to
-                    // be gone: connect instead.
+                    // be gone: a drop looks at the host first; anything else
+                    // connects.
                     Some(LinkState::Connecting { .. }) => {
                         if let Some(link) =
                             self.remote.links.iter_mut().find(|link| link.tab == tab)
@@ -573,7 +866,11 @@ impl FilesSession {
                             && link.retry_at.is_none()
                         {
                             link.answering_only = false;
-                            self.remote.attempts.connect(&remote);
+                            if link.dropped {
+                                self.look_at_host(tab);
+                            } else {
+                                self.remote.attempts.connect(&remote);
+                            }
                             changed = true;
                         }
                     }
@@ -629,6 +926,7 @@ impl FilesSession {
         let remote = crate::remote::remote_of(location, self.remote.gvfs_root.as_deref());
         let saved = self.saved_view(tab, location);
         let readings = self.readings_of(tab);
+        let held = self.held_paste(tab, location);
         self.remote.links.retain(|link| link.tab != tab);
         self.remote.links.push(TabLink {
             tab,
@@ -636,26 +934,28 @@ impl FilesSession {
             remote,
             state: LinkState::Connecting { again },
             saved,
-            paste: None,
+            paste: held,
             since: Instant::now(),
-            retry_at: Some(Instant::now() + RETRY_EVERY),
+            // Its mount is there and its folder was slow to answer: it is
+            // listed again by itself (no connection is made, nothing is
+            // sent but the listing), soon at first, then within the retry
+            // limit. A slow server is not a failure.
+            retry_at: Some(Instant::now() + FIRST_RELIST),
             answering_only: true,
             replaces: None,
             readings,
+            dropped: true,
+            checked_once: false,
+            network: (self.remote.network_id)(),
         });
     }
 
     fn schedule_answering(&mut self, tab: TabId) {
+        let limit = self.remote.retry_limit;
         if let Some(link) = self.remote.links.iter_mut().find(|link| link.tab == tab) {
             link.answering_only = true;
-            if link.retry_at.is_none() {
-                link.retry_at = Some(Instant::now() + RETRY_EVERY);
-            }
-            if link.since.elapsed() >= DROPPED_LIMIT {
-                link.state = LinkState::Failed {
-                    reason: Reason::NoAnswer,
-                    detail: String::new(),
-                };
+            if link.retry_at.is_none() && link.dropped {
+                schedule_retry(link, limit);
             }
         }
     }
@@ -672,7 +972,14 @@ impl FilesSession {
         let root = self.remote.gvfs_root.clone();
         let mut dropped = Vec::new();
         for (tab, pane) in &self.panes {
-            if self.remote.links.iter().any(|link| link.tab == *tab) {
+            // Only a folder that was open and listed can drop; one just
+            // opened is connected by its own listing.
+            let open = self
+                .remote
+                .good
+                .iter()
+                .any(|(id, at, _)| id == tab && at == pane.location());
+            if !open || self.remote.links.iter().any(|link| link.tab == *tab) {
                 continue;
             }
             if let Need::Connect(_) = crate::remote::need(pane.location(), root.as_deref(), &mounts)
@@ -683,7 +990,7 @@ impl FilesSession {
         }
         let changed = !dropped.is_empty();
         for (tab, location) in dropped {
-            self.begin_link(tab, &location, true, None);
+            self.begin_drop(tab, &location);
         }
         changed
     }
@@ -824,6 +1131,8 @@ impl FilesSession {
             self.server_folders.retain(|(known, _)| *known != address);
             self.server_folders.push((address, mounted.root.clone()));
         }
+        // The mount is new: a probe stuck on the dead one speaks for it no more.
+        self.reader.forget_probe(&mounted.root);
         let active = self.active_tab();
         let reader = self.reader.clone();
         for link in waiting {
@@ -863,24 +1172,68 @@ impl FilesSession {
                 self.remote.scroll_to_restore = link.saved.scroll.filter(|scroll| *scroll > 0.0);
                 self.after_landing();
             }
+            // A held paste goes in once the folder is listed and known to be
+            // there: never into a folder deleted on the server meanwhile.
             if let Some(clipboard) = link.paste {
-                let built = crate::commands::paste(&clipboard, &target);
-                let was_cut = matches!(clipboard, crate::commands::Clipboard::Cut(_));
-                match built {
-                    Ok(spec) => {
-                        self.submit(spec);
-                        if was_cut {
-                            self.clipboard = crate::commands::Clipboard::Empty;
-                        }
-                    }
-                    Err(refusal) => self.notice = Some(Notice::Command(refusal)),
+                self.remote.pending_pastes.push(PendingPaste {
+                    tab: link.tab,
+                    location: target.clone(),
+                    clipboard,
+                });
+            }
+        }
+    }
+
+    /// The held pastes whose folder is listed now go in; one whose folder
+    /// is gone, could not be listed, or was left says so.
+    fn settle_pastes(&mut self) -> bool {
+        let pending = std::mem::take(&mut self.remote.pending_pastes);
+        let before = pending.len();
+        for paste in pending {
+            let pane = self
+                .panes
+                .iter()
+                .find(|(id, _)| *id == paste.tab)
+                .map(|(_, pane)| pane);
+            let Some(pane) = pane.filter(|pane| pane.location() == &paste.location) else {
+                self.paste_not_done(&paste.location, PasteWhy::Left);
+                continue;
+            };
+            match pane.model().status() {
+                ListingStatus::Complete if !pane.is_listing() => self.run_paste(paste),
+                ListingStatus::Failed(ListingError::NotFound { .. }) => {
+                    self.paste_not_done(&paste.location, PasteWhy::Gone)
+                }
+                ListingStatus::Failed(
+                    ListingError::NotConnected { .. } | ListingError::NotAnswering { .. },
+                )
+                | ListingStatus::Loading
+                | ListingStatus::Complete => self.remote.pending_pastes.push(paste),
+                _ => self.paste_not_done(&paste.location, PasteWhy::Failed),
+            }
+        }
+        self.remote.pending_pastes.len() != before
+    }
+
+    /// Pastes a held clipboard into its folder. A held cut empties the
+    /// clipboard only when it is still that cut: a newer copy stays.
+    fn run_paste(&mut self, paste: PendingPaste) {
+        match crate::commands::paste(&paste.clipboard, &paste.location) {
+            Ok(spec) => {
+                self.submit(spec);
+                if matches!(paste.clipboard, crate::commands::Clipboard::Cut(_))
+                    && self.clipboard == paste.clipboard
+                {
+                    self.clipboard = crate::commands::Clipboard::Empty;
                 }
             }
+            Err(refusal) => self.notice = Some(Notice::Command(refusal)),
         }
     }
 
     fn refuse(&mut self, key: &str, error: &MountError) {
         let network_up = (self.remote.network_up)();
+        let limit = self.remote.retry_limit;
         for link in &mut self.remote.links {
             if link.key().as_deref() != Some(key)
                 || !matches!(link.state, LinkState::Connecting { .. })
@@ -891,17 +1244,29 @@ impl FilesSession {
                 link.state = LinkState::Cancelled;
                 continue;
             }
-            let dropped = matches!(link.state, LinkState::Connecting { again: true });
             let reason = Reason::of(error, &link.server(), network_up);
-            // A connection that dropped keeps trying by itself, and says
-            // "connecting again" until its own limit; then it says why, and
-            // still tries.
-            if dropped && reason != Reason::SignInRefused {
-                link.retry_at = Some(Instant::now() + RETRY_EVERY);
-                if link.since.elapsed() < DROPPED_LIMIT {
-                    continue;
+            // A connection that dropped keeps trying by itself within its
+            // limit, and says "connecting again" for its first 30 s. A
+            // refused sign-in and a changed host key are never tried again
+            // by themselves, and say so at once.
+            let final_reason = matches!(
+                reason,
+                Reason::SignInRefused | Reason::Mount(MountFailure::HostKeyChanged)
+            );
+            if link.dropped && !final_reason {
+                schedule_retry(link, limit);
+                // Past its first 30 s the page says why, in this failure's
+                // own words, while it goes on trying.
+                if matches!(link.state, LinkState::Failed { .. }) {
+                    link.state = LinkState::Failed {
+                        reason,
+                        detail: error.detail.trim().to_string(),
+                    };
                 }
+                continue;
             }
+            link.retry_at = None;
+            link.dropped = false;
             link.state = LinkState::Failed {
                 reason,
                 detail: error.detail.trim().to_string(),
@@ -919,16 +1284,27 @@ impl FilesSession {
             .map(|link| link.tab)
             .collect();
         let changed = !due.is_empty();
+        let network = (self.remote.network_id)();
         for tab in due {
-            let failed = self
-                .remote
-                .links
-                .iter()
-                .find(|link| link.tab == tab)
-                .map(|link| link.state.clone());
-            self.reconnect(tab);
+            let Some(link) = self.remote.links.iter_mut().find(|link| link.tab == tab) else {
+                continue;
+            };
+            let failed = link.state.clone();
+            link.retry_at = None;
+            // On another network nothing is tried by itself: the name may
+            // now be someone else's.
+            if link.network != network {
+                self.leave_tab_not_connected(tab);
+                continue;
+            }
+            if link.answering_only {
+                self.reconnect(tab);
+            } else {
+                // The host is looked at before any connection is made.
+                self.look_at_host(tab);
+            }
             // A failure page stays up while it tries again behind it.
-            if let Some(LinkState::Failed { reason, detail }) = failed
+            if let LinkState::Failed { reason, detail } = failed
                 && let Some(link) = self.remote.links.iter_mut().find(|link| link.tab == tab)
             {
                 link.state = LinkState::Failed { reason, detail };
@@ -1002,7 +1378,10 @@ impl FilesSession {
             pane.replace_current(folder, reader.as_ref());
             self.remote.links.retain(|link| link.tab != tab);
             self.sync_history(tab);
-            if tab == self.active_tab() {
+            // "Nothing was pasted" says more than "the folder above was
+            // opened", and stays.
+            if tab == self.active_tab() && !matches!(self.notice, Some(Notice::PasteNotDone { .. }))
+            {
                 let remote = crate::remote::remote_of(&gone, root.as_deref());
                 self.notice = Some(Notice::RemoteFolderGone {
                     folder: remote
@@ -1053,6 +1432,29 @@ fn view_of(model: &files_core::DirectoryModel) -> SavedView {
         selected: selection.ids().filter_map(name).collect(),
         cursor: selection.cursor().and_then(name),
         scroll: None,
+    }
+}
+
+/// The next try of a dropped connection: in [`RETRY_EVERY`], while within
+/// `limit` of the drop; past it, the page says the server did not answer
+/// and only a click tries again. Past its first 30 s the page says why
+/// while it goes on trying.
+fn schedule_retry(link: &mut TabLink, limit: Duration) {
+    let no_answer = LinkState::Failed {
+        reason: Reason::NoAnswer,
+        detail: String::new(),
+    };
+    if link.since.elapsed() >= limit {
+        link.retry_at = None;
+        link.dropped = false;
+        if matches!(link.state, LinkState::Connecting { .. }) {
+            link.state = no_answer;
+        }
+        return;
+    }
+    link.retry_at = Some(Instant::now() + RETRY_EVERY);
+    if link.since.elapsed() >= DROPPED_LIMIT && matches!(link.state, LinkState::Connecting { .. }) {
+        link.state = no_answer;
     }
 }
 

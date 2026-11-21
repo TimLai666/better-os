@@ -420,7 +420,16 @@ impl FilesApp {
                     Reason::Refused => c.remote_refused,
                     Reason::NameNotFound => c.remote_name_not_found,
                     Reason::SignInRefused => c.remote_sign_in_refused,
-                    Reason::ShareGone => c.remote_share_gone,
+                    // Only a mount with a share names one (ticket 310's review).
+                    Reason::ShareGone
+                        if link
+                            .remote
+                            .as_ref()
+                            .is_some_and(|remote| remote.share().is_some()) =>
+                    {
+                        c.remote_share_gone
+                    }
+                    Reason::ShareGone => c.remote_folder_missing,
                     Reason::NoNetwork => c.remote_no_network,
                     Reason::Mount(failure) => {
                         use crate::network::MountFailure as F;
@@ -503,7 +512,7 @@ impl FilesApp {
         let icon: Glyph = if warning {
             IconName::TriangleAlert.into()
         } else {
-            IconName::Globe.into()
+            Picture::Network.into()
         };
         let address = link
             .remote
