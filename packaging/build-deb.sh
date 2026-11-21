@@ -980,6 +980,11 @@ PACKAGE_DATA=(
     "packaging/manager/better-window-attention.service:usr/lib/systemd/user/better-window-attention.service"
     "packaging/manager/org.betteros.WindowAttention1.service:usr/share/dbus-1/services/org.betteros.WindowAttention1.service"
     "packaging/manager/better-manager.tmpfiles:usr/lib/tmpfiles.d/better-manager.conf"
+    # dconf's default profile (user-db:user), which D-Bus activation names
+    # after a Better OS session for as long as the session bus lives; here
+    # and not in better-os-session, so it never leaves before the session
+    # does (ticket 203).
+    "packaging/manager/betteros-default.dconf-profile:usr/share/dconf/profile/betteros-default"
 )
 # libsecret-tools is a desktop helper Better OS installs with the manager so
 # that everyday tools work without the person hunting for a package: its
@@ -1233,6 +1238,7 @@ if [[ "$RELEASE_TARGET" != ubuntu-22.04 ]]; then
     PACKAGE_DATA=(
         "packaging/session/better-os.desktop:usr/share/wayland-sessions/better-os.desktop"
         "packaging/session/better-os-session.target:usr/lib/systemd/user/better-os-session.target"
+        "packaging/session/better-os-session-autostart.target:usr/lib/systemd/user/better-os-session-autostart.target"
         "packaging/session/better-os-session-settings-daemon.service:usr/lib/systemd/user/better-os-session-settings-daemon.service"
         "packaging/session/better-os-session-osd.service:usr/lib/systemd/user/better-os-session-osd.service"
         "packaging/session/better-os-session-idle.service:usr/lib/systemd/user/better-os-session-idle.service"
@@ -1242,7 +1248,6 @@ if [[ "$RELEASE_TARGET" != ubuntu-22.04 ]]; then
         "packaging/session/better-os-session-leftovers.service:usr/lib/systemd/user/better-os-session-leftovers.service"
         "packaging/session/tracker-miner-fs-3-better-os-session.conf:usr/lib/systemd/user/tracker-miner-fs-3.service.d/better-os-session.conf"
         "packaging/session/betteros.dconf-profile:usr/share/dconf/profile/betteros"
-        "packaging/session/betteros-default.dconf-profile:usr/share/dconf/profile/betteros-default"
         "packaging/session/betteros-portals.conf:usr/share/xdg-desktop-portal/betteros-portals.conf"
         "packaging/session/$SESSION_SHORTCUTS/defaults:usr/share/better-os/session/$SESSION_SHORTCUTS/defaults"
         "packaging/session/$SESSION_SHORTCUTS/system_actions:usr/share/better-os/session/$SESSION_SHORTCUTS/system_actions"
@@ -1266,6 +1271,10 @@ if [[ "$RELEASE_TARGET" != ubuntu-22.04 ]]; then
         # It is in no APT source, so whatever installs the session installs
         # it in the same transaction (ticket 205).
         "better-launcher"
+        # D-Bus activation's DCONF_PROFILE after the session names
+        # better-manager's betteros-default, so it must stay while the
+        # session package is installed (and leave no earlier).
+        "better-manager"
     )
     # The leftovers unit runs in every session of every person, enabled at
     # install and disabled at removal; it acts only on an orphaned record.

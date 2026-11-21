@@ -42,6 +42,11 @@ pub const GUARD_UNIT: &str = "better-os-session-guard.service";
 /// session that ended without its launcher left ([`record`]).
 pub const LEFTOVERS_UNIT: &str = "better-os-session-leftovers.service";
 
+/// The target the launcher starts after [`TARGET`]: the XDG autostart
+/// entries and Tracker, which cannot carry the session's condition
+/// themselves, so nothing but the launcher may pull them in.
+pub const AUTOSTART_TARGET: &str = "better-os-session-autostart.target";
+
 /// The systemd user target the session's units hang from.
 pub const TARGET: &str = "better-os-session.target";
 

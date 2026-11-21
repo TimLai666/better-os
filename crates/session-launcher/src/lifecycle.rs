@@ -103,6 +103,8 @@ pub fn begin(
     }
     if let Err(error) = session.start_unit(crate::TARGET) {
         problems.push(format!("starting {}: {error}", crate::TARGET));
+    } else if let Err(error) = session.start_unit(crate::AUTOSTART_TARGET) {
+        problems.push(format!("starting {}: {error}", crate::AUTOSTART_TARGET));
     }
     (import, problems)
 }
@@ -191,6 +193,64 @@ pub fn restore(
     problems
 }
 
+/// Whether a unit that binds `graphical-session.target` holds it, from its
+/// `ActiveState` and the type of the job queued for it (`None` for none).
+/// A GNOME login's `gnome-session.target` waits, inactive, with a start job
+/// while its dependencies start (ticket 203's second review): that holds it
+/// as an active one does. A unit with a stop job, or going down, does not.
+/// A job whose type could not be read is passed as `Some("")` and holds, so
+/// an unknown never stops a session someone may be starting.
+pub fn holds(active_state: &str, job_type: Option<&str>) -> bool {
+    match job_type {
+        Some("stop") => false,
+        Some(_) => true,
+        None => matches!(active_state, "active" | "activating" | "reloading"),
+    }
+}
+
+/// Puts back what a session whose launcher is gone left, touching only what
+/// is still the session's ([`environment::leftover_restore`]): another
+/// session may have started meanwhile. When the user manager's environment
+/// cannot be read, nothing in it is touched, since whose each value is is
+/// then unknown.
+pub fn put_back_leftovers(
+    session: &dyn UserSession,
+    import: &Import,
+    activation: &BTreeMap<String, String>,
+) -> Vec<String> {
+    let mut problems = Vec::new();
+    let now = match session.environment() {
+        Ok(entries) => Some(environment::parse_assignments(&entries)),
+        Err(error) => {
+            problems.push(format!(
+                "the user manager's environment could not be read, so it is left as it is: {error}"
+            ));
+            None
+        }
+    };
+    let left = environment::leftover_restore(import, activation, &now.unwrap_or_default());
+    if !left.set.is_empty()
+        && let Err(error) = session.set_environment(&environment::assignments(&left.set))
+    {
+        problems.push(format!(
+            "setting the user manager's environment back: {error}"
+        ));
+    }
+    if !left.unset.is_empty()
+        && let Err(error) = session.unset_environment(&left.unset)
+    {
+        problems.push(format!("unsetting the session's variables: {error}"));
+    }
+    if !left.activation.is_empty()
+        && let Err(error) = session.update_activation_environment(&left.activation)
+    {
+        problems.push(format!(
+            "setting D-Bus activation's environment back: {error}"
+        ));
+    }
+    problems
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -268,10 +328,10 @@ mod tests {
             if self.failing_start {
                 return Err("refused".into());
             }
-            *self.running.borrow_mut() = vec![
+            self.running.borrow_mut().extend([
                 unit.to_string(),
                 crate::GRAPHICAL_SESSION_TARGET.to_string(),
-            ];
+            ]);
             Ok(())
         }
         fn stop_unit(&self, unit: &str) -> Result<(), String> {
@@ -320,6 +380,11 @@ mod tests {
         assert!(position("set ") < position("activation"));
         assert!(position("activation") < position("record"));
         assert!(position("record") < position("start better-os-session.target"));
+        // Autostart and Tracker only once the session's own target runs.
+        assert!(
+            position("start better-os-session.target")
+                < position("start better-os-session-autostart.target")
+        );
         assert_eq!(
             fake.manager
                 .borrow()
@@ -503,5 +568,86 @@ mod tests {
         assert_eq!(slept.get(), STOP_PATIENCE);
         assert_eq!(problems.len(), 1);
         assert!(problems[0].contains("graphical-session.target"));
+    }
+
+    #[test]
+    fn a_pending_start_holds_the_graphical_session_and_a_stop_does_not() {
+        // gnome-session.target early in a GNOME login: inactive, start job.
+        assert!(holds("inactive", Some("start")));
+        assert!(holds("inactive", Some("")), "an unreadable job type holds");
+        assert!(holds("active", None));
+        assert!(holds("activating", None));
+        assert!(!holds("active", Some("stop")));
+        assert!(!holds("deactivating", None));
+        assert!(!holds("inactive", None));
+        assert!(!holds("failed", None));
+    }
+
+    /// Ticket 203's second review, P2: the leftovers unit runs inside a GNOME
+    /// login that has already imported its own values.
+    #[test]
+    fn leftovers_put_back_under_gnome_take_only_what_is_still_the_sessions() {
+        let fake = Fake::with(&[("XDG_DATA_DIRS", "/usr/share/")]);
+        let (import, _) = begin(&fake, &session_environment(), &mut recorder(&fake));
+        let activation = environment::activation_restore(&import, "/default");
+        // The launcher was killed; GNOME's login then imported its own.
+        fake.manager.borrow_mut().extend(
+            [
+                ("XDG_CURRENT_DESKTOP", "ubuntu:GNOME"),
+                ("XDG_SESSION_DESKTOP", "ubuntu"),
+                ("DESKTOP_SESSION", "ubuntu"),
+                ("WAYLAND_DISPLAY", "wayland-0"),
+                ("XDG_DATA_DIRS", "/usr/share/gnome:/usr/share/"),
+            ]
+            .map(|(name, value)| (name.to_string(), value.to_string())),
+        );
+        let gnome = fake.manager.borrow().clone();
+        let problems = put_back_leftovers(&fake, &import, &activation);
+        assert!(problems.is_empty(), "{problems:?}");
+        let after = fake.manager.borrow().clone();
+        assert_eq!(
+            after.get("DCONF_PROFILE"),
+            None,
+            "the session's profile goes"
+        );
+        for name in [
+            "XDG_CURRENT_DESKTOP",
+            "XDG_SESSION_DESKTOP",
+            "DESKTOP_SESSION",
+            "WAYLAND_DISPLAY",
+            "XDG_DATA_DIRS",
+        ] {
+            assert_eq!(after.get(name), gnome.get(name), "{name} is GNOME's");
+        }
+        assert_eq!(
+            fake.activation
+                .borrow()
+                .get("DCONF_PROFILE")
+                .map(String::as_str),
+            Some("/default")
+        );
+    }
+
+    #[test]
+    fn leftovers_with_an_unreadable_manager_touch_nothing_there() {
+        let fake = Fake::default();
+        let (import, _) = begin(&fake, &session_environment(), &mut recorder(&fake));
+        let activation = environment::activation_restore(&import, "/default");
+        let before = fake.manager.borrow().clone();
+        let fake = Fake {
+            failing_read: true,
+            ..fake
+        };
+        let problems = put_back_leftovers(&fake, &import, &activation);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert_eq!(*fake.manager.borrow(), before);
+        assert_eq!(
+            fake.activation
+                .borrow()
+                .get("DCONF_PROFILE")
+                .map(String::as_str),
+            Some("/default"),
+            "activation, which nothing else sets it in, still gets its value"
+        );
     }
 }

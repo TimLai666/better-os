@@ -5,7 +5,9 @@
 //! `dconf_engine_profile_open`): a mandatory profile for the uid, then
 //! `DCONF_PROFILE` (a name looked up in `/etc/dconf/profile/` and then
 //! `dconf/profile/` under each `XDG_DATA_DIRS` entry, or an absolute path),
-//! then `$XDG_RUNTIME_DIR/dconf.profile`, then the profile named `user` by
+//! then `$XDG_RUNTIME_DIR/dconf/profile` (a file named `profile`: dconf
+//! 0.40.0 `engine/dconf-engine-profile.c` line 33, `RUNTIME_PROFILE` "/dconf/profile"
+//! appended to `g_get_user_runtime_dir ()`, lines 243-258), then the profile named `user` by
 //! the same lookup, and with none of these the single line `user-db:user`.
 //! A named profile that is missing gives the null configuration, which
 //! writes nothing, so `DCONF_PROFILE=user` is not the same as unset on a
@@ -26,8 +28,18 @@ use std::path::{Path, PathBuf};
 /// The shipped session profile's name.
 pub const SESSION_PROFILE: &str = crate::environment::DCONF_PROFILE;
 
-/// A shipped profile that is dconf's default fallback, `user-db:user`.
+/// A profile that is dconf's default fallback, `user-db:user`. D-Bus
+/// activation keeps pointing at it after the session, for as long as the
+/// session bus lives, so it ships in `better-manager`, which outlives the
+/// session package: a profile file that left with `better-os-session` would
+/// give every GNOME application D-Bus starts dconf's null configuration
+/// (nothing read, nothing saved). Removing Better Manager removes the
+/// session too (it depends on it).
 pub const DEFAULT_USER_PROFILE: &str = "/usr/share/dconf/profile/betteros-default";
+
+/// dconf's runtime profile under `XDG_RUNTIME_DIR` (dconf 0.40.0
+/// `engine/dconf-engine-profile.c` line 33).
+pub const RUNTIME_PROFILE: &str = "dconf/profile";
 
 /// The file name of a profile the launcher writes for the session.
 pub const GENERATED_PROFILE: &str = "dconf-profile";
@@ -78,7 +90,7 @@ pub fn default_profile(probe: &Probe) -> String {
     if let Some(runtime) = probe
         .runtime_dir
         .as_ref()
-        .map(|dir| dir.join("dconf.profile"))
+        .map(|dir| dir.join(RUNTIME_PROFILE))
         && runtime.exists()
     {
         return runtime.display().to_string();
@@ -180,10 +192,10 @@ mod tests {
                 .display()
                 .to_string()
         );
-        write(&root.path().join("run/dconf.profile"), "user-db:user\n");
+        write(&root.path().join("run/dconf/profile"), "user-db:user\n");
         assert_eq!(
             default_profile(&probe(root.path())),
-            root.path().join("run/dconf.profile").display().to_string()
+            root.path().join("run/dconf/profile").display().to_string()
         );
     }
 
@@ -220,7 +232,8 @@ mod tests {
         let session = std::fs::read_to_string(repository.join("betteros.dconf-profile")).unwrap();
         assert_eq!(sources(&session), vec!["user-db:betteros", "user-db:user"]);
         let default =
-            std::fs::read_to_string(repository.join("betteros-default.dconf-profile")).unwrap();
+            std::fs::read_to_string(repository.join("../manager/betteros-default.dconf-profile"))
+                .unwrap();
         assert_eq!(sources(&default), vec!["user-db:user"]);
     }
 

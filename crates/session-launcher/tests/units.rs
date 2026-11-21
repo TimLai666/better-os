@@ -31,27 +31,91 @@ fn the_launcher_starts_the_target_the_package_ships() {
     );
 }
 
+fn autostart_target() -> Vec<(String, String)> {
+    unit_lines(&read(
+        "packaging/session/better-os-session-autostart.target",
+    ))
+}
+
 #[test]
-fn the_target_binds_the_graphical_session_and_pulls_in_autostart() {
+fn the_target_binds_the_graphical_session() {
     let target = target();
     assert_eq!(values(&target, "BindsTo"), vec!["graphical-session.target"]);
     assert!(values(&target, "Before").contains(&"graphical-session.target".to_string()));
-    let wants = values(&target, "Wants");
-    for wanted in [
-        "graphical-session-pre.target",
-        "xdg-desktop-autostart.target",
-        "tracker-miner-fs-3.service",
-    ] {
-        assert!(
-            wants.contains(&wanted.to_string()),
-            "the target wants {wanted}"
-        );
-    }
+    assert!(values(&target, "Wants").contains(&"graphical-session-pre.target".to_string()));
     assert!(values(&target, "After").contains(&"graphical-session-pre.target".to_string()));
     // The launcher starts it; nothing enables it.
     let text = read("packaging/session/better-os-session.target");
     assert!(!sections(&text).contains(&"Install".to_string()));
     assert!(values(&target, "RefuseManualStart").is_empty());
+}
+
+/// Ticket 203's second review: a condition skips only its own unit, never
+/// what it wants (systemd.unit(5)), so the target's condition did not keep
+/// the XDG autostart target and Tracker from starting when something
+/// started the target under GNOME. Every unit the target wants carries the
+/// condition itself; the two that cannot are wanted by a second target that
+/// only the launcher starts, after the first.
+#[test]
+fn autostart_and_tracker_are_pulled_in_only_by_the_launchers_second_target() {
+    let target = target();
+    for unconditioned in ["xdg-desktop-autostart.target", "tracker-miner-fs-3.service"] {
+        assert!(
+            !values(&target, "Wants").contains(&unconditioned.to_string())
+                && !values(&target, "Requires").contains(&unconditioned.to_string()),
+            "the session's target would start {unconditioned} under GNOME"
+        );
+    }
+    // Everything the target wants skips itself outside the session.
+    for wanted in values(&target, "Wants") {
+        if wanted == "graphical-session-pre.target" {
+            // GNOME's own login starts it anyway; it starts nothing of ours
+            // but the leftovers unit, which is meant to run there.
+            continue;
+        }
+        let lines = unit_lines(&read(&format!("packaging/session/{wanted}")));
+        assert_eq!(
+            values(&lines, "ConditionPathExists"),
+            vec![IN_SESSION],
+            "{wanted} would start under GNOME with the target"
+        );
+    }
+    let second = autostart_target();
+    let wants = values(&second, "Wants");
+    for wanted in ["xdg-desktop-autostart.target", "tracker-miner-fs-3.service"] {
+        assert!(wants.contains(&wanted.to_string()), "it wants {wanted}");
+    }
+    assert_eq!(values(&second, "ConditionPathExists"), vec![IN_SESSION]);
+    assert_eq!(values(&second, "PartOf"), vec![session_launcher::TARGET]);
+    assert!(values(&second, "After").contains(&session_launcher::TARGET.to_string()));
+    let text = read("packaging/session/better-os-session-autostart.target");
+    assert!(!sections(&text).contains(&"Install".to_string()));
+    assert!(installed_data().iter().any(|(source, installed)| {
+        source == "packaging/session/better-os-session-autostart.target"
+            && installed
+                == &format!(
+                    "usr/lib/systemd/user/{}",
+                    session_launcher::AUTOSTART_TARGET
+                )
+    }));
+    // No unit of the package names the second target: only the launcher
+    // starts it ([`session_launcher::lifecycle::begin`]).
+    for unit in SESSION_UNITS.iter().chain([
+        &session_launcher::GUARD_UNIT,
+        &session_launcher::LEFTOVERS_UNIT,
+    ]) {
+        assert!(
+            !read(&format!("packaging/session/{unit}"))
+                .contains(session_launcher::AUTOSTART_TARGET),
+            "{unit}"
+        );
+    }
+    assert!(
+        !read("packaging/session/better-os-session.target")
+            .lines()
+            .filter(|line| !line.starts_with('#'))
+            .any(|line| line.contains(session_launcher::AUTOSTART_TARGET))
+    );
 }
 
 #[test]
@@ -120,9 +184,16 @@ fn the_target_wants_nothing_it_would_be_ordered_after_in_a_cycle() {
     // ordered after it. Autostart entries are After=graphical-session.target,
     // which is after this target: without Before= the implicit order is a
     // cycle, and systemd broke it on Zorin OS 18.1 by dropping every
-    // autostart entry.
+    // autostart entry. The target that wants them is ordered before them.
+    assert!(
+        values(&autostart_target(), "Before").contains(&"xdg-desktop-autostart.target".to_string())
+    );
     let target = target();
-    assert!(values(&target, "Before").contains(&"xdg-desktop-autostart.target".to_string()));
+    assert!(
+        values(&target, "Wants")
+            .iter()
+            .all(|wanted| wanted != "xdg-desktop-autostart.target")
+    );
     // Each unit of the session it wants is ordered after it.
     for unit in SESSION_UNITS.iter().chain([&session_launcher::GUARD_UNIT]) {
         if *unit == session_launcher::GUARD_UNIT {
@@ -155,6 +226,10 @@ fn nothing_of_the_session_starts_outside_it() {
         )
     );
     assert_eq!(values(&target(), "ConditionPathExists"), vec![IN_SESSION]);
+    assert_eq!(
+        values(&autostart_target(), "ConditionPathExists"),
+        vec![IN_SESSION]
+    );
     for unit in SESSION_UNITS.iter().chain([&session_launcher::GUARD_UNIT]) {
         let lines = unit_lines(&read(&format!("packaging/session/{unit}")));
         assert_eq!(
@@ -204,6 +279,9 @@ fn the_leftovers_unit_is_the_one_that_runs_in_any_session() {
         values(&lines, "ExecStart"),
         vec![session_launcher::INSTALLED_PATH, "--leftovers"]
     );
+    // graphical-session-pre.target waits for it: a hung call must not hold a
+    // GNOME login up for ever (a oneshot has no start limit by default).
+    assert_eq!(values(&lines, "TimeoutStartSec"), vec!["15s"]);
     assert!(
         common::read("packaging/build-deb.sh")
             .contains("PACKAGE_ALWAYS_ON_UNITS=\"better-os-session-leftovers.service\""),

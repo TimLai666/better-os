@@ -97,7 +97,8 @@ required_data_files() {
                 usr/share/icons/hicolor/scalable/apps/better-manager.svg \
                 usr/lib/systemd/user/better-window-attention.service \
                 usr/share/dbus-1/services/org.betteros.WindowAttention1.service \
-                usr/lib/tmpfiles.d/better-manager.conf
+                usr/lib/tmpfiles.d/better-manager.conf \
+                usr/share/dconf/profile/betteros-default
             ;;
         better-monitor)
             printf '%s\n' \
@@ -1015,7 +1016,7 @@ if [[ "$RELEASE_TARGET" != ubuntu-22.04 ]]; then
         cosmic-idle cosmic-osd cosmic-randr cosmic-settings cosmic-settings-daemon \
         cosmic-theme-bundles pop-sound-theme xdg-desktop-portal-cosmic \
         fcitx5 fcitx5-chewing fcitx5-frontend-gtk3 fcitx5-frontend-gtk4 fcitx5-frontend-qt5 \
-        fcitx5-config-qt xdg-desktop-portal-gtk gnome-keyring playerctl better-launcher \
+        fcitx5-config-qt xdg-desktop-portal-gtk gnome-keyring playerctl better-launcher better-manager \
         gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
         libfontconfig1 libwayland-client0 libwayland-egl1 libwayland-cursor0; do
         if ! printf '%s\n' "$session_depends" | grep -Eq "(^|,)[[:space:]]*${required_dependency}([[:space:]]|,|$)"; then
@@ -1054,6 +1055,7 @@ if [[ "$RELEASE_TARGET" != ubuntu-22.04 ]]; then
         usr/libexec/better-os/session/start \
         usr/share/wayland-sessions/better-os.desktop \
         usr/lib/systemd/user/better-os-session.target \
+        usr/lib/systemd/user/better-os-session-autostart.target \
         usr/lib/systemd/user/tracker-miner-fs-3.service.d/better-os-session.conf \
         usr/share/dconf/profile/betteros \
         usr/share/xdg-desktop-portal/betteros-portals.conf \
@@ -1107,11 +1109,30 @@ if [[ "$RELEASE_TARGET" != ubuntu-22.04 ]]; then
     for line in \
         'BindsTo=graphical-session.target' \
         'Wants=graphical-session-pre.target' \
+        'ConditionPathExists=%t/better-os/session/restore.json'; do
+        grep -qxF "$line" "$session_target" || {
+            printf 'better-os-session.target does not say %s\n' "$line" >&2
+            exit 1
+        }
+    done
+    # A condition does not cover what a unit wants, so the XDG autostart
+    # target and Tracker, which carry no condition of ours, are wanted only by
+    # the second target the launcher starts, never by the first, which a
+    # start under GNOME would then pull them in with.
+    if grep -qE '^(Wants|Requires)=(xdg-desktop-autostart\.target|tracker-miner-fs-3\.service)$' \
+        "$session_target"; then
+        printf 'better-os-session.target pulls in autostart or Tracker unconditioned\n' >&2
+        exit 1
+    fi
+    autostart_target="$session_extract/usr/lib/systemd/user/better-os-session-autostart.target"
+    for line in \
+        'PartOf=better-os-session.target' \
+        'ConditionPathExists=%t/better-os/session/restore.json' \
         'Wants=xdg-desktop-autostart.target' \
         'Before=xdg-desktop-autostart.target' \
         'Wants=tracker-miner-fs-3.service'; do
-        grep -qxF "$line" "$session_target" || {
-            printf 'better-os-session.target does not say %s\n' "$line" >&2
+        grep -qxF "$line" "$autostart_target" || {
+            printf 'better-os-session-autostart.target does not say %s\n' "$line" >&2
             exit 1
         }
     done
@@ -1188,10 +1209,13 @@ if [[ "$RELEASE_TARGET" != ubuntu-22.04 ]]; then
         printf 'The leftovers unit is not enabled for every person at install\n' >&2
         exit 1
     }
-    grep -qxF 'user-db:user' "$session_extract/usr/share/dconf/profile/betteros-default" || {
-        printf 'The default-equivalent dconf profile is missing\n' >&2
+    # dconf's default-equivalent profile, which D-Bus activation names after
+    # the session, ships in better-manager (which the session depends on) so
+    # it never leaves with the session.
+    if [[ -e "$session_extract/usr/share/dconf/profile/betteros-default" ]]; then
+        printf 'betteros-default must ship in better-manager, not in %s\n' "$session_name" >&2
         exit 1
-    }
+    fi
     assert_nothing_is_enabled_at_install "$session_name" "$session_extract"
     assert_user_units_restart_on_upgrade "$session_name" "$session_path" "$session_extract"
     printf 'Verified %s (%s)\n' "$session_path" "$EXPECTED_ARCH"

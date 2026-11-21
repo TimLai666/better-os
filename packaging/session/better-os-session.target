@@ -10,16 +10,13 @@ BindsTo=graphical-session.target
 Before=graphical-session.target
 Wants=graphical-session-pre.target
 After=graphical-session-pre.target
-Wants=xdg-desktop-autostart.target
-# Before, never after: a target is ordered after what it wants unless told
-# otherwise, and the autostart entries' units are After=graphical-session.target,
-# which is after this target, so the implicit order is a cycle and systemd
-# drops every autostart entry to break it (ticket 203, seen on Zorin OS 18.1).
-Before=xdg-desktop-autostart.target
 # Only inside a Better OS session: the launcher writes its record before it
-# starts the target and every way the session ends takes it away, so a
-# start under GNOME (by hand, or by a manager that enables every unit of a
-# package) does nothing.
+# starts the target and every way the session ends takes it away. A
+# condition skips only this unit and not what it wants (systemd.unit(5)), so
+# everything wanted here carries the same condition and skips itself too,
+# and the XDG autostart target and Tracker, which cannot, are wanted by
+# better-os-session-autostart.target, which only the launcher starts. A
+# start of this target under GNOME therefore starts nothing.
 ConditionPathExists=%t/better-os/session/restore.json
 # The guard runs as long as the launcher; when the launcher is gone,
 # however it went, the guard stops the target. Not BindsTo=: an update of
@@ -34,6 +31,3 @@ Wants=better-os-session-osd.service
 Wants=better-os-session-idle.service
 Wants=better-os-session-background.service
 Wants=better-os-session-input-method.service
-# The file search index, where it is installed. Its own unit is
-# WantedBy=gnome-session.target only, so nothing else starts it here.
-Wants=tracker-miner-fs-3.service

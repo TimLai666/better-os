@@ -80,7 +80,20 @@ pub fn write(runtime_dir: &Path, record: &Record) -> io::Result<()> {
 
 /// Reads the record without taking it.
 pub fn read(runtime_dir: &Path) -> Option<Record> {
-    serde_json::from_slice(&fs::read(path(runtime_dir)).ok()?).ok()
+    parse(&fs::read(path(runtime_dir)).ok()?)
+}
+
+/// A record from its bytes, holding only the names the session uses
+/// ([`Import::known_only`]): the rest is dropped as it is read, so nothing
+/// that reads a record can put another name in the user manager or D-Bus
+/// activation (ticket 203's second review).
+fn parse(bytes: &[u8]) -> Option<Record> {
+    let mut record: Record = serde_json::from_slice(bytes).ok()?;
+    record.import = record.import.known_only();
+    record
+        .activation
+        .retain(|name, _| crate::environment::is_known(name));
+    Some(record)
 }
 
 /// Takes the record: renames it away first, so of several takers at once
@@ -90,9 +103,7 @@ pub fn take(runtime_dir: &Path) -> Option<Record> {
         .join(DIRECTORY)
         .join(format!("{FILE}.taken.{}", std::process::id()));
     fs::rename(path(runtime_dir), &taken).ok()?;
-    let record = fs::read(&taken)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok());
+    let record = fs::read(&taken).ok().and_then(|bytes| parse(&bytes));
     let _ = fs::remove_file(&taken);
     record
 }
@@ -163,6 +174,35 @@ mod tests {
             .unwrap()
             .collect();
         assert!(left.is_empty(), "nothing is left behind: {left:?}");
+    }
+
+    #[test]
+    fn a_record_holds_only_the_sessions_names_when_read() {
+        let runtime = tempfile::tempdir().unwrap();
+        let mut written = record(42, 7);
+        written
+            .import
+            .set
+            .insert("LD_PRELOAD".into(), "/tmp/x.so".into());
+        written.import.unset.push("PATH".into());
+        written
+            .import
+            .restore_set
+            .insert("PATH".into(), "/tmp".into());
+        written.import.restore_unset.push("HOME".into());
+        written
+            .activation
+            .insert("LD_PRELOAD".into(), "/tmp/x.so".into());
+        written
+            .activation
+            .insert("DCONF_PROFILE".into(), "/default".into());
+        write(runtime.path(), &written).unwrap();
+        let mut expected = record(42, 7);
+        expected
+            .activation
+            .insert("DCONF_PROFILE".into(), "/default".into());
+        assert_eq!(read(runtime.path()), Some(expected.clone()));
+        assert_eq!(take(runtime.path()), Some(expected));
     }
 
     #[test]

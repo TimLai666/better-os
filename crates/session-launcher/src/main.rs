@@ -4,7 +4,7 @@
 //! one loop.
 
 use std::collections::{BTreeMap, HashMap};
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsFd as _, AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::fs::DirBuilderExt as _;
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt as _;
@@ -122,31 +122,26 @@ fn main() -> ExitCode {
     session.run(sender, events)
 }
 
+/// Blocks the stop signals and reports the first one as an event. The
+/// signal is watched through a `signalfd` that is polled and never read, so
+/// it stays pending ([`process::pending_stop_signal`]): if the launcher
+/// `exec`s its updated program at that moment, the signal crosses the exec
+/// and the new program sees it at once (ticket 203's second review). One
+/// signal ends the session, so the thread stops after the first.
 fn take_signals(sender: Sender<Event>) -> std::io::Result<()> {
-    // SAFETY: the set is initialized by sigemptyset before use, and the mask
-    // is changed before any other thread is started.
-    let set = unsafe {
-        let mut set: libc::sigset_t = std::mem::zeroed();
-        libc::sigemptyset(&mut set);
-        for signal in [libc::SIGTERM, libc::SIGINT, libc::SIGHUP] {
-            libc::sigaddset(&mut set, signal);
-        }
-        if libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut()) != 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-        set
-    };
+    let set = process::stop_signal_set();
+    // SAFETY: `set` is initialized, and the mask is changed before any other
+    // thread is started, so every thread inherits it.
+    if unsafe { libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut()) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let fd = process::stop_signal_fd()?;
     std::thread::Builder::new()
         .name("signals".into())
         .spawn(move || {
-            loop {
-                let mut received = 0;
-                // SAFETY: `set` is a valid, initialized signal set.
-                if unsafe { libc::sigwait(&set, &mut received) } == 0
-                    && sender.send(Event::Signal(received)).is_err()
-                {
-                    return;
-                }
+            if let Ok(true) = process::wait_readable(fd.as_fd(), None) {
+                let signal = process::pending_stop_signal().unwrap_or(libc::SIGTERM);
+                let _ = sender.send(Event::Signal(signal));
             }
         })?;
     Ok(())
@@ -255,11 +250,13 @@ fn put_back_if_orphaned(bus: &Bus, runtime: &std::path::Path) {
         "the session of launcher {} ended without it; putting back what it left",
         found.leader
     ));
-    if bus.is_running(session_launcher::TARGET).unwrap_or(false) {
-        stop_orphaned_session(bus);
+    if bus.is_running(session_launcher::TARGET).unwrap_or(true)
+        && let Err(problem) = stop_orphaned_session(bus)
+    {
+        log(problem);
     }
     if let Some(taken) = record::take(runtime) {
-        for problem in lifecycle::restore(bus, &taken.import, &taken.activation) {
+        for problem in lifecycle::put_back_leftovers(bus, &taken.import, &taken.activation) {
             log(problem);
         }
     }
@@ -287,11 +284,18 @@ fn guard_mode() -> ExitCode {
     // The guard stops the target itself rather than the target being bound
     // to it: a restart of the guard (an update of the package restarts its
     // running units) must not take the session down.
-    match Bus::connect() {
-        Ok(bus) => stop_orphaned_session(&bus),
-        Err(error) => log(format!("the session bus is not reachable: {error}")),
+    // A failure here is the unit's failure, so `Restart=on-failure` tries
+    // again and the journal shows the unit failed.
+    let stopped = Bus::connect()
+        .map_err(|error| format!("the session bus is not reachable: {error}"))
+        .and_then(|bus| stop_orphaned_session(&bus));
+    match stopped {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(problem) => {
+            log(problem);
+            ExitCode::FAILURE
+        }
     }
-    ExitCode::SUCCESS
 }
 
 /// Stops the target of a session whose launcher is gone, and then
@@ -300,17 +304,17 @@ fn guard_mode() -> ExitCode {
 /// `StopWhenUnneeded=`; after a launcher was killed, ticket 203's VM found
 /// `graphical-session.target` still active with nothing binding it, so the
 /// guard stops it itself, and never under a GNOME session that binds it.
-fn stop_orphaned_session(bus: &Bus) {
-    if let Err(error) = bus.stop_unit(session_launcher::TARGET) {
-        log(format!("stopping {}: {error}", session_launcher::TARGET));
-    }
+fn stop_orphaned_session(bus: &Bus) -> Result<(), String> {
+    bus.stop_unit(session_launcher::TARGET)
+        .map_err(|error| format!("stopping {}: {error}", session_launcher::TARGET))?;
     for _ in 0..50 {
-        if !bus.is_running(session_launcher::TARGET).unwrap_or(false) {
+        if !bus.is_running(session_launcher::TARGET).unwrap_or(true) {
             break;
         }
         std::thread::sleep(Duration::from_millis(100));
     }
     stop_graphical_session_if_unheld(bus);
+    Ok(())
 }
 
 /// The second half of [`stop_orphaned_session`]. The guard itself is
@@ -358,7 +362,19 @@ fn restore_mode() -> ExitCode {
         return ExitCode::SUCCESS;
     };
     let leader_alive = record::leader_alive(&found, std::path::Path::new("/proc"));
-    let target_staying = bus.is_staying(session_launcher::TARGET).unwrap_or(false);
+    // A state that cannot be read counts as a session still running: putting
+    // a live session's environment back would break it, and a record left
+    // too long is put back by the leftovers unit at the next login.
+    let target_staying = match bus.is_staying(session_launcher::TARGET) {
+        Ok(staying) => staying,
+        Err(error) => {
+            log(format!(
+                "whether {} stays is unknown ({error}); the environment is left",
+                session_launcher::TARGET
+            ));
+            true
+        }
+    };
     if !record::session_over(leader_alive, target_staying) {
         return ExitCode::SUCCESS;
     }
@@ -784,6 +800,18 @@ impl Session {
             import: self.import.clone(),
             recorded: self.recorded,
         };
+        // A stop signal that came after the queue was looked at is still
+        // pending and crosses the exec ([`take_signals`]); one already here
+        // ends this program instead.
+        if let Some(number) = process::pending_stop_signal() {
+            log(format!(
+                "signal {number} came as the launcher was updated; the session ends"
+            ));
+            if let Some(fd) = socket {
+                let _ = process::set_close_on_exec(fd, true);
+            }
+            return;
+        }
         log("the launcher was updated; starting the new program in its place");
         // Called from the main thread, so the children's parent-death signal,
         // which follows this thread, carries over to the new program.
@@ -960,7 +988,8 @@ impl Bus {
     }
 
     /// Whether a unit other than `except` that binds `unit` (`BoundBy=`, such
-    /// as GNOME's `gnome-session.target`) runs.
+    /// as GNOME's `gnome-session.target`) runs or has a start job queued
+    /// ([`lifecycle::holds`]).
     fn held_by_another(&self, unit: &str, except: &str) -> Result<bool, String> {
         let path = self
             .manager()?
@@ -975,11 +1004,51 @@ impl Bus {
         .and_then(|proxy| proxy.get_property("BoundBy"))
         .map_err(|error| error.to_string())?;
         for other in bound_by.iter().filter(|other| other.as_str() != except) {
-            if self.is_running(other)? {
+            if self.holds(other)? {
                 return Ok(true);
             }
         }
         Ok(false)
+    }
+
+    /// [`lifecycle::holds`] for one unit, read from the user manager.
+    fn holds(&self, unit: &str) -> Result<bool, String> {
+        let path = match self
+            .manager()?
+            .call::<_, _, OwnedObjectPath>("GetUnit", &(unit,))
+        {
+            Ok(path) => path,
+            Err(zbus::Error::MethodError(name, _, _)) if name.as_str().ends_with("NoSuchUnit") => {
+                return Ok(false);
+            }
+            Err(error) => return Err(error.to_string()),
+        };
+        let proxy = zbus::blocking::Proxy::new(
+            &self.connection,
+            "org.freedesktop.systemd1",
+            path,
+            "org.freedesktop.systemd1.Unit",
+        )
+        .map_err(|error| error.to_string())?;
+        let state: String = proxy
+            .get_property("ActiveState")
+            .map_err(|error| error.to_string())?;
+        let (job, job_path): (u32, OwnedObjectPath) = proxy
+            .get_property("Job")
+            .map_err(|error| error.to_string())?;
+        let job_type = (job != 0).then(|| {
+            // A job that finished between the two reads has no object left;
+            // its type is then unknown, which holds.
+            zbus::blocking::Proxy::new(
+                &self.connection,
+                "org.freedesktop.systemd1",
+                job_path,
+                "org.freedesktop.systemd1.Job",
+            )
+            .and_then(|job| job.get_property::<String>("JobType"))
+            .unwrap_or_default()
+        });
+        Ok(lifecycle::holds(&state, job_type.as_deref()))
     }
 
     /// Whether the unit is active with no job queued for it: a target being

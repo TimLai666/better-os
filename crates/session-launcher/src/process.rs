@@ -59,6 +59,86 @@ pub fn with_parent_death_signal(command: &mut Command, signal: i32) -> &mut Comm
     }
 }
 
+/// The stop signals the launcher handles.
+pub const STOP_SIGNALS: [i32; 3] = [libc::SIGTERM, libc::SIGINT, libc::SIGHUP];
+
+/// [`STOP_SIGNALS`] as a set.
+pub fn stop_signal_set() -> libc::sigset_t {
+    // SAFETY: the set is initialized by sigemptyset before sigaddset.
+    unsafe {
+        let mut set: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut set);
+        for signal in STOP_SIGNALS {
+            libc::sigaddset(&mut set, signal);
+        }
+        set
+    }
+}
+
+/// The first stop signal pending for the calling thread or the process.
+///
+/// The launcher never takes a stop signal off the pending set: it watches a
+/// [`stop_signal_fd`] with `poll` and never reads it. `execve(2)` keeps the
+/// mask and the pending set, so a stop signal that arrives while the
+/// launcher `exec`s its updated program is still pending in the new one,
+/// whose own descriptor is readable at once (ticket 203's second review).
+pub fn pending_stop_signal() -> Option<i32> {
+    // SAFETY: sigpending writes only to `pending`, which sigemptyset
+    // initialized.
+    unsafe {
+        let mut pending: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut pending);
+        if libc::sigpending(&mut pending) != 0 {
+            return None;
+        }
+        STOP_SIGNALS
+            .into_iter()
+            .find(|signal| libc::sigismember(&pending, *signal) == 1)
+    }
+}
+
+/// A close-on-exec `signalfd` for the stop signals, which the caller has
+/// blocked. It is readable while one is pending.
+pub fn stop_signal_fd() -> std::io::Result<std::os::fd::OwnedFd> {
+    use std::os::fd::FromRawFd as _;
+    let set = stop_signal_set();
+    // SAFETY: `set` is initialized; -1 asks for a new descriptor.
+    let raw = unsafe { libc::signalfd(-1, &set, libc::SFD_CLOEXEC | libc::SFD_NONBLOCK) };
+    if raw < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: `raw` is a new descriptor nothing else owns.
+    Ok(unsafe { std::os::fd::OwnedFd::from_raw_fd(raw) })
+}
+
+/// Waits until `fd` is readable, without reading it. `None` waits without
+/// end. Returns whether it became readable.
+pub fn wait_readable(
+    fd: std::os::fd::BorrowedFd<'_>,
+    timeout: Option<std::time::Duration>,
+) -> std::io::Result<bool> {
+    use std::os::fd::AsRawFd as _;
+    let mut poll = libc::pollfd {
+        fd: fd.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    let timeout = timeout.map_or(-1, |timeout| {
+        i32::try_from(timeout.as_millis()).unwrap_or(i32::MAX)
+    });
+    loop {
+        // SAFETY: one valid pollfd.
+        let ready = unsafe { libc::poll(&mut poll, 1, timeout) };
+        if ready >= 0 {
+            return Ok(ready > 0);
+        }
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() != Some(libc::EINTR) {
+            return Err(error);
+        }
+    }
+}
+
 /// Sets or clears `FD_CLOEXEC` on a descriptor this process owns.
 pub fn set_close_on_exec(fd: std::os::fd::RawFd, close: bool) -> std::io::Result<()> {
     // SAFETY: fcntl on a descriptor number; an invalid one is an error.
@@ -82,7 +162,7 @@ pub fn set_close_on_exec(fd: std::os::fd::RawFd, close: bool) -> std::io::Result
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::fd::AsRawFd as _;
+    use std::os::fd::{AsFd as _, AsRawFd as _};
     use std::time::{Duration, Instant};
 
     #[test]
@@ -164,5 +244,68 @@ mod tests {
         })
         .join()
         .unwrap();
+    }
+
+    #[test]
+    fn a_watched_stop_signal_stays_pending_until_taken() {
+        // On a thread of its own, with the signal sent to that thread only:
+        // the harness's other threads do not block SIGTERM.
+        std::thread::spawn(|| {
+            let set = stop_signal_set();
+            // SAFETY: an initialized set, this thread's own mask.
+            unsafe {
+                assert_eq!(
+                    libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut()),
+                    0
+                );
+            }
+            let fd = stop_signal_fd().unwrap();
+            assert_eq!(pending_stop_signal(), None);
+            assert!(!wait_readable(fd.as_fd(), Some(Duration::ZERO)).unwrap());
+            // SAFETY: a signal to this very thread, which blocks it.
+            unsafe {
+                libc::pthread_kill(libc::pthread_self(), libc::SIGHUP);
+            }
+            assert!(wait_readable(fd.as_fd(), Some(Duration::from_secs(5))).unwrap());
+            // Looked at twice, still there: nothing took it.
+            assert_eq!(pending_stop_signal(), Some(libc::SIGHUP));
+            assert!(wait_readable(fd.as_fd(), Some(Duration::ZERO)).unwrap());
+            assert_eq!(pending_stop_signal(), Some(libc::SIGHUP));
+            // Taken, so the thread ends clean.
+            let mut taken = 0;
+            // SAFETY: an initialized set.
+            assert_eq!(unsafe { libc::sigwait(&set, &mut taken) }, 0);
+            assert_eq!(taken, libc::SIGHUP);
+            assert_eq!(pending_stop_signal(), None);
+        })
+        .join()
+        .unwrap();
+    }
+
+    #[test]
+    fn a_pending_stop_signal_crosses_an_exec() {
+        // The child blocks SIGTERM, has one sent to itself, and execs `grep`
+        // through `Command`'s own exec path, the one the launcher's restart
+        // in place takes: the signal is still pending and blocked there.
+        let mut command = Command::new("grep");
+        command.args(["-E", "^(SigBlk|ShdPnd):", "/proc/self/status"]);
+        // SAFETY: sigemptyset, sigaddset, pthread_sigmask, getpid and kill
+        // are async-signal-safe.
+        unsafe {
+            command.pre_exec(|| {
+                let mut set: libc::sigset_t = std::mem::zeroed();
+                libc::sigemptyset(&mut set);
+                libc::sigaddset(&mut set, libc::SIGTERM);
+                if libc::pthread_sigmask(libc::SIG_SETMASK, &set, std::ptr::null_mut()) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                libc::kill(libc::getpid(), libc::SIGTERM);
+                Ok(())
+            });
+        }
+        let output = command.output().unwrap();
+        let text = String::from_utf8(output.stdout).unwrap();
+        assert!(text.contains("ShdPnd:\t0000000000004000"), "{text}");
+        assert!(text.contains("SigBlk:\t0000000000004000"), "{text}");
     }
 }

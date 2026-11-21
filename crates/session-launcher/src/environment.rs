@@ -154,6 +154,23 @@ impl Import {
     pub fn restore_assignments(&self) -> Vec<String> {
         assignments(&self.restore_set)
     }
+
+    /// The import with every name outside [`IMPORTED`] and [`WITHHELD`]
+    /// dropped. A record is read from a file in the runtime directory, and
+    /// whatever it holds besides the session's own names (`LD_PRELOAD`,
+    /// `PATH`) must never reach the user manager.
+    pub fn known_only(mut self) -> Import {
+        self.set.retain(|name, _| is_known(name));
+        self.unset.retain(|name| is_known(name));
+        self.restore_set.retain(|name, _| is_known(name));
+        self.restore_unset.retain(|name| is_known(name));
+        self
+    }
+}
+
+/// Whether the session ever imports or withholds `name`.
+pub fn is_known(name: &str) -> bool {
+    IMPORTED.contains(&name) || WITHHELD.contains(&name)
 }
 
 /// `NAME=value` for each entry.
@@ -339,6 +356,76 @@ pub fn activation_restore(import: &Import, dconf_default: &str) -> BTreeMap<Stri
         }
     }
     values
+}
+
+/// What putting back a record left by a session whose launcher is gone may
+/// touch, given the user manager's environment `now`. Another session may
+/// have started since (the leftovers unit runs inside a GNOME login, after
+/// gnome-session imported its own values), so a variable is put back only
+/// while its value is one only the session sets ([`is_session_value`]);
+/// every other value may be someone else's and stays, a display or an input
+/// method variable equal to the session's included (ticket 203's second
+/// review, P2). `XDG_DATA_DIRS` still holding the session's entry loses only
+/// that entry. In D-Bus activation, which cannot be read, only
+/// `DCONF_PROFILE` is set, to the record's value that behaves as unset:
+/// nothing but the session sets it, and a GNOME login sets its own
+/// `XDG_DATA_DIRS` there.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Leftovers {
+    pub set: BTreeMap<String, String>,
+    pub unset: Vec<String>,
+    pub activation: BTreeMap<String, String>,
+}
+
+pub fn leftover_restore(
+    import: &Import,
+    activation: &BTreeMap<String, String>,
+    now: &BTreeMap<String, String>,
+) -> Leftovers {
+    let mut leftovers = Leftovers::default();
+    // Only a value nobody but the session sets is known to be the session's.
+    // A display (`:0`, `wayland-0`) or an input method variable (`fcitx`)
+    // may as well be the starting session's own, which then imports its
+    // value anyway, so those are left.
+    let still_ours = |name: &str| {
+        now.get(name)
+            .is_some_and(|value| is_session_value(name, value))
+    };
+    let names = import
+        .restore_set
+        .keys()
+        .chain(import.restore_unset.iter())
+        .chain(import.set.keys());
+    let mut seen = std::collections::BTreeSet::new();
+    for name in names {
+        if !seen.insert(name.as_str()) || !still_ours(name) {
+            continue;
+        }
+        if name == "XDG_DATA_DIRS" {
+            match now
+                .get(name)
+                .and_then(|value| without_session_data_dir(value))
+            {
+                Some(rest) => {
+                    leftovers.set.insert(name.clone(), rest);
+                }
+                None => leftovers.unset.push(name.clone()),
+            }
+            continue;
+        }
+        match import.restore_set.get(name) {
+            Some(before) if !is_session_value(name, before) => {
+                leftovers.set.insert(name.clone(), before.clone());
+            }
+            _ => leftovers.unset.push(name.clone()),
+        }
+    }
+    if let Some(profile) = activation.get("DCONF_PROFILE") {
+        leftovers
+            .activation
+            .insert("DCONF_PROFILE".to_string(), profile.clone());
+    }
+    leftovers
 }
 
 #[cfg(test)]
@@ -608,5 +695,96 @@ mod tests {
             assignments(&parsed),
             vec!["A=1".to_string(), "B=x=y".to_string()]
         );
+    }
+
+    /// The import of a session that started on a fresh user manager.
+    fn fresh_session_import() -> Import {
+        let before = parse_assignments(&[
+            "XDG_DATA_DIRS=/usr/local/share/:/usr/share/:/var/lib/snapd/desktop".to_string(),
+        ]);
+        let session = lookup(&[
+            ("WAYLAND_DISPLAY", "wayland-1"),
+            ("DISPLAY", ":0"),
+            ("XDG_CURRENT_DESKTOP", "BetterOS:COSMIC"),
+            ("XDG_SESSION_DESKTOP", "better-os"),
+            ("DESKTOP_SESSION", "better-os"),
+            ("DCONF_PROFILE", "betteros"),
+            (
+                "XDG_DATA_DIRS",
+                "/usr/share/better-os/session:/usr/local/share/:/usr/share/:/var/lib/snapd/desktop",
+            ),
+            ("QT_IM_MODULE", "fcitx"),
+            ("XMODIFIERS", "@im=fcitx"),
+        ]);
+        plan_import(session, &before)
+    }
+
+    #[test]
+    fn leftovers_put_back_under_a_starting_gnome_leave_gnomes_values_alone() {
+        let import = fresh_session_import();
+        let activation = activation_restore(&import, "/usr/share/dconf/profile/betteros-default");
+        // gnome-session has imported its own values; the session's
+        // DCONF_PROFILE and its fcitx variables are still there.
+        let now = parse_assignments(&[
+            "XDG_CURRENT_DESKTOP=ubuntu:GNOME".to_string(),
+            "XDG_SESSION_DESKTOP=ubuntu".to_string(),
+            "DESKTOP_SESSION=ubuntu".to_string(),
+            "WAYLAND_DISPLAY=wayland-0".to_string(),
+            "DISPLAY=:0".to_string(),
+            "XDG_DATA_DIRS=/usr/share/ubuntu:/usr/share/gnome:/usr/local/share/:/usr/share/"
+                .to_string(),
+            "QT_IM_MODULE=ibus".to_string(),
+            "XMODIFIERS=@im=fcitx".to_string(),
+            "DCONF_PROFILE=betteros".to_string(),
+        ]);
+        let left = leftover_restore(&import, &activation, &now);
+        assert_eq!(left.unset, vec!["DCONF_PROFILE".to_string()]);
+        assert!(left.set.is_empty(), "{:?}", left.set);
+        // DISPLAY=:0 and XMODIFIERS=@im=fcitx equal the session's values
+        // but may as well be GNOME's own: they are left.
+        for gnome in [
+            "XDG_CURRENT_DESKTOP",
+            "XDG_SESSION_DESKTOP",
+            "DESKTOP_SESSION",
+            "WAYLAND_DISPLAY",
+            "DISPLAY",
+            "XDG_DATA_DIRS",
+            "QT_IM_MODULE",
+            "XMODIFIERS",
+        ] {
+            assert!(
+                !left.unset.contains(&gnome.to_string()),
+                "{gnome} is GNOME's"
+            );
+            assert!(!left.set.contains_key(gnome), "{gnome} is GNOME's");
+        }
+        assert_eq!(
+            left.activation.get("DCONF_PROFILE").map(String::as_str),
+            Some("/usr/share/dconf/profile/betteros-default")
+        );
+        assert!(!left.activation.contains_key("XDG_DATA_DIRS"));
+    }
+
+    #[test]
+    fn leftovers_with_nobody_else_there_are_all_put_back() {
+        let import = fresh_session_import();
+        let now: BTreeMap<String, String> = import.set.clone();
+        let left = leftover_restore(&import, &BTreeMap::new(), &now);
+        assert_eq!(
+            left.set.get("XDG_DATA_DIRS").map(String::as_str),
+            Some("/usr/local/share/:/usr/share/:/var/lib/snapd/desktop")
+        );
+        for name in [
+            "DCONF_PROFILE",
+            "XDG_CURRENT_DESKTOP",
+            "XDG_SESSION_DESKTOP",
+            "DESKTOP_SESSION",
+        ] {
+            assert!(left.unset.contains(&name.to_string()), "{name}");
+        }
+        // Not provably the session's, so left even here (the next session
+        // imports its own).
+        assert!(!left.unset.contains(&"WAYLAND_DISPLAY".to_string()));
+        assert!(!left.unset.contains(&"QT_IM_MODULE".to_string()));
     }
 }

@@ -12,6 +12,10 @@ Before=graphical-session-pre.target
 [Service]
 Type=oneshot
 ExecStart=/usr/libexec/better-os/session/start --leftovers
+# graphical-session-pre.target waits for it, so a hung bus call must not hold
+# a login up: it waits up to 5 s for the old target to stop and is killed
+# after 15 s in all, and the login goes on (a oneshot's default is no limit).
+TimeoutStartSec=15s
 
 [Install]
 WantedBy=graphical-session-pre.target
