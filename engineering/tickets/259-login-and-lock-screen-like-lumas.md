@@ -1,7 +1,7 @@
 # Ticket 259 — A Better OS login screen laid out like Luma's lock screen
 
 **Blocked by:** 203 (the session package) for running it; none for the design
-**Blocked:** on the owner's answers to L3, L4, L5, L6 and L7 at the top of `design/login-screen-spec.md` (L1, L2 and L8 were answered on 2026-11-21)
+**Blocked:** on tickets 260 to 281, which build it (the owner answered L1, L2 and L8 on 2026-11-21 and L3 to L7 on 2026-11-22, each as recommended)
 
 ## Why
 

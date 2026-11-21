@@ -1,7 +1,7 @@
 # Ticket 264 — `better-greeter`: the Better OS login screen on greetd
 
 **Spec:** `design/login-screen-spec.md` sections 3, 5.2, 5.3, 5.5 to 5.8; `engineering/specs/login-screen-security.md`; ADR 0044
-**Blocked by:** 260, 262, 263, 269, 279, and the owner's decision L7 (L1 is answered: B)
+**Blocked by:** 260, 262, 263, 269, 279 (L1 is answered B and L7 is answered (a), 2026-11-22)
 
 ## Why
 

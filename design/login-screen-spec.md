@@ -46,8 +46,9 @@ file decides layout and copy.
 ## 0. Decisions that are the owner's
 
 **Decided by the owner on 2026-11-21: L1 = (B), L2 = (a), L8 = (a), each as
-recommended.** L3 to L7 are still open; each blocks only the tickets named
-with it.
+recommended; and on 2026-11-22: L3 = (b), L4 = (a) with the setting, L5 = (a),
+L6 = (a), L7 = (a), each as recommended.** Every decision in this table is
+answered.
 
 A review on 2026-11-22 corrected the design without changing these answers:
 L1's row says "a login prompt within 60 seconds"; that figure counted
