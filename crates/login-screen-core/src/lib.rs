@@ -17,6 +17,8 @@
 //!   chooser, the session menu, the layout indicator, PAM's words, the power
 //!   menu;
 //! - [`lock_content`]: the lock screen's notifications and media row;
+//! - [`status`]: the status row's battery, from the one battery rule
+//!   (`hardware_core::charge_state::battery_look`);
 //! - [`clock`]: the date and time;
 //! - [`copy`]: every sentence of the spec's tables in zh-TW and English.
 
@@ -31,6 +33,7 @@ pub mod pam;
 pub mod power;
 pub mod secret;
 pub mod sessions;
+pub mod status;
 pub mod view;
 pub mod wait;
 

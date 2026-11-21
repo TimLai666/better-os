@@ -142,8 +142,6 @@ copy_table! {
     accessibility,
     network_connected,
     network_not_connected,
-    battery,
-    battery_charging,
     power,
 
     // ---- Several accounts (3.5) ------------------------------------------
@@ -264,8 +262,6 @@ pub static ZH_TW: Copy = Copy {
     accessibility: "協助工具",
     network_connected: "網路：已連線到 {name}",
     network_not_connected: "網路：未連線",
-    battery: "電池 {n}%",
-    battery_charging: "電池 {n}%，充電中",
     power: "電源",
 
     switch_account: "切換帳號",
@@ -371,8 +367,6 @@ pub static EN_US: Copy = Copy {
     accessibility: "Accessibility",
     network_connected: "Network: connected to {name}",
     network_not_connected: "Network: not connected",
-    battery: "Battery {n}%",
-    battery_charging: "Battery {n}%, charging",
     power: "Power",
 
     switch_account: "Switch account",

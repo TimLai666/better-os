@@ -357,7 +357,7 @@ the screen draws at 2 and is scaled down.
 | Wallpaper | full bleed on every output | Better OS's login artwork (L5); a gradient scrim from 45% black at the bottom start corner to clear at the middle, so white text reads on any picture |
 | Clock group | start 64, bottom 56; right-to-left mirrors it | weekday 120/120 weight 600; under it, 16 below, a row: time 56/64 weight 300 with tabular figures, the period (only for a 12-hour clock) 18/24 weight 600 at 75% white, 8 from the time and on the side the locale puts it (「下午 3:42」, "3:42 PM"), a 1 × 32 divider at 35% white 16 either side, the date 20/28 weight 400 at 90% white. White in both appearances, with a 0 2 24 shadow at 25% black. Below 1100 wide: weekday 88/88, time 44/52 |
 | Card | top 20, end 20, bottom 20 | width 480 at 1100 and wider, 440 below; radius 8 (a surface that floats, `DESIGN.md`); padding 24; fill: the flyout fill at 88% (`#f9f9f9` light, `#2c2c2c` dark) over the wallpaper blurred once at 32 px; 1 px control stroke; shadow 0 8 32 at the flyout shadow colour |
-| Status row | the card's top, end-aligned, 32 tall | 32 × 32 subtle buttons, 4 apart: keyboard layout (its short name, Body Strong 12), accessibility, network, battery with its percentage (Caption), a 1 × 16 divider, power |
+| Status row | the card's top, end-aligned, 32 tall | 32 × 32 subtle buttons, 4 apart: keyboard layout (its short name, Body Strong 12), accessibility, network, battery with its percentage (Caption; its picture, from `battery_look` like every Better OS battery icon), a 1 × 16 divider, power |
 | Identity group | centred vertically in the space between the status row and the bottom row | avatar 96 round (initial in Title 28 when there is no picture, on a fill derived from the account's name); 16 below it the name in Title 28/36 weight 600, one line, ellipsized; 4 below a Caption line in secondary text (section 3.3) |
 | Entry | 24 below the identity group, 320 wide, centred | a Fluent text field 320 × 36: placeholder, the reveal button 28 × 28 and the submit button 28 × 28 in the accent inside its end, radius 4, a 2 px accent bottom line while focused |
 | Message line | 8 below the field | Caption 12/16, centred, at most two lines; the critical colour after an error glyph for errors, secondary text with an information glyph for notices |
@@ -610,12 +610,16 @@ Enter submits. F10 or the menu key opens nothing (there is no menu bar).
 | Layout | 鍵盤配置：{layout} / Keyboard layout: {layout} |
 | Accessibility | 協助工具 / Accessibility |
 | Network | 網路：已連線到 {name} / Network: connected to {name}; 網路：未連線 / Network: not connected |
-| Battery | 電池 {n}% / Battery {n}%; 電池 {n}%，充電中 / Battery {n}%, charging |
+| Battery | the one battery rule's name (`hardware_core::charge_state::battery_look`, `engineering/specs/battery-charge-state.md`): 電池 {n}%，{state's words} / Battery {n}%: {state's words}, for example 電池 87%，充電中 / Battery 87%: Charging, 電池 80%，已接上電源，維持在 80% / Battery 80%: Plugged in, holding at 80% |
 | Power | 電源 / Power |
 | Clock group | the date and time spoken in full |
 
 Network and battery are read-only status, read from NetworkManager and
 UPower over the system bus; the login screen offers no network menu.
+Corrected on 2026-11-22 (ticket 260): the first version gave the battery
+words of its own (「電池 {n}%，充電中」 / "Battery {n}%, charging"), which
+could not say held at the limit, not charging or unknown and broke AGENTS.md's
+one battery rule; the battery's picture and name are now the shared ones.
 
 ### 3.16 Starting the session, and a session that does not start
 

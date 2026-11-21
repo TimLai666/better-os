@@ -80,6 +80,12 @@ each now written into the spec:
   `design/system-settings-spec.md` section 12, whose wording
   「在鎖定畫面顯示通知」 now matches this spec's 「在鎖定畫面上顯示通知」.
 
+The status row's battery has no words of its own: `status::battery` passes
+`hardware_core::charge_state::battery_look` through, whose new `spoken`
+form (「電池 87%，充電中」 / "Battery 87%: Charging") names the button;
+the spec's first battery copy was replaced by it (CI's `one_battery_rule`
+caught the crate's own strings on pull request 36).
+
 Unverified: the strings greetd 0.9.0 puts in an `auth_error` description
 (`pam::classify_refusal` matches both `pam_strerror`'s text and the return
 code's name); ticket 264 sees the real ones. Left to their tickets: drawing

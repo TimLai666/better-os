@@ -4421,6 +4421,7 @@ version = "0.2.16"
 dependencies = [
  "app-catalog-core",
  "better-core",
+ "hardware-core",
  "image",
  "libc",
  "serde",

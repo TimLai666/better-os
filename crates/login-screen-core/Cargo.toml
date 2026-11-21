@@ -19,6 +19,9 @@ license.workspace = true
 app-catalog-core.workspace = true
 # The one local-time conversion (ticket 146) the clock formats from.
 better-core.workspace = true
+# The one battery rule (`hardware_core::charge_state::battery_look`) the
+# status row's battery takes its picture, words and name from.
+hardware-core.workspace = true
 # The avatar decoder, PNG and JPEG only, with the spec's limits
 # (section 5.8: at most 1 MiB and 1024 x 1024).
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
