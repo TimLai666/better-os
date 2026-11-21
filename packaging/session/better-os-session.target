@@ -11,6 +11,15 @@ Before=graphical-session.target
 Wants=graphical-session-pre.target
 After=graphical-session-pre.target
 Wants=xdg-desktop-autostart.target
+# Only inside a Better OS session: the launcher writes its record before it
+# starts the target and every way the session ends takes it away, so a
+# start under GNOME (by hand, or by a manager that enables every unit of a
+# package) does nothing.
+ConditionPathExists=%t/better-os/session/restore.json
+# The guard runs as long as the launcher; when the launcher is gone,
+# however it went, the guard ends and takes the target with it.
+BindsTo=better-os-session-guard.service
+After=better-os-session-guard.service
 # The session's COSMIC daemons and its input method. They are named here and
 # not through [Install] WantedBy=, which would need an enable step for each
 # person: installing the package is all it takes (AGENTS.md).

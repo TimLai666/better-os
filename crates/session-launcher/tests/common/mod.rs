@@ -81,6 +81,39 @@ pub fn session_depends() -> Vec<String> {
         .collect()
 }
 
+/// Each package's programs under `/usr/bin`, as build-deb.sh's
+/// `PACKAGE_BINARIES` lists them before its `make_package` call.
+pub fn programs_by_package() -> Vec<(String, String)> {
+    let script = read("packaging/build-deb.sh");
+    let mut found = Vec::new();
+    let mut rest = script.as_str();
+    while let Some(start) = rest.find("PACKAGE_BINARIES=(") {
+        let block = &rest[start..];
+        let end = block.find(')').expect("the list ends");
+        let list = &block[..end];
+        let after = &block[end..];
+        let package = after
+            .find("make_package ")
+            .map(|at| {
+                after[at + "make_package ".len()..]
+                    .split_whitespace()
+                    .next()
+                    .unwrap()
+                    .to_string()
+            })
+            .expect("every binary list belongs to a package");
+        for quoted in list.split('"').skip(1).step_by(2) {
+            if let Some((_, installed)) = quoted.split_once(':')
+                && let Some(program) = installed.strip_prefix("usr/bin/")
+            {
+                found.push((package.clone(), program.to_string()));
+            }
+        }
+        rest = &block[end..];
+    }
+    found
+}
+
 /// Every `binary:installed/path` a package of build-deb.sh installs.
 pub fn installed_binaries() -> Vec<String> {
     read("packaging/build-deb.sh")

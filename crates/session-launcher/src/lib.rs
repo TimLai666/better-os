@@ -26,10 +26,20 @@
 pub mod callers;
 pub mod children;
 pub mod compositor;
+pub mod dconf;
 pub mod environment;
 pub mod lifecycle;
 pub mod process;
+pub mod record;
 pub mod resume;
+
+/// The unit bound to the target that watches the launcher and puts the
+/// environment back when the target stops ([`record`]).
+pub const GUARD_UNIT: &str = "better-os-session-guard.service";
+
+/// The unit any session of the person starts, which puts back what a
+/// session that ended without its launcher left ([`record`]).
+pub const LEFTOVERS_UNIT: &str = "better-os-session-leftovers.service";
 
 /// The systemd user target the session's units hang from.
 pub const TARGET: &str = "better-os-session.target";

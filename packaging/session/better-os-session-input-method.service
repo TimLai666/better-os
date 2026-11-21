@@ -4,6 +4,7 @@ Description=Fcitx 5 input method in the Better OS session
 # through QT_IM_MODULE=fcitx, X11 through XMODIFIERS=@im=fcitx (ADR 0038 C4).
 PartOf=better-os-session.target
 After=better-os-session.target
+ConditionPathExists=%t/better-os/session/restore.json
 
 [Service]
 Slice=session.slice

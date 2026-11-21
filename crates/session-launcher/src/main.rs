@@ -5,6 +5,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::os::unix::fs::DirBuilderExt as _;
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt as _;
 use std::path::PathBuf;
@@ -18,9 +19,11 @@ use better_core::self_update::{
 use session_launcher::callers::{self, COSMIC_EXIT_CALLERS, LOGOUT_CALLERS};
 use session_launcher::children::{self, AfterExit, ChildSpec, Ending, Restarts};
 use session_launcher::compositor;
+use session_launcher::dconf;
 use session_launcher::environment::{self, Import};
 use session_launcher::lifecycle::{self, UserSession};
 use session_launcher::process;
+use session_launcher::record;
 use session_launcher::resume::{self, Resume};
 use zbus::fdo;
 use zbus::message::Header;
@@ -57,11 +60,15 @@ fn main() -> ExitCode {
             "--help" => {
                 println!(
                     "{}: the Better OS session, started by the display manager from \
-                     /usr/share/wayland-sessions/better-os.desktop. It takes no arguments.",
+                     /usr/share/wayland-sessions/better-os.desktop. It takes no arguments; \
+                     --guard, --restore and --leftovers are its units' own modes.",
                     session_launcher::INSTALLED_PATH
                 );
                 ExitCode::SUCCESS
             }
+            "--guard" => guard_mode(),
+            "--restore" => restore_mode(),
+            "--leftovers" => leftovers_mode(),
             other => {
                 eprintln!(
                     "better-os-session takes no arguments (got {other}); the display manager \
@@ -98,11 +105,15 @@ fn main() -> ExitCode {
             for warning in &launch.warnings {
                 log(warning);
             }
+            let before_session = inherited.clone();
             for name in &launch.remove {
                 inherited.remove(name);
             }
             inherited.extend(launch.set);
-            match Session::start(inherited, sender.clone(), &events) {
+            if let Some(profile) = generated_dconf_profile(&before_session) {
+                inherited.insert("DCONF_PROFILE".into(), profile);
+            }
+            match Session::start(inherited, before_session, sender.clone(), &events) {
                 Ok(session) => session,
                 Err(code) => return code,
             }
@@ -172,8 +183,11 @@ fn watch_exit(pid: i32, sender: Sender<Event>) {
         });
 }
 
+/// Starts a child. Only the main thread calls this: the parent-death signal
+/// follows the thread that forks ([`process::with_parent_death_signal`]).
 fn spawn(spec: &ChildSpec, environment: &BTreeMap<String, String>) -> std::io::Result<i32> {
     let mut command = Command::new(spec.program);
+    process::with_parent_death_signal(&mut command, libc::SIGTERM);
     let child = process::with_signals_unblocked(&mut command)
         .args(spec.arguments)
         .env_clear()
@@ -186,6 +200,137 @@ fn signal(pid: i32, signal: i32) {
     // SAFETY: kill has no memory preconditions; the pid is a child of ours.
     unsafe {
         libc::kill(pid, signal);
+    }
+}
+
+/// `XDG_RUNTIME_DIR` of a unit's mode, which the user manager sets.
+fn runtime_dir() -> Option<PathBuf> {
+    std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from)
+}
+
+/// The session's dconf profile when the machine's `user` profile adds system
+/// databases ([`dconf::session_profile`]): written under the runtime
+/// directory, and its path is what `DCONF_PROFILE` names. `None` keeps the
+/// shipped `betteros` profile.
+fn generated_dconf_profile(before: &BTreeMap<String, String>) -> Option<String> {
+    let probe = dconf::Probe::system(
+        before.get("XDG_DATA_DIRS").map(String::as_str),
+        before.get("XDG_RUNTIME_DIR").map(String::as_str),
+    );
+    let user = probe
+        .named("user")
+        .and_then(|path| std::fs::read_to_string(path).ok());
+    let dconf::SessionProfile::Generated(text) = dconf::session_profile(user.as_deref()) else {
+        return None;
+    };
+    let directory = probe.runtime_dir?.join(record::DIRECTORY);
+    let path = directory.join(dconf::GENERATED_PROFILE);
+    let written = std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&directory)
+        .and_then(|()| std::fs::write(&path, text));
+    match written {
+        Ok(()) => Some(path.display().to_string()),
+        Err(error) => {
+            log(format!(
+                "the session's dconf profile with this machine's system databases could not be \
+                 written ({error}); the shipped one is used"
+            ));
+            None
+        }
+    }
+}
+
+/// Puts back what a session that ended without its launcher left: its
+/// target, if it still runs, and its environment ([`record`]).
+fn put_back_if_orphaned(bus: &Bus, runtime: &std::path::Path) {
+    let Some(found) = record::read(runtime) else {
+        return;
+    };
+    if record::leader_alive(&found, std::path::Path::new("/proc")) {
+        return;
+    }
+    log(format!(
+        "the session of launcher {} ended without it; putting back what it left",
+        found.leader
+    ));
+    if bus.is_running(session_launcher::TARGET).unwrap_or(false)
+        && let Err(error) = bus.stop_unit(session_launcher::TARGET)
+    {
+        log(format!(
+            "stopping the left {}: {error}",
+            session_launcher::TARGET
+        ));
+    }
+    if let Some(taken) = record::take(runtime) {
+        for problem in lifecycle::restore(bus, &taken.import, &taken.activation) {
+            log(problem);
+        }
+    }
+}
+
+/// `better-os-session-guard.service`: lives as long as the launcher that
+/// wrote the record, so the target, bound to it, stops when the launcher
+/// ends however it ends.
+fn guard_mode() -> ExitCode {
+    let Some(runtime) = runtime_dir() else {
+        log("the guard has no XDG_RUNTIME_DIR");
+        return ExitCode::FAILURE;
+    };
+    let Some(found) = record::read(&runtime) else {
+        log("the guard found no session record; the session's units stop");
+        return ExitCode::FAILURE;
+    };
+    while record::leader_alive(&found, std::path::Path::new("/proc")) {
+        std::thread::sleep(Duration::from_secs(1));
+    }
+    log(format!(
+        "launcher {} has ended; the session's units stop",
+        found.leader
+    ));
+    ExitCode::SUCCESS
+}
+
+/// The guard's `ExecStopPost=`: puts the environment back when the target
+/// stops, however it stops.
+fn restore_mode() -> ExitCode {
+    let Some(runtime) = runtime_dir() else {
+        return ExitCode::FAILURE;
+    };
+    let Some(taken) = record::take(&runtime) else {
+        return ExitCode::SUCCESS;
+    };
+    let bus = match Bus::connect() {
+        Ok(bus) => bus,
+        Err(error) => {
+            log(format!(
+                "the session bus is not reachable to put the environment back: {error}"
+            ));
+            return ExitCode::FAILURE;
+        }
+    };
+    for problem in lifecycle::restore(&bus, &taken.import, &taken.activation) {
+        log(problem);
+    }
+    ExitCode::SUCCESS
+}
+
+/// `better-os-session-leftovers.service`, in every session of the person:
+/// a record whose launcher is gone is put back.
+fn leftovers_mode() -> ExitCode {
+    let Some(runtime) = runtime_dir() else {
+        return ExitCode::SUCCESS;
+    };
+    match Bus::connect() {
+        Ok(bus) => {
+            put_back_if_orphaned(&bus, &runtime);
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            log(format!("the session bus is not reachable: {error}"));
+            ExitCode::FAILURE
+        }
     }
 }
 
@@ -204,11 +349,16 @@ struct Session {
     restarts: BTreeMap<&'static str, Restarts>,
     import: Import,
     bus: Option<Bus>,
+    runtime_dir: Option<PathBuf>,
+    /// Whether the record was written, so the units can put the
+    /// environment back without this process ([`record`]).
+    recorded: bool,
 }
 
 impl Session {
     fn start(
         mut environment: BTreeMap<String, String>,
+        before_session: BTreeMap<String, String>,
         sender: Sender<Event>,
         events: &Receiver<Event>,
     ) -> Result<Session, ExitCode> {
@@ -218,6 +368,9 @@ impl Session {
         })?;
         let theirs_fd: RawFd = theirs.as_raw_fd();
         let mut command = Command::new(session_launcher::COMPOSITOR);
+        // The compositor ignores its session socket closing, so without this
+        // it would outlive a launcher that died (ticket 203's review, P1).
+        process::with_parent_death_signal(&mut command, libc::SIGTERM);
         process::with_signals_unblocked(&mut command)
             .env_clear()
             .envs(&environment)
@@ -298,9 +451,39 @@ impl Session {
                 None
             }
         };
+        let runtime_dir = environment.get("XDG_RUNTIME_DIR").map(PathBuf::from);
+        let mut recorded = false;
         let import = match &bus {
             Some(bus) => {
-                let (import, problems) = lifecycle::begin(bus, &environment);
+                // An earlier session that ended without its launcher is put
+                // back before this one reads what is "before".
+                if let Some(runtime) = &runtime_dir {
+                    put_back_if_orphaned(bus, runtime);
+                }
+                let probe = dconf::Probe::system(
+                    before_session.get("XDG_DATA_DIRS").map(String::as_str),
+                    runtime_dir.as_deref().and_then(|dir| dir.to_str()),
+                );
+                let mut write_record = |import: &Import| -> Result<(), String> {
+                    let runtime = runtime_dir
+                        .as_ref()
+                        .ok_or_else(|| "XDG_RUNTIME_DIR is not set".to_string())?;
+                    let own = std::process::id() as i32;
+                    let record = record::Record {
+                        leader: own,
+                        leader_start: record::start_time(std::path::Path::new("/proc"), own)
+                            .ok_or_else(|| "this process's start time is unreadable".to_string())?,
+                        import: import.clone(),
+                        activation: environment::activation_restore(
+                            import,
+                            &dconf::default_profile(&probe),
+                        ),
+                    };
+                    record::write(runtime, &record).map_err(|error| error.to_string())?;
+                    recorded = true;
+                    Ok(())
+                };
+                let (import, problems) = lifecycle::begin(bus, &environment, &mut write_record);
                 for problem in problems {
                     log(problem);
                 }
@@ -316,6 +499,8 @@ impl Session {
             restarts: BTreeMap::new(),
             import,
             bus,
+            runtime_dir,
+            recorded,
         };
         session.serve(&sender);
         for spec in children::CHILDREN {
@@ -340,10 +525,20 @@ impl Session {
         // SAFETY: the previous program kept this descriptor open across the
         // exec for this program, and nothing else owns it.
         let socket = state.socket.map(|fd| unsafe { OwnedFd::from_raw_fd(fd) });
+        // The previous program cleared FD_CLOEXEC for the exec; a locker
+        // started from now on must not inherit the compositor's socket.
+        if let Some(fd) = &socket
+            && let Err(error) = process::set_close_on_exec(fd.as_raw_fd(), true)
+        {
+            log(format!(
+                "the compositor's socket stays open to children: {error}"
+            ));
+        }
         let bus = zbus::blocking::Connection::session()
             .map(|connection| Bus { connection })
             .map_err(|error| log(format!("the session bus is not reachable: {error}")))
             .ok();
+        let runtime_dir = environment.get("XDG_RUNTIME_DIR").map(PathBuf::from);
         let mut session = Session {
             environment,
             compositor: state.compositor,
@@ -352,6 +547,8 @@ impl Session {
             restarts: BTreeMap::new(),
             import: state.import,
             bus,
+            runtime_dir,
+            recorded: state.recorded,
         };
         session.serve(&sender);
         for spec in children::CHILDREN {
@@ -415,8 +612,10 @@ impl Session {
 
     fn run(mut self, sender: Sender<Event>, events: Receiver<Event>) -> ExitCode {
         let mut update = UpdateWatch::start(&sender);
+        // Events taken off the channel before an exec that did not happen.
+        let mut backlog: std::collections::VecDeque<Event> = Default::default();
         let end = loop {
-            let Ok(event) = events.recv() else {
+            let Some(event) = backlog.pop_front().or_else(|| events.recv().ok()) else {
                 break End::Signal;
             };
             match event {
@@ -444,7 +643,26 @@ impl Session {
                     if let Some(watch) = update.as_mut()
                         && watch.ready(timer, &sender)
                     {
-                        self.restart_in_place(watch.program());
+                        // Whatever is already queued is looked at first: an
+                        // ending the exec would drop ends the session
+                        // instead, and a child that ended is let go so the
+                        // new program starts it again.
+                        let waiting: Vec<Event> = events.try_iter().collect();
+                        let pending: Vec<resume::Pending> =
+                            waiting.iter().map(|event| self.pending(event)).collect();
+                        if resume::may_restart(&pending) {
+                            for event in waiting {
+                                if let Event::Exited { pid, .. } = event
+                                    && let Some((&name, _)) =
+                                        self.running.iter().find(|(_, running)| **running == pid)
+                                {
+                                    self.running.remove(name);
+                                }
+                            }
+                            self.restart_in_place(watch.program());
+                        } else {
+                            backlog.extend(waiting);
+                        }
                     }
                 }
                 Event::Ready(_) => {}
@@ -452,6 +670,15 @@ impl Session {
         };
         drop(update);
         self.end(end, &events)
+    }
+
+    fn pending(&self, event: &Event) -> resume::Pending {
+        match event {
+            Event::Signal(_) | Event::Logout(_) => resume::Pending::Ending,
+            Event::Exited { pid, .. } if *pid == self.compositor => resume::Pending::Ending,
+            Event::Exited { .. } => resume::Pending::ChildEnded,
+            _ => resume::Pending::Other,
+        }
     }
 
     fn child_ended(&mut self, pid: i32, code: i32, sender: &Sender<Event>) {
@@ -483,16 +710,12 @@ impl Session {
     /// Starts the updated launcher in this process's place. It returns only
     /// when that failed, and the session then goes on with this program.
     fn restart_in_place(&self, program: PathBuf) {
-        let socket = self.socket.as_ref().map(|fd| fd.as_raw_fd());
-        if let Some(fd) = socket {
-            // SAFETY: fcntl on a descriptor this process owns.
-            unsafe {
-                let flags = libc::fcntl(fd, libc::F_GETFD);
-                if flags != -1 {
-                    libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
-                }
-            }
-        }
+        // The socket crosses the exec; it is the only descriptor that does.
+        let socket = self
+            .socket
+            .as_ref()
+            .map(|fd| fd.as_raw_fd())
+            .filter(|fd| process::set_close_on_exec(*fd, false).is_ok());
         let state = Resume {
             compositor: self.compositor,
             socket,
@@ -502,8 +725,11 @@ impl Session {
                 .map(|(name, pid)| (name.to_string(), *pid))
                 .collect(),
             import: self.import.clone(),
+            recorded: self.recorded,
         };
         log("the launcher was updated; starting the new program in its place");
+        // Called from the main thread, so the children's parent-death signal,
+        // which follows this thread, carries over to the new program.
         let error = Command::new(&program)
             .env_clear()
             .envs(&self.environment)
@@ -512,6 +738,9 @@ impl Session {
         log(format!(
             "the updated launcher could not start ({error}); this one goes on"
         ));
+        if let Some(fd) = socket {
+            let _ = process::set_close_on_exec(fd, true);
+        }
     }
 
     fn end(self, end: End, events: &Receiver<Event>) -> ExitCode {
@@ -531,7 +760,26 @@ impl Session {
         }
         end_processes(&pids, events);
         if let Some(bus) = &self.bus {
-            for problem in lifecycle::restore(bus, &self.import) {
+            // The guard unit's ExecStopPost normally took the record and put
+            // the environment back as the target stopped; whatever is left
+            // is done here. Without a record (it could not be written) the
+            // import this process holds is put back.
+            let problems = match self.runtime_dir.as_deref().and_then(record::take) {
+                Some(record) => lifecycle::restore(bus, &record.import, &record.activation),
+                None if !self.recorded => {
+                    let probe = dconf::Probe::system(
+                        None,
+                        self.runtime_dir.as_deref().and_then(|dir| dir.to_str()),
+                    );
+                    let activation = environment::activation_restore(
+                        &self.import,
+                        &dconf::default_profile(&probe),
+                    );
+                    lifecycle::restore(bus, &self.import, &activation)
+                }
+                None => Vec::new(),
+            };
+            for problem in problems {
                 log(problem);
             }
         }
@@ -650,6 +898,10 @@ struct Bus {
 }
 
 impl Bus {
+    fn connect() -> zbus::Result<Bus> {
+        zbus::blocking::Connection::session().map(|connection| Bus { connection })
+    }
+
     fn manager(&self) -> Result<zbus::blocking::Proxy<'static>, String> {
         zbus::blocking::Proxy::new(
             &self.connection,
@@ -747,13 +999,19 @@ async fn authorize(
     let name = BusName::Unique(sender.to_owned());
     let uid = dbus.get_connection_unix_user(name.clone()).await?;
     let pid = dbus.get_connection_unix_process_id(name).await?;
-    let program = std::fs::read_link(format!("/proc/{pid}/exe")).ok();
-    callers::check(uid, own_uid, program.as_deref(), allowed).map_err(|refusal| {
-        log(format!("refused a logout: {refusal}"));
-        fdo::Error::AccessDenied(refusal.to_string())
-    })?;
-    Ok(program
-        .map(|path| callers::running_program(&path).display().to_string())
+    let exe = PathBuf::from(format!("/proc/{pid}/exe"));
+    let caller = std::fs::read_link(&exe)
+        .ok()
+        .zip(callers::file_id(&exe))
+        .map(|(link, file)| callers::Caller { link, file });
+    callers::check(uid, own_uid, caller.as_ref(), allowed, callers::file_id).map_err(
+        |refusal| {
+            log(format!("refused a logout: {refusal}"));
+            fdo::Error::AccessDenied(refusal.to_string())
+        },
+    )?;
+    Ok(caller
+        .map(|caller| callers::running_program(&caller.link).display().to_string())
         .unwrap_or_default())
 }
 

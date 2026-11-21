@@ -1015,7 +1015,7 @@ if [[ "$RELEASE_TARGET" != ubuntu-22.04 ]]; then
         cosmic-idle cosmic-osd cosmic-randr cosmic-settings cosmic-settings-daemon \
         cosmic-theme-bundles pop-sound-theme xdg-desktop-portal-cosmic \
         fcitx5 fcitx5-chewing fcitx5-frontend-gtk3 fcitx5-frontend-gtk4 fcitx5-frontend-qt5 \
-        fcitx5-config-qt xdg-desktop-portal-gtk gnome-keyring playerctl; do
+        fcitx5-config-qt xdg-desktop-portal-gtk gnome-keyring playerctl better-launcher; do
         if ! printf '%s\n' "$session_depends" | grep -Eq "(^|,)[[:space:]]*${required_dependency}([[:space:]]|,|$)"; then
             printf 'Missing runtime dependency for %s: %s\n' "$session_name" "$required_dependency" >&2
             exit 1
@@ -1117,16 +1117,56 @@ if [[ "$RELEASE_TARGET" != ubuntu-22.04 ]]; then
             exit 1
         fi
     done
+    # Nothing of the session starts outside one: the target and each unit
+    # require the record the launcher writes (ticket 203's review).
+    in_session='ConditionPathExists=%t/better-os/session/restore.json'
+    for unit in "${session_units[@]}" "$session_target"; do
+        grep -qxF "$in_session" "$unit" || {
+            printf '%s can start without a Better OS session (no %s)\n' "${unit##*/}" "$in_session" >&2
+            exit 1
+        }
+    done
     for unit in "${session_units[@]}"; do
+        case "${unit##*/}" in
+            # The one unit that runs in any session, to put back what a
+            # session that ended without its launcher left.
+            better-os-session-leftovers.service)
+                grep -qxF 'WantedBy=graphical-session-pre.target' "$unit" || {
+                    printf 'The leftovers unit does not run in every session\n' >&2
+                    exit 1
+                }
+                continue
+                ;;
+            # Bound to by the target, so the target ends with the launcher.
+            better-os-session-guard.service)
+                grep -qxF 'BindsTo=better-os-session-guard.service' "$session_target" &&
+                    grep -qxF 'ExecStopPost=/usr/libexec/better-os/session/start --restore' "$unit" || {
+                    printf 'The guard does not hold the target or put the environment back\n' >&2
+                    exit 1
+                }
+                ;;
+            *)
+                grep -qxF "Wants=${unit##*/}" "$session_target" || {
+                    printf 'better-os-session.target does not start %s\n' "${unit##*/}" >&2
+                    exit 1
+                }
+                ;;
+        esac
         grep -qxF 'PartOf=better-os-session.target' "$unit" || {
             printf '%s does not stop with better-os-session.target\n' "${unit##*/}" >&2
             exit 1
         }
-        grep -qxF "Wants=${unit##*/}" "$session_target" || {
-            printf 'better-os-session.target does not start %s\n' "${unit##*/}" >&2
-            exit 1
-        }
     done
+    session_control="$WORK_DIR/$session_name-control"
+    dpkg-deb --control "$session_path" "$session_control"
+    grep -qxF "better_os_always_on_units='better-os-session-leftovers.service'" "$session_control/postinst" || {
+        printf 'The leftovers unit is not enabled for every person at install\n' >&2
+        exit 1
+    }
+    grep -qxF 'user-db:user' "$session_extract/usr/share/dconf/profile/betteros-default" || {
+        printf 'The default-equivalent dconf profile is missing\n' >&2
+        exit 1
+    }
     assert_nothing_is_enabled_at_install "$session_name" "$session_extract"
     assert_user_units_restart_on_upgrade "$session_name" "$session_path" "$session_extract"
     printf 'Verified %s (%s)\n' "$session_path" "$EXPECTED_ARCH"

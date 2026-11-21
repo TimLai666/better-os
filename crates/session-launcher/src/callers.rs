@@ -4,8 +4,12 @@
 //! stops the target and ends the compositor. It is not a privilege boundary:
 //! anything running as the person can end their own session through logind.
 //! The check keeps an arbitrary program from logging the person out by
-//! accident or on a page's request: only the session's own programs, named by
-//! the file they run, of the same person.
+//! accident or on a page's request: only the session's own programs, of the
+//! same person. A program is the file it runs, compared by device and inode
+//! (`stat` of `/proc/<pid>/exe`, which reaches the running file itself) with
+//! the installed file, not by the path the link reads: a process in another
+//! mount namespace (a Flatpak whose runtime has a file at that path) is not
+//! the installed program.
 //!
 //! The launcher also answers `com.system76.CosmicSession.Exit`, the call
 //! `cosmic-osd log-out` makes after its confirmation (COSMIC's `LogOut`
@@ -68,23 +72,54 @@ pub fn running_program(link: &Path) -> PathBuf {
     }
 }
 
-/// The rule.
+/// A file by its device and inode.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FileId {
+    pub device: u64,
+    pub inode: u64,
+}
+
+/// The file `path` leads to, following links; for `/proc/<pid>/exe`, the
+/// file the process runs.
+pub fn file_id(path: &Path) -> Option<FileId> {
+    use std::os::unix::fs::MetadataExt as _;
+    let metadata = std::fs::metadata(path).ok()?;
+    Some(FileId {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+    })
+}
+
+/// The caller as the launcher saw it: the path its `exe` link reads (for
+/// the journal) and the file it runs.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Caller {
+    pub link: PathBuf,
+    pub file: FileId,
+}
+
+/// The rule. `installed` gives the file at an allowed path on this machine.
+/// A program replaced by an update runs a file no longer at its path and is
+/// refused until it restarts itself, which AGENTS.md has every window do
+/// within seconds.
 pub fn check(
     caller_uid: u32,
     own_uid: u32,
-    program: Option<&Path>,
+    caller: Option<&Caller>,
     allowed: &[&str],
+    installed: impl Fn(&Path) -> Option<FileId>,
 ) -> Result<(), Refusal> {
     if caller_uid != own_uid {
         return Err(Refusal::OtherUser(caller_uid));
     }
-    let program = program
-        .map(running_program)
-        .ok_or(Refusal::UnknownProgram)?;
-    if allowed.iter().any(|allowed| Path::new(allowed) == program) {
+    let caller = caller.ok_or(Refusal::UnknownProgram)?;
+    if allowed
+        .iter()
+        .any(|allowed| installed(Path::new(allowed)) == Some(caller.file))
+    {
         Ok(())
     } else {
-        Err(Refusal::NotAllowed(program))
+        Err(Refusal::NotAllowed(running_program(&caller.link)))
     }
 }
 
@@ -92,81 +127,130 @@ pub fn check(
 mod tests {
     use super::*;
 
+    /// Two files standing for installed programs, and the rule over them.
+    struct Machine {
+        _dir: tempfile::TempDir,
+        manager: PathBuf,
+        osd: PathBuf,
+    }
+
+    impl Machine {
+        fn new() -> Machine {
+            let dir = tempfile::tempdir().unwrap();
+            let manager = dir.path().join("better-manager");
+            let osd = dir.path().join("cosmic-osd");
+            std::fs::write(&manager, "m").unwrap();
+            std::fs::write(&osd, "o").unwrap();
+            Machine {
+                _dir: dir,
+                manager,
+                osd,
+            }
+        }
+        /// Maps the installed paths of the lists to the scratch files.
+        fn installed(&self) -> impl Fn(&Path) -> Option<FileId> + '_ {
+            move |path| match path.to_str() {
+                Some("/usr/bin/better-manager") => file_id(&self.manager),
+                Some("/usr/bin/cosmic-osd") => file_id(&self.osd),
+                _ => None,
+            }
+        }
+        fn caller(&self, link: &str, file: &Path) -> Caller {
+            Caller {
+                link: PathBuf::from(link),
+                file: file_id(file).unwrap(),
+            }
+        }
+    }
+
     #[test]
     fn better_manager_of_the_same_person_may_log_out() {
+        let machine = Machine::new();
+        let caller = machine.caller("/usr/bin/better-manager", &machine.manager);
         assert_eq!(
             check(
                 1000,
                 1000,
-                Some(Path::new("/usr/bin/better-manager")),
-                LOGOUT_CALLERS
-            ),
-            Ok(())
-        );
-        assert_eq!(
-            check(
-                1000,
-                1000,
-                Some(Path::new("/usr/bin/better-manager (deleted)")),
-                LOGOUT_CALLERS
+                Some(&caller),
+                LOGOUT_CALLERS,
+                machine.installed()
             ),
             Ok(())
         );
     }
 
     #[test]
+    fn a_file_at_the_same_path_that_is_not_the_installed_one_is_refused() {
+        let machine = Machine::new();
+        // Another mount namespace's /usr/bin/better-manager: the same path,
+        // another file.
+        let elsewhere = machine._dir.path().join("flatpak-better-manager");
+        std::fs::write(&elsewhere, "m").unwrap();
+        let caller = machine.caller("/usr/bin/better-manager", &elsewhere);
+        assert_eq!(
+            check(
+                1000,
+                1000,
+                Some(&caller),
+                LOGOUT_CALLERS,
+                machine.installed()
+            ),
+            Err(Refusal::NotAllowed(PathBuf::from(
+                "/usr/bin/better-manager"
+            )))
+        );
+        // A hard link is the same file.
+        let linked = machine._dir.path().join("hard-link");
+        std::fs::hard_link(&machine.manager, &linked).unwrap();
+        let caller = machine.caller("/opt/x", &linked);
+        assert!(
+            check(
+                1000,
+                1000,
+                Some(&caller),
+                LOGOUT_CALLERS,
+                machine.installed()
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
     fn anything_else_is_refused_with_the_reason() {
+        let machine = Machine::new();
+        let manager = machine.caller("/usr/bin/better-manager", &machine.manager);
         assert_eq!(
             check(
                 1001,
                 1000,
-                Some(Path::new("/usr/bin/better-manager")),
-                LOGOUT_CALLERS
+                Some(&manager),
+                LOGOUT_CALLERS,
+                machine.installed()
             ),
             Err(Refusal::OtherUser(1001))
         );
         assert_eq!(
-            check(1000, 1000, None, LOGOUT_CALLERS),
+            check(1000, 1000, None, LOGOUT_CALLERS, machine.installed()),
             Err(Refusal::UnknownProgram)
         );
-        assert_eq!(
-            check(
-                1000,
-                1000,
-                Some(Path::new("/usr/bin/busctl")),
-                LOGOUT_CALLERS
-            ),
-            Err(Refusal::NotAllowed(PathBuf::from("/usr/bin/busctl")))
-        );
-        // A copy of an allowed program elsewhere is not that program.
-        assert!(
-            check(
-                1000,
-                1000,
-                Some(Path::new("/tmp/better-manager")),
-                LOGOUT_CALLERS
-            )
-            .is_err()
-        );
         // Each interface has its own list.
-        assert!(
-            check(
-                1000,
-                1000,
-                Some(Path::new("/usr/bin/cosmic-osd")),
-                LOGOUT_CALLERS
-            )
-            .is_err()
+        let osd = machine.caller("/usr/bin/cosmic-osd (deleted)", &machine.osd);
+        assert_eq!(
+            check(1000, 1000, Some(&osd), LOGOUT_CALLERS, machine.installed()),
+            Err(Refusal::NotAllowed(PathBuf::from("/usr/bin/cosmic-osd")))
         );
         assert_eq!(
             check(
                 1000,
                 1000,
-                Some(Path::new("/usr/bin/cosmic-osd")),
-                COSMIC_EXIT_CALLERS
+                Some(&osd),
+                COSMIC_EXIT_CALLERS,
+                machine.installed()
             ),
             Ok(())
         );
+        // A program that is not installed is never allowed.
+        assert!(check(1000, 1000, Some(&manager), LOGOUT_CALLERS, |_: &Path| None).is_err());
     }
 
     #[test]

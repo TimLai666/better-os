@@ -34,7 +34,10 @@ fn the_launcher_starts_the_target_the_package_ships() {
 #[test]
 fn the_target_binds_the_graphical_session_and_pulls_in_autostart() {
     let target = target();
-    assert_eq!(values(&target, "BindsTo"), vec!["graphical-session.target"]);
+    assert_eq!(
+        values(&target, "BindsTo"),
+        vec!["graphical-session.target", session_launcher::GUARD_UNIT]
+    );
     assert!(values(&target, "Before").contains(&"graphical-session.target".to_string()));
     let wants = values(&target, "Wants");
     for wanted in [
@@ -66,7 +69,14 @@ fn every_session_unit_is_the_targets_and_never_graphical_sessions() {
         })
         .map(|(_, installed)| installed.rsplit('/').next().unwrap().to_string())
         .collect();
-    let mut expected: Vec<String> = SESSION_UNITS.iter().map(|unit| unit.to_string()).collect();
+    let mut expected: Vec<String> = SESSION_UNITS
+        .iter()
+        .chain([
+            &session_launcher::GUARD_UNIT,
+            &session_launcher::LEFTOVERS_UNIT,
+        ])
+        .map(|unit| unit.to_string())
+        .collect();
     expected.sort();
     let mut shipped_sorted = shipped.clone();
     shipped_sorted.sort();
@@ -105,6 +115,77 @@ fn every_session_unit_is_the_targets_and_never_graphical_sessions() {
             "{unit} names an absolute program"
         );
     }
+}
+
+/// The condition every unit that may run only in the session carries.
+const IN_SESSION: &str = "%t/better-os/session/restore.json";
+
+#[test]
+fn nothing_of_the_session_starts_outside_it() {
+    // The record's path in the units is the one the launcher writes.
+    assert_eq!(
+        IN_SESSION,
+        format!(
+            "%t/{}/{}",
+            session_launcher::record::DIRECTORY,
+            session_launcher::record::FILE
+        )
+    );
+    assert_eq!(values(&target(), "ConditionPathExists"), vec![IN_SESSION]);
+    for unit in SESSION_UNITS.iter().chain([&session_launcher::GUARD_UNIT]) {
+        let lines = unit_lines(&read(&format!("packaging/session/{unit}")));
+        assert_eq!(
+            values(&lines, "ConditionPathExists"),
+            vec![IN_SESSION],
+            "{unit} refuses to start without a session's record"
+        );
+    }
+}
+
+#[test]
+fn the_guard_holds_the_target_and_puts_the_environment_back_however_it_stops() {
+    let target = target();
+    assert!(values(&target, "BindsTo").contains(&session_launcher::GUARD_UNIT.to_string()));
+    assert!(values(&target, "After").contains(&session_launcher::GUARD_UNIT.to_string()));
+    let guard = unit_lines(&read(&format!(
+        "packaging/session/{}",
+        session_launcher::GUARD_UNIT
+    )));
+    assert_eq!(values(&guard, "PartOf"), vec![session_launcher::TARGET]);
+    assert_eq!(
+        values(&guard, "ExecStart"),
+        vec![session_launcher::INSTALLED_PATH, "--guard"]
+    );
+    // ExecStopPost runs however the service stops, a failure included.
+    assert_eq!(
+        values(&guard, "ExecStopPost"),
+        vec![session_launcher::INSTALLED_PATH, "--restore"]
+    );
+}
+
+#[test]
+fn the_leftovers_unit_is_the_one_that_runs_in_any_session() {
+    let text = read(&format!(
+        "packaging/session/{}",
+        session_launcher::LEFTOVERS_UNIT
+    ));
+    let lines = unit_lines(&text);
+    // Any session of the person, GNOME's too: before its graphical session.
+    assert_eq!(
+        values(&lines, "WantedBy"),
+        vec!["graphical-session-pre.target"]
+    );
+    assert!(!text.contains("WantedBy=graphical-session.target"));
+    assert_eq!(values(&lines, "ConditionPathExists"), vec![IN_SESSION]);
+    assert_eq!(
+        values(&lines, "ExecStart"),
+        vec![session_launcher::INSTALLED_PATH, "--leftovers"]
+    );
+    assert!(
+        common::read("packaging/build-deb.sh")
+            .contains("PACKAGE_ALWAYS_ON_UNITS=\"better-os-session-leftovers.service\""),
+        "enabled for every person at install, disabled at removal"
+    );
 }
 
 #[test]
@@ -215,6 +296,11 @@ fn every_file_under_packaging_session_is_installed() {
                 .unwrap()
                 .to_string_lossy()
                 .to_string();
+            // The record of what the shortcut directory replaces is for the
+            // checks, not the package.
+            if relative == "packaging/session/cosmic/upstream.tsv" {
+                continue;
+            }
             assert!(
                 installed.contains(&relative),
                 "build-deb.sh installs {relative}"

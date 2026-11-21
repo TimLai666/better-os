@@ -1,6 +1,7 @@
 // The Better OS session's key bindings. Based on cosmic-comp's
 // data/keybindings.ron (System76, GPL-3.0-only) at 6968c5d, the compositor the
-// pinned closure installs, with the session's changes:
+// pinned closure installs (packaging/session/cosmic/upstream.tsv records the
+// upstream file and its hash), with the session's changes:
 //
 // - Super+Space opens Better Launcher, as Super alone and Super+/ do
 //   (COSMIC binds it to InputSourceSwitch; Fcitx 5 has its own switch keys).

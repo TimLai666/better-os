@@ -128,6 +128,24 @@ MISSING_METADATA_COUNT="$(jq '[.packages[] | select(.license == null and .licens
         '| Cairo | `libcairo2`, through GTK 4 | `LGPL-2.1-only OR MPL-1.1` | every window (`better-ui`): the image surfaces GTK draws the frame into, reached through the loaded GTK 4 |'
     printf '%s\n' \
         '' \
+        '## Data files derived from other projects' \
+        '' \
+        'These are configuration files, not code, shipped in the package named.' \
+        'Each is a changed copy of another project'"'"'s file and keeps that file'"'"'s' \
+        'license; the changes are listed at the top of each file.' \
+        '' \
+        '| Shipped file | Package | Derived from | License |' \
+        '| --- | --- | --- | --- |'
+    # packaging/session/cosmic/upstream.tsv: session file, installed upstream
+    # file, package, version, upstream source, license, hash.
+    awk -F '\t' '
+        /^#/ || NF < 7 { next }
+        {
+            printf "| `/usr/share/better-os/session/cosmic/com.system76.CosmicSettings.Shortcuts/v1/%s` | `better-os-session` | [%s](%s), the `%s` package at `%s` | `%s` |\n", $1, $2, $5, $3, $4, $6
+        }
+    ' "$ROOT_DIR/packaging/session/cosmic/upstream.tsv"
+    printf '%s\n' \
+        '' \
         '## Package inventory' \
         '' \
         '| Package | Version | License metadata | Source |' \

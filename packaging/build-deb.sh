@@ -1219,7 +1219,8 @@ make_package better-storage \
 # keyring betteros-portals.conf names, and the programs the session's
 # system_actions run (playerctl, wpctl, xdg-open, busctl, loginctl, the
 # machine's terminal). They are Depends and not Recommends because Better
-# Manager installs with --no-install-recommends.
+# Manager installs with --no-install-recommends. The Better OS programs the
+# session's keys run are Depends too (crates/session-launcher/tests/shortcuts.rs).
 if [[ "$RELEASE_TARGET" != ubuntu-22.04 ]]; then
     SESSION_SHORTCUTS="cosmic/com.system76.CosmicSettings.Shortcuts/v1"
     PACKAGE_BINARIES=("better-os-session:usr/libexec/better-os/session/start")
@@ -1231,8 +1232,11 @@ if [[ "$RELEASE_TARGET" != ubuntu-22.04 ]]; then
         "packaging/session/better-os-session-idle.service:usr/lib/systemd/user/better-os-session-idle.service"
         "packaging/session/better-os-session-background.service:usr/lib/systemd/user/better-os-session-background.service"
         "packaging/session/better-os-session-input-method.service:usr/lib/systemd/user/better-os-session-input-method.service"
+        "packaging/session/better-os-session-guard.service:usr/lib/systemd/user/better-os-session-guard.service"
+        "packaging/session/better-os-session-leftovers.service:usr/lib/systemd/user/better-os-session-leftovers.service"
         "packaging/session/tracker-miner-fs-3-better-os-session.conf:usr/lib/systemd/user/tracker-miner-fs-3.service.d/better-os-session.conf"
         "packaging/session/betteros.dconf-profile:usr/share/dconf/profile/betteros"
+        "packaging/session/betteros-default.dconf-profile:usr/share/dconf/profile/betteros-default"
         "packaging/session/betteros-portals.conf:usr/share/xdg-desktop-portal/betteros-portals.conf"
         "packaging/session/$SESSION_SHORTCUTS/defaults:usr/share/better-os/session/$SESSION_SHORTCUTS/defaults"
         "packaging/session/$SESSION_SHORTCUTS/system_actions:usr/share/better-os/session/$SESSION_SHORTCUTS/system_actions"
@@ -1249,7 +1253,14 @@ if [[ "$RELEASE_TARGET" != ubuntu-22.04 ]]; then
         "fcitx5-frontend-qt5" "fcitx5-config-qt"
         "systemd" "dbus" "dconf-gsettings-backend" "xdg-desktop-portal-gtk" "gnome-keyring"
         "playerctl" "wireplumber" "xdg-utils" "gnome-terminal | x-terminal-emulator"
+        # Super, Super+Space and Super+/ run it (system_actions' Launcher).
+        # It is in no APT source, so whatever installs the session installs
+        # it in the same transaction (ticket 205).
+        "better-launcher"
     )
+    # The leftovers unit runs in every session of every person, enabled at
+    # install and disabled at removal; it acts only on an orphaned record.
+    PACKAGE_ALWAYS_ON_UNITS="better-os-session-leftovers.service"
     make_package better-os-session \
         'Better OS desktop session on the COSMIC compositor' \
         'The Better OS session GDM lists beside GNOME: cosmic-comp, the COSMIC daemons Better OS keeps, Fcitx 5, and the session rules of Better OS.'

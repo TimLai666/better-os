@@ -172,6 +172,17 @@ keeps its own license.
 | libadwaita | `libadwaita-1-0` (recommended) | `LGPL-2.1-or-later` | every window (`better-ui`): loaded at run time with `dlopen` when installed, so the frame matches GNOME's own applications |
 | Cairo | `libcairo2`, through GTK 4 | `LGPL-2.1-only OR MPL-1.1` | every window (`better-ui`): the image surfaces GTK draws the frame into, reached through the loaded GTK 4 |
 
+## Data files derived from other projects
+
+These are configuration files, not code, shipped in the package named.
+Each is a changed copy of another project's file and keeps that file's
+license; the changes are listed at the top of each file.
+
+| Shipped file | Package | Derived from | License |
+| --- | --- | --- | --- |
+| `/usr/share/better-os/session/cosmic/com.system76.CosmicSettings.Shortcuts/v1/defaults` | `better-os-session` | [/usr/share/cosmic/com.system76.CosmicSettings.Shortcuts/v1/defaults](https://github.com/pop-os/cosmic-comp/blob/6968c5d81901f110911aaa526af1a46fc9f360ed/data/keybindings.ron), the `cosmic-comp` package at `0.1~1795167359~24.04~6968c5d` | `GPL-3.0-only` |
+| `/usr/share/better-os/session/cosmic/com.system76.CosmicSettings.Shortcuts/v1/system_actions` | `better-os-session` | [/usr/share/cosmic/com.system76.CosmicSettings.Shortcuts/v1/system_actions](https://github.com/pop-os/cosmic-settings-daemon/blob/a8d9d84cd1c13af510a20dc0f4ab1156c5726515/data/system_actions.ron), the `cosmic-settings-daemon` package at `1.11.0~1794421662~24.04~a8d9d84` | `GPL-3.0-or-later` |
+
 ## Package inventory
 
 | Package | Version | License metadata | Source |

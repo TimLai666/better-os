@@ -2,6 +2,7 @@
 Description=COSMIC wallpaper in the Better OS session
 PartOf=better-os-session.target
 After=better-os-session.target
+ConditionPathExists=%t/better-os/session/restore.json
 
 [Service]
 Slice=session.slice

@@ -6,7 +6,7 @@ mod common;
 
 use std::collections::BTreeMap;
 
-use common::{SESSION_SHORTCUTS, installed_binaries, read, session_depends};
+use common::{SESSION_SHORTCUTS, programs_by_package, read, session_depends};
 
 /// A program the session's system actions run that is not Better OS's, and
 /// the package of the session's `Depends` that installs it.
@@ -120,10 +120,9 @@ fn every_bound_system_action_has_a_command() {
 
 #[test]
 fn every_command_runs_a_program_the_session_installs() {
-    let better_os: Vec<String> = installed_binaries()
-        .into_iter()
-        .filter_map(|path| path.strip_prefix("/usr/bin/").map(str::to_string))
-        .collect();
+    // A Better OS program counts only when the session package ships it or
+    // depends on the package that does: any other package may be missing.
+    let better_os = programs_by_package();
     let depends = session_depends();
     for (name, command) in system_actions() {
         let program = command.split_whitespace().next().unwrap();
@@ -131,7 +130,11 @@ fn every_command_runs_a_program_the_session_installs() {
             !NOT_INSTALLED.contains(&program),
             "{name} runs {program}, which is not installed"
         );
-        if better_os.contains(&program.to_string()) {
+        if let Some((package, _)) = better_os.iter().find(|(_, shipped)| shipped == program) {
+            assert!(
+                package == "better-os-session" || depends.contains(package),
+                "{name} runs {program} from {package}, which the session does not depend on"
+            );
             continue;
         }
         let (_, package) = PROVIDERS
@@ -236,4 +239,42 @@ fn logging_out_goes_through_the_launcher() {
         Some("cosmic-osd log-out")
     );
     assert!(session_launcher::callers::COSMIC_EXIT_CALLERS.contains(&"/usr/bin/cosmic-osd"));
+}
+
+#[test]
+fn the_upstream_files_the_session_replaces_are_recorded() {
+    // packaging/session/cosmic/upstream.tsv: one line per session file, with
+    // the installed upstream file, its package, version, source, licence and
+    // hash, which the VM check compares with the installed closure.
+    let record = read("packaging/session/cosmic/upstream.tsv");
+    let mut files = Vec::new();
+    for line in record
+        .lines()
+        .filter(|line| !line.starts_with('#') && !line.is_empty())
+    {
+        let fields: Vec<&str> = line.split('\t').collect();
+        assert_eq!(fields.len(), 7, "seven fields: {line}");
+        assert!(
+            fields[1].starts_with("/usr/share/cosmic/com.system76.CosmicSettings.Shortcuts/v1/")
+        );
+        assert!(
+            fields[4].contains(&fields[3].rsplit('~').next().unwrap()[..7]),
+            "{line}"
+        );
+        assert_eq!(fields[6].len(), 64, "a SHA-256: {line}");
+        files.push(fields[0].to_string());
+        // The session's file says what it derives from.
+        let session = read(&format!(
+            "packaging/session/{SESSION_SHORTCUTS}/{}",
+            fields[0]
+        ));
+        assert!(
+            session.contains(fields[2]),
+            "{} names {}",
+            fields[0],
+            fields[2]
+        );
+    }
+    files.sort();
+    assert_eq!(files, vec!["defaults", "system_actions"]);
 }

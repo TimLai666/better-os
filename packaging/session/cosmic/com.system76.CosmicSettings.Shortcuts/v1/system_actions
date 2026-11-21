@@ -1,5 +1,8 @@
 // The Better OS session's system actions: the command each System(...) key
-// binding runs (engineering/specs/better-os-session.md, "Media keys").
+// binding runs (engineering/specs/better-os-session.md, "Media keys"). Based
+// on cosmic-settings-daemon's data/system_actions.ron (System76,
+// GPL-3.0-or-later) at a8d9d84; packaging/session/cosmic/upstream.tsv records
+// the upstream file this replaces.
 //
 // This directory replaces COSMIC's /usr/share/cosmic/com.system76.CosmicSettings.Shortcuts/v1/
 // in the session: cosmic-config takes a configuration's defaults from the

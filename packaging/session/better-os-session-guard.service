@@ -1,0 +1,14 @@
+[Unit]
+Description=Ends the Better OS session's units with its launcher and puts the environment back
+# The target is bound to this unit. It runs as long as the launcher that
+# wrote the session's record does, so a launcher that dies any way at all
+# (SIGKILL, the OOM killer, a panic) still stops the target. ExecStopPost
+# puts the user manager's and D-Bus activation's environment back however
+# this unit stops (crates/session-launcher/src/record.rs).
+PartOf=better-os-session.target
+ConditionPathExists=%t/better-os/session/restore.json
+
+[Service]
+Slice=session.slice
+ExecStart=/usr/libexec/better-os/session/start --guard
+ExecStopPost=/usr/libexec/better-os/session/start --restore

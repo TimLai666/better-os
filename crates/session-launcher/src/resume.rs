@@ -28,6 +28,9 @@ pub struct Resume {
     /// Each running child by its [`crate::children::ChildSpec::name`].
     pub children: Vec<(String, i32)>,
     pub import: Import,
+    /// Whether the session's record was written ([`crate::record`]).
+    #[serde(default)]
+    pub recorded: bool,
 }
 
 impl Resume {
@@ -49,9 +52,37 @@ impl Resume {
     }
 }
 
+/// What is waiting in the launcher's queue when the update is ready.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Pending {
+    /// A stop signal, a logout, or the compositor's end: the session ends.
+    Ending,
+    /// A child ended; the new program starts it again (it adopts only the
+    /// children that run).
+    ChildEnded,
+    /// Anything the exec may drop: a restart timer, another look at the file.
+    Other,
+}
+
+/// Whether the launcher may exec its new program with these waiting. An
+/// ending that is already taken would be lost by the exec (its signal was
+/// consumed by `sigwait`, its logout call answered), and GDM's SIGKILL later
+/// would end the session without its end; so the session ends first, and the
+/// new program is not started.
+pub fn may_restart(pending: &[Pending]) -> bool {
+    !pending.contains(&Pending::Ending)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_ending_already_taken_is_never_dropped_by_the_exec() {
+        assert!(may_restart(&[]));
+        assert!(may_restart(&[Pending::Other, Pending::ChildEnded]));
+        assert!(!may_restart(&[Pending::Other, Pending::Ending]));
+    }
 
     fn state() -> Resume {
         let mut import = Import::default();
@@ -62,6 +93,7 @@ mod tests {
             socket: Some(7),
             children: vec![("locker".into(), 4250)],
             import,
+            recorded: true,
         }
     }
 

@@ -69,6 +69,15 @@ in `packaging/session/cosmic/com.system76.CosmicSettings.Shortcuts/v1/`
 configuration's defaults come from one directory, better-os-session.md's
 `XDG_DATA_DIRS` row), so the bindings go there and not in `custom`.
 
+The dconf profile question this ticket raised is settled by ticket 203: the
+session follows the machine's `user` profile. Neither Ubuntu 24.04 nor Zorin
+OS 18.1 ships one (dconf's default `user-db:user` then), so the shipped
+`betteros` profile stands; where an administrator's `/etc/dconf/profile/user`
+adds `system-db` lines, the launcher writes a profile with them under the
+session's runtime directory and `DCONF_PROFILE` names its path, so an
+administrator's lockdown (saving disabled) reaches Better Screenshot in the
+session as in GNOME.
+
 ## Done when
 
 - [x] The owner's answer is recorded in this ticket.

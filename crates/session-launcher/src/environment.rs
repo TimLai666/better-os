@@ -137,6 +137,11 @@ pub struct Import {
     /// Unset at the end: each variable the session set that had no value
     /// before it.
     pub restore_unset: Vec<String>,
+    /// Set when the user manager's environment could not be read before the
+    /// session: at the end `XDG_DATA_DIRS` is read again and the session's
+    /// entry taken out of it, rather than set back to a value nobody knows.
+    #[serde(default)]
+    pub strip_data_dir: bool,
 }
 
 impl Import {
@@ -226,6 +231,114 @@ pub fn plan_import(
         }
     }
     import
+}
+
+/// Whether `value` of `name` is one only the Better OS session sets. Such a
+/// value in the user manager before the session starts was left by an
+/// earlier session that ended without its launcher, never set by the person.
+pub fn is_session_value(name: &str, value: &str) -> bool {
+    match name {
+        "DCONF_PROFILE" => crate::dconf::is_session_profile(value),
+        "XDG_CURRENT_DESKTOP" => value == CURRENT_DESKTOP,
+        "XDG_SESSION_DESKTOP" | "DESKTOP_SESSION" => {
+            value == better_core::desktop::BETTER_OS_SESSION_NAME
+        }
+        "XDG_DATA_DIRS" => value
+            .split(':')
+            .next()
+            .is_some_and(|first| first.trim_end_matches('/') == SESSION_DATA_DIR),
+        _ => false,
+    }
+}
+
+/// `XDG_DATA_DIRS` without the session's entry, or `None` when nothing else
+/// is left in it.
+pub fn without_session_data_dir(value: &str) -> Option<String> {
+    let rest: Vec<&str> = value
+        .split(':')
+        .filter(|entry| !entry.is_empty() && entry.trim_end_matches('/') != SESSION_DATA_DIR)
+        .collect();
+    (!rest.is_empty()).then(|| rest.join(":"))
+}
+
+/// The user manager's environment with an earlier session's leftovers taken
+/// out, as if that session had put it back (ticket 203's review, P1). The
+/// session-only values ([`is_session_value`]) go; `XDG_DATA_DIRS` loses the
+/// session's entry and keeps the rest. `QT_IM_MODULE` and `XMODIFIERS` are
+/// values a person may set for GNOME too, so they go only beside a leftover
+/// `DCONF_PROFILE=betteros`, which nobody but the session sets.
+pub fn without_leftovers(before: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+    let leaked = before
+        .get("DCONF_PROFILE")
+        .is_some_and(|value| is_session_value("DCONF_PROFILE", value));
+    let mut clean = BTreeMap::new();
+    for (name, value) in before {
+        if name == "XDG_DATA_DIRS" && is_session_value(name, value) {
+            if let Some(rest) = without_session_data_dir(value) {
+                clean.insert(name.clone(), rest);
+            }
+            continue;
+        }
+        if is_session_value(name, value) {
+            continue;
+        }
+        if leaked
+            && ((name == "QT_IM_MODULE" && value == "fcitx")
+                || (name == "XMODIFIERS" && value == "@im=fcitx"))
+        {
+            continue;
+        }
+        clean.insert(name.clone(), value.clone());
+    }
+    clean
+}
+
+/// The import when the user manager's environment could not be read: the
+/// session's variables are set, and at the end only what provably belongs to
+/// the session is taken back. The session-only values and the displays are
+/// unset, `XDG_DATA_DIRS` loses the session's entry ([`Import::strip_data_dir`]),
+/// and `QT_IM_MODULE` and `XMODIFIERS`, which may have been the person's,
+/// stay as they are.
+pub fn plan_import_blind(session: impl Fn(&str) -> Option<String>) -> Import {
+    let mut import = Import::default();
+    for name in IMPORTED {
+        if let Some(value) = session(name).filter(|value| !value.is_empty()) {
+            if is_session_value(name, &value) && name != "XDG_DATA_DIRS"
+                || crate::compositor::REPORTED.contains(&name)
+            {
+                import.restore_unset.push(name.to_string());
+            }
+            import.set.insert(name.to_string(), value);
+        }
+    }
+    import.strip_data_dir = true;
+    import
+}
+
+/// What D-Bus activation's environment is set to at the end of the session.
+/// `dbus-daemon` cannot unset a variable, so one the session added keeps its
+/// value there for as long as the session bus lives (a quick login after,
+/// linger, an ssh session), and a GNOME application D-Bus starts directly
+/// would then read and write the session's dconf database. Each variable is
+/// therefore set back to its value before the session, and where it had
+/// none, to a value that behaves as unset does: `DCONF_PROFILE` to
+/// `dconf_default` ([`crate::dconf::default_profile`]) and `XDG_DATA_DIRS` to
+/// the specification's default. The other session-only names are left to the
+/// next session, which sets its own.
+pub fn activation_restore(import: &Import, dconf_default: &str) -> BTreeMap<String, String> {
+    let mut values = import.restore_set.clone();
+    for name in &import.restore_unset {
+        match name.as_str() {
+            "DCONF_PROFILE" => {
+                values.insert(name.clone(), dconf_default.to_string());
+            }
+            "XDG_DATA_DIRS" => {
+                values.insert(name.clone(), DEFAULT_DATA_DIRS.to_string());
+            }
+            _ => {}
+        }
+    }
+    values
 }
 
 #[cfg(test)]
