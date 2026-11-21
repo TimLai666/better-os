@@ -1,7 +1,7 @@
 # Ticket 279 — Better OS's own login screen artwork, light and dark
 
 **Spec:** `design/login-screen-spec.md` section 3.2
-**Blocked by:** the owner's decision L5
+**Blocked by:** none (the owner answered L5 (a) on 2026-11-22)
 
 ## Why
 

@@ -6,7 +6,7 @@ Proposed on 2026-11-21 for ticket 259 (`design/login-screen-spec.md`,
 decisions L1, L2, L7 and L8), and revised the same day for the owner's two
 requirements: locking must never depend on GDM, and a boot must never be
 left without a login screen. Accepted by the owner on 2026-11-21, who answered L1 (B), L2 (a) and L8 (a)
-as recommended; L7 is still open. It does not
+as recommended, and L7 (a) on 2026-11-22. It does not
 change ADR 0038's C3 by itself: GDM stays the login screen until
 the fifth step of the design's section 9, and then only for a person who
 chooses otherwise. ADR 0033 is not
@@ -195,3 +195,77 @@ named in the text fallback's message.
   across all outputs (`cage.c` at v0.1.5).
 - **Writing `display-manager.service` directly without debconf.** Every
   `gdm3` upgrade would relink it from `/etc/X11/default-display-manager`.
+
+## Amendment of 2026-11-22: corrections after an independent review
+
+An independent review of the design found faults in how the decision above
+is carried out. None changes the owner's answers (L1 B, L2 a, L8 a) or the
+two requirements; each corrects a mechanism. Where a sentence above and this
+section disagree, this section holds. The design
+(`design/login-screen-spec.md` sections 0, 3.6, 4.5, 5.1, 5.2, 5.5, 5.6,
+5.10, 6) and the security review carry the details.
+
+1. **The supervisor is the display manager.** Above: "within 60 seconds of
+   `better-os-greeter.service` starting", and the design had the supervisor
+   `PartOf=` and `Before=` the greeter's unit. `PartOf=` propagates a stop
+   or restart of the greeter's unit to the supervisor (systemd.unit(5)), so
+   every retry and the fall back would have stopped or reset it. Now
+   `display-manager.service` is an alias of
+   `better-os-login-supervisor.service` (`daemon_name`
+   `/usr/sbin/better-os-login-supervisor`); the supervisor starts
+   `better-os-greeter.service` itself after stages 1 to 3 and depends on
+   nothing it controls; it keeps its state in `/run`, so a restart
+   continues; it has `Restart=always` with a start limit (a watchdog alone
+   only marks a unit failed, systemd.service(5)).
+2. **A backstop independent of the supervisor:**
+   `better-os-login-backstop.service`, standard programs only, started by
+   the supervisor's `OnFailure=` and by a timer 90 seconds after its first
+   start, gives `plymouth quit` and a text login on tty2 when the greeter
+   never became ready.
+3. **The figure is 80 seconds, not 60** (90 when the supervisor itself
+   fails): the 60 counted stopping a unit as free. Every stop now has a
+   4-second `SIGTERM` limit and `SIGKILL`; the fall back moves to tty2
+   rather than wait for a process the kernel cannot kill, and such a
+   process is stated as a limit, not promised away.
+4. **The greeter's unit is not Debian's `greetd.service`:** no
+   `After=plymouth-quit-wait.service` (it would wait for a splash only the
+   supervisor quits), `TimeoutStopSec=4`, `Restart=no`, and no `OnFailure=`
+   to a text login (it raced the supervisor's attempts on tty1); only
+   `OnFailure=plymouth-quit.service`.
+5. **The supervisor's sandbox** closes the network with `IPAddressDeny=any`,
+   not `PrivateNetwork=`, which would hide `plymouthd`'s abstract socket;
+   it does not repair accounts at boot.
+6. **Switching off, removing and upgrading never stop a running display
+   manager.** Above: "the supervisor and the unlock service are stopped
+   before GDM starts; then the packages step 2 installed are purged".
+   greetd ends the running session when it is stopped (`server.rs` lines
+   261 to 273, `context.rs` lines 389 to 403 at 0.9.0), and stopping the
+   unlock service would leave a locked GNOME session without a password
+   check. Now switching off changes only the debconf value, the file and
+   the link, and takes effect at the next boot; Better Manager's first start
+   after that boot purges what the switch installed. Upgrades never stop or
+   restart `better-os-greeter.service`.
+7. **The GNOME unlock service's boundary is the caller's own account.**
+   Above: "after checking … that the caller is GNOME Shell". The executable
+   check stays as a filter, not a boundary (the same person can run
+   `/usr/bin/gnome-shell`). Its socket is 0666 in a 0711 directory, as
+   GDM's, matched by peer credentials (the 0700 directory of the design
+   would have refused the person's own shell). It is `Type=dbus`, ships its
+   own bus policy (no dependence on `gdm3`'s file), limits failures per uid,
+   runs each PAM conversation on its own thread with a time limit, keeps
+   serving running sessions when `libgdm1` changes (above: "refuses to
+   start"), and the greeter checks it right before starting GNOME, because
+   GNOME Shell asks only once, at start.
+8. **The lock is not a boundary against the person's own programs.** logind
+   lets a session's own user `Unlock` it without a password (systemd v255
+   `logind-session-dbus.c` lines 201 to 221), and a program of the person's
+   can take `cosmic-comp`'s lock after killing `better-lock`. Both GNOME and
+   the Better OS session have this limit; it is stated, and closing the
+   compositor half would need a patch under ADR 0039.
+9. **The greeter does not write AccountsService.** Another account's record
+   needs an administrator's password; a small program in the new session
+   writes the person's own choice instead.
+10. **GDM's automatic login is carried over** into greetd's
+    `initial_session` by the switch, and GDM's file is never edited.
+11. **AGENTS.md records the exception** this decision makes to "privileged
+    system mutation … belongs in `manager-daemon`", as a working rule.

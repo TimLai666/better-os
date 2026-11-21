@@ -1,58 +1,71 @@
 # The login and lock path: security review
 
 The review Better OS's login and lock path needs before any of it runs on a
-person's machine, and before the Better OS greeter may replace GDM
+person's machine
 ([ADR 0044](/engineering/decisions/0044-better-os-login-screen-and-gdm.md),
-proposed). It covers five programs: the greeter (`better-greeter` under
-greetd), the lock program (`better-lock` in the Better OS session), the
-login supervisor (`better-os-login-supervisor`), the GNOME unlock service
-(`better-os-gnome-unlock`), and the text fallback. The design is
+accepted on 2026-11-21, amended on 2026-11-22). It covers six programs: the
+greeter (`better-greeter` under greetd), the lock program (`better-lock` in
+the Better OS session), the login supervisor
+(`better-os-login-supervisor`, which is the display manager), the GNOME
+unlock service (`better-os-gnome-unlock`), the backstop and text fallback,
+and `better-os-remember-login`. The design is
 `design/login-screen-spec.md` (ticket 259). Every claim below names the
 source, check or test that holds it, or the ticket that will add the test;
 a claim with none is listed under "Not proven". Nothing here has run yet:
 the tests named are the ones tickets 260 to 268, 280 and 281 must write.
 
+Revised on 2026-11-22 after an independent review. What changed, in short:
+the supervisor is the display manager and no longer `PartOf=` what it
+controls; its sandbox no longer breaks Plymouth, and it no longer repairs
+accounts at boot; a backstop that runs no Better OS code guards it; the
+unlock service's socket follows GDM's (0711 and 0666, checked by peer
+credentials); the lock is stated as **not** a boundary against programs
+running as the same person; switching and upgrading never stop a running
+display manager.
+
 ## What it does
 
-- **Login.** At boot and after every logout, `greetd` (root) opens a PAM
-  session of class `greeter` for the account `_better-greeter` and runs
-  `/usr/sbin/better-os-greeter`, which execs `cosmic-comp` with
-  `better-greeter` as its program. The greeter shows the accounts
-  AccountsService lists, takes a password, hands it to greetd over greetd's
-  socket, and on success asks greetd to start the chosen session, then
-  exits. greetd runs PAM (`/etc/pam.d/greetd`) and starts the session as
-  the person.
-- **Supervising login.** `better-os-login-supervisor` (root) watches every
-  stage between the display manager's start and a login prompt accepting
-  input, with a deadline for each; it retries the greeter, quits the boot
-  splash, and when the greeter cannot appear starts a text login on the
-  first virtual terminal (spec section 5.10).
+- **Login.** At boot, systemd starts `display-manager.service`, which is
+  `better-os-login-supervisor.service`. The supervisor checks the graphics
+  device, the seat and logind, quits nothing yet, and starts
+  `better-os-greeter.service`: `greetd` (root) opens a PAM session of class
+  `greeter` for `_better-greeter` and runs `/usr/sbin/better-os-greeter`,
+  which execs `cosmic-comp` with `better-greeter`. The greeter takes a
+  password, hands it to greetd, and on success asks greetd to start the
+  chosen session, then exits. greetd runs PAM (`/etc/pam.d/greetd`) and
+  starts the session as the person.
+- **Supervising login.** The supervisor watches every stage with a
+  deadline, retries the greeter, quits the boot splash, and when the greeter
+  cannot appear starts a text login that names the failed stage (spec
+  section 5.10). If the supervisor itself cannot run, the backstop does the
+  last step.
+- **Remembering the choice.** In the new session, `better-os-remember-login`
+  (the person) writes the chosen session and language to the person's own
+  AccountsService record.
 - **Locking the Better OS session.** The session launcher starts
   `better-lock` as the person, inside the session's scope. It takes the
   compositor's session lock (`ext_session_lock_v1`), covers every output,
-  and runs PAM itself under the service `better-os-lock` until the
-  person's password is accepted, then unlocks and exits.
+  and runs PAM itself under `better-os-lock` until the person's password is
+  accepted, then unlocks and exits.
 - **Locking a GNOME session.** GNOME Shell locks itself; to check the
   password it asks `org.gnome.DisplayManager` for a reauthentication
-  channel. While the Better OS greeter is the display manager,
+  channel. While the Better OS login screen is the display manager,
   `better-os-gnome-unlock` (root) owns that name and runs PAM for the
-  caller's own user over a private connection (spec section 5.6).
+  caller's own account over a private connection (spec section 5.6).
 
 ## The risk being reviewed
 
 The login path is the one thing on the machine every person passes through
 before being authenticated, and the lock is the only thing between an open
-session and whoever is at the keyboard. Two of the five programs are new
-Better OS code running as root. So the review has to establish, in this
-order:
+session and whoever is at the keyboard. Two of the programs are new Better
+OS code running as root. So the review has to establish, in this order:
 
 1. a password never leaves the path keyboard → program → PAM, is never kept,
    and never reaches a log, a core file, the network, or another account;
-2. nothing unlocks or logs in without PAM saying yes, and the GNOME unlock
-   service never checks a password for anyone but the session that asks;
-3. a crash or a hang of any of them never leaves a session unlocked, never
-   leaves the screen on the splash, and never leaves the person without a
-   way to authenticate;
+2. nothing logs in without PAM saying yes, and the GNOME unlock service
+   never checks a password for an account other than the caller's own;
+3. a crash or a hang never unlocks a session, never leaves the screen on
+   the splash, and never leaves the person without a way to authenticate;
 4. the greeter reads nothing a person controls beyond what GDM already
    reads, and nothing at all from a home directory;
 5. the root programs can do only what their job needs;
@@ -64,37 +77,48 @@ order:
 - **A person at the keyboard of a locked or logged-out machine,** who does
   not know the password. They may type anything, plug in a keyboard or a
   USB device, switch virtual terminals, close and open the lid, unplug a
-  monitor, and press keys at any speed.
+  monitor, and press keys at any speed. This is who the lock keeps out.
 - **Another local account** on the same machine, who can set their own
   avatar, real name and session in AccountsService, and can call
-  `org.gnome.DisplayManager.Manager` on the system bus like anyone
-  (`gdm.conf`'s default policy).
-- **A program in the person's session** (the person's own, or one that got
-  in), which can talk to the session and system buses and the compositor but
-  does not know the password. It may try to draw over the lock screen, to
-  read the lock program's memory, to ask it to unlock, or to open a
-  reauthentication channel itself.
+  `org.gnome.DisplayManager.Manager` on the system bus like anyone.
+- **A program running as the person** (the person's own, or one that got
+  in). It is **not** kept out by the lock, in either session, and this
+  review does not claim otherwise: logind lets a session's own user call
+  `Unlock` on it with no password (systemd v255
+  `src/login/logind-session-dbus.c` lines 201 to 221: the polkit check
+  names the session's uid as the user who needs no authorization), and
+  both Better OS's lock and GNOME's honour `Unlock`; in the Better OS
+  session such a program can also kill `better-lock` and take the
+  compositor's lock in the second before the launcher restarts it, since
+  `cosmic-comp` accepts a lock from any client once the old one is gone
+  (`session_lock.rs` lines 22 to 30), and then unlock it. What such a
+  program can do while the person is away it could already do while they
+  were there. Closing the compositor path would need a `cosmic-comp` patch
+  (ADR 0039); it is listed, not proposed.
 - Out of scope: root, physical access to the disk, the kernel, firmware.
 
 ## Who holds which privilege
 
 | Process | Account | Started by | Holds |
 | --- | --- | --- | --- |
-| `greetd` 0.9.0 | root | `better-os-greeter.service` | PAM for both its services, the VT, the socket it gives to the greeter (`greetd/src/server.rs` line 182 `chown`s it to the greeter's account) |
-| `better-os-login-supervisor` | root | `better-os-login-supervisor.service` (`WatchdogSec=10`) | start, stop and restart of exactly `better-os-greeter.service`, `better-os-login-fallback@tty1.service` and `plymouth-quit.service`, through systemd's bus; `plymouth` commands and a kill of `plymouthd`; `chvt 1`; `systemd-sysusers` for its own account file; reads logind, `/sys/class/drm`, the greeter's heartbeat; writes `/var/lib/better-os/boot-watch/` and `/run/better-os/login-fallback.issue` |
-| `better-os-gnome-unlock` | root | `better-os-gnome-unlock.service` (`Conflicts=gdm.service`) | the bus name `org.gnome.DisplayManager`; PAM for the services `better-os-gnome-unlock`, `-fingerprint`, `-smartcard`; one socket directory `/run/better-os-gnome-unlock/` (0700, root) |
-| `/usr/sbin/better-os-greeter` | `_better-greeter` | greetd's greeter session | nothing; sets the environment and execs the compositor |
-| `cosmic-comp` (greeter) | `_better-greeter` | the line above | the seat's DRM and input devices through logind (class `greeter` session, active on `seat0`) |
-| `better-greeter` | `_better-greeter` | `cosmic-comp` | greetd's socket; the system bus as an unprivileged client; read and write in `/var/lib/better-os-greeter/` and `/run/better-os-greeter/` only |
-| Orca, AT-SPI bus (only with the screen reader on) | `_better-greeter` | the start wrapper | the greeter's own D-Bus session; reads the greeter's accessibility tree |
-| `agetty` and `login` (fallback) | root, then the person | `better-os-login-fallback@tty1.service` | the standard text login, PAM service `login` |
+| `better-os-login-supervisor` | root | `display-manager.service` (its alias), `Type=notify`, `WatchdogSec=10`, `Restart=always`, `StartLimitBurst=5` in 60 s, `OnFailure=better-os-login-backstop.service` | start and stop of exactly `better-os-greeter.service`, `better-os-gnome-unlock.service`, `better-os-login-fallback@tty1.service` and `@tty2.service` through systemd's bus; `plymouth` commands and a kill of `plymouthd`; `KDSETMODE` and `VT_SETMODE` on `/dev/tty1`, `chvt`; reads logind, `/sys/class/drm`, the greeter's heartbeat, greetd's cgroup; writes `/var/lib/better-os/boot-watch/` and `/run/better-os/` |
+| `better-os-login-backstop` (a unit, no program of Better OS's) | root | the supervisor's `OnFailure=` and a 90 s timer | `plymouth quit`, `systemctl start better-os-login-fallback@tty2.service`, `chvt 2`, only when the greeter never reported `ready` and no fall back runs |
+| `greetd` 0.9.0 | root | `better-os-greeter.service`, started only by the supervisor | PAM for `greetd` and `greetd-greeter`, the VT, the socket it gives to the greeter (`greetd/src/server.rs` line 182) |
+| `better-os-gnome-unlock` | root | `better-os-gnome-unlock.service` (`Type=dbus`, `Conflicts=gdm.service`) | the bus name `org.gnome.DisplayManager` (under its own bus policy file); PAM for the services `better-os-gnome-unlock`, `-fingerprint`, `-smartcard`; `/run/better-os-gnome-unlock/` |
+| `/usr/sbin/better-os-greeter`, `cosmic-comp`, `better-greeter` | `_better-greeter` | greetd's greeter session | the seat's devices through logind (class `greeter`); greetd's socket; the system bus as an unprivileged client; `/var/lib/better-os-greeter/` and `/run/better-os-greeter/` |
+| Orca, AT-SPI bus (only with the screen reader on) | `_better-greeter` | the start wrapper | the greeter's own D-Bus session |
+| `agetty` and `login` (fall back) | root, then the person | `better-os-login-fallback@ttyN.service` | the standard text login, PAM service `login` |
+| `better-os-remember-login` | the person | an XDG autostart entry | AccountsService for the person's own account (`change-own-user-data`) |
 | `better-lock` | the person | the session launcher | the person's PAM conversation under `better-os-lock`; the compositor's session lock; the session bus |
 | `cosmic-greeter` locker (fallback only) | the person | the session launcher after three crashes | the same, under its own PAM service |
 
-`_better-greeter` is a system account created by sysusers: no password, no
-shell (`/usr/sbin/nologin`), home `/var/lib/better-os-greeter` (0700),
-member of `video` only if `cosmic-comp` needs it there (ticket 268). It owns
-no file outside its home and `/run/better-os-greeter/`.
+`_better-greeter` is a system account created by sysusers at install: no
+password, no shell (`/usr/sbin/nologin`), home `/var/lib/better-os-greeter`
+(0700), member of `video` only if `cosmic-comp` needs it there (ticket 268).
+The greeter never writes AccountsService for anyone: changing another
+account's record needs `org.freedesktop.accounts.user-administration`, which
+polkit grants only with an administrator's password (`auth_admin_keep`,
+`/usr/share/polkit-1/actions/org.freedesktop.accounts.policy`).
 
 ## What each can reach
 
@@ -104,7 +128,7 @@ no file outside its home and `/run/better-os-greeter/`.
 | Resource | Allowed | How it is held |
 | --- | --- | --- |
 | greetd's socket | connect, read, write | `GREETD_SOCK`; the only Unix stream socket it opens besides the system bus and the Wayland socket |
-| System bus | method calls and property reads on AccountsService, logind (`Can*`, `Suspend`, `Reboot`, `PowerOff`, `ListSessions`), NetworkManager and UPower (properties only), locale1, and `org.gnome.DisplayManager`'s `Version` property (to know whether to list GNOME) | the bus's own policy; logind's power calls are decided by polkit for an active greeter session; a test lists every destination in the code |
+| System bus | method calls and property reads on AccountsService (reads only), logind (`Can*`, `Suspend`, `Reboot`, `PowerOff`, `ListSessions`), NetworkManager and UPower (properties only), locale1, and `org.gnome.DisplayManager`'s `Version` property | the bus's own policy; logind's power calls are decided by polkit for an active greeter session; a test lists every destination in the code |
 | Files read | `/usr/share/` (artwork, fonts, `wayland-sessions`), `/etc/fonts`, `/var/lib/AccountsService/icons/`, its own state directories, `$XDG_RUNTIME_DIR` | Landlock (ABI 4, Linux 6.7 and newer; Ubuntu 24.04 ships 6.8) |
 | Files written | its state directories and `$XDG_RUNTIME_DIR` | Landlock; files created new with `O_NOFOLLOW` and renamed into place |
 | Network | none | Landlock's TCP bind and connect rules, and a seccomp filter refusing `socket(AF_INET, …)`, `AF_INET6`, `AF_PACKET`; a test runs the built binary and checks that a `connect` attempt from inside fails |
@@ -112,68 +136,108 @@ no file outside its home and `/run/better-os-greeter/`.
 | Executing programs | none after start | seccomp refuses `execve` once the screen is up; Orca is started by the wrapper before |
 
 `better-lock` runs with the person's rights. It sets `PR_SET_DUMPABLE` 0 at
-start (so `ptrace` from the same account is refused without
-`CAP_SYS_PTRACE`) and uses the same no-network and no-`execve` rules.
+start, so another process of the person cannot read its memory with
+`ptrace` without `CAP_SYS_PTRACE`; that protects the password it is holding,
+not the lock (above). It uses the same no-network and no-`execve` rules.
 
-`better-os-login-supervisor` is root and needs to be: it must be able to
-stop a display manager and start a text login when every other program has
-failed. What limits it:
+### The supervisor
 
-- It runs no PAM, reads no password, opens no socket but the system bus and
-  the journal, and has no D-Bus interface of its own that changes anything
-  (`org.betteros.LoginSupervisor1` offers only the last record, read-only,
-  for `better-os-login-status`).
+It is root because it must be able to stop a display manager and start a
+text login when every other program has failed. What limits it:
+
+- It runs no PAM, reads no password, and has no D-Bus interface that changes
+  anything (`org.betteros.LoginSupervisor1` offers only the last record,
+  read-only, for `better-os-login-status`).
 - The units it acts on are a fixed list compiled in (above); a test feeds it
   every stage outcome against a fake systemd and checks it never names
-  another unit.
-- Its unit sandbox: `ProtectHome=yes`, `ProtectSystem=strict` with
-  `ReadWritePaths=/var/lib/better-os/boot-watch /run/better-os`,
-  `PrivateNetwork=yes`, `NoNewPrivileges=yes`, `RestrictAddressFamilies=AF_UNIX`,
-  `MemoryDenyWriteExecute=yes`, `SystemCallFilter=@system-service`. It reads
-  `/sys/class/drm` and never writes it.
-- What it writes to the fallback issue file is its own fixed text with a
-  stage name from a closed list and a time; nothing from another program.
+  another unit. It is not `PartOf=`, `BindsTo=` or `Requires=` any of them,
+  so stopping them never stops it (systemd.unit(5), `PartOf=`: "When systemd
+  stops or restarts the units listed here, the action is propagated to this
+  unit").
+- Its unit sandbox: `ProtectHome=yes`; `ProtectSystem=strict` with
+  `ReadWritePaths=/var/lib/better-os/boot-watch /run/better-os`; the network
+  closed by `IPAddressDeny=any`, **not** by `PrivateNetwork=`, because a
+  private network namespace also hides abstract Unix sockets
+  (network_namespaces(7)) and `plymouth` reaches `plymouthd` only at the
+  abstract address `/org/freedesktop/plymouthd` (in `libply-boot-client.so.5`);
+  `RestrictAddressFamilies=AF_UNIX` (it polls `/sys/class/drm` and does not
+  open a udev monitor, so it needs no `AF_NETLINK`); `NoNewPrivileges=yes`;
+  `MemoryDenyWriteExecute=yes`; `SystemCallFilter=@system-service` plus the
+  `ioctl`s on `/dev/tty1` it needs (`DeviceAllow=/dev/tty1 rw`,
+  `/dev/tty2 rw`).
+- It does not repair accounts. `/etc` stays read-only to it; a missing or
+  locked `_better-greeter` is a failed stage 5 and a text login, and Better
+  Manager's health check repairs it from the person's next session.
+- What it writes to the fallback's issue file is its own fixed text with a
+  stage name from a closed list and a time.
+- Its own state lives in `/run/better-os/login-path.json`, so a watchdog
+  restart continues the same appearance instead of starting its deadlines
+  again.
 
-`better-os-gnome-unlock` is root because PAM's `pam_unix` checks a
-password through `unix_chkpwd` for its own user only unless it runs as root,
-and because only root may own `org.gnome.DisplayManager` (`gdm.conf`). What
-limits it:
+### The backstop
+
+`better-os-login-backstop.service` runs only `plymouth`, `systemctl` and
+`chvt`, with `ExecCondition=` on two files in `/run`; it exists so that a
+bug in the supervisor (a crash loop, a binary that will not start, a sandbox
+that refuses it) still ends in a text login. It is started by the
+supervisor's `OnFailure=` (after five starts in 60 s) and by a timer 90
+seconds after the supervisor's first start.
+
+### The GNOME unlock service
+
+It is root because `pam_unix` checks a password for another uid only as
+root, and because only root may own `org.gnome.DisplayManager`. It ships its
+own bus policy file with the same rules as `gdm3`'s `gdm.conf` (root may
+own the name; everyone may call `org.gnome.DisplayManager.Manager` and read
+its properties), so it works on an Ubuntu machine where `gdm3` has been
+removed. What limits it:
 
 - **Who may ask.** `OpenReauthenticationChannel(username)` is answered only
-  when, from the caller's bus credentials (the bus daemon's
-  `GetConnectionCredentials`, not anything the caller says): the caller's
-  process is in a logind session that is local, on a seat, and of class
-  `user`; that session's user is `username`; and the caller's executable
-  (`/proc/<pid>/exe`, opened once, compared by device and inode with
-  `/usr/bin/gnome-shell`) is GNOME Shell. Every other caller gets
-  `AccessDenied`. Another local account therefore cannot have it check a
-  password for anyone, not even itself unless it is running GNOME Shell.
-- **The private connection.** For each accepted request it creates one
-  socket under `/run/better-os-gnome-unlock/` (0700, root), returns its
-  address, accepts exactly one connection within 10 seconds whose peer
-  (`SO_PEERCRED`) has the caller's uid and pid, and closes the socket.
-  Nothing else can connect: the directory is root's, and the one connection
-  is matched against the request.
-- **What it runs.** PAM for that one user, only for the three service names
-  it maps (`gdm-password` → `better-os-gnome-unlock`, `gdm-fingerprint` →
-  `-fingerprint`, `gdm-smartcard` → `-smartcard`, Better OS's own files in
-  `/etc/pam.d/`): `pam_authenticate`, `pam_acct_mgmt`, then `pam_setcred`
-  with `PAM_REINITIALIZE_CRED`. It opens no PAM session and starts no
-  process. Answers from the shell are kept in the same `Secret` buffer type
-  as the greeter's (below).
-- **Limits.** At most one channel per session at a time, at most one
-  conversation per service per channel; a channel idle for 5 minutes is
-  closed. Failed attempts are subject to PAM's own delay (`pam_faildelay`
-  in the file, 3 seconds as in `/etc/pam.d/login`).
-- **Its unit sandbox.** `ProtectHome=read-only` (PAM modules may read
-  `~/.pam_environment`-style files; none in the Better OS files do, which a
-  test checks), `PrivateNetwork=yes` unless a PAM module in its files needs
-  the network (`pam_sss` does; Better OS's files include `common-auth`,
-  which may name it, so this is decided per machine and recorded: **not
-  proven**), `NoNewPrivileges=yes`, `RestrictAddressFamilies=AF_UNIX`,
-  `CapabilityBoundingSet=` only what PAM needs.
-- **Never beside GDM.** `Conflicts=gdm.service`; started only while the
-  alias names the Better OS greeter. If GDM owns the name, it never starts.
+  when, from the bus daemon's `GetConnectionCredentials` (never from
+  anything the caller says), the caller's process is in a logind session
+  that is local, on a seat, of class `user`, and owned by `username`'s uid.
+  Every other caller gets `AccessDenied`. This is the boundary: **a caller
+  can only have its own account's password checked.** The first version
+  also compared the caller's executable with `/usr/bin/gnome-shell`; that
+  is kept as a filter against mistakes but is not a boundary, because the
+  same person can run their own `/usr/bin/gnome-shell` (with `LD_PRELOAD`,
+  a shell mode, or an extension). GDM itself checks neither the executable
+  nor that `username` is the caller (`gdm-manager.c` lines 1155 to 1235).
+- **The private connection.** As GDM does it (`daemon/gdm-dbus-util.c`
+  lines 84 to 107): a directory `/run/better-os-gnome-unlock/` at 0711 and
+  a socket in it at 0666 for each accepted request, so the person's
+  `gnome-shell` can connect; the boundary is the connection's credentials,
+  not the file's mode. The service accepts exactly one connection within 10
+  seconds whose peer credentials (`SO_PEERCRED`, and the uid D-Bus's
+  `EXTERNAL` authentication reports) match the requesting caller's uid and
+  pid, then removes the socket. The first version put the socket in a 0700
+  root directory, which the person's `gnome-shell` could not reach: every
+  unlock would have failed with "Authentication error".
+- **What it runs.** PAM for that one account, only for the three service
+  names it maps (`gdm-password` → `better-os-gnome-unlock`,
+  `gdm-fingerprint` → `-fingerprint`, `gdm-smartcard` → `-smartcard`, Better
+  OS's own files): `pam_authenticate`, `pam_acct_mgmt`, then `pam_setcred`
+  with `PAM_REINITIALIZE_CRED`, with the session's `XDG_RUNTIME_DIR` and
+  session bus address from logind in PAM's environment, as GDM's worker
+  has. It opens no PAM session and starts no process.
+- **Limits it sets itself.** Each conversation runs on its own thread with a
+  60-second limit (a hung `pam_sss` stalls only that conversation, and is
+  cancelled); at most one channel per session and one conversation per
+  service name; after five failures for a uid, 1, 2, 4, 8, then 30 seconds
+  between attempts across all service names. `/etc/pam.d` on the owner's
+  machine has no `pam_faillock`, so without this only `pam_faildelay`'s 3
+  seconds would apply.
+- **Its unit sandbox.** `ProtectHome=read-only`; the network closed with
+  `IPAddressDeny=any` unless a PAM module in `common-auth` needs it
+  (`pam_sss` does on machines that use it; decided per machine at install
+  and recorded, **not proven**); `NoNewPrivileges=yes`;
+  `RestrictAddressFamilies=AF_UNIX AF_NETLINK`.
+- **Never beside GDM, and never stopped under a locked session.**
+  `Conflicts=gdm.service`; switching back to GDM takes effect at the next
+  boot, so it is never stopped while a GNOME session that needs it runs. An
+  upgrade `try-restart`s it; a GNOME unlock attempt in that second fails
+  with "Authentication error" and the next one works. A new `libgdm1` major
+  version never makes it refuse sessions that are already running.
 
 ## The password
 
@@ -185,58 +249,53 @@ limits it:
   the answers the shell sends.
 - **Where it goes.** In the greeter, into greetd's
   `post_auth_message_response` JSON, built directly into a second `Secret`
-  buffer (never a `String` or a `serde_json::Value`), written to the socket,
-  then both are wiped. In the lock program and the unlock service, into
-  PAM's conversation reply, which PAM frees itself; the program's copy is
-  wiped when the reply is handed over.
+  buffer, written to the socket, then both are wiped. In the lock program
+  and the unlock service, into PAM's conversation reply, which PAM frees
+  itself; the program's copy is wiped when the reply is handed over.
 - **When it is wiped.** After it is sent; on Escape; when the view changes;
-  after 60 seconds without input; when the program exits normally. The
-  field's drawn text is dots only, except while "Show password" is held on.
+  after 60 seconds without input; when the program exits normally.
 - **What is never done with it.** No log line, no error message, no panic
   message carries it; a test feeds a known secret through each path with
   logging at its most verbose and searches the log and every error value
   for it (tickets 263 and 280).
 - **Input methods.** The greeter runs none. The lock surface takes the
-  keyboard from the session; the field asks for the `password` content
-  purpose and the lock program keeps text input disabled.
+  keyboard; the field asks for the `password` content purpose and the lock
+  program keeps text input disabled.
 
-## Nothing unlocks without PAM, or without logind
+## What unlocks and what logs in
 
 - The greeter cannot start a session without greetd's `success` for that
-  account: greetd refuses `start_session` unless the session is ready
-  (`context.rs`, `start`).
+  account (`context.rs`, `start`).
 - `better-lock` calls `unlock_and_destroy` only after PAM's `authenticate`
   and `acct_mgmt` both succeed for the session's own user, or when logind
-  sends the session `Unlock`. logind sends `Unlock` only to a caller it has
-  authorized for that session (`loginctl unlock-session`); that is the
-  text-console way back, after the person has authenticated there. The rule
-  is in `login-screen-core` with a test that every other outcome (error,
-  conversation failure, PAM module missing, a panic in the conversation)
-  leaves the lock held.
-- GNOME Shell unlocks only on `VerificationComplete` from the channel or on
+  sends the session `Unlock`. logind sends `Unlock` to anyone the session's
+  user or an administrator lets call it; for the person this needs no
+  password (threat model). A test holds that every other outcome leaves the
+  lock held.
+- GNOME Shell unlocks on `VerificationComplete` from the channel or on
   logind's `Unlock` (`screenShield.js` lines 147 to 156); the unlock
   service sends `VerificationComplete` only after the three PAM calls above
-  succeed for the caller's own user.
+  succeed for the caller's own account.
 - Nothing draws over a Better OS lock but the lock surfaces and layers
-  marked to show on the lock: `cosmic-comp` draws nothing else while locked
-  (`src/shell/focus/order.rs` lines 91 to 177). The marking
-  (`cosmic_session_lock_layer_manager_v1`) is offered to every client that
-  is not sandboxed (`src/state.rs` line 776), so a program of the person's
-  could imitate the lock screen above it; it cannot unlock. Listed under
-  "Not proven" until ticket 268 checks it.
+  marked to show on the lock (`src/shell/focus/order.rs` lines 91 to 177);
+  any program of the person's may mark one, so it could imitate the lock
+  screen; it could also simply unlock (threat model).
 
 ## What a failure leaves the person with
 
 | What fails | What the person sees | What brings it back |
 | --- | --- | --- |
-| The greeter, its compositor, greetd, the greeter's account, logind, the DRM device, Plymouth (every stage of the spec's section 5.10) | the splash or a black screen for at most 60 seconds | the supervisor retries, then starts the text login with a message naming the stage; never the splash, never GDM on its own |
-| The greeter hangs after it was ready | a frozen login screen | its heartbeat goes stale; the supervisor restarts it within 30 s, and the stages run again |
-| The supervisor hangs or crashes | nothing at first | systemd restarts it on its watchdog (`WatchdogSec=10`); its deadlines start again from its own restart |
-| The GNOME unlock service crashes | a GNOME lock screen saying "Authentication error" | systemd restarts it within a second; the next password attempt opens a new channel; the session stays locked meanwhile |
-| The GNOME unlock service stays down | a GNOME lock screen that cannot check a password | "Getting back into a locked session" below |
-| `better-lock` crashes | every output black (the lock stays; `cosmic-comp` draws nothing where a lock surface was: `render/mod.rs` lines 1085 to 1112) | the launcher starts it again within a second and `cosmic-comp` accepts the new client's lock (`session_lock.rs` lines 22 to 30); after three crashes in 30 s, `cosmic-greeter`'s locker; if both fail, the steps below |
+| Any stage of the spec's section 5.10 | the splash or a black screen for at most 80 seconds | the supervisor retries, then starts the text login naming the stage; never the splash, never GDM on its own |
+| A process of the greeter path that the kernel cannot kill | the fall back starts on tty2 without waiting for it | whether the text console can draw while that process holds the device depends on the driver: **not promised** |
+| The greeter hangs after it was ready | a frozen login screen | its heartbeat goes stale; the supervisor restarts it within 30 s |
+| The supervisor hangs | nothing at first | its watchdog aborts it within 10 s and `Restart=always` starts it again; it continues from `/run/better-os/login-path.json` |
+| The supervisor cannot start or keeps crashing | nothing from it | after five starts in 60 s, `OnFailure=` starts the backstop; in any case the backstop's timer fires at 90 s: `plymouth quit` and a text login on tty2 |
+| logind crashes at logout (ticket 256) | a black screen | the supervisor sees the session's end in greetd's cgroup as well as in logind, and starts a new appearance |
+| The GNOME unlock service crashes | a GNOME lock screen saying "Authentication error" | systemd restarts it within a second; the next attempt opens a new channel |
+| The GNOME unlock service is absent when a GNOME session starts | — | the greeter checks it right before starting GNOME and does not start GNOME without it (spec section 5.6) |
+| `better-lock` crashes | every output black (the lock stays) | the launcher starts it again within a second; after three crashes in 30 s, `cosmic-greeter`'s locker; if both fail, the steps below |
 | `better-lock` hangs | a frozen lock screen | its heartbeat; the launcher restarts it after 30 s of silence |
-| The session launcher dies while locked | the compositor's session ends and the login screen appears | logging in again; unsaved work in that session is lost, as on any session crash |
+| The session launcher dies while locked | the compositor's session ends and the login screen appears | logging in again; unsaved work in that session is lost |
 
 ADR 0033's watch is not used on this path: it does nothing when the display
 manager is not GDM. The supervisor replaces it here and writes its records
@@ -265,15 +324,12 @@ login. Every step works with nothing of Better OS running.
    `echo /usr/sbin/gdm3 | sudo tee /etc/X11/default-display-manager`
    `sudo ln -sf /lib/systemd/system/gdm3.service /etc/systemd/system/display-manager.service`
    `sudo systemctl daemon-reload`
-   (`better-os-greeter.service` has no `[Install]` section of its own, as
-   `cosmic-greeter.service` has none: the alias link is the only thing that
-   starts it.)
-7. Type `sudo systemctl stop better-os-login-supervisor.service
-   better-os-gnome-unlock.service` and Enter, then `sudo systemctl restart
-   display-manager.service` and Enter. GDM's login screen appears; if it
-   does not, type `sudo reboot` and Enter.
+7. Type `sudo reboot` and Enter. GDM's login screen appears after the
+   restart. (Restarting `display-manager.service` instead would end every
+   running session, including GNOME sessions whose lock needs the unlock
+   service.)
 8. Once logged in, open Better Manager: its Better OS session page shows
-   "Use the Better OS login screen" off, and it can be removed from there.
+   "Use the Better OS login screen" off, and finishes removing it.
 
 Ticket 268 performs these steps by hand in both VMs and records the
 screens; Better Manager shows the same text next to the switch.
@@ -286,13 +342,13 @@ password.
 1. Press **Ctrl+Alt+F3** (or F4 to F6).
 2. Log in with **the same account** as the locked session, with its
    password.
-3. Type `loginctl unlock-session` followed by the session's id from
-   `loginctl list-sessions` (the line with your user name and `seat0`), and
-   Enter. Both Better OS's lock screen and GNOME's honour it.
-4. Switch back with **Ctrl+Alt+F1** (or the terminal `loginctl` lists for
+3. Type `loginctl list-sessions` and Enter, and note the id on the line with
+   your user name and `seat0`.
+4. Type `loginctl unlock-session <id>` with that id, and Enter. logind
+   allows it for your own session without another password; both Better
+   OS's lock screen and GNOME's honour it.
+5. Switch back with **Ctrl+Alt+F1** (or the terminal `loginctl` lists for
    the session).
-5. If logind asks for an administrator's password at step 3, use `sudo
-   loginctl unlock-session <id>` instead.
 6. If nothing brings the session back, `loginctl terminate-session <id>`
    ends it: **everything not saved in it is lost**, and the login screen
    appears.
@@ -311,16 +367,14 @@ screen back rather than the session unlocked.
   its content (the lock is in the session's compositor in both sessions).
 - **Another local account:** can put a crafted avatar or name in front of
   the greeter (decoded by the pure-Rust `image` crate with size limits,
-  inside the sandbox); can call the GNOME unlock service and is refused
-  unless it is GNOME Shell in its own session asking about itself. A code
-  execution in the greeter gains `_better-greeter`: its state directories
-  and greetd's socket (trying passwords as anyone at the keyboard can,
-  under PAM's delay), nothing else.
-- **A program in the person's session:** cannot read the lock program's
-  memory, cannot unlock, can draw an imitation over the Better OS lock. It
-  can ask the unlock service for a channel only if it is GNOME Shell's own
-  executable, and then only to check the person's own password, which
-  gains it nothing a password prompt of its own would not.
+  inside the sandbox); can ask the unlock service only about its own
+  account, from its own local session, under the service's own backoff. A
+  code execution in the greeter gains `_better-greeter`: its state
+  directories and greetd's socket (trying passwords as anyone at the
+  keyboard can, under PAM's delay), nothing else.
+- **A program running as the person:** can unlock the person's session
+  without the password (threat model). It cannot read the lock program's
+  memory, and it gains nothing about other accounts.
 - **A compromise of the supervisor or the unlock service** is root. That
   is why each has a fixed list of what it may do, its own unit sandbox, no
   input it did not create beyond its D-Bus methods, and tests that hold
@@ -331,15 +385,16 @@ screen back rather than the session unlocked.
 - None of the tests named above exists yet; tickets 260 to 268, 280 and
   281 write them.
 - That GNOME Shell 46 locks and unlocks through the unlock service as it
-  does through GDM, and that GDM's session worker does nothing more on
-  reauthentication that the shell relies on (ticket 280).
-- Whether the unlock service can run with `PrivateNetwork=yes` on machines
-  whose `common-auth` names a networked PAM module.
-- Whether logind lets a person unlock their own session from another
-  terminal without an administrator's password.
+  does through GDM, that GDM's session worker does nothing more on
+  reauthentication that the shell relies on, how `pam_gnome_keyring`
+  behaves when PAM runs in a root service, and what GNOME's "Switch user"
+  button does there (ticket 280).
+- Whether the unlock service can close the network on machines whose
+  `common-auth` names a networked PAM module.
 - Whether `cosmic-comp` shows any surface but the lock's while locked, in
   practice (ticket 268 tries a layer surface over a lock).
 - Whether `_better-greeter` needs the `video` group under `cosmic-comp`.
 - Whether Landlock's TCP rules and the seccomp filter leave GPUI, Orca's
   AT-SPI bus and AccessKit working (ticket 263).
-- Every deadline of the supervisor (ticket 281).
+- Every deadline of the supervisor and the backstop, the `KD_TEXT` reset of
+  tty1, and greetd's cgroup as the sign of a session's end (ticket 281).
