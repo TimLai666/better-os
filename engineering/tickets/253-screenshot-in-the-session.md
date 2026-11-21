@@ -84,16 +84,19 @@ session as in GNOME.
 - [ ] Every feature in "What to build" works in the nested `cosmic-comp`
       (`packaging/tests/cosmic-nested.sh`) with fixture windows, in zh-TW and
       English, light and dark, at 100 % and 150 %.
-- [ ] In ticket 201's VM (`packaging/tests/session-vm/`), Print Screen in the
+- [x] In ticket 201's VM (`packaging/tests/session-vm/`), Print Screen in the
       session saves an image of the screen where the person expects it, and an
       application asking the Screenshot portal interactively gets a dialog
       and an image; screenshots in `/home/tim/Developer/better-os-evidence/253/`.
 - [x] Tests for the program's rules (save path, file name, refusal when the
       portal says no).
 
-**Blocked:** the VM check needs ticket 203's session package, which puts
-`better-screenshot` on Print Screen and in the session's portal
-configuration; until it exists nothing in a real session starts the program.
+**Blocked:** several outputs (the VM's virtual GPU shows its second head
+disconnected with QEMU's headless display; ticket 201's VM plan for several
+outputs), the recording's indicator in a real top bar (tickets 152, 156),
+and the non-interactive portal call through COSMIC's own Access backend;
+everything else ran in the real session (notes, "Checked in the Better OS
+session").
 
 ## Notes (2026-11-22)
 
@@ -348,3 +351,30 @@ items confirmed fixed; three new ones, fixed.
   results are the ones recorded in the table above. The unlocked paths
   after this round are covered by `request_tests` and were not run again in
   the nested compositor, because the owner's session stayed locked.
+
+### Checked in the Better OS session (2026-11-22, ticket 203's VM)
+
+Ubuntu 24.04 VM (`packaging/tests/session-vm/`), the closure from System76's
+source, the `better-os-session` package built from ticket 203's branch with
+everything listed in "What ticket 203 adds" above, one 1920×1080 output, a
+real GDM login. Screenshots and files in
+`/home/tim/Developer/better-os-evidence/253/vm-session-203/`.
+
+| Check | Result |
+| --- | --- |
+| Print opens the interface | yes, over the frozen screen (21) |
+| Screen picture with the pointer (P on) | saved 1920×1080, the pointer drawn where it was (24, 25) |
+| Window picture with the pointer, from the interface | saved 656×547, the I-beam drawn inside the window (27, 28) |
+| Alt+Print | saved the focused window, 656×547, without the pointer (26) |
+| Shift+Print | saved the whole screen, 1920×1080 (`shift-print.png`) |
+| An application's interactive portal call | `org.freedesktop.portal.Screenshot.Screenshot` with `interactive` from a client that stays on the bus: the interface opened (30), and after Capture the Request answered `response=0` with the file's URI (`python-client.txt`; the client is `/home/tim/Developer/better-os-evidence/203/scripts/portal-screenshot.py`) |
+| Recording | Ctrl+Shift+Alt+R opened the interface in recording mode (31), Screen and Capture started it (32), Ctrl+Shift+Alt+R again stopped it: `Videos/Screencasts/Screencast from … .webm`, WebM VP8 1920×1080, 7.5 s (`gst-discoverer-1.0`) |
+| Notifications | every capture logged "no notification shown: org.freedesktop.Notifications was not provided": the session has no notification service until ticket 215 |
+
+Two things seen in passing: S typed while the interface opened did not
+switch to Screen (P did take effect), and Enter after clicking the Screen
+button pressed that button again rather than capturing (it held the
+keyboard focus); both were worked around with the capture button. Not run
+here: several outputs (QEMU's headless virtual GPU reports its second head
+disconnected), the recording's indicator in a real top bar, and the
+non-interactive portal call with COSMIC's Access dialog.

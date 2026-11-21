@@ -2,7 +2,7 @@
 
 **Spec:** better-os-session.md S1, S4 ("The session": what it is, the environment, the process table, how units bind)
 **Blocked by:** 201
-**Blocked:** the key bindings for Super+A (the owner's decision S3, ticket 210), Alt+Tab (ticket 211), the overview (ticket 212), and Print (ticket 253, pull request 32), and the theme's corner radius (ticket 148 has not decided the window radius); everything else is built and checked (Notes)
+**Blocked:** the key bindings for Super+A (the owner's decision S3, ticket 210), Alt+Tab (ticket 211), and the overview (ticket 212), and the theme's corner radius (ticket 148 has not decided the window radius); everything else is built and checked (Notes)
 
 ## Why
 
@@ -146,12 +146,84 @@ stand-in there; the package's files do not differ by base).
 - Super+A: the owner's decision S3, then ticket 210.
 - Alt+Tab, Alt+Shift+Tab, Super+Tab: ticket 211 ships the switcher.
 - Super+W, XF86LaunchA: ticket 212 ships the overview.
-- Print and the screenshot keys, the portal line, the binary and its
-  Depends: ticket 253 (pull request 32, not merged); each place is marked
-  "Ticket 253 adds" and ticket 253's "What to build" lists them.
 - The theme's corner radius: ticket 148 has not said the window radius.
   Writing COSMIC's theme also means shipping the theme configuration's whole
   default directory (the one-directory rule above).
 Each binding goes into the session's `defaults` together with its
 `system_actions` command, and its line leaves `WAITING` in
 `crates/session-launcher/tests/shortcuts.rs`.
+
+### The review of 2026-11-22, and Better Screenshot
+
+Review: `/home/tim/Developer/better-os-evidence/203/review-2026-11-22.md`.
+VM records of this round: `/home/tim/Developer/better-os-evidence/203/review-round/`
+and screenshots 20 to 32 beside NOTES.md.
+
+- **P1, a launcher that dies.** Children get `PR_SET_PDEATHSIG`
+  (`session_launcher::process`, test: a child dies with the thread that
+  started it). The launcher writes a record of what it changed
+  (`session_launcher::record`); `better-os-session-guard.service` watches
+  the launcher and stops the target (and `graphical-session.target` when no
+  other session binds it) when it ends, and its `ExecStopPost=` puts the
+  environment back; `better-os-session-leftovers.service` does the same in
+  any later session, the launcher before its own start. A leftover value is
+  not taken for the person's own (`environment::without_leftovers`, test).
+  VM: the launcher re-executed after an update, then `kill -9`: within 8 s
+  the compositor, XWayland, and the locker were gone (so the parent-death
+  signal survived the exec), every unit and `graphical-session.target`
+  inactive, the record taken, the user manager without any session variable
+  (`crash4/`); the GNOME login after showed GNOME's own environment, a
+  D-Bus-activated GNOME Text Editor had `DCONF_PROFILE` naming the shipped
+  `betteros-default` (`user-db:user`), and a write with its environment
+  landed in `~/.config/dconf/user` while `betteros` kept its hash
+  (`crash2/`, `t203-gnome-after-kill.txt`). Found on the way and fixed: a
+  target `BindsTo=` the guard went down when the package's postinst
+  restarted the guard during an update, taking the session's units and
+  environment with it; now the target only wants the guard, and the guard's
+  `ExecStopPost=` acts only when the session is over (`record::session_over`,
+  test). An update in a running session then kept every unit running.
+- **P2, D-Bus activation.** At the end `DCONF_PROFILE` is set there to a
+  value dconf treats as its default (`dconf::default_profile`, tests; dconf
+  0.40's `dconf_engine_profile_open` read: an empty value and `user` do not
+  work on Ubuntu, which has no `user` profile). VM: the session bus is
+  `dbus-daemon`; after a clean Better OS logout and a GNOME login on the
+  same user manager, GNOME Text Editor started by D-Bus activation had
+  `DCONF_PROFILE=/usr/share/dconf/profile/betteros-default` (`clean/`).
+- **P2, Better Launcher.** `better-launcher` is in the session's `Depends`
+  (ticket 205 carries it as a companion); the shortcut test now accepts a
+  Better OS program only from the session package or its `Depends`.
+- **P2, upstream drift.** `packaging/session/cosmic/upstream.tsv` records the
+  two upstream files with versions and hashes;
+  `guest/check-shortcut-upstream.sh` passed against the installed closure in
+  the VM and fails with instructions on a changed file (tried on an altered
+  copy); ticket 204's closure check is told to run the same comparison.
+- **P3.** The re-exec sets `FD_CLOEXEC` again (in `adopt` and after a failed
+  exec; VM: the socket's flags read `02004002` after a re-exec) and never
+  execs with an ending queued (`resume::may_restart`, test). AGENTS.md
+  names the launcher as the fourth update mechanism. The target and its
+  units carry `ConditionPathExists=` on the record (unit tests, verify-deb;
+  VM journal: "skipped because of an unmet condition check" when started
+  without one). An unreadable user manager takes back only the session's
+  own (test). The derived defaults are in the shipped notice and
+  copyleft-review.md. The caller check compares device and inode (tests,
+  including a same-path file that is not the installed one).
+- **im-launch.** In the session `im-launch` does nothing: it acts only with
+  `IM_CONFIG_PHASE=1`, which `/etc/profile.d/im-config_wayland.sh` sets in a
+  login shell, and GDM starts the launcher without one. With the user
+  manager's `LANG=zh_TW.UTF-8` its autostart unit ran and exited 0, and
+  exactly one `fcitx5`, the unit's, ran (`t203-imlaunch*.txt`). GDM kept
+  `LANG=en_US.UTF-8` for the session although AccountsService said
+  `zh_TW.UTF-8` (no Chinese language pack in the VM), so the session leader
+  itself never ran with the Chinese locale.
+- **dconf system databases.** Ubuntu 24.04 (VM) and Zorin OS 18.1 (this
+  installed machine, read only) ship no `/etc/dconf/profile/user`; both have
+  only IBus's `ibus` profile. The shipped `betteros` profile is therefore
+  exactly the session's; with an administrator's `user` profile holding
+  `system-db` lines, the launcher writes a profile with them and points
+  `DCONF_PROFILE` at it (`dconf::session_profile`, tests; not run in a VM).
+- **Better Screenshot** (ticket 253, merged): the binary, its portal file,
+  D-Bus activation file, and desktop entry, the GStreamer plugins, Print and
+  the three keys, and the portal line are in the package. The desktop
+  entry's `OnlyShowIn=BetterOS;` was dropped: `desktop-file-validate`
+  refuses an unregistered desktop name, and `NoDisplay=true` already keeps
+  it out of every list. VM results are in ticket 253's notes.

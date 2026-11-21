@@ -310,6 +310,13 @@ fn stop_orphaned_session(bus: &Bus) {
         }
         std::thread::sleep(Duration::from_millis(100));
     }
+    stop_graphical_session_if_unheld(bus);
+}
+
+/// The second half of [`stop_orphaned_session`]. The guard itself is
+/// stopped with the target (it is `PartOf=` it) before it gets here, so its
+/// `ExecStopPost=` runs this too.
+fn stop_graphical_session_if_unheld(bus: &Bus) {
     match bus.held_by_another(
         session_launcher::GRAPHICAL_SESSION_TARGET,
         session_launcher::TARGET,
@@ -359,6 +366,9 @@ fn restore_mode() -> ExitCode {
         for problem in lifecycle::restore(&bus, &taken.import, &taken.activation) {
             log(problem);
         }
+    }
+    if !leader_alive {
+        stop_graphical_session_if_unheld(&bus);
     }
     ExitCode::SUCCESS
 }
