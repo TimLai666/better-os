@@ -64,6 +64,15 @@ pub struct Player {
     playing: bool,
     finished: bool,
     missing: Vec<String>,
+    /// Whether the pipeline has finished opening (reached paused with its
+    /// first frame). Until then GStreamer has not linked every stream, and
+    /// a seek sent then can be dropped or leave the file unopened: the
+    /// length is often known well before this (the demuxer reads it from
+    /// the header), so a seek bar that waits for the length is not enough.
+    opened: bool,
+    /// The last seek asked for before the pipeline had opened, sent by
+    /// [`Player::poll`] when it does.
+    pending_seek: Option<Duration>,
 }
 
 /// Starts GStreamer once per process.
@@ -148,7 +157,7 @@ impl Player {
                 .map_err(|_| MediaError::Unavailable("fakesink".into()))?;
             playbin.set_property("audio-sink", &discard);
         }
-        playbin
+        let change = playbin
             .set_state(gst::State::Paused)
             .map_err(|_| MediaError::Pipeline("the file could not be opened".into()))?;
         Ok(Self {
@@ -157,6 +166,10 @@ impl Player {
             playing: false,
             finished: false,
             missing: Vec::new(),
+            // A change that finished at once posts no "async done" message;
+            // only an asynchronous one (every file playbin prerolls) does.
+            opened: change != gst::StateChangeSuccess::Async,
+            pending_seek: None,
         })
     }
 
@@ -187,8 +200,20 @@ impl Player {
         self.playing
     }
 
-    /// Moves to `to` (clamped to the length when it is known).
+    /// Moves to `to` (clamped to the length when it is known). Asked before
+    /// the file has finished opening, the move is kept and made by
+    /// [`Player::poll`] as soon as it has: GStreamer only seeks reliably
+    /// once the pipeline is paused on its first frame.
     pub fn seek(&mut self, to: Duration) {
+        self.finished = false;
+        if !self.opened {
+            self.pending_seek = Some(to);
+            return;
+        }
+        self.send_seek(to);
+    }
+
+    fn send_seek(&mut self, to: Duration) {
         let to = match self.duration() {
             Some(length) => to.min(length),
             None => to,
@@ -199,7 +224,6 @@ impl Player {
             gst::SeekFlags::FLUSH | gst::SeekFlags::ACCURATE,
             gst::ClockTime::from_nseconds(to.as_nanos() as u64),
         );
-        self.finished = false;
     }
 
     /// 0.0 (silent) to 1.0 (as recorded).
@@ -238,6 +262,16 @@ impl Player {
         while let Some(message) = bus.pop() {
             use gst::MessageView;
             match message.view() {
+                // The pipeline's own, not a child's: the whole file is open
+                // (and later, a flushing seek has landed).
+                MessageView::AsyncDone(_)
+                    if message.src() == Some(self.playbin.upcast_ref::<gst::Object>()) =>
+                {
+                    self.opened = true;
+                    if let Some(to) = self.pending_seek.take() {
+                        self.send_seek(to);
+                    }
+                }
                 MessageView::Eos(_) => {
                     let _ = self.playbin.set_state(gst::State::Paused);
                     self.playing = false;
@@ -258,6 +292,7 @@ impl Player {
                 MessageView::Error(error) => {
                     let _ = self.playbin.set_state(gst::State::Null);
                     self.playing = false;
+                    self.pending_seek = None;
                     let cause = error.error();
                     if is_missing_codec(&cause) {
                         events.push(MediaEvent::MissingCodec(self.missing.clone()));
