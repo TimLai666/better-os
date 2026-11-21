@@ -113,6 +113,9 @@ fn the_supervisor_restarts_itself_and_hands_over_to_the_backstop() {
     assert_eq!(one(&s, "Service.TimeoutStartSec"), "10");
     assert_eq!(one(&s, "Service.Restart"), "always");
     assert_eq!(one(&s, "Service.RestartSec"), "1");
+    // systemd 255 runs OnFailure= on every failure otherwise, restarts
+    // included: one crash would start the backstop's text login.
+    assert_eq!(one(&s, "Service.RestartMode"), "direct");
     assert_eq!(one(&s, "Unit.StartLimitIntervalSec"), "60");
     assert_eq!(one(&s, "Unit.StartLimitBurst"), "5");
     assert_eq!(

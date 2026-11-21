@@ -102,7 +102,7 @@ OS code running as root. So the review has to establish, in this order:
 | Process | Account | Started by | Holds |
 | --- | --- | --- | --- |
 | `better-os-login-supervisor` | root | `display-manager.service` (its alias), `Type=notify`, `WatchdogSec=10`, `Restart=always`, `StartLimitBurst=5` in 60 s, `OnFailure=better-os-login-backstop.service` | start and stop of exactly `better-os-greeter.service`, `better-os-login-fallback@tty1.service` and `@tty2.service`, by `systemctl --no-block` (`better-os-gnome-unlock.service` only through its unit's `Wants=`); `plymouth` commands and a kill of `plymouthd`; `KDSETMODE`, `VT_SETMODE` and `VT_ACTIVATE` on `/dev/tty1` and `/dev/tty2`; reads logind (a `busctl` probe and `/run/systemd/sessions/`), `/sys/class/drm`, `/etc/passwd`, the greeter's heartbeat, greetd's cgroup and its processes in `/proc`; writes `/var/lib/better-os/boot-watch/` and `/run/better-os/` |
-| `better-os-login-backstop` (a unit, no program of Better OS's) | root | the supervisor's `OnFailure=` and a 90 s timer | `timeout 5 plymouth quit`, `pkill -KILL -x plymouthd`, `cp --no-clobber` of a shipped message file into `/run/better-os/`, `touch /run/better-os/login-fallback.active`, `systemctl --no-block start better-os-login-fallback@tty2.service`, `chvt 2`, only when the greeter never reported `ready`, no fall back runs and the supervisor never saw the property hold |
+| `better-os-login-backstop` (a unit, no program of Better OS's) | root | the supervisor's `OnFailure=` and a 90 s timer | `timeout 5 plymouth quit`, `pkill -KILL -x plymouthd`, `cp --update=none` of a shipped message file into `/run/better-os/`, `touch /run/better-os/login-fallback.active`, `systemctl --no-block start better-os-login-fallback@tty2.service`, `chvt 2`, only when the greeter never reported `ready`, no fall back runs and the supervisor never saw the property hold |
 | `greetd` 0.9.0 | root | `better-os-greeter.service`, started only by the supervisor | PAM for `greetd` and `greetd-greeter`, the VT, the socket it gives to the greeter (`greetd/src/server.rs` line 182) |
 | `better-os-gnome-unlock` | root | `better-os-gnome-unlock.service` (`Type=dbus`, `Conflicts=gdm.service`) | the bus name `org.gnome.DisplayManager` (under its own bus policy file); PAM for the services `better-os-gnome-unlock`, `-fingerprint`, `-smartcard`; `/run/better-os-gnome-unlock/` |
 | `/usr/sbin/better-os-greeter`, `cosmic-comp`, `better-greeter` | `_better-greeter` | greetd's greeter session | the seat's devices through logind (class `greeter`); greetd's socket; the system bus as an unprivileged client; `/var/lib/better-os-greeter/` and `/run/better-os-greeter/` |
@@ -206,7 +206,8 @@ text login when every other program has failed. What limits it:
 in `/run`; it exists so that a
 bug in the supervisor (a crash loop, a binary that will not start, a sandbox
 that refuses it) still ends in a text login. It is started by the
-supervisor's `OnFailure=` (after five starts in 60 s) and by a timer 90
+supervisor's `OnFailure=` (after five starts in 60 s: `RestartMode=direct`
+keeps systemd 255 from triggering it on each restart) and by a timer 90
 seconds after the supervisor's first start.
 
 ### The GNOME unlock service

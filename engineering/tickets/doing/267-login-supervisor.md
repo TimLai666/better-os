@@ -119,7 +119,15 @@ is the container check (stand-in greeter that never becomes ready, the
 supervisor killed mid-attempt, a supervisor that cannot start); this
 machine has no Docker, so its first run is CI's.
 
-Left: the container check's first CI run on this branch. What needs
+The container check's first CI run (run 44946611014) passed case A on
+all four runners and found a real fault: systemd 255 triggers
+`OnFailure=` on every failure of a `Restart=always` unit, so one
+supervisor crash started the backstop's text login on tty2. Fixed with
+`RestartMode=direct` (spec, security review and `tests/units.rs`
+updated); the check now also kills by process id, since `systemctl kill`
+fails on two runners' kernels.
+
+Left: the container check passing in CI with that fix. What needs
 greetd, the real greeter, the package or the VM is in the notes of
 tickets 264, 265 and 281.
 

@@ -222,7 +222,9 @@ systemctl start display-manager.service
 t0="$(show "$SUPERVISOR" InactiveExitTimestampMonotonic)"
 wait_for "the first retry" 40 retried
 sleep 2
-systemctl kill -s KILL "$SUPERVISOR"
+# By its process id: `systemctl kill` also signals the cgroup, which some
+# runners' kernels refuse.
+kill -KILL "$(show "$SUPERVISOR" MainPID)"
 restarted() { (($(show "$SUPERVISOR" NRestarts) >= 1)); }
 wait_for "the supervisor's restart" 10 restarted
 wait_for "the text login on tty1" 85 systemctl is-active --quiet better-os-login-fallback@tty1.service

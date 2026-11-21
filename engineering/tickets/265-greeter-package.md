@@ -98,6 +98,10 @@ From ticket 267 (2026-11-22): what it built for this package, and left to it.
   `Conflicts=plymouth-quit.service getty@tty1.service`): the greeter's
   `OnFailure=plymouth-quit.service` and a getty on tty1 would then stop the
   supervisor. `verify-deb.sh` should check that, as `tests/units.rs` does.
+- The supervisor's unit needs `RestartMode=direct` (systemd 254 and
+  newer): without it systemd 255 triggers `OnFailure=` on every failure,
+  restarts included, so one crash would start the backstop's text login.
+  CI's container check found it; `verify-deb.sh` should check it too.
 - Depends: `procps` (`pkill`), `kbd` (`chvt`), `util-linux` (`agetty`),
   `coreutils`, which the backstop and the fall back run; `plymouth` is not
   a dependency (every `plymouth` call tolerates its absence).

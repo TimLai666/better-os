@@ -30,6 +30,12 @@ TimeoutStartSec=10
 TimeoutStopSec=5
 Restart=always
 RestartSec=1
+# Without it systemd 255 triggers OnFailure= on every failure, restarts
+# included (seen in CI's container check, ticket 267): one crash would run
+# the backstop and take the screen to tty2 while the supervisor continues.
+# With it, OnFailure= runs only when systemd gives up (systemd 254 and newer;
+# the login screen is offered on Ubuntu 24.04 bases only, ADR 0044).
+RestartMode=direct
 # Its state (/run/better-os/login-path.json) outlives its own restarts and
 # stops, so a restarted supervisor continues the same appearance.
 RuntimeDirectory=better-os

@@ -17,7 +17,7 @@ ExecCondition=/usr/bin/test ! -e /run/better-os/login-fallback.active
 ExecCondition=/usr/bin/test ! -e /run/better-os/login-held
 ExecStart=-/usr/bin/timeout 5 /usr/bin/plymouth quit
 ExecStart=-/usr/bin/pkill -KILL -x plymouthd
-ExecStart=-/usr/bin/cp --no-clobber /usr/share/better-os/login-supervisor-failed.issue /run/better-os/login-fallback.issue
+ExecStart=-/usr/bin/cp --update=none /usr/share/better-os/login-supervisor-failed.issue /run/better-os/login-fallback.issue
 ExecStart=/usr/bin/touch /run/better-os/login-fallback.active
 ExecStart=/usr/bin/systemctl --no-block start better-os-login-fallback@tty2.service
 ExecStart=-/usr/bin/chvt 2
