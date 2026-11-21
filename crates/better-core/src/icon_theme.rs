@@ -481,7 +481,7 @@ impl ThemeIndex {
             })
             .map(|(dir, context, _, scalable, _)| (dir.clone(), context.clone(), *scalable))
             .collect();
-        others.sort_by(|a, b| b.2.cmp(&a.2));
+        others.sort_by_key(|other| std::cmp::Reverse(other.2));
         let mut apps: Vec<(String, u32, bool, u32)> = details
             .into_iter()
             .filter(|(dir, context, ..)| {

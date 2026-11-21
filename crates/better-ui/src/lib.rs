@@ -359,10 +359,10 @@ impl AppIcon {
 /// own icon theme and every theme it inherits from, then `hicolor`, then
 /// `pixmaps`. A theme's application directories come from its `index.theme`
 /// (`Directories=` with `Context=Applications`); a theme without one is
-/// searched at the usual sizes.
+/// searched at the usual sizes. The lookup is `better_core::icon_theme`,
+/// shared with programs that have no window; this adds what only a window
+/// needs.
 pub mod icons {
-    //! The icon theme lookup is `better_core::icon_theme`, shared with
-    //! programs that have no window; this adds what only a window needs.
     pub use better_core::icon_theme::*;
 
     use gpui::SharedString;
