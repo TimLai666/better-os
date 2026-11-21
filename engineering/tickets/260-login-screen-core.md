@@ -1,7 +1,7 @@
 # Ticket 260 — `login-screen-core`: the login and lock screens' states, copy and layout rules, with no GPUI
 
 **Spec:** `design/login-screen-spec.md` sections 2 to 4, 5.1, 5.7; `engineering/specs/login-screen-security.md` ("The password")
-**Blocked by:** the owner's decisions L3, L4 and L5
+**Blocked by:** none (the owner answered L3 (b), L4 (a) with the setting and L5 (a) on 2026-11-22)
 
 ## Why
 

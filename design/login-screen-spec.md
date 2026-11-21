@@ -17,7 +17,7 @@ is its own file,
 Who owns the login and lock path, and in what order Better OS takes it over
 from GDM, is
 [ADR 0044](/engineering/decisions/0044-better-os-login-screen-and-gdm.md)
-(proposed). The work is cut into tickets 260 to 269, 278 to 281 (270 to 277
+(accepted on 2026-11-21, amended after review on 2026-11-22). The work is cut into tickets 260 to 269, 278 to 281 (270 to 277
 were taken on another branch). The look follows
 `DESIGN.md`; every control is a `better_ui::fluent` control and every icon
 comes from `better_ui::icon_set`. The mockups in `design/login-screen/` draw
@@ -46,8 +46,15 @@ file decides layout and copy.
 ## 0. Decisions that are the owner's
 
 **Decided by the owner on 2026-11-21: L1 = (B), L2 = (a), L8 = (a), each as
-recommended.** L3 to L7 are still open; each blocks only the tickets named
-with it.
+recommended; and on 2026-11-22: L3 = (b), L4 = (a) with the setting, L5 = (a),
+L6 = (a), L7 = (a), each as recommended.** Every decision in this table is
+answered.
+
+A review on 2026-11-22 corrected the design without changing these answers:
+L1's row says "a login prompt within 60 seconds"; that figure counted
+stopping a unit as free, and with every stop counted it is **80 seconds, or
+90 when the supervisor itself cannot run** (section 5.10). The other
+corrections are listed in ADR 0044's amendment of 2026-11-22.
 
 | # | Decision | Recommendation | What each choice costs |
 | --- | --- | --- | --- |
@@ -431,10 +438,19 @@ entries do: `env GNOME_SHELL_SESSION_MODE=zorin /usr/bin/gnome-session
 --session=zorin`) is listed like any other and locks through the GNOME
 unlock service (section 5.6, L2 (a)); under L2 (d) it is left out. The
 greeter shows a GNOME session only while the unlock service answers on the
-system bus, so a session that could not lock is never offered. The choice is written to
+system bus, and checks again right before starting it (section 5.6), so a
+session that could not lock is never started. The choice is written to
 AccountsService (`SetSession`, the account's own data, the same call ticket
 205 makes) only after a successful login, so a wrong password changes
-nothing.
+nothing, and not by the greeter: changing another account's data needs
+`org.freedesktop.accounts.user-administration`, which polkit gives only with
+an administrator's password (`auth_admin_keep`,
+`/usr/share/polkit-1/actions/org.freedesktop.accounts.policy`), and the
+greeter has no way to ask for one. The greeter passes the chosen session and
+language in `start_session`'s environment (`BETTER_OS_LOGIN_SESSION`,
+`BETTER_OS_LOGIN_LANGUAGE`), and `better-os-remember-login`, started once in
+the new session by an XDG autostart entry, writes them as the person
+(`change-own-user-data`, allowed without a password).
 
 | Item | zh-TW | English |
 | --- | --- | --- |
@@ -696,13 +712,22 @@ playing". Media keys work while locked, as they do on GNOME.
   seconds it starts `cosmic-greeter`'s locker instead (installed with the
   session's closure), which also asks for the password. What the person does
   if both fail is in the security review's numbered steps.
-- **logind's `Unlock`** (what `loginctl unlock-session` sends) is honoured:
-  logind sends it only to a caller it has authorized for that session, and
-  it is the way back for a person who has logged in on a text console with
-  their password while the lock screen is broken. It is the one way to
-  unlock that does not pass through `better-lock`'s own PAM conversation,
-  and it is the same rule GNOME's screen shield follows
-  (`screenShield.js` lines 151 to 152).
+- **logind's `Unlock`** (what `loginctl unlock-session` sends) is honoured,
+  as GNOME's screen shield honours it (`screenShield.js` lines 151 to 152):
+  it is the way back for a person whose lock screen is broken.
+- **Who the lock protects against.** The lock keeps out a person at the
+  keyboard who does not know the password. It does **not** keep out a
+  program running as the same person: logind lets the session's own user
+  call `Unlock` without any password (`bus_verify_polkit_async` with the
+  session's uid as the user who needs no authorization, systemd v255
+  `src/login/logind-session-dbus.c` lines 201 to 221), and such a program
+  can also kill `better-lock` and take the compositor's lock in the second
+  before the launcher starts it again (`cosmic-comp` accepts a new lock from
+  any client once the old one is gone, `session_lock.rs` lines 22 to 30),
+  then unlock it. GNOME's lock has the same limit through logind. Closing
+  the second path would need `cosmic-comp` to give the lock only to a client
+  the launcher hands over, which is a compositor patch (ADR 0039's
+  territory) and is not proposed here.
 
 ## 5. How it is built
 
@@ -710,13 +735,14 @@ playing". Media keys work while locked, as they do on GNOME.
 
 | Program | Runs as | In | Reaches |
 | --- | --- | --- | --- |
-| `greetd` 0.9.0 (Ubuntu's archive) | root | `better-os-greeter.service` | PAM, logind, the VT, the greeter's socket |
+| `greetd` 0.9.0 (Ubuntu's archive) | root | `better-os-greeter.service`, started only by the supervisor | PAM, logind, the VT, the greeter's socket |
 | `/usr/sbin/better-os-greeter` (a few lines of Rust: environment, then `exec cosmic-comp /usr/libexec/better-os/greeter/better-greeter`) | `_better-greeter` | greetd's greeter session (class `greeter`) | the compositor |
 | `cosmic-comp` | `_better-greeter` | the same | DRM and input through logind's seat |
 | `better-greeter` (GPUI) | `_better-greeter` | the same | greetd's socket; the system bus, read-only, for AccountsService, logind, NetworkManager, UPower, locale1; its own state directory |
 | `better-lock` (GPUI) | the person | the session's scope, child of the session launcher | PAM (`better-os-lock`), the session bus, the compositor's lock |
-| `better-os-login-supervisor` (Rust, no GPUI) | root | `better-os-login-supervisor.service`, started with the display manager, `WatchdogSec=10` | logind (read), systemd (start, stop, restart of the units named in section 5.10 and nothing else), `plymouth`, `/sys/class/drm` (read), the greeter's heartbeat, its records under `/var/lib/better-os/boot-watch/` |
-| `better-os-gnome-unlock` (Rust, no GPUI) | root | `better-os-gnome-unlock.service`, only while the Better OS greeter is the display manager (`Conflicts=gdm.service`) | owns `org.gnome.DisplayManager` on the system bus; runs PAM (`better-os-gnome-unlock`) for the person whose GNOME session asks, over a private connection only that session can open (section 5.6) |
+| `better-os-login-supervisor` (Rust, no GPUI) | root | `better-os-login-supervisor.service`, which **is** the display manager (`display-manager.service` is its alias), `WatchdogSec=10`, `Restart=always` | logind (read), systemd (start, stop, restart of the units named in section 5.10 and nothing else), `plymouth`, `/sys/class/drm` (read), the greeter's heartbeat, its records under `/var/lib/better-os/boot-watch/` |
+| `better-os-gnome-unlock` (Rust, no GPUI) | root | `better-os-gnome-unlock.service`, only while the Better OS greeter is the display manager (`Conflicts=gdm.service`) | owns `org.gnome.DisplayManager` on the system bus; runs PAM (`better-os-gnome-unlock`) for the person whose GNOME session asks, over a private connection matched to that session's process (section 5.6) |
+| `better-os-remember-login` (Rust, no GPUI) | the person | an XDG autostart entry, once per login, in any session | AccountsService for the person's own account only (`change-own-user-data`, which polkit allows the person without a password): writes the session and language the greeter passed in `start_session`'s environment |
 
 One crate holds everything both programs share and nothing that draws:
 `login-screen-core` (ticket 260): the states, the copy, the layout rules
@@ -774,8 +800,12 @@ creating a session" and stops (`context.rs` lines 357 to 360). The unit's
 `greetd.service`) would start it again up to five times and then give up,
 with nothing on screen. Better OS does not rely on that: the login
 supervisor owns every restart and every deadline (section 5.10), and
-`better-os-greeter.service` has `Restart=no` and `OnFailure=` the
-supervisor's fallback. GDM is never started on its own (L8).
+`better-os-greeter.service` has `Restart=no` and `OnFailure=` only
+`plymouth-quit.service`. It has no `OnFailure=` to a text login: a first
+crash would then start `agetty` on tty1 while the supervisor was starting
+its second attempt on the same terminal, and the three attempts would be
+bypassed. Only the supervisor (or, if it cannot run, the backstop) decides
+the fall back. GDM is never started on its own (L8).
 
 **One session at a time.** greetd keeps one current session and starts the
 greeter again only when it ends (`context.rs`): while one person is logged
@@ -845,21 +875,35 @@ installing it changes nothing; its config runs `agreety` on VT 7 as
 So Better OS's greeter registers as a display manager the Debian way, as
 `cosmic-greeter` does:
 
-- the package `better-os-greeter` ships `better-os-greeter.service`
-  (`ExecStart=greetd --config /etc/greetd/better-os-greeter.toml`, as
-  Debian's `greetd.service` except `Restart=no`, `OnFailure=` the
-  supervisor's fallback and `OnFailure=plymouth-quit.service`, section
-  5.10), `better-os-login-supervisor.service`,
-  `better-os-gnome-unlock.service`, `better-os-login-fallback@.service`, the TOML
-  (`vt = 1`, `command = "/usr/sbin/better-os-greeter"`, `user =
-  "_better-greeter"`), a sysusers entry, a debconf template
-  `better-os-greeter/daemon_name` = `/usr/sbin/better-os-greeter`, and a
-  postinst copying `cosmic-greeter`'s;
+- the package `better-os-greeter` ships the units of section 5.10
+  (`better-os-login-supervisor.service`, which is the display manager;
+  `better-os-greeter.service`, greetd with `--config
+  /etc/greetd/better-os-greeter.toml`; `better-os-gnome-unlock.service`;
+  `better-os-login-fallback@.service`; the backstop's service and timer),
+  the TOML (`vt = 1`, `command = "/usr/sbin/better-os-greeter"`, `user =
+  "_better-greeter"`), a sysusers entry, the unlock service's own bus policy
+  for `org.gnome.DisplayManager`, a debconf template
+  `better-os-greeter/daemon_name` = `/usr/sbin/better-os-login-supervisor`
+  (so the alias names the supervisor's unit), and a postinst copying
+  `cosmic-greeter`'s for the shared question. The greeter's unit is written
+  for Better OS, not copied from Debian's `greetd.service`: Debian's runs on
+  VT 7 (`systemd_service_tweaks.patch`) with `TimeoutStopSec=30s`,
+  `Restart=always` and `After=… plymouth-quit-wait.service`, each wrong
+  here (section 5.10);
+- an upgrade of `better-os-greeter` never stops or restarts
+  `better-os-greeter.service` (`dh_installsystemd --no-stop-on-upgrade
+  --no-restart-after-upgrade` for it): greetd ends the running session when
+  it is stopped (`server.rs` lines 261 to 273 call `terminate`, which sends
+  the session's process `SIGTERM`, `context.rs` lines 389 to 403). The
+  supervisor and the unlock service are `try-restart`ed (the supervisor
+  continues from its state file; the unlock service is gone for about a
+  second, and a GNOME unlock attempt in that second fails and can be
+  retried); the greeter program re-executes itself as every Better OS
+  window does (AGENTS.md's update rule);
 - choosing it is `debconf-set-selections` of the shared question to
   `better-os-greeter` and `dpkg-reconfigure better-os-greeter`, which writes
-  the file and relinks the alias; it takes effect at the next boot or the
-  next restart of `display-manager.service`, never by killing the running
-  session;
+  the file and relinks the alias; it takes effect at the next boot, never by
+  stopping a display manager that runs a person's session;
 - choosing GDM back is the same with `gdm3`, which is also the one command a
   person can type at a text console (`sudo dpkg-reconfigure gdm3`); and a
   `gdm3` upgrade keeps whatever was chosen, because its postinst relinks from
@@ -957,33 +1001,68 @@ The options weighed (L2):
 
 | | How | Invariants | Depends on GDM | Verdict |
 | --- | --- | --- | --- | --- |
-| **(a) A GNOME unlock service** | `better-os-gnome-unlock`, a Rust system service, owns `org.gnome.DisplayManager` while the Better OS greeter is the display manager, and answers exactly: the `Version` property (`"46.2"`, the installed GDM's version, so the shell's check is the one it was written for); `OpenReauthenticationChannel(username)`; `RegisterSession(details)` (accepted and recorded; the shell calls it at start, `registerSessionWithGDM`); and refuses everything else (`OpenSession`, `RegisterDisplay`) with `AccessDenied`. For `OpenReauthenticationChannel` it finds the caller's logind session from its process, refuses unless the caller's user is `username`, the session is local and on a seat, and the caller's executable is `/usr/bin/gnome-shell`; then it listens on a fresh socket in a 0700 root directory, accepts one connection whose peer user (`SO_PEERCRED`) is that user, and serves `UserVerifier`, `UserVerifier.ChoiceList` (empty) and `EnableExtensions` on it, running PAM itself for the service names `gdm-password`, `gdm-fingerprint` and `gdm-smartcard` mapped to Better OS's own PAM files (`better-os-gnome-unlock`, `-fingerprint`, `-smartcard`; any other name is `ServiceUnavailable`) | 1 and 2 are GNOME's; 3: the service is restarted by systemd within a second, the shell opens a new channel at the next attempt, and `loginctl unlock-session` from a text console unlocks (the shield listens to logind's `Unlock`) | **No**: the interface is GDM's, but nothing of GDM runs; `gdm.conf`'s bus policy (from `gdm3`, which stays installed) already lets root own the name and every user call `Manager` | **Recommended** |
+| **(a) A GNOME unlock service** | `better-os-gnome-unlock`, a Rust system service, owns `org.gnome.DisplayManager` while the Better OS greeter is the display manager, and answers exactly: the `Version` property (`"46.2"`, the installed GDM's version, so the shell's check is the one it was written for); `OpenReauthenticationChannel(username)`; `RegisterSession(details)` (accepted and recorded; the shell calls it at start, `registerSessionWithGDM`); and refuses everything else (`OpenSession`, `RegisterDisplay`) with `AccessDenied`. For `OpenReauthenticationChannel` it finds the caller's logind session from its process, refuses unless the caller's user is `username` and the session is local and on a seat; then it listens on a fresh socket as GDM does (directory `/run/better-os-gnome-unlock/` 0711, socket 0666, `daemon/gdm-dbus-util.c` lines 84 to 107), accepts one connection whose peer (`SO_PEERCRED` and the D-Bus `EXTERNAL` credentials) has the caller's uid and pid, and serves `UserVerifier`, `UserVerifier.ChoiceList` (empty) and `EnableExtensions` on it, running PAM itself for the service names `gdm-password`, `gdm-fingerprint` and `gdm-smartcard` mapped to Better OS's own PAM files (`better-os-gnome-unlock`, `-fingerprint`, `-smartcard`; any other name is `ServiceUnavailable`) | 1 and 2 are GNOME's; 3: the service is restarted by systemd within a second, the shell opens a new channel at the next attempt, and `loginctl unlock-session` from a text console unlocks (the shield listens to logind's `Unlock`) | **No**: the interface is GDM's, but nothing of GDM runs; the service ships its own bus policy for the name (the same rules as `gdm3`'s `gdm.conf`), so it does not depend on `gdm3` being installed | **Recommended** |
 | (b) Lock by leaving the session | logind's `Lock` makes a Better OS helper switch the seat to a lock screen on another virtual terminal, and back after authentication, as LightDM's `dm-tool lock` | **Fails 1**: Ctrl+Alt+F*n* back to the session's terminal shows it, unless the session itself hides its content, which is GNOME's own lock again; greetd cannot hold a second session, so it also needs a display manager of Better OS's own (L1 C) | No | Rejected |
 | (c) GDM running for GNOME's lock only | GDM's daemon would answer the shell | GDM's local display factory always manages `seat0` and starts its greeter there (`gdm-local-display-factory.c`), so it cannot run beside the Better OS greeter; and it is a dependence on GDM in the owner's sense | **Yes** | Not possible, and excluded |
 | (d) GNOME not offered at the Better OS login screen | the session menu leaves out `gnome-session` entries | nothing to lock | No | The cost of doing nothing else; the owner has not asked for it |
 
 What (a) costs and what could break:
 
-- **A second root service that runs PAM.** It is reachable only through the
-  checks above; it never answers for a user other than the caller's own; the
-  security review covers it.
+- **A second root service that runs PAM.** Its boundary is "the caller's
+  own account, from a local session on a seat", checked from the bus's and
+  the socket's credentials; that is stricter than GDM, which checks neither
+  (`gdm-manager.c` lines 1155 to 1235). It is **not** a boundary against
+  another program of the same person: such a program can start its own
+  `/usr/bin/gnome-shell` or check its own password with `unix_chkpwd`
+  anyway, and can unlock its own session through logind (section 4.5). It
+  limits tries itself: after five failures for a uid it waits 1, 2, 4, 8,
+  then 30 seconds between attempts, across all three service names, and
+  each PAM conversation runs on its own thread with a 60-second limit, so a
+  hung `pam_sss` stalls only that conversation. The security review covers
+  it.
+- **The shell asks only once.** `main.js` calls `canLock()` once, when
+  `gnome-shell` starts, synchronously with GDBus's default 25-second
+  timeout (`loginManager.js` lines 41 to 47); there is no activation file
+  for the name. A GNOME session started while the service is absent or
+  hung has no screen shield for its whole life. So the service is
+  `Type=dbus` with `BusName=org.gnome.DisplayManager`, the greeter's unit is
+  ordered after it, and the greeter checks `Version` again right before
+  `start_session` for a GNOME session and refuses to start GNOME (saying
+  "GNOME can't lock right now, so it wasn't started. Choose another session
+  or try again." / 「GNOME 目前無法鎖定，所以沒有啟動。請選擇其他工作階段，或再試一次。」)
+  when it does not answer within 2 seconds.
 - **It follows an interface GDM owns.** A GNOME or GDM update can change
   it (a new method the shell calls, a changed path). Ticket 280's test runs
   the installed `gnome-shell`'s own lock and unlock against the service in
   a VM, and runs again on every `gnome-shell`, `gir1.2-gdm-1.0` or
-  `libgdm1` version Ubuntu or Zorin ships; the service refuses to start
-  when `libgdm1`'s major version is not the one it was tested with, and
-  then the greeter stops listing GNOME (section 3.6) rather than offer a
-  session that cannot lock.
-- **Never at the same time as GDM.** It is `Conflicts=gdm.service`, runs
-  only while the alias names the Better OS greeter, and is stopped before
-  GDM starts on the way back.
+  `libgdm1` version Ubuntu or Zorin ships. When `libgdm1`'s major version
+  is not the one it was tested with, the service keeps serving every GNOME
+  session already running (a restart during an upgrade never locks a
+  person out) and answers `Version` with an error only for sessions that
+  start afterwards, so the greeter stops listing GNOME (section 3.6) rather
+  than offer a session that cannot lock.
+- **Never at the same time as GDM.** It is `Conflicts=gdm.service` and runs
+  only while the Better OS login screen is the display manager; switching
+  back takes effect at the next boot (section 6), so a running GNOME
+  session never loses it.
+- **GNOME's "Switch user" button.** GNOME 46 shows it on the lock screen
+  when AccountsService says the seat can switch and there is more than one
+  account (`unlockDialog.js` lines 858 to 862), and pressing it calls
+  `Gdm.goto_login_session_sync` (line 839), which needs GDM to open a
+  second login. greetd cannot open one. What the button does then is
+  ticket 280's check; the service answers `LocalDisplayFactory` calls with
+  an error, and if the button is shown the design's choice is to hide it
+  through GNOME's own `org.gnome.desktop.screensaver user-switch-enabled`
+  default, set system-wide while the Better OS login screen is chosen.
 - **Not proven yet**: that GNOME Shell 46 then locks, unlocks with the
   password, honours `loginctl lock-session` and `unlock-session`, and keeps
   the keyring unlocked; that GDM's worker does nothing else the shell
   needs (for example `pam_setcred` with `PAM_REINITIALIZE_CRED`, which the
-  service also calls). All of it is ticket 280's VM proof, before any
-  person runs it.
+  service also calls); and how `pam_gnome_keyring` behaves when the PAM
+  conversation runs in a root service without the person's
+  `XDG_RUNTIME_DIR` (the service passes the session's environment from
+  logind, `XDG_RUNTIME_DIR` and `DBUS_SESSION_BUS_ADDRESS`, as GDM's worker
+  does). All of it is ticket 280's VM proof, before any person runs it.
 
 ### 5.7 Language
 
@@ -1038,67 +1117,83 @@ that is active and silent leaves the splash up for ever; and GDM 46 waits
 (`gdm-local-display-factory.c` lines 55, 869 to 894). Neither is shown to
 be ticket 139's cause, and this design does not claim to fix it.
 
+#### The units, and what starts what
+
+Revised on 2026-11-22 after review: the first version made the supervisor
+`PartOf=` the greeter's unit, so every retry and the fall back would have
+stopped or restarted the supervisor itself (systemd.unit(5): "When systemd
+stops or restarts the units listed here, the action is propagated to this
+unit"), and it let the greeter's unit start before the supervisor had
+decided anything. Now:
+
+| Unit | Role | Started by | Key settings |
+| --- | --- | --- | --- |
+| `better-os-login-supervisor.service` | **the display manager**: `display-manager.service` is an alias of it (the Debian `daemon_name` is `/usr/sbin/better-os-login-supervisor`, section 5.5) | `graphical.target`, through the alias | `Type=notify`, `WatchdogSec=10`, `Restart=always`, `RestartSec=1`, `StartLimitIntervalSec=60`, `StartLimitBurst=5`, `OnFailure=better-os-login-backstop.service`; no `PartOf=`, `BindsTo=` or `Requires=` on any unit it controls |
+| `better-os-greeter.service` | greetd with the Better OS greeter | **only** the supervisor, after stages 1 to 3 | `Restart=no`, `TimeoutStopSec=4`, `SendSIGKILL=yes`, `Conflicts=getty@tty1.service`, `After=better-os-gnome-unlock.service`, `OnFailure=plymouth-quit.service` and nothing else; **no** `After=plymouth-quit-wait.service` (Debian's and upstream's `greetd.service` have it, and `plymouth-quit-wait.service` is `plymouth --wait` with `TimeoutSec=0`: copied here, the greeter would wait for a splash only the supervisor quits); no `[Install]` |
+| `better-os-gnome-unlock.service` | the GNOME unlock service | `Wants=` from the supervisor | `Type=dbus`, `BusName=org.gnome.DisplayManager`, `Restart=always`, `Conflicts=gdm.service` |
+| `better-os-login-fallback@.service` | `agetty` with the fall back's message, on the VT named by the instance | only the supervisor or the backstop | `Conflicts=getty@%i.service` |
+| `better-os-login-backstop.service` | the last guard, with no Better OS code in it | the supervisor's `OnFailure=`, and `better-os-login-backstop.timer` (`OnActiveSec=90` from the supervisor's first start) | `ExecCondition=` that the greeter never reported `ready` this boot (`/run/better-os-greeter/ready-seen` absent) and no fall back is running (`/run/better-os/login-fallback.active` absent); then only standard programs: `plymouth quit`, `systemctl --no-block start better-os-login-fallback@tty2.service`, `chvt 2` |
+
+The supervisor keeps T0, the attempt count and the stage reached in
+`/run/better-os/login-path.json` (rewritten atomically after each step) and
+reads systemd's `ActiveEnterTimestampMonotonic` of its own unit's first
+start this boot, so a supervisor restarted by its watchdog continues where
+it was and its deadlines do not start again.
+
 #### The property
 
-> Within **60 seconds** of `better-os-greeter.service` starting (at boot,
-> and every time the greeter should come back: after a logout or a session
-> that ended), either the Better OS login screen is accepting input, or a
-> text login is accepting input on the first virtual terminal, Plymouth has
-> quit, and the journal holds one line `BETTER_OS_LOGIN_STAGE=<stage>
-> RESULT=<ok|retried|fell-back> REASON=<…>` for every stage that did not
-> pass.
+> Within **80 seconds** of the display manager starting (at boot, and every
+> time the login screen should come back: after a logout or a session that
+> ended), either the Better OS login screen is accepting input, or a text
+> login is accepting input on a virtual terminal that is on screen,
+> Plymouth has quit, and the journal holds one line
+> `BETTER_OS_LOGIN_STAGE=<stage> RESULT=<ok|retried|fell-back> REASON=<…>`
+> for every stage that did not pass. If the supervisor itself cannot run,
+> the backstop gives the same text login within **90 seconds**.
 
-Why 60: good boots show GDM's greeter about 4 seconds after the display
-manager starts (ticket 139). The deadlines below are three to four times
-that and add up exactly: 12 seconds for the device, the seat and logind,
-then at most three attempts at the greeter (the first, one plain retry, one
-in safe mode) of 15 seconds each, is 57, plus 3 to start the text login. A shorter N would fall back
-on a slow but healthy start (a cold disk, a GPU firmware load); a longer one
-is a person staring at a black screen.
-
-"Accepting input" is defined, not guessed: the greeter writes `ready` to
-`/run/better-os-greeter/alive` only after its first frame is presented on
-every output and its password field has keyboard focus, and then rewrites
-the file every 5 seconds.
-
-#### Who enforces it
-
-`better-os-login-supervisor` (section 5.1), a root service started with the
-display manager (`PartOf=` and `Before=better-os-greeter.service`), which
-systemd restarts if it stops answering its own watchdog (`WatchdogSec=10`).
-It does not trust greetd, the greeter or the compositor to report their own
-failure; it watches from outside, with a deadline for every stage, and it
-alone restarts, retries, and falls back. It replaces ADR 0033's watch on
-this path and writes its records in the same place and format
-(`/var/lib/better-os/boot-watch/`), so Better Manager's Home and Health and
-`better-manager-cli doctor` show them (ticket 267).
+Why 80 (the first version said 60 and counted stopping a unit as free; the
+review found greetd's own unit has `TimeoutStopSec=30s` and that a process
+that ignores `SIGTERM` adds the whole stop timeout): good boots show GDM's
+greeter about 4 seconds after the display manager starts (ticket 139). The
+budget is now written with every stop in it: 12 s for the device, the seat
+and logind; three attempts at the greeter of 15 s each; between attempts and
+before the fall back a stop of at most 6 s (`SIGTERM`, 4 s, `SIGKILL`, 2 s
+for the kernel to reap); 3 s to start the text login: 12 + 15 + 6 + 15 + 6
++ 15 + 6 + 3 = 78, rounded to 80. Plymouth's commands run inside the first
+12 s and have their own 5 s limit. "Accepting input" is defined, not
+guessed: the greeter writes `ready` to `/run/better-os-greeter/alive` (and
+creates `ready-seen`) only after its first frame is presented on every
+output and its password field has keyboard focus, and then rewrites the
+file every 5 seconds.
 
 #### Stage by stage
 
-T0 is the moment `better-os-greeter.service` is started. Times are
-deadlines from T0 unless a stage says otherwise.
+T0 is the moment the supervisor (the display manager) starts, or, for a
+later appearance, the moment the supervisor sees that no session is running
+on the seat any more (stage 9).
 
 | Stage | How it can fail or hang | How the supervisor sees it (a deadline) | What it does |
 | --- | --- | --- | --- |
-| 1. A DRM device and its driver | no `/dev/dri/card*` at all; only the firmware framebuffer (`simpledrm`) while the real driver (`amdgpu` on the owner's machine) loads late or never; the hand-over removes `simpledrm`'s card while something holds it; a card with no connected connector | reads `/sys/class/drm` and udev every 250 ms; waits until a card from a real KMS driver has a connected connector, or until **T0 + 12 s** | a real card in time: continue. Only `simpledrm` at 12 s: continue on it (it draws; slower) and record it; if the real driver binds later, restart the greeter once on the new card. No card at all: fall back (step F) |
-| 2. `seat0` becomes graphical | logind never sets `CanGraphical` (the device is not tagged for the seat) | reads `seat0`'s `CanGraphical` with the same deadline | true: continue. False at T0 + 12 s with a card present: continue anyway (greetd and `cosmic-comp` do not wait for it; logind lets the greeter's session take the device) and record it; a compositor that then cannot open the device fails stage 6 |
-| 3. logind answers | crashed or restarting (ticket 256), or hung | every call to logind has a 2 s timeout; logind must answer within **T0 + 12 s** | answers late: continue. Never: fall back; a text login works without logind (`pam_systemd` is `optional` in `common-session`) |
-| 4. Plymouth | holds the DRM master and the splash; hangs; never told to quit | the supervisor owns quitting it in every path | before greetd starts the greeter: `plymouth deactivate` (5 s timeout) so the compositor can take the device while the splash stays on screen; when the greeter reports `ready`: `plymouth quit --retain-splash`; on any fall back: `plymouth quit`; if a `plymouth` command does not return in 5 s, `plymouthd` is killed. The unit also has `OnFailure=plymouth-quit.service`. So no path ends with the splash up |
-| 5. The display manager unit and the greeter's session | `greetd` fails to start (configuration, binary); it cannot open the VT; the greeter's PAM session fails (account `_better-greeter` missing, locked or expired); it hangs | each attempt starts at the end of stages 1 to 3 or of the previous attempt; a logind session of class `greeter` on `seat0` owned by `_better-greeter` must exist **5 s** into the attempt | before the first attempt the supervisor checks the account exists and is usable and recreates it with `systemd-sysusers` if not; a miss ends the attempt (below) |
-| 6. The compositor gets the DRM master and draws | `cosmic-comp` crashes at start, cannot open the device, the GPU hangs | the greeter's heartbeat file must exist (written once the greeter is connected to the compositor) **10 s** into the attempt | a miss ends the attempt: the second attempt is a plain restart of the unit, the third is in **safe mode** (only the first card, the compositor's software rendering if it has one, unverified, no fractional scale); after the third: fall back |
-| 7. The greeter is accepting input | the greeter crashes, panics, cannot read the system bus, hangs before its first frame | `ready` **15 s** into the attempt; afterwards the heartbeat never older than 30 s while no person's session exists | as stage 6 (three attempts in all per appearance); a heartbeat gone stale after `ready` starts a new appearance |
-| 8. PAM, once a password is typed | a module that hangs (`pam_sss` waiting for a server) | the screen is already up, so the property holds; the greeter gives greetd 60 s, then `cancel_session` and "The sign-in service isn't responding." | the person can try again or use the power menu |
-| 9. After a session ends | logind crashed at logout and the greeter never comes back (ticket 256) | a person's session leaving `seat0` is a new T0 | the same stages again |
-| F. Fall back | — | — | stop `better-os-greeter.service`; `plymouth quit`; start `better-os-login-fallback@tty1.service` (an `agetty` with `--issue-file` naming `/etc/issue` and `/run/better-os/login-fallback.issue`); switch to the first terminal; write the record. The text login accepts input within 3 s |
+| 1. A DRM device and its driver | no `/dev/dri/card*`; only the firmware framebuffer (`simpledrm`) while the real driver loads late or never; a card with no connected screen | polls `/sys/class/drm` every 250 ms (no udev monitor, so no `AF_NETLINK`); waits until a card from a real KMS driver has a connected connector, or until **T0 + 12 s** | a real card with a screen: continue. Only `simpledrm` at 12 s: continue on it and record it. A real card with no connected screen at 12 s (a closed lid with no monitor yet): start the greeter anyway, so it appears as soon as a screen is connected, and record "no screen"; the property cannot be observed without a screen and is suspended until one is connected, which starts a new T0. No card at all: fall back |
+| 1a. The real driver binds later | `simpledrm`'s card disappears and the real one appears | the same poll | restart the greeter on the new card **only while no person's session runs on the seat** (stage 9's test); never stop a person's session; otherwise the next appearance uses it |
+| 2. `seat0` becomes graphical | logind never sets `CanGraphical` | logind's property, same 12 s | false at 12 s with a card: continue and record it; a compositor that then cannot open the device fails stage 6 |
+| 3. logind answers | crashed, restarting (ticket 256) or hung | every call has a 2 s timeout; an answer by **T0 + 12 s** | never: fall back; a text login works without logind (`pam_systemd` is `optional` in `common-session`) |
+| 4. Plymouth | holds the DRM master and the splash; hangs; never told to quit | the supervisor runs every `plymouth` command with a 5 s limit | `plymouth deactivate` before starting the greeter's unit; `plymouth quit --retain-splash` at `ready`; `plymouth quit` on fall back; `plymouthd` killed when a command does not return. The supervisor's unit has no network namespace (`PrivateNetwork=` would hide `plymouthd`'s abstract socket `/org/freedesktop/plymouthd`, in `libply-boot-client.so.5`; abstract sockets belong to a network namespace, network_namespaces(7)); the network is closed with `IPAddressDeny=any` instead |
+| 5. The greeter's unit and its session | greetd fails to start, cannot open the VT, the greeter's PAM session fails (account `_better-greeter` missing, locked or expired), greetd hangs | each attempt starts when the supervisor starts the unit; a logind session of class `greeter` owned by `_better-greeter`, or (when logind does not answer) a second process in the unit's cgroup, **5 s** into the attempt | the account is not repaired at boot (`/etc` stays read-only to the supervisor); a missing or unusable account is recorded and the attempt fails, and Better Manager repairs it from the person's next session (ticket 266's health check). A miss ends the attempt |
+| 6. The compositor | `cosmic-comp` crashes at start, cannot open the device, the GPU hangs, it ignores `SIGTERM` | the greeter's heartbeat file **10 s** into the attempt | a miss ends the attempt: stop the unit (`TimeoutStopSec=4`, then `SIGKILL`); the second attempt is a plain start, the third in **safe mode** (only the first card, the compositor's software rendering if it has one, unverified, no fractional scale); after the third: fall back |
+| 7. The greeter accepting input | crashes, panics, hangs before its first frame | `ready` **15 s** into the attempt; afterwards a heartbeat never older than 30 s while no person's session runs | as stage 6 (three attempts in all per appearance); a stale heartbeat after `ready` with no person's session starts a new appearance |
+| 8. PAM, once a password is typed | a module that hangs (`pam_sss`) | the screen is up, so the property holds; the greeter gives greetd 60 s, then `cancel_session` and "The sign-in service isn't responding." | the person can try again or use the power menu |
+| 9. A session ends | the session ends and logind crashed at logout (ticket 256) | a person's session leaving the seat, from logind; and, because logind may be the thing that failed, from greetd's own cgroup: while a person's session runs, greetd has a session worker process in `better-os-greeter.service`'s cgroup and no greeter heartbeat is fresh; when that worker is gone and no heartbeat comes within 15 s, the session has ended whatever logind says | a new appearance from stage 1 |
+| F. Fall back | — | — | stop the greeter's unit (at most 6 s, as stage 6); `plymouth quit`; give tty1 back to text (`KDSETMODE KD_TEXT` and `VT_SETMODE VT_AUTO` on `/dev/tty1`, which a killed compositor or `plymouthd` may have left in graphics mode); start `better-os-login-fallback@tty1.service` and `chvt 1`; if the greeter's unit has not stopped in 6 s (a process in uninterruptible sleep), start the fall back on **tty2** instead and `chvt 2`, without waiting; write `/run/better-os/login-fallback.active` and the record. The text login accepts input within 3 s |
 
-The text login's message, written by the supervisor into the issue file
-with the stage and the time filled in (mockup `text-fallback`). On the
-console it is **always the English column**: the Linux text console draws
-with a font of at most 512 glyphs and cannot show Chinese characters, so
-zh-TW text there would be unreadable. The zh-TW column is what Better
-Manager shows for the same record (section 6), and what
-`better-os-login-status` prints in a terminal that can draw it (it prints
-English on the Linux console, `TERM=linux`).
+The text login's message, written by the supervisor into
+`/run/better-os/login-fallback.issue` with the stage and the time filled in
+(mockup `text-fallback`). On the console it is **always the English
+column**: the Linux text console draws with a font of at most 512 glyphs
+and cannot show Chinese characters. The zh-TW column is what Better Manager
+shows for the same record (section 6), and what `better-os-login-status`
+prints in a terminal that can draw it (it prints English when
+`TERM=linux`).
 
 | zh-TW | English |
 | --- | --- |
@@ -1114,44 +1209,74 @@ English on the Linux console, `TERM=linux`).
 | 5 | 登入服務無法啟動 | the sign-in service didn't start |
 | 6 | 顯示伺服器無法啟動 | the display server didn't start |
 | 7 | 登入畫面程式沒有回應 | the login screen program didn't respond |
+| supervisor | 登入監督程式無法執行 | the login supervisor couldn't run |
 
-`better-os-login-status` prints the supervisor's last record for this boot
-(the same text Better Manager shows).
+The backstop writes the last row; it has no stage of its own to report.
+
+#### Automatic login
+
+GDM's automatic login (`AutomaticLoginEnable` in `/etc/gdm3/custom.conf`)
+does nothing once GDM is not the display manager. The switch (section 6)
+carries it over: it reads GDM's setting, and when automatic login is on it
+writes greetd's `initial_session` with the same account and that account's
+last session, and the confirmation says so. GDM's file is never edited, so
+going back to GDM gives back GDM's own setting. With automatic login, at boot
+the property is "a session or a prompt": a session of that account on the
+seat within 80 seconds counts.
 
 #### What it cannot promise
 
-- A fault before `better-os-greeter.service` starts (firmware, the kernel,
-  the initramfs, a disk that does not mount, systemd itself) is outside it;
-  so is a machine with no display output at all, where even the text login
-  has nowhere to appear.
+- A fault before the display manager starts (firmware, the kernel, the
+  initramfs, a disk that does not mount, systemd itself) is outside it; so
+  is a machine with no screen at all.
+- **A process the kernel cannot kill.** A compositor or Plymouth stuck in
+  uninterruptible sleep inside the GPU driver keeps the DRM device. The
+  supervisor does not wait for it (the fall back moves to tty2), but whether
+  the kernel's text console can draw on a device whose master never let go
+  depends on the driver; on such a machine the text login may run and still
+  not be visible. Stated, not solved.
+- **The supervisor and the backstop both depending on systemd.** If systemd
+  itself is stuck, nothing here runs.
 - Ticket 139's own cause is unknown. This design does not claim to fix it;
   it makes sure that, whatever the cause, the Better OS path ends in a login
-  prompt that says what failed, within 60 seconds, instead of a splash.
+  prompt that says what failed instead of a splash, within the limits above.
 - A full disk does not stop the property (the greeter, greetd and the text
-  login need no writes; records that cannot be written are logged to the
-  journal, and a journal that cannot write either loses them), but it may
-  stop a person's session from starting after they log in.
+  login need no writes; records that cannot be written go to the journal,
+  and a journal that cannot write loses them), but it may stop a person's
+  session from starting after they log in.
 
 #### How it is proven (tickets 267 and 281)
 
 In the session VM (`packaging/tests/session-vm/`), on Ubuntu 24.04 and Zorin
-OS 18, each case boots (or logs out) with one failure injected, and the
-check is the property: within 60 seconds either the greeter's `ready` or the
-fallback `agetty` on `tty1`, Plymouth not running, and the expected
-`BETTER_OS_LOGIN_STAGE` line. Screenshots of every end state.
+OS 18, each case boots (or logs out) with one failure injected. The check is
+the property, judged **on the VM's own screen**: a screenshot of the screen
+the person would see, plus a login typed with the VM's keyboard on that
+screen, within 80 seconds (90 for the supervisor's own failures); Plymouth
+not running; the expected `BETTER_OS_LOGIN_STAGE` line. A login over the
+serial console does not count: it says nothing about what is on screen.
 
 | Injected | How | Expected end |
 | --- | --- | --- |
-| No DRM device at start | boot with `modprobe.blacklist=amdgpu,virtio_gpu` and `initcall_blacklist=simpledrm_platform_driver_init` | text login, stage 1 |
-| A late DRM device | `simpledrm` only, then `modprobe virtio_gpu` at 25 s from a test unit | greeter on `simpledrm` at about 12 s, restarted on the real card |
-| A seat that is not graphical | a udev rule removing the `seat` tag from the card | greeter if the compositor opens the device anyway, otherwise text login, stage 2 recorded |
+| No DRM device at start | `modprobe.blacklist=virtio_gpu` and `initcall_blacklist=simpledrm_platform_driver_init` | text login, stage 1 (on a console the kernel can still draw, `vga16fb` or serial; recorded which) |
+| A late DRM device | `simpledrm` only, then `modprobe virtio_gpu` at 25 s | greeter on `simpledrm` at about 12 s, restarted on the real card while nobody is logged in |
+| A late DRM device after login | as above, with a person logged in before the module loads | the person's session untouched |
+| A card with no screen | no display attached to the VM's card | greeter started, "no screen" recorded; attaching a display shows it within 80 s |
+| A seat that is not graphical | a udev rule removing the `seat` tag from the card | greeter, or text login with stage 2 recorded |
 | The compositor crashing at start | a `cosmic-comp` wrapper that exits 1 | two retries, then text login, stage 6 |
-| The greeter crashing | `BETTER_OS_TEST_GREETER_PANIC` in the greeter's environment | as above, stage 7 |
+| The compositor ignoring `SIGTERM` | the wrapper traps `TERM` and sleeps | each stop ends by `SIGKILL` within 6 s; text login, stage 6 |
+| The greeter crashing | `BETTER_OS_TEST_GREETER_PANIC` | as above, stage 7 |
 | The greeter hanging | `SIGSTOP` to the greeter after `ready` | restart within 30 s |
-| logind restarting | `systemctl restart systemd-logind` during the greeter's start, and `kill -ABRT` of logind at logout | greeter, or text login with stage 3 |
-| The greeter's account missing or locked | `userdel _better-greeter`; `usermod -L -e 1 _better-greeter` | recreated and greeter; or text login, stage 5 |
+| greetd hanging | `SIGSTOP` to `greetd` before it starts the greeter | stage 5 misses, `SIGKILL`, retries, text login |
+| logind restarting | `systemctl restart systemd-logind` during the greeter's start | greeter, or text login with stage 3 |
+| logind hanging | `SIGSTOP` to `systemd-logind` before T0 | text login, stage 3 |
+| logind crashing at logout | `kill -ABRT` of logind as a person logs out (ticket 256) | a prompt within 80 s of the session's end, the end seen from greetd's cgroup; the record names the signal used |
+| The greeter's account missing or locked | `userdel _better-greeter`; `usermod -L -e 1 _better-greeter` | text login, stage 5, and Better Manager's health check repairs it later |
 | A full disk | fill `/` and `/var` before boot | greeter accepting input; login still possible |
-| Plymouth hanging | `SIGSTOP` to `plymouthd` | `plymouthd` killed, greeter or text login |
+| Plymouth hanging before T0 | `SIGSTOP` to `plymouthd` from an early unit | `plymouthd` killed, greeter or text login |
+| The supervisor failing to start | its binary replaced by `false` | backstop: text login on tty2 within 90 s |
+| The supervisor crashing repeatedly | `BETTER_OS_TEST_SUPERVISOR_ABORT` at stage 6 | restarted, continues from `/run/better-os/login-path.json`; after five starts, the backstop |
+| The supervisor hanging | `SIGSTOP` to the supervisor | watchdog restart within 10 s, continues |
+| tty1 left in graphics mode | `SIGKILL` to `cosmic-comp` and `plymouthd` with logind stopped | the fall back's tty shows text (`KD_TEXT` reset) |
 | Normal boot | nothing | greeter `ready`, measured (target under 10 s) |
 
 ## 6. Installing, switching and removing
@@ -1173,11 +1298,21 @@ display manager, and leaves GDM installed and stopped:
 | On | 正在使用 Better OS 登入畫面。 / 改回 GNOME 登入畫面 | You're using the Better OS login screen. / Go back to the GNOME login screen |
 | The last start fell back to the text login (ticket 267's record) | 上次開機時登入畫面無法顯示（{stage}），已改用文字模式登入。 / 查看詳細資料 | The login screen couldn't be shown last time you started up ({stage}), so a text sign-in was used. / See details |
 | The greeter needed a retry | 上次開機時登入畫面重新啟動了一次（{stage}）。 | The login screen had to be restarted once last time you started up ({stage}). |
+| Automatic login is on in GDM (the confirmation adds) | 你目前設定開機後自動登入 {name}，改用後會繼續自動登入。 | You're set to sign in as {name} automatically. That will continue after the switch. |
+| Going back, until the next start | 下次開機時會回到 GNOME 登入畫面。 / 立即重新開機 | You'll see the GNOME login screen the next time you start up. / Restart now |
 
-Both directions are one action and one restart; going back puts
+Both directions are one action and take effect at the next start. Neither
+stops anything that runs: stopping greetd ends the person's session (section
+5.5), and stopping the unlock service would leave a locked GNOME session
+unable to check a password. Going back puts
 `/etc/X11/default-display-manager`, the alias link and the debconf value
-exactly as they were captured, and stops the supervisor and the unlock
-service before GDM starts.
+exactly as they were captured; the next boot then starts GDM, and the
+supervisor, the greeter and the unlock service do not start (the unlock
+service is `Conflicts=gdm.service`). Purging the packages the switch
+installed waits for that boot: Better Manager's next start after it finishes
+the removal, as it finishes every pending put-back. Removing the Better OS
+session while the Better OS login screen is chosen switches it back first,
+and the session's own removal waits for the same boot.
 
 ## 7. Not verified
 
@@ -1190,8 +1325,20 @@ service before GDM starts.
   black screen between the greeter and the session and how long it lasts;
   `cosmic-comp` having a software renderer for safe mode; GPUI under the
   greeter's account with no person's session around it; AccessKit and Orca
-  in the greeter; whether logind lets a person run `loginctl
-  unlock-session` on their own session without an administrator's password.
+  in the greeter; whether the kernel's text console comes back on tty1
+  after a compositor or `plymouthd` that held it in graphics mode was
+  killed (the supervisor resets it, section 5.10; ticket 281 checks it);
+  what GNOME's "Switch user" button does under the unlock service (ticket
+  280); how `pam_gnome_keyring` and a hung `pam_sss` behave in the unlock
+  service (ticket 280); whether greetd's cgroup is a reliable sign that a
+  session ended when logind has crashed (ticket 281).
+- Read from source and settled (no longer open): logind lets the session's
+  own user `Unlock` it without a password (systemd v255
+  `logind-session-dbus.c` lines 201 to 221); `PartOf=` propagates a stop
+  or restart to the unit that names it (systemd.unit(5)); a network
+  namespace hides `plymouthd`'s abstract socket (network_namespaces(7),
+  `libply-boot-client.so.5`); greetd ends the running session when it is
+  stopped (`server.rs` 261 to 273, `context.rs` 389 to 403 at 0.9.0).
 - What Luma's screens look like on a screen: no image of them is published,
   and the Try application was not run (section 1.5).
 - How the `lzh_TW` time locale renders the weekday line.
@@ -1204,15 +1351,15 @@ service before GDM starts.
 | 261 | GPUI: a session lock window kind and the password content purpose | L6, 257 |
 | 262 | `better-lock`, the lock screen in the session | 203, 260, 261, 263, 269 |
 | 263 | Sandboxing the programs and the review's tests | 260 |
-| 264 | `better-greeter`, the login screen on greetd, with its heartbeat | 260, 262, 263, 269, 279, L1 = B or C, L7 |
-| 265 | The `better-os-greeter` package: units, TOML, account, debconf registration, the text fallback unit | 264, 267, 280, 203 |
-| 266 | Better Manager's switch: install, choose, go back, remove; exact GDM restore | 265, 268, 281, 204, 205 |
-| 267 | The login supervisor: every stage's deadline, retries, safe mode, Plymouth, the text fallback, records (ADR 0033's watch on this path) | 260, L8 |
+| 264 | `better-greeter`, the login screen on greetd, with its heartbeat; `better-os-remember-login` | 260, 262, 263, 269, 279, L7 |
+| 265 | The `better-os-greeter` package: the units of section 5.10, TOML, account, bus policy, debconf registration, upgrade rules | 264, 267, 280, 203 |
+| 266 | Better Manager's switch: install, choose, go back, remove, each at the next start; automatic login carried; exact GDM restore | 265, 268, 281, 204, 205 |
+| 267 | The login supervisor as the display manager, and the backstop: every stage's deadline, retries, safe mode, Plymouth, the text fallback, records (ADR 0033's watch on this path) | 260 |
 | 268 | VM checks on Ubuntu 24.04 and Zorin OS 18, and the way back from a text console done by hand | 265 |
 | 269 | The on-screen keyboard in `better-ui` | 260 |
 | 278 | Fingerprint and smart card | 262, 264, 280 |
 | 279 | Better OS's login artwork, light and dark | L5 |
-| 280 | `better-os-gnome-unlock`: GNOME locks without GDM | L1 = B or C, L2 |
+| 280 | `better-os-gnome-unlock`: GNOME locks without GDM | none (L1 and L2 answered) |
 | 281 | The fault-injection suite: section 5.10's property in the VM, every injected failure | 265, 267 |
 
 ## 9. The order in which Better OS takes over the login and lock path
@@ -1229,7 +1376,8 @@ machine before step 5.
    service while locked.
 3. **The login path cannot sit silent** (tickets 267, 281): the supervisor
    with a minimal test greeter first, then with the real one, every
-   injected failure of section 5.10 ending within 60 seconds in a login
+   injected failure of section 5.10 ending within 80 seconds (90 when the
+   supervisor itself fails) in a login
    prompt.
 4. **The Better OS greeter** (tickets 264, 265, 268): every state on both
    bases, and the way back to GDM from a text console done by hand.
