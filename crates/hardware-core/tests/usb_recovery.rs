@@ -415,36 +415,60 @@ fn only_kernel_lines_and_exact_markers_are_read_from_the_journal() {
     assert_eq!(classify_journal(&as_journal(&text)), classify(&text));
 }
 
-/// Review finding 8: a hub worker's stack in any other dump (a WARN during
-/// enumeration) does not say the hub work is stuck; only a hung-task
-/// report does.
+/// Review findings 8 and 2-1: a hub worker's stack in any other dump (a
+/// WARN during enumeration) does not say the hub work is stuck; only the
+/// worker named by a hung-task report's own lines does. Every case is also
+/// run through the query's `--grep`, which is how the daemon reads the log.
 #[test]
 fn a_hub_worker_in_a_warning_is_not_hung_hub_work() {
+    let pattern = regex::Regex::new(KERNEL_LOG_PATTERN).unwrap();
+    let grep = |text: &str| -> String {
+        text.lines()
+            .filter(|line| pattern.is_match(line))
+            .map(|line| format!("{line}\n"))
+            .collect()
+    };
+    let both = |text: &str| {
+        (
+            classify(text).hub_work_hung,
+            classify(&grep(text)).hub_work_hung,
+        )
+    };
     let warn = "\
 ------------[ cut here ]------------
 WARNING: CPU: 3 PID: 120 at drivers/usb/core/hub.c:1 hub_port_init+0x1/0x2
+Modules linked in: ucsi_acpi typec_ucsi
+CPU: 3 UID: 0 PID: 120 Comm: kworker/3:1 Not tainted 7.0.0-42-generic
 Workqueue: usb_hub_wq hub_event
+RIP: 0010:hub_port_init+0x1/0x2
 ";
-    assert!(!classify(warn).hub_work_hung);
+    assert_eq!(both(warn), (false, false));
+    // The real report of ticket 101: the hub worker itself is hung.
     let hung = "\
 INFO: task kworker/12:2:1115178 blocked for more than 122 seconds.
       Not tainted 7.0.0-42-generic #42~24.04.1-Ubuntu
+\"echo 0 > /proc/sys/kernel/hung_task_timeout_secs\" disables this message.
+task:kworker/12:2    state:D stack:0     pid:1115178 tgid:1115178 ppid:2      task_flags:0x4208060 flags:0x00080000
 Workqueue: usb_hub_wq hub_event
+Call Trace:
 ";
-    assert!(classify(hung).hub_work_hung);
-    // A warning after a hung report ends it.
-    assert!(
-        !classify(&format!(
-            "INFO: task k:1 blocked for more than 122 seconds.\n{warn}"
-        ))
-        .hub_work_hung
-    );
-    // The grep keeps the hung-task line, so a grepped log says the same.
-    let pattern = regex::Regex::new(KERNEL_LOG_PATTERN).unwrap();
-    let grepped: String = hung
-        .lines()
-        .filter(|line| pattern.is_match(line))
-        .map(|line| format!("{line}\n"))
-        .collect();
-    assert!(classify(&grepped).hub_work_hung);
+    assert_eq!(both(hung), (true, true));
+    // A hung report for an unrelated task (no workqueue), then later a
+    // warning from the hub worker: not stuck hub work, grepped or not.
+    let unrelated = "\
+INFO: task nfsd:4242 blocked for more than 122 seconds.
+      Not tainted 7.0.0-42-generic #42~24.04.1-Ubuntu
+\"echo 0 > /proc/sys/kernel/hung_task_timeout_secs\" disables this message.
+task:nfsd            state:D stack:0     pid:4242  tgid:4242  ppid:2      task_flags:0x0 flags:0x00004000
+Call Trace:
+ <TASK>
+ __schedule+0x2b5/0x640
+ </TASK>
+";
+    assert_eq!(both(&format!("{unrelated}{warn}")), (false, false));
+    // A hung kworker of another workqueue, then the hub worker's warning.
+    let other_wq = hung.replace("usb_hub_wq hub_event", "events_freezable pci_pme_list_scan");
+    assert_eq!(both(&format!("{other_wq}{warn}")), (false, false));
+    // And the report's own line still counts after an earlier warning.
+    assert_eq!(both(&format!("{warn}{hung}")), (true, true));
 }

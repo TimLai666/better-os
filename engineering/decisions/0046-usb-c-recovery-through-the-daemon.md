@@ -83,10 +83,14 @@ PCI restriction is on BAR access and config space, `kernel_lockdown(7)`).
     line not followed by a verified rebind, and acts only when sysfs shows
     that function with class 0x0c0330, vendor and device on the list
     (1022:151e), and `xhci_hcd` bound. Refused as `usb_restart_needed` when
-    the hub work is stuck: logged (`Workqueue: usb_hub_wq` inside a
-    hung-task report, `INFO: task … blocked for more than …`, or a failed
-    freeze listing `usb_hub_wq`; the same line in any other stack dump is
-    not stuck work), or seen now (a
+    the hub work is stuck: logged (the worker a hung-task report names:
+    `INFO: task … blocked for more than …`, its own taint, "echo 0", and
+    `task:` lines, then `Workqueue: usb_hub_wq`, the line that ends the
+    report; any other line ends it first, and the query's `--grep` keeps
+    the report's `task:` and `Workqueue:` lines and the first lines of
+    every other dump, `WARNING:`, the cut-here line, `BUG:`, `Oops`, so a
+    later dump's `Workqueue:` line never reads as the report's; or a
+    failed freeze listing `usb_hub_wq`), or seen now (a
     worker named `kworker/…+usb_hub_wq` in state D in two looks two seconds
     apart; the kernel names a worker `+WQ` while it runs a work item of
     `WQ`, `wq_worker_comm()` in `kernel/workqueue.c`). Unbinding then would
@@ -103,9 +107,20 @@ PCI restriction is on BAR access and config space, `kernel_lockdown(7)`).
   `/lib/modules/$(uname -r)/kernel/drivers/usb/typec/ucsi/
   ucsi_acpi.ko{.zst,.xz,.gz,}` with `O_NOFOLLOW` and checks it is a regular
   file owned by root and writable by nobody else, and, for a compressed one,
-  that `/boot/config-$(uname -r)` has `CONFIG_MODULE_DECOMPRESS=y` and the
-  matching `CONFIG_MODULE_COMPRESS_*` (`MODULE_INIT_COMPRESSED_FILE`, Linux
-  5.17). Only then does it call `delete_module("ucsi_acpi", O_NONBLOCK)`
+  that the kernel decompresses that format itself
+  (`MODULE_INIT_COMPRESSED_FILE`, Linux 5.17): the kernel's own
+  `/sys/module/compression` when it has one, bound read-only into the unit
+  (`BindReadOnlyPaths=-…`), else `/boot/config-$(uname -r)` with
+  `CONFIG_MODULE_DECOMPRESS=y` and the matching `CONFIG_MODULE_COMPRESS_*`.
+  `/sys/module/compression` is `kernel/module/decompress.c`'s
+  `compression_show`, which prints `MODULE_COMPRESSION` (`gzip`, `xz`, or
+  `zstd`); that file is built only with `CONFIG_MODULE_DECOMPRESS`
+  (`obj-$(CONFIG_MODULE_DECOMPRESS) += decompress.o`,
+  `kernel/module/Makefile`; both read on torvalds/linux `master`,
+  2026-11-22), so it exists exactly when the kernel can, and names the
+  format; this machine reads `zstd`. The daemon makes the same check before
+  it starts the helper, and a no is refused as `usb_module_cannot_load`,
+  which the Fixes page says in words. Only then does it call `delete_module("ucsi_acpi", O_NONBLOCK)`
   and `finit_module(2)` on the open file, twice if the first load fails;
   any check that fails leaves the loaded module alone. The kernel checks
   the signature. Its unit is `helper_sandbox()` with
@@ -184,9 +199,22 @@ PCI restriction is on BAR access and config space, `kernel_lockdown(7)`).
   counts as held), Better Manager's privileged service is not in a
   transaction (`/run/better-os/daemon-busy`, which exists exactly while one
   runs; whether apt itself holds a logind inhibitor while dpkg runs is not
-  known, so the marker is checked regardless), and no other `user` session
+  known, so the marker is checked regardless), no other login session
   exists, whatever its uid (the same person over SSH or on a tty may be
-  running work; a session that cannot be read counts as one); at most once
+  running work; a session that cannot be read, or of a class this build
+  does not know, counts as one), and no account lingers (logind's
+  `ListUsers`: `Linger` set, or `State` `lingering`, a user manager running
+  with no session; an account that cannot be read counts as lingering).
+  The login classes are systemd's `session_class_table`
+  (`src/login/logind-session.c`, meanings in `logind-session.h`, read on
+  `main` on 2026-11-22): `user`, `user-early`, `user-incomplete`,
+  `user-light`, and `user-early-light` are a person's login; `greeter`,
+  `lock-screen`, `background`, `background-light`, `manager`,
+  `manager-early`, and `none` are not; the systemd of 22.04 (249) and 24.04
+  (255) has a subset of that table. Everything the power-off depends on
+  is read again right before it, after the notifications (which can take
+  ten seconds a person); a world that changed meanwhile stops it, and the
+  run may still power off later in the same run of failures. At most once
   per run of failures. The default, once the fix is on, is notify only.
 
 ## Why these are acceptable
@@ -211,15 +239,17 @@ PCI restriction is on BAR access and config space, `kernel_lockdown(7)`).
 
 - **At the desk** (the active local session, `allow_active=yes`): call
   `ReloadUcsi` and `RebindController`. Each runs only when this boot's log
-  shows the fault after the last verified recovery, and at most one call of
-  each kind runs every 30 s (reload) or 60 s (rebind), whatever it ended
-  with: a call inside the cooldown gets the last answer back (`recent`, or
-  the same refusal or failure) with no second run, no second journal read,
-  and no helper started; one at a time (an async lock, no thread per
-  caller; and systemd refuses a second unit of the same name). So: reload
-  a driver that has stopped answering, twice a minute at most; rebind a
-  dead controller once a minute at most. `Findings` reads the journal at
-  most once in five seconds whatever the number of callers.
+  shows the fault after the last verified recovery, and at most one helper
+  run of each kind every 30 s (reload) or 60 s (rebind), succeeded or
+  failed: a call inside the cooldown gets that run's answer back
+  (`recent`, or the same failure) and starts no helper; one at a time (an
+  async lock, no thread per caller; and systemd refuses a second unit of
+  the same name, `Busy`, which is never kept). A refusal is decided afresh
+  each time, from findings at most five seconds old shared with
+  `Findings`, so a fault that appears just after a refused call is repaired
+  by the next one and a caller in a loop reads the journal at most once in
+  five seconds. So: reload a driver that has stopped answering, twice a
+  minute at most; rebind a dead controller once a minute at most.
 - **To change a choice** an administrator authenticates
   (`auth_admin_keep`): a hostile process cannot turn the power-off on.
 - **Inactive or remote sessions** authenticate for everything.

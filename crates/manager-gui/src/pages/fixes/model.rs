@@ -294,6 +294,7 @@ pub(crate) fn usb_refusal(locale: Locale, error: &patch_core::ChangeError) -> &'
         Some(hardware_core::usb_recovery::Refusal::ControllerNotRecognised) => {
             c.refused_not_recognised
         }
+        Some(hardware_core::usb_recovery::Refusal::ModuleCannotLoad) => c.refused_module,
         None if text.contains("daemon.error.auth_cancelled") => c.refused_cancelled,
         None if text.contains("daemon.error.unauthorized") => c.refused_not_allowed,
         None if text.contains("daemon.error.busy")

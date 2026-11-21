@@ -666,6 +666,8 @@ mod usb {
         );
         assert!(row.facts.iter().any(|f| {
             f.starts_with("It never turns off the PC while the lid is open, while it's docked")
+                && f.contains("Better Manager is changing packages")
+                && f.contains("keep its services running after signing out")
         }));
 
         let chosen = settings.with(UsbChoice::PowerOffWhenSleepBlocked, true);
@@ -813,6 +815,10 @@ mod usb {
             (
                 ChangeError::Refused("daemon.error.auth_cancelled".into()),
                 "Authentication wasn't completed, so nothing changed.",
+            ),
+            (
+                ChangeError::Refused("daemon.error.usb_module_cannot_load".into()),
+                "This kernel can't load the USB-C driver's file, so the ports weren't reset. Nothing was changed.",
             ),
             (
                 ChangeError::NotInstalled("better-manager-daemon"),

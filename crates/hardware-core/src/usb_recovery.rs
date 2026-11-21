@@ -34,8 +34,18 @@ pub const KERNEL_LOG_PATTERN: &str = concat!(
     r"|^PM: Some devices failed to suspend",
     r"|^Freezing .* failed",
     r"|^workqueue usb_hub_wq:",
-    r"|^Workqueue: usb_hub_wq ",
+    // A hung-task report: its first line, its `task:` line, and the
+    // worker's `Workqueue:` line (any workqueue, so a report for another
+    // one ends there); and the first lines of every other stack dump, so a
+    // dump's own `Workqueue:` line never follows a report's lines in a
+    // grepped log.
     r"|^INFO: task .* blocked for more than ",
+    r"|^task:",
+    r"|^Workqueue: ",
+    r"|^WARNING: ",
+    r"|\[ cut here \]",
+    r"|^BUG: ",
+    r"|^Oops",
     r"|^usb-recovery: ",
 );
 
@@ -359,7 +369,9 @@ pub fn classify(log: &str) -> UsbFindings {
     let mut pending: std::collections::BTreeMap<PciAddress, Pending> = Default::default();
     // The attempt in progress: (failed, failed because of the hub work).
     let mut attempt: Option<(bool, bool)> = None;
-    // Inside a hung-task report, until the next report or sleep line.
+    // Inside a hung-task report's own first lines (the report line, the
+    // kernel's taint and "echo 0" notes, the `task:` line), up to the
+    // worker's `Workqueue:` line, which ends it; any other line ends it too.
     let mut hung_report = false;
     let close = |attempt: &mut Option<(bool, bool)>, sleep: &mut SleepFindings| {
         if let Some((failed, hub)) = attempt.take() {
@@ -373,6 +385,23 @@ pub fn classify(log: &str) -> UsbFindings {
     };
     for line in log.lines() {
         let line = line.trim_end();
+        if hung_report {
+            if let Some(workqueue) = line.strip_prefix("Workqueue: ") {
+                if workqueue.starts_with("usb_hub_wq ") {
+                    findings.hub_work_hung = true;
+                }
+                hung_report = false;
+                continue;
+            }
+            let own = line.trim_start().starts_with("Not tainted")
+                || line.trim_start().starts_with("Tainted:")
+                || line.starts_with("\"echo 0 > /proc/sys/kernel/hung_task_timeout_secs\"")
+                || line.starts_with("task:");
+            if own {
+                continue;
+            }
+            hung_report = false;
+        }
         if let Some(rest) = line.strip_prefix("ucsi_acpi ") {
             if !rest.ends_with("(-110)") {
                 continue;
@@ -417,7 +446,6 @@ pub fn classify(log: &str) -> UsbFindings {
                 });
             }
         } else if line.starts_with("PM: suspend entry") {
-            hung_report = false;
             close(&mut attempt, &mut findings.sleep);
             findings.sleep.attempts += 1;
             attempt = Some((false, false));
@@ -440,13 +468,6 @@ pub fn classify(log: &str) -> UsbFindings {
             }
         } else if line.starts_with("INFO: task ") && line.contains(" blocked for more than ") {
             hung_report = true;
-            continue;
-        } else if line.starts_with("Workqueue: usb_hub_wq ") {
-            if hung_report {
-                findings.hub_work_hung = true;
-            }
-        } else if line.starts_with("WARNING:") || line.contains("[ cut here ]") {
-            hung_report = false;
         }
     }
     close(&mut attempt, &mut findings.sleep);
@@ -631,6 +652,9 @@ pub enum Refusal {
     ControllerNotRecognised,
     /// The hub work is stuck behind the dead host; only a restart frees it.
     RestartNeeded,
+    /// The running kernel cannot load the distribution's (compressed)
+    /// `ucsi_acpi` file, or it is not there: nothing is unloaded.
+    ModuleCannotLoad,
 }
 
 impl Refusal {
@@ -641,6 +665,7 @@ impl Refusal {
             Refusal::NothingToReset => "daemon.error.usb_nothing_to_reset",
             Refusal::ControllerNotRecognised => "daemon.error.usb_controller_not_recognised",
             Refusal::RestartNeeded => "daemon.error.usb_restart_needed",
+            Refusal::ModuleCannotLoad => "daemon.error.usb_module_cannot_load",
         }
     }
 
@@ -650,6 +675,7 @@ impl Refusal {
             Refusal::NothingToReset,
             Refusal::ControllerNotRecognised,
             Refusal::RestartNeeded,
+            Refusal::ModuleCannotLoad,
         ]
         .into_iter()
         .find(|refusal| key.contains(refusal.key()))
@@ -925,6 +951,7 @@ mod tests {
             Refusal::NothingToReset,
             Refusal::ControllerNotRecognised,
             Refusal::RestartNeeded,
+            Refusal::ModuleCannotLoad,
         ] {
             assert_eq!(
                 Refusal::from_key(&format!(

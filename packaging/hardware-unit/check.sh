@@ -222,7 +222,9 @@ echo 0x0c0330 > "$xhci/class"
 : > /sys/bus/pci/drivers/xhci_hcd/unbind
 : > /sys/bus/pci/drivers/xhci_hcd/bind
 
-# 6a. The reload helper's unit: systemd takes every property, /sys is empty,
+# 6a. The reload helper's unit: systemd takes every property, /sys holds
+# nothing but the kernel's /sys/module/compression (bound read-only when
+# the kernel has it),
 # the modules tree is readable, /proc/sys is read-only, and the only
 # capability left is CAP_SYS_MODULE (bit 16). The helper itself is started
 # only with an argument it refuses before any system call.
@@ -232,7 +234,7 @@ printf '%s\n' "${probe_props[@]}" | grep -qx 'ProtectKernelModules=yes' \
 printf '%s\n' "${probe_props[@]}" | grep -qx 'CapabilityBoundingSet=CAP_SYS_MODULE' \
     || fail "the reload helper's list keeps more than CAP_SYS_MODULE"
 probe='echo PROBE-STARTED'
-probe="$probe; [ \"\$(ls -A /sys | wc -l)\" -eq 0 ] && echo SYS-EMPTY"
+probe="$probe; [ \"\$(find /sys -mindepth 1 ! -path /sys/module ! -path /sys/module/compression | wc -l)\" -eq 0 ] && echo SYS-EMPTY"
 probe="$probe; [ -d /usr/lib/modules ] && echo MODULES-VISIBLE"
 probe="$probe; grep -q ' /proc/sys ro,' /proc/self/mountinfo && echo PROC-SYS-RO"
 probe="$probe; grep -q '^CapBnd:[[:space:]]*0000000000010000\$' /proc/self/status && echo CAP-MODULE-ONLY"
@@ -249,7 +251,7 @@ done
 out="$(systemd-run --quiet --wait --pipe --collect "${probe_props[@]}" \
     /usr/libexec/better-manager-daemon --reload-ucsi refuse-me 2>&1 || true)"
 [[ "$out" == *"takes no value"* ]] || fail "the reload helper did not start in its unit: $out"
-echo "PASS reload helper: properties accepted; /sys empty, modules readable, CAP_SYS_MODULE only"
+echo "PASS reload helper: properties accepted; /sys holds only module/compression, modules readable, CAP_SYS_MODULE only"
 
 # 6b. The rebind helper: its unit sees the driver's two files and the
 # function's identity and nothing else, cannot change the identity, and the

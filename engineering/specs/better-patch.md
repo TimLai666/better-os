@@ -291,10 +291,12 @@ classified.
     whether it failed because `usb_hub_wq` would not freeze (a `Freezing …
     failed` line followed by `workqueue usb_hub_wq:`), and how many of the
     last attempts in a row did;
-  - hung hub work: that failed freeze, or `Workqueue: usb_hub_wq hub_event`
-    inside a hung-task report (`INFO: task … blocked for more than …`); the
-    same line in any other stack dump (a warning during enumeration) is not
-    hung work;
+  - hung hub work: that failed freeze, or the worker a hung-task report
+    names (`INFO: task … blocked for more than …`, its own lines, then
+    `Workqueue: usb_hub_wq hub_event`, which ends it; any other line ends
+    it first). The same line in any other stack dump (a warning during
+    enumeration) is not hung work, grepped or not: the query keeps the
+    first lines of every dump too;
   - the daemon's markers after a verified recovery (`usb-recovery: ucsi_acpi
     reloaded`, `usb-recovery: controller rebound ADDRESS`). A fault before
     the last marker is not failing now. The query is read as JSON with each
@@ -376,7 +378,7 @@ again:
 | Controller not back | 已重新啟動，但 USB 控制器沒有恢復。請重新開機。 / Restarted, but the USB controller didn't come back. Restart the PC. |
 | Inside the cooldown (added) | 這是剛才那次重設的結果，不會連續重設兩次。 / This is the reset from a moment ago; it isn't run twice in a row. |
 
-A refusal is a sentence in the error bar, never a key: 不需要重設：USB-C 連接埠運作
+A refusal is a sentence in the error bar, never a key: 這個核心無法載入 USB-C 驅動程式的檔案，所以沒有重設連接埠，也沒有變更任何東西。 / This kernel can't load the USB-C driver's file, so the ports weren't reset. Nothing was changed. (the kernel cannot decompress the distribution's file: no `/sys/module/compression` naming its format and no build config saying so); 不需要重設：USB-C 連接埠運作
 正常。 / Nothing to reset: the USB-C ports are working.; USB 控制器卡住了，只有重新開機
 才能恢復。 / The USB controller is stuck, and only restarting the PC brings it
 back.; 停止運作的控制器不是 Better OS 可以重新啟動的那種。 / The controller that stopped
@@ -422,7 +424,7 @@ working; logind retried about every 40 s for 11 hours with the lid closed
 - **Power-off is the person's choice**, made on that card (an administrator
   authenticates): 闔上螢幕、沒有接擴充座或外接螢幕時，睡眠一直失敗，Better OS 會關機。開著的應用程式裡沒存的內容會不見。
   / When sleep keeps failing with the lid closed and no dock or external screen, Better OS turns off the PC. Work you haven't saved in open apps is lost., with 只通知我 / Only
-  notify me. The card says what it never does: 螢幕打開時、接著擴充座或外接螢幕時、有程式暫緩關機時（例如正在更新）、Better Manager 正在變更套件時，或還有其他登入的工作階段時（包括你自己在別的螢幕或從網路登入的），都不會關機。 / It never turns off the PC while the lid is open, while it's docked or an external screen is connected, while something holds off shutting down (an update, for example), while Better Manager is changing packages, or while any other session is signed in, yours on another screen or over the network included.
+  notify me. The card says what it never does: 螢幕打開時、接著擴充座或外接螢幕時、有程式暫緩關機時（例如正在更新）、Better Manager 正在變更套件時、還有其他登入的工作階段時（包括你自己在別的螢幕或從網路登入的），或有帳號設定成登出後服務繼續執行時，都不會關機。 / It never turns off the PC while the lid is open, while it's docked or an external screen is connected, while something holds off shutting down (an update, for example), while Better Manager is changing packages, while any other session is signed in (yours on another screen or over the network included), or while an account is set to keep its services running after signing out.
 - Why these: with the lid open the person may be at the machine, and the
   loop is not burning a battery in a bag. A closed lid alone cannot tell a
   bag from a desk: a laptop on a dock or with an external screen may be in
@@ -434,9 +436,13 @@ working; logind retried about every 40 s for 11 hours with the lid closed
   Manager's own privileged service marks a transaction it runs
   (`/run/better-os/daemon-busy`), and a power-off then could leave dpkg
   half way; whether apt itself holds a logind inhibitor while dpkg runs is
-  not known, so the marker is checked whatever it does. Any other session
-  holds work nobody chose to lose: another person's, or the same person's
-  over SSH or on a tty (a long job). The lid state is logind's
+  not known, so the marker is checked whatever it does. Any other login
+  session holds work nobody chose to lose: another person's, or the same
+  person's over SSH or on a tty (a long job), of any of systemd's login
+  classes (`user`, `user-early`, `user-incomplete`, `user-light`,
+  `user-early-light`; an unknown class counts too), and so does an account
+  set to linger, whose services run with no session at all. All of this
+  is read again right before the power-off, after the notifications. The lid state is logind's
   `LidClosed`; not knowing is not "closed". `PowerOff(false)` goes through
   logind, so its delay inhibitors (an application saving) still get their
   time. At most one power-off is asked for per run of failures.

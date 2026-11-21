@@ -198,6 +198,33 @@ test that fails without the fix:
 - The notification's language follows the one rule in `better_core::locale`,
   which Better Awake now calls too (`zh_HK` is Traditional Chinese).
 
+### Second review fixes (2026-11-22)
+
+The second review (`better-os-evidence/101/review-2-2026-11-22.md`) found
+four P3 and two to investigate in the first round of fixes; all six are
+fixed:
+
+- A hung-task report counts only for the worker its own lines name, and
+  the query keeps every dump's first lines so a grepped log says the same
+  (`a_hub_worker_in_a_warning_is_not_hung_hub_work`, every case grepped).
+- Only a run that reached the helper holds the cooldown; a refusal is
+  decided afresh from findings at most five seconds old, and `Busy` is not
+  kept (`only_a_run_that_reached_the_helper_holds_the_cooldown`,
+  `a_refusal_is_decided_afresh_from_recent_findings`).
+- The power-off reads its whole world again right before it
+  (`a_transaction_started_while_people_are_told_stops_the_power_off`).
+- A lingering account blocks the power-off, and every systemd login class
+  counts (`lingering_accounts_and_every_login_class_count`).
+- A kernel that cannot load the compressed file is refused before the
+  helper with a sentence on the page; the kernel's own
+  `/sys/module/compression` decides when it exists
+  (`a_module_the_kernel_cannot_load_is_refused_before_the_helper`,
+  `the_kernel_says_which_compressed_modules_it_loads`). `wait_with_deadline`
+  kills and reaps on a failed `try_wait` too (no test: that error cannot
+  be made happen to a real child from a test).
+
+The `*-power-off-chosen.png` screenshots were taken again with the new copy.
+
 ### Left: measured on the owner's machine before and after
 
 This needs the release that carries the above installed (not an

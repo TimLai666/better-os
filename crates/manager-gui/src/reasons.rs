@@ -300,6 +300,11 @@ pub(crate) const REASONS: &[(&str, &str, &str)] = &[
         "這個 USB-C 修復不適用於這台電腦。",
     ),
     (
+        "daemon.error.usb_module_cannot_load",
+        "This kernel can't load the USB-C driver's file, so nothing was unloaded.",
+        "這個核心無法載入 USB-C 驅動程式的檔案，所以沒有卸載任何東西。",
+    ),
+    (
         "daemon.error.usb_nothing_to_reset",
         "Nothing to reset: the USB-C ports are working.",
         "不需要重設：USB-C 連接埠運作正常。",

@@ -92,6 +92,8 @@ struct Fake {
     reload_fails: bool,
     /// How many times the journal was read.
     reads: Mutex<u32>,
+    /// What the kernel says about loading the module file.
+    module_ready: Result<(), String>,
 }
 
 impl Fake {
@@ -106,6 +108,7 @@ impl Fake {
             charger_stays_hidden: false,
             reload_fails: false,
             reads: Mutex::new(0),
+            module_ready: Ok(()),
         }
     }
 }
@@ -124,6 +127,9 @@ impl UsbMachine for Fake {
         self.workers.clone()
     }
     fn pause(&self, _duration: Duration) {}
+    fn ucsi_module_ready(&self) -> Result<(), String> {
+        self.module_ready.clone()
+    }
     fn reload_ucsi(&self) -> Result<(), DaemonError> {
         *self.reloads.lock().unwrap() += 1;
         if self.reload_fails {
@@ -257,6 +263,10 @@ struct World {
     blocked: bool,
     busy: bool,
     others: bool,
+    lingering: bool,
+    /// The daemon starts a transaction while the notifications go out.
+    busy_after_notify: bool,
+    became_busy: Mutex<bool>,
     notified: Mutex<Vec<u32>>,
     powered_off: Mutex<u32>,
 }
@@ -272,13 +282,19 @@ impl SleepWorld for World {
         self.blocked
     }
     fn daemon_busy(&self) -> bool {
-        self.busy
+        self.busy || *self.became_busy.lock().unwrap()
+    }
+    fn lingering(&self) -> bool {
+        self.lingering
     }
     fn people(&self) -> (Vec<u32>, bool) {
         (vec![1000], self.others)
     }
     fn notify(&self, uid: u32) {
         self.notified.lock().unwrap().push(uid);
+        if self.busy_after_notify {
+            *self.became_busy.lock().unwrap() = true;
+        }
     }
     fn power_off(&self) -> Result<(), String> {
         *self.powered_off.lock().unwrap() += 1;
@@ -392,6 +408,11 @@ fn the_overnight_loop_is_told_once_and_powered_off_only_when_chosen() {
         },
         World {
             busy: true,
+            ..closed()
+        },
+        // An account lingering with no session (its services run).
+        World {
+            lingering: true,
             ..closed()
         },
     ] {
@@ -540,10 +561,21 @@ async fn serve<A: Authorizer + 'static>(
     settings: &Path,
     authorizer: A,
 ) -> zbus::Connection {
+    serve_fresh(bus, fake, settings, authorizer, recovery::FINDINGS_FRESH).await
+}
+
+async fn serve_fresh<A: Authorizer + 'static>(
+    bus: &PrivateBus,
+    fake: Arc<Fake>,
+    settings: &Path,
+    authorizer: A,
+    fresh: Duration,
+) -> zbus::Connection {
     let address: zbus::Address = bus.address.parse().unwrap();
     let service =
         UsbRecoveryService::new(authorizer, fake, settings, Arc::new(CallGate::default()))
-            .with_timings(Timings::INSTANT);
+            .with_timings(Timings::INSTANT)
+            .with_findings_fresh(fresh);
     zbus::connection::Builder::address(address)
         .unwrap()
         .serve_at(OBJECT_PATH, service)
@@ -758,6 +790,9 @@ fn a_forged_line_in_the_daemons_stream_moves_nothing() {
         fn pause(&self, duration: Duration) {
             self.0.pause(duration)
         }
+        fn ucsi_module_ready(&self) -> Result<(), String> {
+            self.0.ucsi_module_ready()
+        }
         fn reload_ucsi(&self) -> Result<(), DaemonError> {
             self.0.reload_ucsi()
         }
@@ -779,11 +814,11 @@ fn a_forged_line_in_the_daemons_stream_moves_nothing() {
     assert!(forged.0.rebinds.lock().unwrap().is_empty());
 }
 
-/// Review finding 5: a failed run and a refused call hold the cooldown
-/// too, so a caller in a loop neither unloads the module again nor reads
-/// the journal again inside it.
+/// Review finding 5 and second review 2: a run that reached the helper
+/// holds the cooldown, success and failure alike, so a caller in a loop
+/// does not unload the module again inside it. `Busy` is never kept.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_failed_or_refused_reset_holds_the_cooldown_too() {
+async fn only_a_run_that_reached_the_helper_holds_the_cooldown() {
     let runtime = tokio::runtime::Handle::current();
     let mut failing = Fake::new(UCSI_LOG, broken("M5406WA"));
     failing.reload_fails = true;
@@ -791,33 +826,210 @@ async fn a_failed_or_refused_reset_holds_the_cooldown_too() {
     let limiter = recovery::Limiter::default();
     for _ in 0..3 {
         let machine = failing.clone();
+        let read = recovery::findings(failing.as_ref());
         let answer = limiter
-            .run(Duration::from_secs(30), &runtime, move || {
-                recovery::reload(machine.as_ref(), Timings::INSTANT)
-            })
+            .run(
+                Duration::from_secs(30),
+                &runtime,
+                async move { read },
+                move |found| recovery::reload_with(machine.as_ref(), &found, Timings::INSTANT),
+            )
             .await;
         assert!(matches!(answer, Err(DaemonError::UsbRecoveryFailed(_))));
     }
     assert_eq!(*failing.reloads.lock().unwrap(), 1);
 
-    let healthy = Arc::new(Fake::new(
-        "PM: suspend entry (s2idle)\nPM: suspend exit\n",
-        broken("M5406WA"),
-    ));
+    // Busy (another reload's unit exists) is said and not kept.
     let limiter = recovery::Limiter::default();
+    let busy = limiter
+        .run(
+            Duration::from_secs(30),
+            &runtime,
+            async { Ok(core::UsbFindings::default()) },
+            |_| Err(DaemonError::Busy),
+        )
+        .await;
+    assert_eq!(busy, Err(DaemonError::Busy));
+    let fake = Arc::new(Fake::new(UCSI_LOG, broken("M5406WA")));
+    let machine = fake.clone();
+    let read = recovery::findings(fake.as_ref());
+    let next = limiter
+        .run(
+            Duration::from_secs(30),
+            &runtime,
+            async move { read },
+            move |found| recovery::reload_with(machine.as_ref(), &found, Timings::INSTANT),
+        )
+        .await;
+    assert!(matches!(next, Ok(ref reply) if !reply.recent), "{next:?}");
+    assert_eq!(*fake.reloads.lock().unwrap(), 1);
+}
+
+/// Second review 2: a refusal is not kept for the cooldown. A fault that
+/// appears just after a refused Reset is repaired by the next one; refused
+/// calls in a loop read the journal no more often than findings are fresh.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refusal_is_decided_afresh_from_recent_findings() {
+    let bus = bus_or_skip!();
+    let dir = tempfile::tempdir().unwrap();
+    let healthy = "PM: suspend entry (s2idle)\nPM: suspend exit\n";
+    let fake = Arc::new(Fake::new(healthy, broken("M5406WA")));
+    let _server = serve_fresh(
+        &bus,
+        fake.clone(),
+        &dir.path().join("s.json"),
+        FakeAuthorizer(true),
+        Duration::ZERO,
+    )
+    .await;
+    let refused = call(&bus, "ReloadUcsi", &()).await.unwrap_err();
+    assert!(refused.contains("usb_nothing_to_reset"), "{refused}");
+    *fake.log.lock().unwrap() = format!("{healthy}{UCSI_LOG}");
+    let reply: RecoveryReply =
+        serde_json::from_str(&call(&bus, "ReloadUcsi", &()).await.unwrap()).unwrap();
+    assert!(!reply.recent && reply.restored.complete());
+    assert_eq!(*fake.reloads.lock().unwrap(), 1);
+    drop(_server);
+
+    // With findings five seconds fresh, three refused calls read once.
+    let fake = Arc::new(Fake::new(healthy, broken("M5406WA")));
+    let _server = serve(
+        &bus,
+        fake.clone(),
+        &dir.path().join("s.json"),
+        FakeAuthorizer(true),
+    )
+    .await;
     for _ in 0..3 {
-        let machine = healthy.clone();
-        let answer = limiter
-            .run(Duration::from_secs(30), &runtime, move || {
-                recovery::reload(machine.as_ref(), Timings::INSTANT)
-            })
-            .await;
-        assert_eq!(
-            answer,
-            Err(DaemonError::UsbRefused(Refusal::NothingToReset))
-        );
+        assert!(call(&bus, "ReloadUcsi", &()).await.is_err());
     }
-    assert_eq!(*healthy.reads.lock().unwrap(), 1);
+    assert_eq!(*fake.reads.lock().unwrap(), 1);
+}
+
+/// Second review 6: a kernel that cannot load the file is refused before
+/// the helper starts, with a key the page says in words; nothing unloads.
+#[test]
+fn a_module_the_kernel_cannot_load_is_refused_before_the_helper() {
+    let mut fake = Fake::new(UCSI_LOG, broken("M5406WA"));
+    fake.module_ready = Err("no /boot/config".into());
+    assert_eq!(
+        recovery::reload(&fake, Timings::INSTANT),
+        Err(DaemonError::UsbRefused(Refusal::ModuleCannotLoad))
+    );
+    assert_eq!(*fake.reloads.lock().unwrap(), 0);
+    assert_eq!(
+        DaemonError::UsbRefused(Refusal::ModuleCannotLoad).to_string(),
+        "daemon.error.usb_module_cannot_load"
+    );
+}
+
+/// Second review 6: the kernel's own `/sys/module/compression` decides
+/// when it is there; the build config only when it is not; neither is a no.
+#[test]
+fn the_kernel_says_which_compressed_modules_it_loads() {
+    let dir = tempfile::tempdir().unwrap();
+    let modules = dir.path().join("modules");
+    let release = "7.0.0-43-generic";
+    let ko_dir = modules.join(release).join(recovery::UCSI_MODULE_DIR);
+    std::fs::create_dir_all(&ko_dir).unwrap();
+    std::fs::write(ko_dir.join("ucsi_acpi.ko.zst"), b"m").unwrap();
+    let attribute = dir.path().join("compression");
+    let config = dir.path().join("config");
+    let check = || recovery::module_loadable(&attribute, &modules, &config, release);
+    // Neither source: refused.
+    assert!(check().is_err());
+    // The config alone.
+    std::fs::write(
+        &config,
+        "CONFIG_MODULE_DECOMPRESS=y\nCONFIG_MODULE_COMPRESS_ZSTD=y\n",
+    )
+    .unwrap();
+    assert!(check().is_ok());
+    // The kernel's own word wins over the config.
+    std::fs::write(&attribute, "xz\n").unwrap();
+    assert!(check().is_err());
+    std::fs::write(&attribute, "zstd\n").unwrap();
+    std::fs::remove_file(&config).unwrap();
+    assert!(check().is_ok());
+    // An uncompressed module needs neither.
+    std::fs::remove_file(ko_dir.join("ucsi_acpi.ko.zst")).unwrap();
+    std::fs::write(ko_dir.join("ucsi_acpi.ko"), b"m").unwrap();
+    std::fs::remove_file(&attribute).unwrap();
+    assert!(check().is_ok());
+    // No file at all.
+    std::fs::remove_file(ko_dir.join("ucsi_acpi.ko")).unwrap();
+    assert!(check().is_err());
+}
+
+/// Second review 3: what the power-off depends on is read again right
+/// before it, after the notifications, which can take seconds each.
+#[test]
+fn a_transaction_started_while_people_are_told_stops_the_power_off() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = settings(
+        dir.path(),
+        &[
+            UsbChoice::ControllerAutomatic,
+            UsbChoice::PowerOffWhenSleepBlocked,
+        ],
+    );
+    let fake = Fake::new(&format!("{DIED_LOG}{BLOCKED}"), broken("M5406WA"));
+    let world = World {
+        lid_closed: Some(true),
+        docked: Some(false),
+        busy_after_notify: true,
+        ..World::default()
+    };
+    let run = dir.path().join("run.json");
+    let done = recovery::after_sleep(&fake, &world, &path, &run, Timings::INSTANT);
+    assert_eq!(done.notified, vec![1000]);
+    assert!(!done.powered_off);
+    assert_eq!(*world.powered_off.lock().unwrap(), 0);
+    // Not spent: once the transaction is over, the same run may still.
+    *world.became_busy.lock().unwrap() = false;
+    let world = World {
+        lid_closed: Some(true),
+        docked: Some(false),
+        ..World::default()
+    };
+    let again = recovery::after_sleep(&fake, &world, &path, &run, Timings::INSTANT);
+    assert!(again.powered_off);
+}
+
+/// Second review 4 and 5: a lingering account blocks the power-off, an
+/// unreadable one too; every logind class that is a person's login counts,
+/// and an unknown class counts as one.
+#[test]
+fn lingering_accounts_and_every_login_class_count() {
+    use recovery::{class_is_login, users_block};
+    assert!(!users_block(&[Some((false, "active".into()))]));
+    assert!(users_block(&[
+        Some((false, "active".into())),
+        Some((false, "lingering".into()))
+    ]));
+    assert!(users_block(&[Some((true, "active".into()))]));
+    assert!(users_block(&[None]));
+    for class in [
+        "user",
+        "user-early",
+        "user-incomplete",
+        "user-light",
+        "user-early-light",
+    ] {
+        assert_eq!(class_is_login(class), Some(true), "{class}");
+    }
+    for class in [
+        "greeter",
+        "lock-screen",
+        "background",
+        "background-light",
+        "manager",
+        "manager-early",
+        "none",
+    ] {
+        assert_eq!(class_is_login(class), Some(false), "{class}");
+    }
+    assert_eq!(class_is_login("user-future"), None);
 }
 
 /// Review finding 1: everything about the file is checked before the
@@ -856,7 +1068,8 @@ fn the_module_stays_loaded_unless_its_file_is_ready() {
     let config = dir.path().join("config");
     // SAFETY: getuid has no preconditions.
     let me = unsafe { libc::getuid() };
-    let prepare = || recovery::prepare_module(&modules, &config, release, me);
+    let no_attribute = dir.path().join("no-compression-attribute");
+    let prepare = || recovery::prepare_module(&no_attribute, &modules, &config, release, me);
     let reload = |calls: &Calls| recovery::reload_module(calls, prepare());
 
     // Missing.
