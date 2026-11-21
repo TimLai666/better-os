@@ -3,3 +3,4 @@
 
 pub mod electron_cursor;
 pub mod font_cache;
+pub mod usb_c;

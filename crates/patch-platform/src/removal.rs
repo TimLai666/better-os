@@ -132,7 +132,7 @@ fn override_now(host: &mut dyn Host, app: &AppId) -> Result<Option<String>, Stri
 fn app_of(record: &AppliedRecord) -> Option<&AppId> {
     match &record.change {
         Recorded::OverrideKeys { app, .. } => Some(app),
-        Recorded::RebuiltFontCache => None,
+        Recorded::RebuiltFontCache | Recorded::UsbRecovery { .. } => None,
     }
 }
 

@@ -19,6 +19,8 @@ pub enum EntryState {
     Undone,
     /// It could not tell.
     CannotCheck(CannotCheck),
+    /// The fault is known only on other models; nothing is offered here.
+    DoesNotApply,
 }
 
 /// What detection said about one subject.
@@ -27,6 +29,7 @@ pub enum Seen {
     Present,
     Absent,
     CannotCheck(CannotCheck),
+    DoesNotApply,
 }
 
 /// The state of one subject.
@@ -38,6 +41,7 @@ pub enum Seen {
 pub fn state(seen: &Seen, recorded: bool, just_undone: bool) -> EntryState {
     match (seen, recorded) {
         (Seen::CannotCheck(reason), _) => EntryState::CannotCheck(reason.clone()),
+        (Seen::DoesNotApply, _) => EntryState::DoesNotApply,
         (Seen::Present, true) => EntryState::AppliedButStillPresent,
         (Seen::Absent, true) => EntryState::FixedAndChecked,
         (_, false) if just_undone => EntryState::Undone,

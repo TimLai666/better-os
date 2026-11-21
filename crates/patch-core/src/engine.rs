@@ -66,6 +66,9 @@ impl Report {
         if let Detection::CannotCheck(reason) = &self.detection {
             return EntryState::CannotCheck(reason.clone());
         }
+        if self.detection == Detection::DoesNotApply {
+            return EntryState::DoesNotApply;
+        }
         let rank = |state: &EntryState| match state {
             EntryState::AppliedButStillPresent => 0,
             EntryState::Found => 1,
@@ -73,6 +76,7 @@ impl Report {
             EntryState::FixedAndChecked => 3,
             EntryState::CannotCheck(_) => 4,
             EntryState::NotPresent => 5,
+            EntryState::DoesNotApply => 6,
         };
         self.instances
             .iter()
@@ -102,12 +106,36 @@ pub fn check(
     let detection = entry.detect(&answers);
     let findings: &[Finding] = match &detection {
         Detection::Checked(findings) => findings,
-        Detection::CannotCheck(_) => &[],
+        Detection::CannotCheck(_) | Detection::DoesNotApply => &[],
+    };
+    // A fix the machine keeps is recorded by the machine, for every
+    // account: its own setting, read with detection.
+    let machine: Vec<AppliedRecord> = entry
+        .machine_records(&answers)
+        .into_iter()
+        .map(|(subject, change)| AppliedRecord {
+            entry: entry.id(),
+            subject,
+            applied_at: 0,
+            change,
+        })
+        .collect();
+    let find = |subject: &Subject| -> Option<AppliedRecord> {
+        if entry.kept_by_machine() {
+            machine.iter().find(|r| &r.subject == subject).cloned()
+        } else {
+            records.find(entry.id(), subject).cloned()
+        }
     };
     let mut subjects: Vec<Subject> = findings.iter().map(|f| f.subject.clone()).collect();
-    for record in records.of(entry.id()) {
-        if !subjects.contains(&record.subject) {
-            subjects.push(record.subject.clone());
+    let recorded: Vec<Subject> = if entry.kept_by_machine() {
+        machine.iter().map(|r| r.subject.clone()).collect()
+    } else {
+        records.of(entry.id()).map(|r| r.subject.clone()).collect()
+    };
+    for subject in recorded {
+        if !subjects.contains(&subject) {
+            subjects.push(subject);
         }
     }
     for subject in just_undone {
@@ -119,9 +147,10 @@ pub fn check(
         .into_iter()
         .map(|subject| {
             let finding = findings.iter().find(|f| f.subject == subject).cloned();
-            let record = records.find(entry.id(), &subject).cloned();
+            let record = find(&subject);
             let seen = match (&detection, &finding) {
                 (Detection::CannotCheck(reason), _) => Seen::CannotCheck(reason.clone()),
+                (Detection::DoesNotApply, _) => Seen::DoesNotApply,
                 (_, Some(_)) => Seen::Present,
                 (_, None) => Seen::Absent,
             };

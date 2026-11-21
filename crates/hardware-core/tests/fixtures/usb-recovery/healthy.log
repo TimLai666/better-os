@@ -1,0 +1,5 @@
+PM: suspend entry (s2idle)
+Freezing remaining freezable tasks completed (elapsed 0.001 seconds)
+PM: suspend exit
+PM: suspend entry (deep)
+PM: suspend exit

@@ -285,6 +285,41 @@ pub(crate) const REASONS: &[(&str, &str, &str)] = &[
         "這裡無法變更那個磁碟（{detail}）。",
     ),
     (
+        "daemon.error.kernel_log_unreadable",
+        "This boot's kernel log couldn't be read ({detail}).",
+        "讀不到這次開機的核心紀錄（{detail}）。",
+    ),
+    (
+        "daemon.error.usb_controller_not_recognised",
+        "The USB controller that stopped isn't one Better OS may restart.",
+        "停止運作的 USB 控制器不是 Better OS 可以重新啟動的那種。",
+    ),
+    (
+        "daemon.error.usb_not_affected",
+        "This USB-C recovery doesn't apply to this PC.",
+        "這個 USB-C 修復不適用於這台電腦。",
+    ),
+    (
+        "daemon.error.usb_module_cannot_load",
+        "This kernel can't load the USB-C driver's file, so nothing was unloaded.",
+        "這個核心無法載入 USB-C 驅動程式的檔案，所以沒有卸載任何東西。",
+    ),
+    (
+        "daemon.error.usb_nothing_to_reset",
+        "Nothing to reset: the USB-C ports are working.",
+        "不需要重設：USB-C 連接埠運作正常。",
+    ),
+    (
+        "daemon.error.usb_recovery_failed",
+        "The USB-C recovery didn't finish ({detail}).",
+        "USB-C 修復沒有完成（{detail}）。",
+    ),
+    (
+        "daemon.error.usb_restart_needed",
+        "The USB controller is stuck, and only restarting the PC brings it back.",
+        "USB 控制器卡住了，只有重新開機才能恢復。",
+    ),
+    (
         "daemon.error.hardware_absent",
         "The device isn't there.",
         "這個裝置不存在。",

@@ -26,7 +26,7 @@ pub use command::{Command, FontQuery};
 pub use engine::{FixError, FixOutcome, Instance, Report, UndoOutcome};
 pub use entry::{
     Answer, Answers, CannotCheck, Change, ChangeError, CheckOutcome, Detection, Entry, EntryId,
-    Finding, Host, Read, ReadError, Subject, UndoKind,
+    Finding, Host, Privileged, Read, ReadError, Subject, UndoKind, UsbMachineView,
 };
 pub use record::{AppliedRecord, Records};
 pub use state::EntryState;

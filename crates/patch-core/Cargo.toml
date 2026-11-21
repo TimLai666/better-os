@@ -6,6 +6,9 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+# The USB-C recovery's model list, kernel log classifier, and decisions
+# (ticket 101): no I/O, shared with the daemon.
+hardware-core.workspace = true
 serde.workspace = true
 
 [dev-dependencies]

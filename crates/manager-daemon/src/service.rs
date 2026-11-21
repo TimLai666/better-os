@@ -107,6 +107,7 @@ pub async fn serve<
     H: Authorizer + 'static,
     D: Authorizer + 'static,
     B: Authorizer + 'static,
+    U: Authorizer + 'static,
 >(
     builder: zbus::connection::Builder<'_>,
     bus_name: &str,
@@ -114,12 +115,14 @@ pub async fn serve<
     hardware: crate::hardware::HardwareService<H>,
     drives: crate::drives::DrivesService<D>,
     boot_watch: crate::boot_watch::BootWatchService<B>,
+    usb_recovery: crate::usb_recovery::UsbRecoveryService<U>,
 ) -> zbus::Result<zbus::Connection> {
     builder
         .serve_at(OBJECT_PATH, service)?
         .serve_at(OBJECT_PATH, hardware)?
         .serve_at(OBJECT_PATH, drives)?
         .serve_at(OBJECT_PATH, boot_watch)?
+        .serve_at(OBJECT_PATH, usb_recovery)?
         .name(bus_name)?
         .build()
         .await
