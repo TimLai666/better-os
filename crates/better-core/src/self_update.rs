@@ -162,7 +162,7 @@ impl ProgramFile {
 
 /// `/proc/self/exe` reads `/usr/bin/x (deleted)` once the file was replaced.
 /// The path a process restarts from is the one without that suffix.
-fn strip_deleted(path: &Path) -> PathBuf {
+pub(crate) fn strip_deleted(path: &Path) -> PathBuf {
     let text = path.to_string_lossy();
     match text.strip_suffix(" (deleted)") {
         Some(stripped) => PathBuf::from(stripped),

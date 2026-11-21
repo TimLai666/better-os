@@ -267,22 +267,6 @@ pub fn terminal_launch(
     })
 }
 
-/// Better Files on the folder, or the desktop's file manager when Better
-/// Files is not installed.
-pub fn files_launch(folder: &Path, exists: impl Fn(&str) -> bool) -> Launch {
-    let program = if exists("better-files") {
-        "better-files"
-    } else {
-        "xdg-open"
-    };
-    Launch {
-        program: program.into(),
-        args: Vec::new(),
-        path_arg: Some(folder.to_path_buf()),
-        working_dir: folder.to_path_buf(),
-    }
-}
-
 /// A URL in the browser.
 pub fn browser_launch(url: &str) -> Launch {
     Launch {

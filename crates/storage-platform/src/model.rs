@@ -173,6 +173,16 @@ impl PlatformDevice {
         DeviceClass::ExternalHotPluggable
     }
 
+    /// Every place the volume is mounted: UDisks2's whole list when the
+    /// storage layer has it, else the one it named.
+    pub fn mount_points(&self) -> Vec<PathBuf> {
+        if self.block.mount_points.is_empty() {
+            self.mount_point.iter().cloned().collect()
+        } else {
+            self.block.mount_points.clone()
+        }
+    }
+
     pub fn transport(&self) -> Transport {
         self.drive
             .as_ref()

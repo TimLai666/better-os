@@ -134,8 +134,13 @@ Status at the end of the fifth ticket-93 pass: **108 of 113 lines ticked**, 5 de
       `src/filemanager1.cpp`. `filemanager1.rs`: `ShowFolders`, `ShowItems`,
       `ShowItemProperties`; each opens a window in this process, the item
       selected. Taken only when no other file manager owns the name. URI
-      handling tested in `tests/filemanager1.rs`; the bus call itself was not
-      exercised.
+      handling tested in `tests/filemanager1.rs`. Becoming what the session
+      bus starts for the name is Better Defaults' `file-manager-service`
+      (ticket 129, ADR 0041): a user-level activation file that runs
+      `better-files --service`, a running owner left alone until it exits,
+      Restore and removal putting the previous file (or none) back;
+      `defaults-core/tests/bus_activation.rs` routes real `ShowItems` calls
+      on a private bus.
 
 ## 3. Selection
 
@@ -287,8 +292,9 @@ Status at the end of the fifth ticket-93 pass: **108 of 113 lines ticked**, 5 de
       with play/pause (button or Enter), seeking (bar or Shift+← →), volume,
       and a plain message naming a missing codec. Tests in
       `files-preview/tests/media.rs` (a WAV to its end, pause, seek, a seek
-      between key frames, volume, video frames paused and playing, a file
-      that is not media) and `tests/media_missing_codec.rs`; shots
+      between key frames, a seek asked for before the file has finished
+      opening, volume, video frames paused and playing, a file that is not
+      media) and `tests/media_missing_codec.rs`; shots
       `26-preview-video-1600-light-en.png`,
       `27-preview-missing-codec-1600-light-en.png`.
 - [x] Rendered Markdown — folio: `plans/folio.md:81`. gpui-component's

@@ -6,6 +6,8 @@
 use std::path::{Path, PathBuf};
 
 use storage_platform::model::PlatformDevice;
+pub use storage_platform::system_use::SystemUse;
+use storage_platform::system_use::{SystemDrives, SystemSource, SystemSources};
 
 use crate::choice::AutoMount;
 
@@ -52,8 +54,12 @@ pub struct Drive {
     pub uuid: Option<String>,
     /// The size UDisks2 reports, for a drive that is not mounted.
     pub size: u64,
-    /// Whether it can be ejected (a removable or optical drive).
+    /// Whether it can be ejected (a removable or optical drive that holds
+    /// nothing of the running system).
     pub ejectable: bool,
+    /// What of the running system is on its drive (ticket 171): Eject,
+    /// Format and unmounting are offered only for `Free`.
+    pub system_use: SystemUse,
     /// How full it is: `None` until read, and for a drive that is not
     /// mounted or did not answer.
     pub capacity: Option<Capacity>,
@@ -293,11 +299,7 @@ pub const ENCRYPTED: &[&str] = &["crypto_LUKS", "crypto_BITLK"];
 /// Every place a device is mounted: UDisks2's whole list when the storage
 /// layer has it, else the one it named.
 pub fn mount_points_of(device: &PlatformDevice) -> Vec<PathBuf> {
-    if device.block.mount_points.is_empty() {
-        device.mount_point.iter().cloned().collect()
-    } else {
-        device.block.mount_points.clone()
-    }
+    device.mount_points()
 }
 
 /// Whether `source` (a mount table's `/dev/mapper/luks-…`, say) names
@@ -321,7 +323,31 @@ pub fn names_device(source: &str, device: &PlatformDevice) -> bool {
 /// The drives among UDisks2's block devices. `root_source` is the device the
 /// mount table shows at `/`, which UDisks2 may name differently (a btrfs
 /// volume it lists at `/home`, `/dev/mapper/luks-…` for its `/dev/dm-0`).
+/// What else the running system uses is not known here: see
+/// [`drives_with_system`].
 pub fn drives_from_devices(devices: &[PlatformDevice], root_source: Option<&str>) -> Vec<Drive> {
+    let sources = SystemSources {
+        sources: root_source
+            .map(|source| SystemSource::node(SystemUse::RunningSystem, source))
+            .into_iter()
+            .collect(),
+        ..SystemSources::default()
+    };
+    drives_with_system(
+        devices,
+        root_source,
+        &SystemDrives::find(devices, Some(&sources)),
+    )
+}
+
+/// The drives among UDisks2's block devices, each with what `system` says
+/// its drive holds of the running system (ticket 171): a drive that holds
+/// anything, or that cannot be told apart from one, is never ejectable.
+pub fn drives_with_system(
+    devices: &[PlatformDevice],
+    root_source: Option<&str>,
+    system: &SystemDrives,
+) -> Vec<Drive> {
     let mut drives: Vec<Drive> = Vec::new();
     // A container that is unlocked is shown as the volume inside it.
     let unlocked: Vec<&str> = devices
@@ -349,14 +375,6 @@ pub fn drives_from_devices(devices: &[PlatformDevice], root_source: Option<&str>
             .any(|point| point == Path::new("/"))
             || root_source.is_some_and(|source| names_device(source, device))
     };
-    // The drives the running system is on: nothing on them is ejectable.
-    let system_drives: Vec<&str> = devices
-        .iter()
-        .filter(|device| is_root(device))
-        .filter_map(|device| drive_of(device, devices))
-        .map(|drive| drive.object_path.as_str())
-        .filter(|path| !path.is_empty() && *path != "/")
-        .collect();
     for device in devices {
         let path = device.address.device_path.as_str();
         if ["/dev/loop", "/dev/ram", "/dev/zram"]
@@ -389,12 +407,12 @@ pub fn drives_from_devices(devices: &[PlatformDevice], root_source: Option<&str>
         if !locked && !DRIVE_FILESYSTEMS.contains(&filesystem) {
             continue;
         }
-        let system = is_root(device);
+        let is_system = is_root(device);
         let points = mount_points_of(device);
         // Shown at `/` when it is the system's, else at the first place a
         // person keeps files; a volume mounted only where the system keeps
         // itself (`/boot/efi`) is not a drive.
-        let mount_point = if system {
+        let mount_point = if is_system {
             Some(PathBuf::from("/"))
         } else {
             match points.iter().find(|point| !is_system_mount(point)) {
@@ -434,11 +452,14 @@ pub fn drives_from_devices(devices: &[PlatformDevice], root_source: Option<&str>
         let drive_object = drive_info
             .map(|drive| drive.object_path.clone())
             .filter(|path| !path.is_empty() && path != "/");
-        let on_system_drive = system
-            || drive_object
-                .as_deref()
-                .is_some_and(|object| system_drives.contains(&object));
-        let kind = if system {
+        // The running system's own volume holds it whatever the drive
+        // lookup says; every other volume is what its drive holds.
+        let system_use = if is_system {
+            SystemUse::RunningSystem.strongest(system.of_device(device, devices))
+        } else {
+            system.of_device(device, devices)
+        };
+        let kind = if is_system {
             DriveKind::System
         } else if optical {
             DriveKind::Optical
@@ -459,6 +480,8 @@ pub fn drives_from_devices(devices: &[PlatformDevice], root_source: Option<&str>
             if known.mount_point.is_none() && mount_point.is_some() {
                 known.mount_point = mount_point;
                 known.kind = kind;
+                known.system_use = known.system_use.clone().strongest(system_use.clone());
+                known.ejectable = known.ejectable && known.system_use.permits_removal();
                 known.key = device.address.object_path.clone();
                 known.object_path = Some(device.address.object_path.clone());
                 known.device_path = Some(device.address.device_path.clone());
@@ -477,10 +500,11 @@ pub fn drives_from_devices(devices: &[PlatformDevice], root_source: Option<&str>
             locked,
             uuid,
             size: device.block.size,
-            // Linux on an external SSD or a live USB: the drive it runs
-            // from is never offered for ejecting.
-            ejectable: !on_system_drive
+            // Linux on an external SSD or a live USB, `/home` or swap on
+            // a USB disk: that drive is never offered for ejecting.
+            ejectable: system_use.permits_removal()
                 && (removable || optical || drive_info.is_some_and(|drive| drive.ejectable)),
+            system_use,
             capacity: None,
             auto_mount: None,
             form: (kind == DriveKind::Removable)
@@ -488,6 +512,25 @@ pub fn drives_from_devices(devices: &[PlatformDevice], root_source: Option<&str>
         });
     }
     drives
+}
+
+/// What the drive of the UDisks2 block `object_path` holds of the running
+/// system (ticket 171), asked of UDisks2 over `system` and of the kernel's
+/// mount table now. Blocking: for a worker thread such as the daemon's.
+pub fn system_use_now(system: &zbus::blocking::Connection, object_path: &str) -> SystemUse {
+    use storage_platform::traits::DeviceControl;
+    let udisks = storage_platform::UDisks2::from_connection(system.inner().clone());
+    let Ok(devices) = zbus::block_on(udisks.enumerate()) else {
+        return SystemUse::Unknown;
+    };
+    let sources = udisks.system_sources();
+    let found = SystemDrives::find(&devices, sources.as_ref());
+    devices
+        .iter()
+        .find(|device| device.address.object_path == object_path)
+        .map_or(SystemUse::Unknown, |device| {
+            found.of_device(device, &devices)
+        })
 }
 
 /// Names a JSON file of drives a sandbox shows instead of the machine's
@@ -515,6 +558,10 @@ struct FixtureDrive {
     uuid: Option<String>,
     /// Why it did not mount, as systemd would say (`timeout`).
     failure: Option<String>,
+    /// What of the running system its drive holds: `free`, `running_system`,
+    /// `swap`, `unknown`, or a system folder's path (`/home`). By default a
+    /// `system` fixture holds the running system and any other is free.
+    system_use: Option<String>,
 }
 
 /// The drives a fixture file names, unsorted.
@@ -529,6 +576,17 @@ pub fn fixture_drives(path: &Path) -> Vec<Drive> {
         .into_iter()
         .enumerate()
         .map(|(index, fixture)| Drive {
+            system_use: match fixture.system_use.as_deref() {
+                Some("free") => SystemUse::Free,
+                Some("running_system") => SystemUse::RunningSystem,
+                Some("swap") => SystemUse::Swap,
+                Some("unknown") => SystemUse::Unknown,
+                Some(path) if path.starts_with('/') => SystemUse::SystemFolder {
+                    path: PathBuf::from(path),
+                },
+                _ if fixture.kind == "system" => SystemUse::RunningSystem,
+                _ => SystemUse::Free,
+            },
             key: format!("fixture-{index}"),
             label: fixture.label,
             kind: match fixture.kind.as_str() {
@@ -587,6 +645,7 @@ mod tests {
             uuid: None,
             size: 263_000_000_000,
             ejectable: false,
+            system_use: super::SystemUse::Free,
             capacity: None,
             auto_mount: None,
             form: None,

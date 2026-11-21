@@ -1,6 +1,7 @@
 //! Shared domain types and validation for Better OS components.
 
 pub mod app_unit;
+pub mod companion;
 pub mod defaults;
 pub mod desktop;
 pub mod host;
@@ -9,6 +10,8 @@ pub mod manifest;
 pub mod package_health;
 pub mod private_dir;
 pub mod self_update;
+pub mod test_guard;
+pub mod uri;
 
 pub use defaults::{
     AdapterId, DconfDatabase, DefaultIntegration, DefaultsValue, HealthPrerequisite,

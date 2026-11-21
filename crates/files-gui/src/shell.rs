@@ -30,8 +30,8 @@ use crate::i18n::{Copy, Locale, copy};
 use crate::keys::Focus;
 use crate::prefs::{ItemScale, ViewMode};
 use crate::sidebar::{
-    FilesystemProbe, NavGroup, NoDeviceStates, SidebarInputs, SidebarRow, SidebarSection,
-    build_rows, shown_rows,
+    FilesystemProbe, NavGroup, NoDeviceStates, RowPlace, SidebarInputs, SidebarRow, SidebarSection,
+    build_rows, highlighted_row, shown_rows,
 };
 use crate::toolbar::toolbar_state;
 
@@ -54,15 +54,39 @@ pub(crate) enum NavTarget {
 }
 
 impl NavTarget {
-    fn location(&self) -> Option<&files_core::Location> {
+    /// What the line stands for when the highlight is chosen (ticket 175):
+    /// a folder row its location, a drive row its mount point, a server
+    /// this window mounted the folder GVfs mounted it at. `drives` is the
+    /// session's drive list, which a [`NavTarget::Drive`] names by key.
+    fn place(
+        &self,
+        session: &crate::session::FilesSession,
+        drives: &[crate::drives::Drive],
+    ) -> Option<RowPlace> {
+        let server = |address: &str| {
+            session
+                .server_folder(address)
+                .map(|folder| RowPlace::Mount(folder.to_path_buf()))
+        };
         match self {
-            NavTarget::Row(row) => Some(&row.location),
-            NavTarget::Device(_)
-            | NavTarget::Machine(_)
-            | NavTarget::PluginItem(_)
-            | NavTarget::PluginView(_)
-            | NavTarget::Drive(_)
-            | NavTarget::ThisPc => None,
+            // The mount table's rows, shown when there is no drive list.
+            NavTarget::Row(row) if row.section == SidebarSection::Devices => row
+                .location
+                .as_local_path()
+                .map(|path| RowPlace::Mount(path.as_path().to_path_buf())),
+            NavTarget::Row(row) => Some(RowPlace::Exact(row.location.clone())),
+            NavTarget::Device(device) => device.mount_point.clone().map(RowPlace::Mount),
+            NavTarget::Drive(key) => drives
+                .iter()
+                .find(|drive| drive.key == *key)
+                .and_then(|drive| drive.mount_point.clone())
+                .map(RowPlace::Mount),
+            NavTarget::Machine(machine) => server(&crate::share::sftp_address(machine)),
+            NavTarget::PluginItem(pair) => match &pair.1.open {
+                Some(crate::plugins::Open::Mount { mount }) => server(mount),
+                _ => None,
+            },
+            NavTarget::PluginView(_) | NavTarget::ThisPc => None,
         }
     }
 }
@@ -1039,9 +1063,11 @@ impl FilesApp {
         let attention =
             device.filter(|device| device.is_warning() || device.unsafe_removal.is_some());
         // Never on the drive the system runs from (Linux on an external SSD,
-        // a live USB), whatever the storage service says.
-        let with_action =
-            drive.kind != crate::drives::DriveKind::System && (drive.ejectable || device.is_some());
+        // a live USB, `/home` or swap on a USB disk), nor on one that cannot
+        // be told apart from it (ticket 171).
+        let with_action = drive.kind != crate::drives::DriveKind::System
+            && (drive.ejectable || device.is_some())
+            && crate::drives::system_use_of(Some(drive), device).permits_removal();
         if let Some(device) = attention {
             item = item.caption(device.state_label(c)).caption_warning(true);
         } else if let Some(caption) = drive.caption(c) {
@@ -1104,20 +1130,25 @@ impl FilesApp {
         }
         let object_path = device.object_path.clone();
         let this = self.weak.clone();
-        NavItem::new(device.label.clone(), Picture::Drive)
+        let item = NavItem::new(device.label.clone(), Picture::Drive)
             .caption(caption)
-            .caption_warning(device.is_warning() || device.unsafe_removal.is_some())
-            .action(NavAction::new(
-                Picture::Eject,
-                c.device_eject,
-                move |_window, cx| {
-                    let _ = this.update(cx, |app, cx| {
-                        app.session.eject_device(&object_path);
-                        cx.notify();
-                    });
-                },
-            ))
-            .entry()
+            .caption_warning(device.is_warning() || device.unsafe_removal.is_some());
+        // Eject only on a drive that holds nothing of the running system
+        // (ticket 171).
+        if !crate::drives::system_use_of(None, Some(device)).permits_removal() {
+            return item.entry();
+        }
+        item.action(NavAction::new(
+            Picture::Eject,
+            c.device_eject,
+            move |_window, cx| {
+                let _ = this.update(cx, |app, cx| {
+                    app.session.eject_device(&object_path);
+                    cx.notify();
+                });
+            },
+        ))
+        .entry()
     }
 
     /// The navigation pane around `content`.
@@ -1138,9 +1169,21 @@ impl FilesApp {
             None if self.drives_page.is_some() => lines
                 .iter()
                 .position(|(_, target)| matches!(target, Some(NavTarget::ThisPc))),
-            None => lines.iter().position(|(_, target)| {
-                target.as_ref().and_then(NavTarget::location) == Some(&current)
-            }),
+            None => {
+                let drives = self.session.shown_drives();
+                let places: Vec<Option<RowPlace>> = lines
+                    .iter()
+                    .map(|(_, target)| {
+                        target
+                            .as_ref()
+                            .and_then(|target| target.place(&self.session, &drives))
+                    })
+                    .collect();
+                let foreign = current
+                    .as_local_path()
+                    .and_then(|path| self.session.foreign_mount(path.as_path()));
+                highlighted_row(&places, &current, foreign.as_deref())
+            }
         };
         let targets: Rc<Vec<Option<NavTarget>>> =
             Rc::new(lines.iter().map(|(_, target)| target.clone()).collect());

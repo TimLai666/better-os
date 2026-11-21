@@ -1267,49 +1267,111 @@ pub(crate) fn open_window_at(folder: Option<files_core::LocalPath>, cx: &mut App
 
 /// Opens the window at the location the command line resolved to.
 pub fn run(start: StartPlan) {
+    run_with(Some(start));
+}
+
+/// How long a Better Files the session bus started waits for the call that
+/// started it before it leaves (ADR 0041).
+pub const SERVICE_IDLE: Duration = Duration::from_secs(30);
+
+/// `better-files --service`: serves `org.freedesktop.FileManager1` with no
+/// window, opens one for each call, and leaves when the last one closes, or
+/// after [`SERVICE_IDLE`] when no call came.
+pub fn run_service() {
+    run_with(None);
+}
+
+fn run_with(start: Option<StartPlan>) {
+    let service = start.is_none();
     let app = gpui_platform::application().with_assets(crate::icons::FilesAssets);
 
     app.run(move |cx| {
         gpui_component::init(cx);
 
+        // A window a restart replaced reopens even when the program was
+        // started by the bus (`--service`, ticket 129): the hand-off decides.
         let handoff = better_ui::restart::take_handoff(APP_ID);
-        let mut window_options = files_window_options(cx);
-        if let Some(bounds) = better_ui::restart::window_bounds(handoff.as_ref()) {
-            window_options.window_bounds = Some(bounds);
+        if let Some(start) = crate::restart::first_window(start, handoff.is_some()) {
+            let mut window_options = files_window_options(cx);
+            if let Some(bounds) = better_ui::restart::window_bounds(handoff.as_ref()) {
+                window_options.window_bounds = Some(bounds);
+            }
+            cx.spawn(async move |cx| {
+                cx.open_window(window_options, |window, cx| {
+                    let view = cx.new(|cx| FilesApp::new(window, cx, start, handoff));
+                    cx.new(|cx| better_ui::window_chrome::root(view, window, cx))
+                })
+                .expect("failed to open Better Files window");
+            })
+            .detach();
         }
 
-        cx.spawn(async move |cx| {
-            cx.open_window(window_options, |window, cx| {
-                let view = cx.new(|cx| FilesApp::new(window, cx, start, handoff));
-                cx.new(|cx| better_ui::window_chrome::root(view, window, cx))
-            })
-            .expect("failed to open Better Files window");
-        })
-        .detach();
-
         // "Show in folder" from other applications: each request opens a
-        // window, in this process.
-        let (requests, received) = std::sync::mpsc::channel();
-        crate::filemanager1::serve(requests);
+        // window, in this process, and the call is answered once it has.
+        let (requests, received) = std::sync::mpsc::channel::<crate::filemanager1::ShowRequest>();
+        let hold = crate::filemanager1::serve(requests);
+        // Started by the bus: this process leaves on its own once nothing
+        // needs it, giving the name back first, so a call that comes as it
+        // goes starts a new Better Files instead of reaching this one.
+        let leaving = std::rc::Rc::new(std::cell::Cell::new(false));
+        if service {
+            cx.set_quit_mode(QuitMode::Explicit);
+            let started = std::time::Instant::now();
+            let idle = leaving.clone();
+            cx.spawn(async move |cx| {
+                Timer::after(SERVICE_IDLE).await;
+                cx.update(|cx| {
+                    if cx.windows().is_empty() && started.elapsed() >= SERVICE_IDLE {
+                        idle.set(true);
+                    }
+                });
+            })
+            .detach();
+            let closed = leaving.clone();
+            cx.on_window_closed(move |cx, _| {
+                if cx.windows().is_empty() {
+                    closed.set(true);
+                }
+            })
+            .detach();
+        }
         cx.spawn(async move |cx| {
             loop {
                 Timer::after(Duration::from_millis(250)).await;
-                while let Ok(target) = received.try_recv() {
+                if leaving.get() {
+                    hold.release();
+                }
+                let mut opened_any = false;
+                while let Ok(request) = received.try_recv() {
+                    opened_any = true;
                     let start = StartPlan {
-                        target: Some(target),
+                        target: Some(request.target.clone()),
                         problem: None,
                         ignored: 0,
                     };
                     cx.update(|cx| {
                         let options = files_window_options(cx);
                         cx.spawn(async move |cx| {
-                            let _ = cx.open_window(options, |window, cx| {
+                            let opened = cx.open_window(options, |window, cx| {
                                 let view = cx.new(|cx| FilesApp::new(window, cx, start, None));
                                 cx.new(|cx| better_ui::window_chrome::root(view, window, cx))
                             });
+                            if opened.is_ok() {
+                                request.opened();
+                            }
                         })
                         .detach();
                     });
+                }
+                if leaving.get() {
+                    if opened_any {
+                        // A call that came in before the name was given up
+                        // still gets its window; the process leaves after it.
+                        leaving.set(false);
+                    } else {
+                        cx.update(|cx| cx.quit());
+                        return;
+                    }
                 }
             }
         })

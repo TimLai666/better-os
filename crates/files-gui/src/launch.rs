@@ -28,6 +28,10 @@ pub enum Invocation {
     Print(String),
     /// Print this to standard error and exit 2.
     Refuse(String),
+    /// `--service`: what the session bus starts for
+    /// `org.freedesktop.FileManager1` (ADR 0041). No window until a call
+    /// asks for one.
+    Service,
 }
 
 /// The location arguments, before anything has been checked.
@@ -148,6 +152,8 @@ better-files — Better OS 檔案管理員 / the Better OS file manager
   better-files <folder-or-file>
                                open a folder, or a file's folder with the file selected
                                (a path or a file:// URI; only the first one is opened)
+  better-files --service       由工作階段匯流排啟動，等待「在資料夾中顯示」
+                               started by the session bus for \"Show in folder\"
   better-files --version       顯示版本 / print the version
   better-files --help          顯示這段說明 / print this help";
 
@@ -161,6 +167,7 @@ pub fn invocation(arguments: &[OsString]) -> Invocation {
     {
         return match option.as_bytes() {
             b"--help" | b"-h" => Invocation::Print(HELP.to_string()),
+            b"--service" if arguments.len() == 1 => Invocation::Service,
             b"--version" | b"-V" => {
                 Invocation::Print(format!("better-files {}", env!("CARGO_PKG_VERSION")))
             }
@@ -399,6 +406,17 @@ mod tests {
                 other => panic!("{flag}: {other:?}"),
             }
         }
+    }
+
+    /// What the session bus starts for "Show in folder" (ADR 0041): alone it
+    /// is the windowless service; with anything else it is refused.
+    #[test]
+    fn service_is_what_the_bus_starts_and_nothing_else_goes_with_it() {
+        assert_eq!(invocation(&args(&["--service"])), Invocation::Service);
+        assert!(matches!(
+            invocation(&args(&["--service", "/tmp"])),
+            Invocation::Refuse(_)
+        ));
     }
 
     #[test]

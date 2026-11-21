@@ -135,6 +135,14 @@ arbitrary asset, path, or command.
   `desktop_entry`.
 - `target.keys` — the exact settings the adapter reads and writes, such as the
   MIME types of a handler group or a dconf path. Never a command.
+- A `user-service` declaration's keys are well-known session bus names, and
+  its desired value is `boolean: true`: this component is what the session
+  bus starts for the name, through an activation file in the person's
+  `$XDG_DATA_HOME/dbus-1/services` (ADR 0041). The program is never named in
+  the manifest; the adapter has a closed table of the components and names it
+  may register (`better-files` for `org.freedesktop.FileManager1`), and any
+  other pair is unsupported. Restoring removes the file or writes back the
+  one that was there.
 - `platforms` and `sessions` — where the declaration applies. A session
   matches when any desktop `XDG_CURRENT_DESKTOP` lists is one `sessions`
   names, ignoring case, so `[gnome]` applies to Zorin's `zorin:GNOME` and

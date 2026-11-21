@@ -19,6 +19,7 @@ pub mod model;
 pub mod openuse;
 pub mod probe;
 pub mod roots;
+pub mod system_use;
 pub mod traits;
 pub mod udisks;
 pub mod writeback;
@@ -28,6 +29,7 @@ pub use model::{BlockInfo, DeviceAddress, DeviceClass, DriveInfo, PlatformDevice
 pub use openuse::ProcOpenUse;
 pub use probe::{DoctorReport, probe};
 pub use roots::Roots;
+pub use system_use::{SystemDrives, SystemSources, SystemUse};
 pub use traits::{
     DeviceControl, EjectOutcome, FilesystemKind, FlushBackend, FlushReport, FormatRequest,
     ImageProgress, OpenUseInspector, PlatformError, WritebackInspector,

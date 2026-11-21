@@ -22,6 +22,9 @@ ARG UBUNTU_RELEASE=24.04
 # libsecret-tools is better-manager's Depends, and util-linux carries the
 # setpriv and setsid its removal runs the before-removal program with (ticket
 # 90); util-linux is Essential and listed so the check does not lean on that.
+# The GStreamer packages are better-files' Depends (its preview), installed
+# so its removal check (ticket 129) needs no network; diffutils carries the
+# cmp its postrm compares with, as the person.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         apt \
@@ -38,6 +41,10 @@ RUN apt-get update \
         libxkbcommon-x11-0 \
         libsecret-tools \
         util-linux \
+        diffutils \
+        libgstreamer1.0-0 \
+        libgstreamer-plugins-base1.0-0 \
+        gstreamer1.0-plugins-base \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt/better-os

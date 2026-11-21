@@ -2,7 +2,8 @@
 # Acting for each person from a maintainer script: run a small step as each
 # account, safely. Shared by every fragment that changes something in a
 # person's home on removal (autostart-overrides.sh,
-# before-removal-accounts.sh), so they never disagree about who is a person.
+# before-removal-accounts.sh, files-activation.sh), so they never disagree
+# about who is a person.
 #
 # How a script uses it (build-deb.sh's account_block writes this for you):
 #

@@ -14,8 +14,8 @@ use std::path::PathBuf;
 use better_core::CurrentDesktop;
 use better_core::defaults::AdapterId;
 use defaults_platform::{
-    AdapterSet, ApplicationCatalog, DconfAdapter, LauncherEntryAdapter, LazyApplications,
-    MockDesktop, ToolEntryPointAdapter, XdgDefaultAppAdapter,
+    AdapterSet, ApplicationCatalog, BusActivationAdapter, DconfAdapter, LauncherEntryAdapter,
+    LazyApplications, MockDesktop, ToolEntryPointAdapter, XdgDefaultAppAdapter,
 };
 use thiserror::Error;
 
@@ -138,6 +138,8 @@ fn production_adapters() -> Result<AdapterSet, AdapterSessionError> {
         )))
         .with(Box::new(LauncherEntryAdapter::for_session()))
         .with(Box::new(ToolEntryPointAdapter::for_session()))
+        // Which program the session bus starts for a name (ADR 0041).
+        .with(Box::new(BusActivationAdapter::for_user()))
         .with_applications(Box::new(LazyApplications::new(
             ApplicationCatalog::for_session,
         ))))

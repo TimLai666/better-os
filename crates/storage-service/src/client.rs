@@ -186,23 +186,35 @@ impl StorageClient {
     }
 
     /// Formats a volume. `erase_confirmed` is the person's answer in the
-    /// window; the service refuses the request without it.
+    /// window; the service refuses the request without it. `identity` is
+    /// the device the person confirmed: the service refuses when another
+    /// device is at `object_path` now (ticket 171).
     pub async fn format(
         &self,
         object_path: &str,
         filesystem: storage_platform::FilesystemKind,
         label: &str,
         erase_confirmed: bool,
+        identity: Option<&str>,
     ) -> Result<(), ClientError> {
-        let json = crate::protocol::FormatDeviceRequest {
+        let request = |identity: Option<&str>| crate::protocol::FormatDeviceRequest {
             protocol_version: crate::protocol::PROTOCOL_VERSION,
             object_path: object_path.to_string(),
             filesystem,
             label: label.to_string(),
             erase_confirmed,
+            identity: identity.map(str::to_string),
+        };
+        let json = request(identity).to_json()?;
+        match self.proxy.format(&json).await.map_err(map_call_error) {
+            // A service older than the field: the window has compared the
+            // identity itself just before sending.
+            Err(error) if identity.is_some() && predates_identity(&error) => {
+                let json = request(None).to_json()?;
+                self.proxy.format(&json).await.map_err(map_call_error)
+            }
+            other => other,
         }
-        .to_json()?;
-        self.proxy.format(&json).await.map_err(map_call_error)
     }
 
     /// Writes a disk image to a whole drive (its own block device, as
@@ -213,15 +225,34 @@ impl StorageClient {
         object_path: &str,
         image: &std::path::Path,
         erase_confirmed: bool,
+        identity: Option<&str>,
         mut progress: impl FnMut(u64, u64),
     ) -> Result<u64, ClientError> {
-        let json = crate::protocol::WriteImageRequest {
+        let request = |identity: Option<&str>| crate::protocol::WriteImageRequest {
             protocol_version: crate::protocol::PROTOCOL_VERSION,
             object_path: object_path.to_string(),
             image_path: image.to_string_lossy().into_owned(),
             erase_confirmed,
+            identity: identity.map(str::to_string),
+        };
+        match self
+            .write_image_once(object_path, request(identity).to_json()?, &mut progress)
+            .await
+        {
+            Err(error) if identity.is_some() && predates_identity(&error) => {
+                self.write_image_once(object_path, request(None).to_json()?, &mut progress)
+                    .await
+            }
+            other => other,
         }
-        .to_json()?;
+    }
+
+    async fn write_image_once(
+        &self,
+        object_path: &str,
+        json: String,
+        progress: &mut impl FnMut(u64, u64),
+    ) -> Result<u64, ClientError> {
         // Subscribed before the call, so no early signal is missed.
         let mut signals = self
             .proxy
@@ -305,6 +336,12 @@ impl StorageClient {
 }
 
 pub use DeviceStateChangedStream as StateChanges;
+
+/// Whether a refusal is a service older than the requests' `identity` field
+/// (it reads requests strictly and names the field it does not know).
+fn predates_identity(error: &ClientError) -> bool {
+    matches!(error, ClientError::Rejected(detail) if detail.contains("unknown field `identity`"))
+}
 
 /// Separates "the name is gone" from "the call was refused".
 ///

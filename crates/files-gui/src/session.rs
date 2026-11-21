@@ -430,6 +430,9 @@ pub enum PendingDialog {
     /// warning that everything on it goes.
     Format {
         object_path: String,
+        /// The identity of the device the dialog was opened for: another
+        /// device later at the same object path closes it (ticket 171).
+        identity: String,
         device_label: String,
         filesystem: storage_platform::FilesystemKind,
     },
@@ -437,6 +440,7 @@ pub enum PendingDialog {
     /// every volume on it.
     WriteImage {
         object_path: String,
+        identity: String,
         device_label: String,
         image: LocalPath,
         volumes: Vec<String>,
@@ -551,6 +555,16 @@ pub struct FilesSession {
     /// into it. Set by a click on an unmounted row and cleared by the mount.
     pending_open: Option<String>,
     pub preview: PreviewPanel,
+    /// The large preview's program when a test names it; `None` is the
+    /// companion rule's.
+    preview_program: Option<String>,
+    /// The folder each server this window mounted was mounted at, by the
+    /// address it was asked for, so the sidebar can light that server's row
+    /// (ticket 175).
+    server_folders: Vec<(String, std::path::PathBuf)>,
+    /// The network or FUSE mount the last folder asked about is on, read
+    /// from the kernel's mount table once per folder.
+    foreign_mount: Option<(std::path::PathBuf, Option<std::path::PathBuf>)>,
     pub search: SearchState,
     /// How much each folder in view holds (ticket 126).
     pub folder_sizes: crate::folder_sizes::FolderSizes,
@@ -722,6 +736,9 @@ impl FilesSession {
             devices: DeviceInventory::default(),
             pending_open: None,
             preview,
+            preview_program: None,
+            server_folders: Vec::new(),
+            foreign_mount: None,
             search: SearchState::default(),
             folder_sizes: crate::folder_sizes::FolderSizes::default()
                 .watching_with(Arc::clone(&hub)),
@@ -1493,8 +1510,19 @@ impl FilesSession {
     /// Format… from a drive's menu: opens the dialog that names the drive,
     /// offers the filesystems and says that everything on it goes.
     pub fn request_format(&mut self, object_path: &str) {
+        if self.refuse_if_system(object_path) {
+            return;
+        }
+        let Some(identity) = self
+            .devices
+            .get(object_path)
+            .map(|row| row.identity.clone())
+        else {
+            return;
+        };
         self.dialog = Some(PendingDialog::Format {
             object_path: object_path.to_string(),
+            identity,
             device_label: self.device_label(object_path),
             filesystem: storage_platform::FilesystemKind::Exfat,
         });
@@ -1510,7 +1538,15 @@ impl FilesSession {
         else {
             return;
         };
+        let Some(identity) = self
+            .devices
+            .get(&target.object_path)
+            .map(|row| row.identity.clone())
+        else {
+            return;
+        };
         self.dialog = Some(PendingDialog::WriteImage {
+            identity,
             object_path: target.object_path,
             device_label: target.name,
             image,
@@ -1524,6 +1560,7 @@ impl FilesSession {
         let request = match self.dialog.take() {
             Some(PendingDialog::Format {
                 object_path,
+                identity,
                 filesystem,
                 ..
             }) => {
@@ -1537,14 +1574,19 @@ impl FilesSession {
                 }
                 crate::devices::EraseRequest::Format {
                     object_path,
+                    identity,
                     filesystem,
                     label: label.trim().to_string(),
                 }
             }
             Some(PendingDialog::WriteImage {
-                object_path, image, ..
+                object_path,
+                identity,
+                image,
+                ..
             }) => crate::devices::EraseRequest::WriteImage {
                 object_path,
+                identity,
                 image: image.as_path().to_path_buf(),
             },
             other => {
@@ -1552,7 +1594,100 @@ impl FilesSession {
                 return;
             }
         };
+        // The device at that path must still be the one the person
+        // confirmed: a stick pulled and another plugged in can take the
+        // same object path (ticket 171).
+        let (object_path, identity) = match &request {
+            crate::devices::EraseRequest::Format {
+                object_path,
+                identity,
+                ..
+            }
+            | crate::devices::EraseRequest::WriteImage {
+                object_path,
+                identity,
+                ..
+            } => (object_path.clone(), identity.clone()),
+        };
+        if self
+            .devices
+            .get(&object_path)
+            .is_none_or(|row| row.identity != identity)
+        {
+            self.notice = Some(Notice::Key(DEVICE_CHANGED.to_string()));
+            return;
+        }
+        // Asked again: the drive may have become the system's while the
+        // dialog was open.
+        if self.refuse_if_system(request.object_path()) {
+            return;
+        }
         self.link.request_erase(request);
+    }
+
+    /// Closes a Format or Write to Drive dialog whose device is gone, or is
+    /// now another device at the same object path, and says so.
+    fn close_erase_for_changed_device(&mut self) {
+        let (object_path, identity) = match &self.dialog {
+            Some(PendingDialog::Format {
+                object_path,
+                identity,
+                ..
+            })
+            | Some(PendingDialog::WriteImage {
+                object_path,
+                identity,
+                ..
+            }) => (object_path.clone(), identity.clone()),
+            _ => return,
+        };
+        if self
+            .devices
+            .get(&object_path)
+            .is_none_or(|row| row.identity != identity)
+        {
+            self.dialog = None;
+            self.notice = Some(Notice::Key(DEVICE_CHANGED.to_string()));
+        }
+    }
+
+    /// The sentence a Format or Write to Drive confirmation shows for a
+    /// device that cannot be told from another one like it (ticket 171).
+    pub fn erase_caution(&self) -> Option<String> {
+        let object_path = match &self.dialog {
+            Some(PendingDialog::Format { object_path, .. })
+            | Some(PendingDialog::WriteImage { object_path, .. }) => object_path,
+            _ => return None,
+        };
+        let row = self.devices.get(object_path)?;
+        crate::devices::erase_caution(row, crate::i18n::copy(self.locale))
+    }
+
+    /// What of the running system the drive of the storage service's
+    /// device holds (ticket 171): the drive listing's answer and the
+    /// service's together, the stronger winning. A device the window does
+    /// not know is unknown.
+    pub fn device_system_use(&self, object_path: &str) -> crate::drives::SystemUse {
+        let row = self.devices.get(object_path);
+        let drive = row.and_then(|row| {
+            self.drives
+                .iter()
+                .find(|drive| crate::drives::is_device(drive, row))
+        });
+        crate::drives::system_use_of(drive, row)
+    }
+
+    /// Says why, and is true, when the device's drive holds the running
+    /// system or cannot be told apart from one: nothing is ejected or
+    /// erased then, whatever asked for it.
+    fn refuse_if_system(&mut self, object_path: &str) -> bool {
+        match self.device_system_use(object_path).refusal_detail() {
+            Some(reason) => {
+                self.notice = Some(Notice::Key(reason));
+                true
+            }
+            None => false,
+        }
     }
 
     /// Picks the filesystem in an open Format dialog.
@@ -1597,6 +1732,9 @@ impl FilesSession {
     /// stop using a device should never have to argue with the file manager
     /// about it.
     pub fn eject_device(&mut self, object_path: &str) {
+        if self.refuse_if_system(object_path) {
+            return;
+        }
         if let Some(folder) = self
             .devices
             .get(object_path)
@@ -1679,7 +1817,10 @@ impl FilesSession {
                 });
                 self.link.request_refresh();
             }
-            DeviceNotice::Inventory(reports) => self.devices.apply_inventory(reports),
+            DeviceNotice::Inventory(reports) => {
+                self.devices.apply_inventory(reports);
+                self.close_erase_for_changed_device();
+            }
             DeviceNotice::Mounted {
                 object_path,
                 mount_point,
@@ -1735,7 +1876,10 @@ impl FilesSession {
             DeviceNotice::Disconnected {
                 object_path,
                 unsafe_removal,
-            } => self.handle_disconnect(&object_path, unsafe_removal),
+            } => {
+                self.handle_disconnect(&object_path, unsafe_removal);
+                self.close_erase_for_changed_device();
+            }
             // Nothing to draw yet: the row changes when an inventory reports
             // the new policy, not when a request for one was accepted.
             DeviceNotice::PolicyApplied { .. } => {}
@@ -1779,13 +1923,29 @@ impl FilesSession {
     /// Whether the window has to redraw.
     fn pump_drives(&mut self) -> bool {
         let mut changed = false;
-        if let Some(drives) = self
+        if let Some((drives, system)) = self
             .drive_scanner
             .as_ref()
             .and_then(|scanner| scanner.take())
         {
             changed |= drives != self.drives;
             self.drives = drives;
+            // The storage service's rows are judged by the same reading
+            // (ticket 171).
+            let before: Vec<_> = self
+                .devices
+                .rows()
+                .iter()
+                .map(|r| r.system_use.clone())
+                .collect();
+            self.devices.set_system(system);
+            changed |= before
+                != self
+                    .devices
+                    .rows()
+                    .iter()
+                    .map(|r| r.system_use.clone())
+                    .collect::<Vec<_>>();
         }
         if self.window_visible && self.last_drive_scan.elapsed() >= crate::drives::DRIVES_REFRESH {
             self.refresh_drives();
@@ -2064,15 +2224,20 @@ impl FilesSession {
         let Some(drive) = self.drives.iter().find(|drive| drive.key == key).cloned() else {
             return;
         };
+        let Some(object_path) = drive.object_path.clone() else {
+            return;
+        };
+        let system = crate::drives::system_use_of(Some(&drive), self.devices.get(&object_path));
+        if let Some(reason) = system.refusal_detail() {
+            self.notice = Some(Notice::Key(reason));
+            return;
+        }
         if !drive.ejectable
             || drive.kind == crate::drives::DriveKind::System
             || drive.mount_point.as_deref() == Some(std::path::Path::new("/"))
         {
             return;
         }
-        let Some(object_path) = drive.object_path.clone() else {
-            return;
-        };
         if self.devices.get(&object_path).is_some() {
             self.eject_device(&object_path);
             return;
@@ -3546,6 +3711,35 @@ impl FilesSession {
         self.mounter = mounter;
     }
 
+    /// The folder a server this window mounted was mounted at, by the
+    /// address it was asked for.
+    pub fn server_folder(&self, address: &str) -> Option<&std::path::Path> {
+        self.server_folders
+            .iter()
+            .find(|(known, _)| known == address)
+            .map(|(_, folder)| folder.as_path())
+    }
+
+    /// The mount point of the network or FUSE filesystem `path` is on, or
+    /// `None` for a local disk. Read from the kernel's mount table, once for
+    /// each folder asked about.
+    pub fn foreign_mount(&mut self, path: &std::path::Path) -> Option<std::path::PathBuf> {
+        if let Some((known, foreign)) = &self.foreign_mount
+            && known == path
+        {
+            return foreign.clone();
+        }
+        let table = files_platform::MountTable::from_env();
+        let foreign = match table.reach(path) {
+            files_platform::Reach::Local => None,
+            files_platform::Reach::Network | files_platform::Reach::Fuse => {
+                table.mount_for(path).map(|mount| mount.mount_point.clone())
+            }
+        };
+        self.foreign_mount = Some((path.to_path_buf(), foreign.clone()));
+        foreign
+    }
+
     /// Whether a server is being opened.
     pub fn is_mounting(&self) -> bool {
         self.mounting.is_some()
@@ -3585,9 +3779,11 @@ impl FilesSession {
         self.server_asks = None;
         self.server_prompt = None;
         match result {
-            Ok(path) => match Location::local(path) {
+            Ok(path) => match Location::local(path.clone()) {
                 Ok(location) => {
                     self.notice = None;
+                    self.server_folders.retain(|(known, _)| *known != address);
+                    self.server_folders.push((address, path));
                     self.navigate_to(location);
                 }
                 Err(_) => {
@@ -3643,11 +3839,18 @@ impl FilesSession {
             self.notice = Some(Notice::Command(CommandRefusal::NothingToActOn));
             return;
         };
-        let invocation = app_catalog_core::Invocation {
-            program: preview_program(),
-            arguments: vec![path],
+        let program = match self.preview_program.clone() {
+            Some(program) => Ok(program),
+            None => preview_program(),
         };
-        if self.spawner.spawn(&invocation).is_err() {
+        let started = program.ok().is_some_and(|program| {
+            let invocation = app_catalog_core::Invocation {
+                program,
+                arguments: vec![path],
+            };
+            self.spawner.spawn(&invocation).is_ok()
+        });
+        if !started {
             // No separate preview: the side pane shows what it can.
             if !self.preview.open {
                 self.toggle_preview();
@@ -3672,6 +3875,13 @@ impl FilesSession {
             }
             None => false,
         }
+    }
+
+    /// Starts `program` for the large preview instead of the one the
+    /// companion rule finds. For tests, whose executable has no preview
+    /// program beside it.
+    pub fn set_preview_program(&mut self, program: impl Into<String>) {
+        self.preview_program = Some(program.into());
     }
 
     /// Uses `root` as the home trash for what undo puts away, instead of the
@@ -3758,21 +3968,23 @@ fn mirror(preferences: &mut FilesPreferences, view: FolderView) {
     preferences.set_order(view.order());
 }
 
-/// The preview program: `better-files-preview` beside this executable, or on
-/// `$PATH` when this one is not where it can be found.
-pub fn preview_program() -> String {
-    std::env::current_exe()
-        .ok()
-        .map(|exe| exe.with_file_name("better-files-preview"))
-        .filter(|candidate| candidate.is_file())
-        .map(|candidate| candidate.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "better-files-preview".to_string())
+/// The preview program by the companion rule (`better_core::companion`,
+/// ticket 179): `better-files-preview` beside this executable, then where the
+/// package installs it for an installed Better Files, and never a name looked
+/// up through `$PATH`, which would give a build the installed preview.
+pub fn preview_program() -> Result<String, better_core::companion::Refusal> {
+    better_core::companion::locate(&better_core::companion::FILES_PREVIEW)
+        .map(|program| program.to_string_lossy().into_owned())
 }
 
 /// How often a visible folder whose changes are not announced (a network or
 /// FUSE mount, the Trash, Recents, or one no watch could be made for) is read
 /// again. Five seconds is soon enough that a file someone else added shows
 /// while the person still looks.
+/// The refusal said when the device a Format or Write to Drive dialog was
+/// opened for is gone or is another device now (ticket 171).
+pub const DEVICE_CHANGED: &str = "storage.erase.device_changed";
+
 pub const UNANNOUNCED_REFRESH: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// The same, for a tab in the background: slower, and the tab is read again

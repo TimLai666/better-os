@@ -23,8 +23,8 @@ use crate::layout::{ActionLayout, MIN_CONTENT_WIDTH, action_layout};
 use crate::pages::default_apps::model::{
     ApprovedPlan, DefaultsSummary, PrimaryAction, RestoreClass, ResultTone, ReviewModel,
     SecondaryAction, aggregate_label, component_rows, integration_state_label, kind_label,
-    last_verified_times, observed_label, outcome_headline, relative_time, result_rows,
-    session_effect_label, skip_reason_label, value_label, warning_label,
+    last_verified_times, observed_for, observed_label, outcome_headline, relative_time,
+    result_rows, session_effect_label, skip_reason_label, value_for, value_label, warning_label,
 };
 
 fn component(value: &str) -> ComponentId {
@@ -162,7 +162,12 @@ fn a_dconf_refusal_reads_as_its_sentence_not_as_manual_work() {
     };
     for locale in [Locale::EnUs, Locale::ZhTw] {
         let c = copy(locale);
-        let row = &result_rows(locale, &refused, &|component| component.to_string())[0];
+        let row = &result_rows(
+            locale,
+            &refused,
+            &|component| component.to_string(),
+            &|_, _| None,
+        )[0];
         assert_eq!(row.label, c.result_not_changed);
         assert_eq!(row.tone, ResultTone::Warning);
         let detail = row.detail.clone().unwrap_or_default();
@@ -732,7 +737,12 @@ fn every_result_outcome_has_its_own_words_in_both_locales() {
     };
 
     for locale in [Locale::EnUs, Locale::ZhTw] {
-        let rows = result_rows(locale, &outcome, &|component| component.to_string());
+        let rows = result_rows(
+            locale,
+            &outcome,
+            &|component| component.to_string(),
+            &|_, _| None,
+        );
         assert_eq!(rows.len(), outcomes.len());
         for (row, tone) in rows.iter().zip(expected_tones) {
             assert!(!row.label.trim().is_empty());
@@ -863,7 +873,9 @@ fn a_group_restored_type_by_type_reports_what_each_type_now_reads() {
             key("image/png", restored("org.gnome.eog.desktop")),
             key("image/jpeg", restored("org.gnome.gThumb.desktop")),
         ]);
-        let row = &result_rows(locale, &all, &|component| component.to_string())[0];
+        let row = &result_rows(locale, &all, &|component| component.to_string(), &|_, _| {
+            None
+        })[0];
         assert_eq!(row.label, c.result_restored);
         assert_eq!(row.tone, ResultTone::Success);
         let detail = row.detail.clone().unwrap_or_default();
@@ -886,7 +898,12 @@ fn a_group_restored_type_by_type_reports_what_each_type_now_reads() {
                 },
             ),
         ]);
-        let row = &result_rows(locale, &manual, &|component| component.to_string())[0];
+        let row = &result_rows(
+            locale,
+            &manual,
+            &|component| component.to_string(),
+            &|_, _| None,
+        )[0];
         assert_eq!(row.label, c.result_partial);
         assert_eq!(row.tone, ResultTone::Warning);
         let detail = row.detail.clone().unwrap_or_default();
@@ -905,7 +922,12 @@ fn a_group_restored_type_by_type_reports_what_each_type_now_reads() {
                 },
             ),
         ]);
-        let row = &result_rows(locale, &failed, &|component| component.to_string())[0];
+        let row = &result_rows(
+            locale,
+            &failed,
+            &|component| component.to_string(),
+            &|_, _| None,
+        )[0];
         assert_eq!(row.label, c.result_partial);
         assert_eq!(row.tone, ResultTone::Failure);
         assert_eq!(outcome_headline(locale, &failed), c.result_partial);
@@ -1000,6 +1022,85 @@ fn a_reading_the_system_could_not_give_is_words_rather_than_a_machine_key() {
             "<Super>e, <Super>f"
         );
     }
+}
+
+/// Ticket 129: a `user-service` row says who answers, by the declaring
+/// component's own name, in both languages, never "On" or an activation
+/// file's text; another component's reads right too.
+#[test]
+fn the_file_manager_row_names_who_answers_show_in_folder() {
+    let kind = IntegrationKind::UserService;
+    for locale in [Locale::EnUs, Locale::ZhTw] {
+        let c = copy(locale);
+        for owner in ["Better Files", "Better Something"] {
+            assert_eq!(
+                value_for(locale, kind, owner, &DefaultsValue::Boolean(true)),
+                owner
+            );
+        }
+        assert_eq!(
+            observed_for(locale, kind, "Better Files", &ObservedValue::Unset),
+            c.service_system
+        );
+        assert_eq!(
+            observed_for(
+                locale,
+                kind,
+                "Better Files",
+                &ObservedValue::Set {
+                    value: DefaultsValue::Text("owned-by:/usr/bin/nautilus".into())
+                }
+            ),
+            c.service_running.replace("{program}", "nautilus")
+        );
+        assert_eq!(
+            observed_for(
+                locale,
+                kind,
+                "Better Files",
+                &ObservedValue::Set {
+                    value: DefaultsValue::Text("[D-BUS Service]\nName=x\n".into())
+                }
+            ),
+            c.service_custom
+        );
+        // Other kinds keep their own words.
+        assert_eq!(
+            value_for(
+                locale,
+                IntegrationKind::Autostart,
+                "Better Files",
+                &DefaultsValue::Boolean(true)
+            ),
+            c.value_on
+        );
+    }
+    assert_eq!(
+        copy(Locale::ZhTw)
+            .service_running
+            .replace("{program}", "nautilus"),
+        "nautilus，直到它關閉"
+    );
+    // The result page after "Use Better OS defaults" says it the same way.
+    let outcome = DefaultsOutcome {
+        kind: PlanKind::Apply,
+        results: vec![EntryResult {
+            component: ComponentId::new("better-files").unwrap(),
+            integration: IntegrationId::new("file-manager-service").unwrap(),
+            outcome: EntryOutcome::AppliedNeedsSignOut {
+                value: DefaultsValue::Boolean(true),
+            },
+        }],
+        baseline_snapshot: None,
+        recorded_snapshot: None,
+    };
+    let rows = result_rows(
+        Locale::EnUs,
+        &outcome,
+        &|_| "Better Files".to_string(),
+        &|_, _| Some(kind),
+    );
+    assert_eq!(rows[0].detail.as_deref(), Some("Better Files"));
 }
 
 #[test]
@@ -1598,7 +1699,12 @@ fn a_missing_application_result_says_so_with_its_name_in_both_locales() {
         let single = run(EntryOutcome::Skipped {
             reason: missing_eog(),
         });
-        let row = &result_rows(locale, &single, &|component| component.to_string())[0];
+        let row = &result_rows(
+            locale,
+            &single,
+            &|component| component.to_string(),
+            &|_, _| None,
+        )[0];
         assert_eq!(row.label, c.previous_application_missing);
         assert_eq!(row.tone, ResultTone::Warning);
         assert_eq!(row.detail.as_deref(), Some("org.gnome.eog.desktop"));
@@ -1619,7 +1725,12 @@ fn a_missing_application_result_says_so_with_its_name_in_both_locales() {
                 },
             ],
         });
-        let row = &result_rows(locale, &group, &|component| component.to_string())[0];
+        let row = &result_rows(
+            locale,
+            &group,
+            &|component| component.to_string(),
+            &|_, _| None,
+        )[0];
         assert_eq!(row.label, c.result_partial);
         assert_eq!(row.tone, ResultTone::Warning);
         let detail = row.detail.clone().unwrap_or_default();
@@ -1692,7 +1803,12 @@ fn a_chosen_application_that_went_missing_is_not_called_the_previous_one() {
             baseline_snapshot: None,
             recorded_snapshot: None,
         };
-        let row = &result_rows(locale, &outcome, &|component| component.to_string())[0];
+        let row = &result_rows(
+            locale,
+            &outcome,
+            &|component| component.to_string(),
+            &|_, _| None,
+        )[0];
         assert_eq!(row.label, c.chosen_application_missing);
         assert_eq!(row.tone, ResultTone::Warning);
         assert_eq!(row.detail.as_deref(), Some("org.gnome.Loupe.desktop"));

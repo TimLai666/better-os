@@ -20,8 +20,13 @@ use std::time::{Duration, Instant};
 /// closed it.
 pub const REOPEN_DEBOUNCE: Duration = Duration::from_millis(500);
 
-/// The window's program.
-pub const WINDOW_PROGRAM: &str = "better-monitor";
+/// The window's program, found by the companion rule
+/// (`better_core::companion`, ticket 179): `monitor-gui` beside a tray run
+/// from a build directory, `/usr/bin/better-monitor` beside an installed
+/// one, and never a name looked up through `PATH`, where `better-monitor`
+/// in a build directory is the command line.
+pub const WINDOW_PROGRAM: better_core::companion::Companion =
+    better_core::companion::MONITOR_WINDOW;
 
 /// The arguments that open the popup at a point.
 pub fn popup_arguments(x: i32, y: i32) -> Vec<String> {
@@ -241,10 +246,11 @@ impl PopupLauncher {
         }
     }
 
-    /// The ways to start the window, in the order they are tried.
-    fn commands(&self) -> Vec<Command> {
+    /// The ways to start the window, in the order they are tried, or why
+    /// there is no window to start.
+    fn commands(&self) -> std::io::Result<Vec<Command>> {
         if !self.programs.is_empty() {
-            return self
+            return Ok(self
                 .programs
                 .iter()
                 .map(|(program, leading)| {
@@ -252,8 +258,10 @@ impl PopupLauncher {
                     command.args(leading);
                     command
                 })
-                .collect();
+                .collect());
         }
+        let window = better_core::companion::locate(&WINDOW_PROGRAM)
+            .map_err(|refusal| std::io::Error::new(std::io::ErrorKind::NotFound, refusal))?;
         let mut commands = Vec::new();
         let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(std::path::PathBuf::from);
         if has_user_manager(runtime.as_deref()) {
@@ -262,13 +270,13 @@ impl PopupLauncher {
             // item never touches it.
             let mut command = Command::new("systemd-run");
             command.args(scope_arguments());
-            command.arg(WINDOW_PROGRAM);
+            command.arg(&window);
             commands.push(command);
         }
         // Without systemd-run, or when it fails, the window still opens:
         // started directly, it only shares the item's unit.
-        commands.push(Command::new(WINDOW_PROGRAM));
-        commands
+        commands.push(Command::new(&window));
+        Ok(commands)
     }
 
     fn shared(&self) -> std::sync::MutexGuard<'_, Shared> {
@@ -298,7 +306,7 @@ impl PopupLauncher {
                 }
             }
             Click::Open => {
-                let popup = Started::start(self.commands(), &popup_arguments(x, y), FAILED_START)?;
+                let popup = Started::start(self.commands()?, &popup_arguments(x, y), FAILED_START)?;
                 shared.generation += 1;
                 shared.closed_at = None;
                 shared.popup = Some(popup);
@@ -337,7 +345,7 @@ impl PopupLauncher {
                 popup.kill();
             }
         }
-        let mut window = Started::start(self.commands(), &[], FAILED_START)?;
+        let mut window = Started::start(self.commands()?, &[], FAILED_START)?;
         // The window runs on its own; a thread falls back if its first start
         // fails and reaps it so no zombie is left.
         std::thread::spawn(move || {

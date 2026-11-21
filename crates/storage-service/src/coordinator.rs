@@ -28,7 +28,7 @@ use storage_platform::traits::{
     DeviceControl, EjectOutcome, FlushBackend, FormatRequest, ImageProgress, OpenUseInspector,
     PlatformError, WritebackInspector,
 };
-use storage_platform::{DeviceAddress, PlatformDevice, PlatformEvent};
+use storage_platform::{DeviceAddress, PlatformDevice, PlatformEvent, SystemDrives, SystemUse};
 use thiserror::Error;
 use tokio::sync::broadcast;
 
@@ -225,6 +225,75 @@ impl<C: DeviceControl> StorageCoordinator<C> {
         &self.control
     }
 
+    /// What the running system holds on the drive `handle` is on, read
+    /// again now from UDisks2 and the kernel's mount table. Anything that
+    /// cannot be read is Unknown, and Unknown refuses.
+    async fn system_use_now(&self, handle: &DeviceHandle) -> SystemUse {
+        let Ok(devices) = self.control.enumerate().await else {
+            return SystemUse::Unknown;
+        };
+        let sources = self.control.system_sources();
+        let system = SystemDrives::find(&devices, sources.as_ref());
+        match devices
+            .iter()
+            .find(|device| device.address.object_path == handle.as_str())
+        {
+            Some(device) => system.of_device(device, &devices),
+            None => SystemUse::Unknown,
+        }
+    }
+
+    /// Refuses ejecting, unmounting, or erasing a drive that holds the
+    /// running system, a system folder or swap, or that cannot be told
+    /// apart from one (ticket 171), with the typed reason
+    /// (`storage.system.running_system`, `storage.system.folder:/home`, …).
+    async fn refuse_if_system(&self, handle: &DeviceHandle) -> Result<(), ServiceError> {
+        match self.system_use_now(handle).await.refusal_detail() {
+            Some(reason) => Err(ServiceError::Refused(reason)),
+            None => Ok(()),
+        }
+    }
+
+    /// Refuses an erase when the device at `handle` is, read again now, no
+    /// longer the one the person confirmed (`expected` is its identity key,
+    /// as reports carry it): a stick pulled and another plugged in can take
+    /// the same object path before this service has heard of either
+    /// (ticket 171). Also refuses when another connected device has the
+    /// same identity, whatever was expected: two sticks alike in serial and
+    /// size, or two in turn at one port with no serial, cannot be told
+    /// apart, and an erase must not guess (`storage.erase.ambiguous`).
+    pub async fn refuse_if_replaced(
+        &self,
+        handle: &DeviceHandle,
+        expected: Option<&str>,
+    ) -> Result<(), ServiceError> {
+        let changed = || ServiceError::Refused("storage.erase.device_changed".to_string());
+        let devices = self.control.enumerate().await?;
+        let key_of = |device: &PlatformDevice| {
+            DeviceIdentity::from_evidence(device.identity_evidence())
+                .key()
+                .to_string()
+        };
+        let Some(device) = devices
+            .iter()
+            .find(|device| device.address.object_path == handle.as_str())
+        else {
+            return Err(changed());
+        };
+        let key = key_of(device);
+        if expected.is_some_and(|expected| expected != key) {
+            return Err(changed());
+        }
+        let alike = devices
+            .iter()
+            .filter(|other| other.classify().is_external() && key_of(other) == key)
+            .count();
+        if alike > 1 {
+            return Err(ServiceError::Refused("storage.erase.ambiguous".to_string()));
+        }
+        Ok(())
+    }
+
     /// Refuses anything on a device an image is being written to.
     fn refuse_if_erasing(&self, handle: &DeviceHandle) -> Result<(), ServiceError> {
         if self.is_erasing(handle) {
@@ -416,6 +485,7 @@ impl<C: DeviceControl> StorageCoordinator<C> {
     /// mode: unmount, then power the drive off where the platform allows it.
     pub async fn eject(&mut self, handle: &DeviceHandle) -> Result<EjectOutcome, ServiceError> {
         self.refuse_if_erasing(handle)?;
+        self.refuse_if_system(handle).await?;
         let device = self
             .known
             .get(handle)
@@ -472,6 +542,7 @@ impl<C: DeviceControl> StorageCoordinator<C> {
         if self.is_writing(handle) || self.is_erasing(handle) {
             return Err(ServiceError::Refused("storage.erase.busy".to_string()));
         }
+        self.refuse_if_system(handle).await?;
         self.control.format(&device.address, request).await?;
         if let Some(known) = self.known.get_mut(handle) {
             known.mount_point = None;
@@ -539,6 +610,7 @@ impl<C: DeviceControl> StorageCoordinator<C> {
         {
             return Err(ServiceError::Refused("storage.erase.busy".to_string()));
         }
+        self.refuse_if_system(handle).await?;
         for member in &members {
             let Some(volume) = self.known.get(member).cloned() else {
                 continue;

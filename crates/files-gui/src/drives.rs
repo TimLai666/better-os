@@ -25,9 +25,11 @@ use storage_platform::model::PlatformDevice;
 // The listing itself is shared with Better Manager's Drives section (ticket
 // 127): which block devices are drives, and their choices.
 pub use drive_mounts::listing::{
-    Capacity, Drive, DriveKind, DriveName, NEARLY_FULL, RemovableForm, drives_from_devices,
-    is_system_mount, mount_points_of, removable_form, running_system_name,
+    Capacity, Drive, DriveKind, DriveName, NEARLY_FULL, RemovableForm, SystemUse,
+    drives_from_devices, drives_with_system, is_system_mount, mount_points_of, removable_form,
+    running_system_name,
 };
+use storage_platform::system_use::{SystemDrives, SystemSources};
 
 /// How long a drive's free space is waited for before it is shown without a
 /// bar.
@@ -77,6 +79,26 @@ pub fn name_words(name: DriveName<'_>, c: &crate::i18n::Copy) -> String {
 pub fn is_device(drive: &Drive, device: &crate::devices::DeviceRow) -> bool {
     drive.object_path.as_deref() == Some(device.object_path.as_str())
         || (drive.mount_point.is_some() && drive.mount_point == device.mount_point)
+}
+
+/// What of the running system a sidebar row's drive holds (ticket 171): the
+/// one answer the menu, Eject and Format all ask. A row the drive listing
+/// and the storage service both know is held when either says so; one
+/// neither has worked out is unknown. Only `Free` is ever ejected,
+/// unmounted or formatted.
+pub fn system_use_of(
+    drive: Option<&Drive>,
+    device: Option<&crate::devices::DeviceRow>,
+) -> SystemUse {
+    match (drive, device) {
+        (Some(drive), Some(device)) => drive
+            .system_use
+            .clone()
+            .strongest(device.system_use.clone()),
+        (Some(drive), None) => drive.system_use.clone(),
+        (None, Some(device)) => device.system_use.clone(),
+        (None, None) => SystemUse::Unknown,
+    }
 }
 
 /// What the drive the running system is on is called: the root crumb of the
@@ -153,6 +175,14 @@ pub fn drives_from_mounts(mounts: &MountTable, devices_known: bool) -> Vec<Drive
             continue;
         }
         drives.push(Drive {
+            // Without UDisks2 nothing says which drive a mount is on: the
+            // system's own is the system's, a share holds nothing, and a
+            // medium under /media cannot be told.
+            system_use: match kind {
+                DriveKind::System => SystemUse::RunningSystem,
+                DriveKind::Network => SystemUse::Free,
+                _ => SystemUse::Unknown,
+            },
             key: point.to_string_lossy().into_owned(),
             label: point
                 .file_name()
@@ -200,6 +230,9 @@ pub fn drives_from_gvfs(children: &[PathBuf]) -> Vec<Drive> {
                 .collect::<Vec<_>>()
                 .join(" · ");
             Some(Drive {
+                // A phone or a server GVfs mounted holds nothing of the
+                // running system.
+                system_use: SystemUse::Free,
                 key: path.to_string_lossy().into_owned(),
                 label: (!label.is_empty()).then_some(label),
                 kind,
@@ -462,7 +495,28 @@ pub struct DriveSources {
     pub mount_failure: MountFailureRead,
     /// Asks `manager-daemon` to turn a drive's choice on or off.
     pub set_auto_mount: SetAutoMount,
+    /// What the running system has mounted and swapped (ticket 171): the
+    /// kernel's own record on a machine, nothing in tests. `None` when it
+    /// cannot be read, which makes every drive unknown.
+    pub system: SystemSourcesRead,
 }
+
+/// What a private bus's fake drives are read against in this crate's tests:
+/// nothing the system uses, every mount a person's.
+#[cfg(test)]
+fn private_bus_sources(testing: bool) -> Option<SystemSourcesRead> {
+    testing
+        .then(|| -> SystemSourcesRead { Arc::new(|| Some(SystemSources::every_mount_personal())) })
+}
+
+/// A shipped binary reads the machine whatever bus it is given.
+#[cfg(not(test))]
+fn private_bus_sources(_testing: bool) -> Option<SystemSourcesRead> {
+    None
+}
+
+/// Reads what the running system has mounted and swapped.
+pub type SystemSourcesRead = Arc<dyn Fn() -> Option<SystemSources> + Send + Sync>;
 
 pub use drive_mounts::listing::FIXTURE_VARIABLE;
 
@@ -572,7 +626,11 @@ fn volume_name(device: &PlatformDevice) -> String {
 /// opens a disc's tray or powers the drive off. A volume that will not
 /// unmount stops it there, named, and nothing is powered off; a power-off
 /// that is refused is reported, the volumes being unmounted all the same.
-async fn eject_through(link: &UdisksLink, drive: &Drive) -> Result<Ejected, EjectError> {
+async fn eject_through(
+    link: &UdisksLink,
+    drive: &Drive,
+    system: &SystemSourcesRead,
+) -> Result<Ejected, EjectError> {
     use storage_platform::traits::DeviceControl;
     let failed = |detail: String| EjectError::Failed(detail);
     let udisks = link.client().await.map_err(failed)?;
@@ -584,6 +642,9 @@ async fn eject_through(link: &UdisksLink, drive: &Drive) -> Result<Ejected, Ejec
         .object_path
         .clone()
         .ok_or_else(|| failed("the drive is not a UDisks2 device".to_string()))?;
+    // Asked again here, of what UDisks2 and the kernel say now, whatever
+    // the window decided (ticket 171).
+    refuse_if_system(&devices, &object, system).map_err(failed)?;
     let on_drive = |device: &PlatformDevice| match &drive.drive_object {
         Some(drive_object) => {
             let own = device.drive.as_ref().map(|info| info.object_path.as_str());
@@ -663,6 +724,28 @@ async fn eject_through(link: &UdisksLink, drive: &Drive) -> Result<Ejected, Ejec
             Err(error) => Ejected::NotPoweredOff(error.to_string()),
         },
     )
+}
+
+/// Refuses a drive that holds the running system, or that cannot be told
+/// apart from one, with the storage service's own key
+/// (`storage.system.running_system`, …).
+fn refuse_if_system(
+    devices: &[PlatformDevice],
+    object: &str,
+    system: &SystemSourcesRead,
+) -> Result<(), String> {
+    let sources = system();
+    let found = SystemDrives::find(devices, sources.as_ref());
+    let held = devices
+        .iter()
+        .find(|device| device.address.object_path == object)
+        .map_or(SystemUse::Unknown, |device| {
+            found.of_device(device, devices)
+        });
+    match held.refusal_detail() {
+        Some(reason) => Err(reason),
+        None => Ok(()),
+    }
 }
 
 /// What an `Unlock` that failed means. UDisks2 answers a wrong passphrase
@@ -853,21 +936,35 @@ impl DriveSources {
         let unlock = move |drive: &Drive, passphrase: &crate::secret::Secret| {
             smol::block_on(unlock_through(&at, drive, passphrase))
         };
+        // The system's own files, and the system bus for the daemon and
+        // systemd; a private bus in tests, where the files are empty.
+        let testing = private.is_some();
+        // The kernel's record of what the running system uses; in this
+        // crate's own tests, where the private bus's drives are all there
+        // is, nothing (a shipped binary has no such reading at all).
+        let system: SystemSourcesRead = private_bus_sources(testing).unwrap_or_else(|| {
+            Arc::new(|| SystemSources::read(&storage_platform::Roots::system()))
+        });
         let at = Arc::clone(&link);
-        let eject = move |drive: &Drive| smol::block_on(eject_through(&at, drive));
+        let reading = Arc::clone(&system);
+        let eject = move |drive: &Drive| smol::block_on(eject_through(&at, drive, &reading));
         let at = Arc::clone(&link);
+        let reading = Arc::clone(&system);
         let unmount = move |drive: &Drive| {
             smol::block_on(async {
-                at.client()
-                    .await?
-                    .unmount(&address_of(drive)?)
+                let udisks = at.client().await?;
+                let address = address_of(drive)?;
+                let devices = udisks
+                    .enumerate()
+                    .await
+                    .map_err(|error| error.to_string())?;
+                refuse_if_system(&devices, &address.object_path, &reading)?;
+                udisks
+                    .unmount(&address)
                     .await
                     .map_err(|error| error.to_string())
             })
         };
-        // The system's own files, and the system bus for the daemon and
-        // systemd; a private bus in tests, where the files are empty.
-        let testing = private.is_some();
         let system_bus = move || -> Option<zbus::blocking::Connection> {
             match &private {
                 Some(address) => zbus::blocking::connection::Builder::address(address.as_str())
@@ -916,11 +1013,19 @@ impl DriveSources {
             system_files: Arc::new(system_files),
             mount_failure: Arc::new(mount_failure),
             set_auto_mount: Arc::new(set_auto_mount),
+            system,
         }
     }
 
     /// Reads every drive and how full each is. Runs on the scanner's thread.
     pub fn scan(&self) -> Vec<Drive> {
+        self.scan_with_system().0
+    }
+
+    /// [`Self::scan`], with which UDisks2 drives hold the running system
+    /// (ticket 171): what the storage service's device rows are stamped
+    /// with, by drive object.
+    pub fn scan_with_system(&self) -> (Vec<Drive>, SystemDrives) {
         if let Some(fixture) = &self.fixture {
             let mut drives = fixture();
             let files = (self.system_files)();
@@ -932,7 +1037,7 @@ impl DriveSources {
                     auto.failure = Some(failure);
                 }
             }
-            return drives;
+            return (drives, SystemDrives::unknown());
         }
         let devices = (self.devices)();
         let mounts = (self.mounts)();
@@ -941,9 +1046,15 @@ impl DriveSources {
             .iter()
             .find(|mount| mount.mount_point == Path::new("/"))
             .map(|mount| mount.source.clone());
+        let sources = (self.system)();
+        let system = devices
+            .as_deref()
+            .map_or_else(SystemDrives::unknown, |devices| {
+                SystemDrives::find(devices, sources.as_ref())
+            });
         let mut drives = devices
             .as_deref()
-            .map(|devices| drives_from_devices(devices, root_source.as_deref()))
+            .map(|devices| drives_with_system(devices, root_source.as_deref(), &system))
             .unwrap_or_default();
         // No UDisks2 block is `/` (ZFS, an overlay live session, composefs):
         // the system drive comes from the mount table.
@@ -985,7 +1096,7 @@ impl DriveSources {
             }
         }
         sort_drives(&mut drives);
-        drives
+        (drives, system)
     }
 }
 
@@ -1005,6 +1116,7 @@ fn system_drive_from_mounts() -> Drive {
         uuid: None,
         size: 0,
         ejectable: false,
+        system_use: SystemUse::RunningSystem,
         capacity: None,
         auto_mount: None,
         form: None,
@@ -1041,10 +1153,13 @@ fn gvfs_children() -> Vec<PathBuf> {
     receiver.recv_timeout(CAPACITY_TIMEOUT).unwrap_or_default()
 }
 
+/// One scan: the drives, and which UDisks2 drives hold the running system.
+pub type Scanned = (Vec<Drive>, SystemDrives);
+
 /// Reads the drives on a thread of its own, when asked and whenever UDisks2
 /// says something changed; the window takes the newest list each frame.
 pub struct DriveScanner {
-    latest: Arc<Mutex<Option<Vec<Drive>>>>,
+    latest: Arc<Mutex<Option<Scanned>>>,
     generation: Arc<AtomicU64>,
     requests: Sender<()>,
     /// Set when the window lets go of the scanner, so its thread ends even
@@ -1058,7 +1173,7 @@ const SETTLE: Duration = Duration::from_millis(150);
 
 impl DriveScanner {
     pub fn start(sources: DriveSources) -> Self {
-        let latest: Arc<Mutex<Option<Vec<Drive>>>> = Arc::default();
+        let latest: Arc<Mutex<Option<Scanned>>> = Arc::default();
         let generation = Arc::new(AtomicU64::new(0));
         let closed = Arc::new(AtomicBool::new(false));
         let (requests, inbox): (Sender<()>, Receiver<()>) = channel();
@@ -1090,9 +1205,9 @@ impl DriveScanner {
                         std::thread::sleep(SETTLE);
                         // Requests made meanwhile are this one scan.
                         while inbox.try_recv().is_ok() {}
-                        let drives = sources.scan();
+                        let scanned = sources.scan_with_system();
                         if let Ok(mut latest) = latest.lock() {
-                            *latest = Some(drives);
+                            *latest = Some(scanned);
                         }
                         generation.fetch_add(1, Ordering::Release);
                     }
@@ -1118,8 +1233,9 @@ impl DriveScanner {
         self.generation.load(Ordering::Acquire)
     }
 
-    /// The newest list, once one has been read.
-    pub fn take(&self) -> Option<Vec<Drive>> {
+    /// The newest list, once one has been read, with which drives hold the
+    /// running system.
+    pub fn take(&self) -> Option<Scanned> {
         self.latest.lock().ok().and_then(|mut latest| latest.take())
     }
 }
@@ -1582,6 +1698,56 @@ mod tests {
         assert!(!find("/b/sdb2").ejectable);
         assert!(!find("/b/sdb3").ejectable, "on the system's drive");
         assert!(find("/b/sdc1").ejectable);
+    }
+
+    /// Ticket 171: `/home` and swap on USB disks, the running system on an
+    /// internal one, and a stick: only the stick may be ejected, and a scan
+    /// whose mount table could not be read knows nothing.
+    #[test]
+    fn a_drive_holding_a_system_folder_or_swap_is_not_ejectable() {
+        let mut root = partition("/b/nvme0n1p2", "/dev/nvme0n1p2", "ext4", None, Some("/"));
+        root.drive.as_mut().unwrap().object_path = "/d/nvme".into();
+        let mut home = usb_stick("/b/sdb1", "/dev/sdb1", "home");
+        home.block.id_type = Some("ext4".into());
+        home.mount_point = Some(PathBuf::from("/home"));
+        let mut data = usb_stick("/b/sdc1", "/dev/sdc1", "swap");
+        data.mount_point = Some(PathBuf::from("/media/a/Data"));
+        let mut swap = data.clone();
+        swap.address.object_path = "/b/sdc2".into();
+        swap.address.device_path = "/dev/sdc2".into();
+        swap.block.device_path = "/dev/sdc2".into();
+        swap.block.id_type = Some("swap".into());
+        swap.mount_point = None;
+        let mut stick = usb_stick("/b/sdd1", "/dev/sdd1", "stick");
+        stick.mount_point = Some(PathBuf::from("/media/a/STICK"));
+        let devices = vec![root, home, data, swap, stick];
+        let mut scan = sources(devices.clone(), "");
+        scan.system = Arc::new(|| {
+            Some(SystemSources::parse(
+                "/dev/nvme0n1p2 / ext4 rw 0 0\n/dev/sdb1 /home ext4 rw 0 0\n",
+                "Filename Type Size Used Priority\n/dev/sdc2 partition 1 0 -2\n",
+            ))
+        });
+        let drives = scan.scan();
+        let find = |key: &str| drives.iter().find(|drive| drive.key == key).unwrap();
+        assert_eq!(
+            find("/b/sdb1").system_use,
+            SystemUse::SystemFolder {
+                path: PathBuf::from("/home")
+            }
+        );
+        assert_eq!(find("/b/sdc1").system_use, SystemUse::Swap);
+        assert_eq!(find("/b/sdd1").system_use, SystemUse::Free);
+        assert!(!find("/b/sdb1").ejectable);
+        assert!(!find("/b/sdc1").ejectable, "shares a drive with swap");
+        assert!(find("/b/sdd1").ejectable);
+
+        let mut blind = sources(devices, "");
+        blind.system = Arc::new(|| None);
+        let drives = blind.scan();
+        let stick = drives.iter().find(|drive| drive.key == "/b/sdd1").unwrap();
+        assert_eq!(stick.system_use, SystemUse::Unknown);
+        assert!(!stick.ejectable);
     }
 
     #[test]

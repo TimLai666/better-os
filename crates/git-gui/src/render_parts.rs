@@ -545,7 +545,7 @@ impl GitApp {
                     c.show_in_files,
                     enabled,
                     cx,
-                    Box::new(move |this, _, _| this.show_in_files(Some(path.clone()))),
+                    Box::new(move |this, _, cx| this.show_in_files(Some(path.clone()), cx)),
                 ),
                 WorktreeAction::CopyPath => {
                     let text = path.display().to_string();

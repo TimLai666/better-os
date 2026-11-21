@@ -79,6 +79,8 @@ pub enum MenuLine {
         /// `Some` for a line drawn with a check mark when on.
         checked: Option<bool>,
     },
+    /// A line that does nothing and says why something is missing.
+    Note(&'static str),
     Separator,
 }
 
@@ -134,7 +136,7 @@ impl MenuLine {
     pub fn command(&self) -> Option<MenuCommand> {
         match self {
             MenuLine::Command { command, .. } => Some(*command),
-            MenuLine::Separator => None,
+            MenuLine::Note(_) | MenuLine::Separator => None,
         }
     }
 }
@@ -264,9 +266,49 @@ pub enum SidebarKind {
         auto_mount: AutoMountLine,
         /// It is on and did not mount: Retry.
         failed: bool,
+        /// Why Eject and Format are not offered (ticket 171): the drive
+        /// holds the running system, or that cannot be told.
+        withheld: Option<Withheld>,
     },
     /// Trash, Applications: nothing to do but open.
     View,
+}
+
+/// Why a drive's menu offers neither Eject nor Format (ticket 171), from
+/// [`crate::drives::system_use_of`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Withheld {
+    RunningSystem,
+    SystemFolder,
+    Swap,
+    SystemTable,
+    Unknown,
+}
+
+impl Withheld {
+    /// `None` for a drive that holds nothing of the running system.
+    pub fn of(system: &storage_platform::SystemUse) -> Option<Self> {
+        use storage_platform::SystemUse as U;
+        match system {
+            U::Free => None,
+            U::RunningSystem => Some(Withheld::RunningSystem),
+            U::SystemFolder { .. } => Some(Withheld::SystemFolder),
+            U::Swap => Some(Withheld::Swap),
+            U::SystemTable => Some(Withheld::SystemTable),
+            U::Unknown => Some(Withheld::Unknown),
+        }
+    }
+
+    /// The one line the menu says, which is also what a refusal says.
+    pub fn line(self, c: &'static Copy) -> &'static str {
+        match self {
+            Withheld::RunningSystem => c.errors.system_running,
+            Withheld::SystemFolder => c.errors.system_folder,
+            Withheld::Swap => c.errors.system_swap,
+            Withheld::SystemTable => c.errors.system_table,
+            Withheld::Unknown => c.errors.system_unknown,
+        }
+    }
 }
 
 /// The "Mount automatically" line a drive's menu has.
@@ -288,6 +330,43 @@ impl AutoMountLine {
                 changeable: auto.locked.is_none(),
             },
         }
+    }
+}
+
+/// What the menu of a drive row the storage service lists is, paired with
+/// the drive listing's own drive when it has one. Eject and Format only for
+/// a drive that holds nothing of the running system (ticket 171), never
+/// from a constant.
+pub fn device_row_kind(
+    device: &crate::devices::DeviceRow,
+    drive: Option<&drive_mounts::listing::Drive>,
+) -> SidebarKind {
+    let system = crate::drives::system_use_of(drive, Some(device));
+    let free = system.permits_removal();
+    SidebarKind::Device {
+        mounted: device.mount_point.is_some(),
+        ejectable: free,
+        formattable: free,
+        auto_mount: drive.map_or(AutoMountLine::None, AutoMountLine::of),
+        failed: drive.is_some_and(drive_mounts::choice::failed),
+        withheld: Withheld::of(&system),
+    }
+}
+
+/// What the menu of a drive row only the drive listing has is: a drive the
+/// storage service does not list (an internal partition, a share, a
+/// phone) is never formatted from here.
+pub fn drive_row_kind(drive: &drive_mounts::listing::Drive) -> SidebarKind {
+    let system = crate::drives::system_use_of(Some(drive), None);
+    SidebarKind::Device {
+        mounted: drive.mount_point.is_some(),
+        ejectable: drive.ejectable
+            && drive.kind != drive_mounts::listing::DriveKind::System
+            && system.permits_removal(),
+        formattable: false,
+        auto_mount: AutoMountLine::of(drive),
+        failed: drive_mounts::choice::failed(drive),
+        withheld: Withheld::of(&system),
     }
 }
 
@@ -331,7 +410,14 @@ pub fn sidebar_menu(kind: SidebarKind, c: &'static Copy) -> Vec<MenuLine> {
             formattable,
             auto_mount,
             failed,
+            withheld,
         } => {
+            // Nothing the running system uses is ejected or formatted,
+            // whatever the caller worked out (ticket 171).
+            let (ejectable, formattable) = match withheld {
+                Some(_) => (false, false),
+                None => (ejectable, formattable),
+            };
             lines.push(MenuLine::Separator);
             // A drive that is not mounted offers Mount, as folio's does, and
             // one that is on and did not mount offers Retry. Eject is always
@@ -356,6 +442,10 @@ pub fn sidebar_menu(kind: SidebarKind, c: &'static Copy) -> Vec<MenuLine> {
             if formattable {
                 lines.push(MenuLine::Separator);
                 lines.push(MenuLine::new(M::Format, c.format_drive, None));
+            }
+            if let Some(withheld) = withheld {
+                lines.push(MenuLine::Separator);
+                lines.push(MenuLine::Note(withheld.line(c)));
             }
         }
         SidebarKind::View => {

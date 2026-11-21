@@ -58,7 +58,9 @@ pub enum BlockerReport {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+// Reports a client reads are not `deny_unknown_fields`: a field a newer
+// service adds must not make an older Better Files throw the whole list away
+// (ticket 171). Requests the service reads stay strict.
 pub struct UnsafeRemovalReport {
     pub at_millis: u64,
     pub previous_state: String,
@@ -226,7 +228,9 @@ impl StateReport {
 
 /// One device, as published to clients.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+// Reports a client reads are not `deny_unknown_fields`: a field a newer
+// service adds must not make an older Better Files throw the whole list away
+// (ticket 171). Requests the service reads stay strict.
 pub struct DeviceReport {
     /// The handle a client passes back to act on this device.
     pub object_path: String,
@@ -260,7 +264,9 @@ pub struct DeviceReport {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+// Reports a client reads are not `deny_unknown_fields`: a field a newer
+// service adds must not make an older Better Files throw the whole list away
+// (ticket 171). Requests the service reads stay strict.
 pub struct DeviceListDocument {
     pub protocol_version: u32,
     pub devices: Vec<DeviceReport>,
@@ -384,7 +390,9 @@ impl OperationNotice {
 
 /// What an eject attempt did.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+// Reports a client reads are not `deny_unknown_fields`: a field a newer
+// service adds must not make an older Better Files throw the whole list away
+// (ticket 171). Requests the service reads stay strict.
 pub struct EjectReport {
     pub protocol_version: u32,
     pub object_path: String,
@@ -416,6 +424,12 @@ pub struct FormatDeviceRequest {
     pub filesystem: storage_platform::FilesystemKind,
     pub label: String,
     pub erase_confirmed: bool,
+    /// The identity the person saw when they confirmed (ticket 171): the
+    /// service refuses when the device at `object_path` is another one now.
+    /// Left out when not known, so a service older than the field (which
+    /// reads requests strictly) can be asked again without it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity: Option<String>,
 }
 
 impl FormatDeviceRequest {
@@ -438,6 +452,9 @@ pub struct WriteImageRequest {
     pub object_path: String,
     pub image_path: String,
     pub erase_confirmed: bool,
+    /// As [`FormatDeviceRequest::identity`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity: Option<String>,
 }
 
 impl WriteImageRequest {

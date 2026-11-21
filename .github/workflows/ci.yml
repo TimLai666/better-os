@@ -30,7 +30,7 @@ jobs:
         # needs one goes through `test_prerequisites`, so under CI a missing
         # one fails the test rather than skipping it (ticket 177):
         # - dbus (`dbus-daemon`): every private-bus test, in awake-service,
-        #   awake-tray, files-gui, hardware-platform, launcher-platform,
+        #   awake-tray, files-gui, git-gui, hardware-platform, launcher-platform,
         #   manager-daemon, manager-gui, monitor-service, monitor-tray,
         #   storage-service, touchpad-gesture-service, touchpad-platform, and
         #   window-attention-service.
@@ -240,6 +240,10 @@ jobs:
           bash packaging/tests/before-removal-accounts.test.sh
           shellcheck packaging/tests/account-scripts.test.sh
           bash packaging/tests/account-scripts.test.sh
+          sh -n packaging/maintainer/files-activation.sh
+          shellcheck --shell=sh packaging/maintainer/files-activation.sh
+          shellcheck packaging/tests/files-activation.test.sh
+          bash packaging/tests/files-activation.test.sh
           bash -n packaging/boot-watch/run.sh packaging/boot-watch/check.sh
           shellcheck packaging/boot-watch/run.sh packaging/boot-watch/check.sh
           bash -n packaging/hardware-unit/run.sh packaging/hardware-unit/check.sh

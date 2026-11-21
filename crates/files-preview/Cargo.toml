@@ -7,6 +7,8 @@ license.workspace = true
 
 [dependencies]
 app-catalog-core.workspace = true
+# The one `file://` spelling (better_core::uri).
+better-core.workspace = true
 thiserror.workspace = true
 # Only the four formats a file manager actually meets first. Every one of them
 # is already in the workspace lockfile, so this adds no package to the build;

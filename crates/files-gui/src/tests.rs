@@ -3709,3 +3709,44 @@ fn preferences_written_before_folder_sizes_existed_load_with_them_on() {
     assert!(loaded.folder_sizes);
     assert!(!loaded.folder_sizes_on_network);
 }
+
+/// A server that mounts at once at a fixed folder.
+struct OpenServer {
+    folder: std::path::PathBuf,
+}
+
+impl crate::network::Mounter for OpenServer {
+    fn mount(
+        &self,
+        _address: &str,
+        _asker: &crate::network::Asker,
+    ) -> Result<std::path::PathBuf, crate::network::MountError> {
+        Ok(self.folder.clone())
+    }
+}
+
+/// Ticket 175's review: the session remembers where a server it mounted
+/// went, which is how the sidebar lights that server's row and not the
+/// system drive above its GVfs folder.
+#[test]
+fn a_mounted_server_is_remembered_by_the_address_it_was_asked_for() {
+    let (fixture, mut session) = fixture();
+    settle(&mut session);
+    let mounted = fixture.home.join("Documents");
+    session.set_mounter(std::sync::Arc::new(OpenServer {
+        folder: mounted.clone(),
+    }));
+    assert_eq!(session.server_folder("sftp://nas.tailnet/"), None);
+    session.mount_server("sftp://nas.tailnet/".to_string());
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while session.is_mounting() {
+        assert!(Instant::now() < deadline, "the mount never finished");
+        session.pump();
+        std::thread::yield_now();
+    }
+    assert_eq!(
+        session.server_folder("sftp://nas.tailnet/"),
+        Some(mounted.as_path())
+    );
+    assert_eq!(session.server_folder("sftp://other/"), None);
+}

@@ -8,16 +8,16 @@
 //! in dpkg's own file list: exactly
 //! `/usr/lib/better-os/before-removal/<package>`, never a path a manifest
 //! supplied. It is run with no arguments and a timeout, and a test environment
-//! that sets [`SYSTEMCTL_GUARD_VARIABLE`] runs nothing.
+//! that sets [`better_core::test_guard::GUARD_VARIABLE`] runs nothing.
 
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
 use better_core::package_health::InstalledFiles;
+use better_core::test_guard::TestGuard;
 
-use crate::user_units::{SYSTEMCTL_GUARD_VARIABLE, run_with_timeout};
+use crate::user_units::run_with_timeout;
 
 pub const BEFORE_REMOVAL_DIRECTORY: &str = "/usr/lib/better-os/before-removal";
 
@@ -52,6 +52,20 @@ pub trait RemovalHookRunner: Send + Sync {
     fn run(&self, program: &Path, undo: bool) -> HookOutcome;
 }
 
+/// Where a package puts the program Better Manager runs when the component
+/// is turned off, and with [`UNDO_ARGUMENT`] when it is turned on again
+/// (ticket 129): what the component took over in the person's session is
+/// given back while it is off, and taken again when it is on, so "it stays
+/// off until enabled again" holds for what dpkg cannot see. The same program
+/// as its before-removal one, with the same exit statuses.
+pub const ON_DISABLE_DIRECTORY: &str = "/usr/lib/better-os/on-disable";
+
+/// The package's turn-off program, when its file list has one.
+pub fn on_disable_hook(package: &str, files: &InstalledFiles) -> Option<PathBuf> {
+    let wanted = Path::new(ON_DISABLE_DIRECTORY).join(package);
+    files.paths.iter().find(|path| **path == wanted).cloned()
+}
+
 /// The package's before-removal program, when its file list has one.
 pub fn before_removal_hook(package: &str, files: &InstalledFiles) -> Option<PathBuf> {
     let wanted = Path::new(BEFORE_REMOVAL_DIRECTORY).join(package);
@@ -84,7 +98,7 @@ pub fn refuse_program(program: &Path, owner: u32) -> Option<String> {
 #[derive(Clone, Debug)]
 pub struct ProcessHookRunner {
     timeout: Duration,
-    guard: Option<PathBuf>,
+    guard: Option<TestGuard>,
     owner: u32,
 }
 
@@ -92,9 +106,7 @@ impl ProcessHookRunner {
     pub fn from_environment() -> Self {
         Self {
             timeout: BEFORE_REMOVAL_TIMEOUT,
-            guard: std::env::var_os(SYSTEMCTL_GUARD_VARIABLE)
-                .filter(|value| !value.is_empty())
-                .map(PathBuf::from),
+            guard: TestGuard::from_environment(),
             owner: 0,
         }
     }
@@ -112,16 +124,9 @@ impl ProcessHookRunner {
 
 impl RemovalHookRunner for ProcessHookRunner {
     fn run(&self, program: &Path, undo: bool) -> HookOutcome {
-        if let Some(log) = &self.guard {
-            let _ = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(log)
-                .and_then(|mut file| writeln!(file, "{}", program.display()));
-            return HookOutcome::NotRestored(format!(
-                "{} is not run while {SYSTEMCTL_GUARD_VARIABLE} is set",
-                program.display()
-            ));
+        if let Some(guard) = &self.guard {
+            guard.record(&program.display().to_string());
+            return HookOutcome::NotRestored(guard.reason(&program.display().to_string()));
         }
         if let Some(reason) = refuse_program(program, self.owner) {
             return HookOutcome::NotRestored(format!("not run: {reason}"));
@@ -257,13 +262,44 @@ mod tests {
         assert_eq!(before_removal_hook("better-awake", &list), None);
     }
 
+    /// Ticket 129: the turn-off program is found the same way, only at the
+    /// package's own exact path, and a hostile file there is never run: the
+    /// runner refuses it before anything executes, as for before-removal.
+    #[test]
+    fn the_turn_off_program_is_found_and_refused_like_the_removal_one() {
+        let list = files(&[
+            "/usr/lib/better-os/on-disable",
+            "/usr/lib/better-os/on-disable/better-files",
+            "/usr/lib/better-os/before-removal/better-files",
+        ]);
+        assert_eq!(
+            on_disable_hook("better-files", &list),
+            Some(PathBuf::from("/usr/lib/better-os/on-disable/better-files"))
+        );
+        assert_eq!(on_disable_hook("better-git", &list), None);
+
+        let directory = tempfile::tempdir().unwrap();
+        let marker = directory.path().join("ran");
+        let program = script(directory.path(), &format!("touch '{}'", marker.display()));
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o775)).unwrap();
+        for undo in [false, true] {
+            match ProcessHookRunner::owned_by(me()).run(&program, undo) {
+                HookOutcome::NotRestored(reason) => {
+                    assert!(reason.contains("changed by others"), "{reason}")
+                }
+                other => panic!("a group-writable program ran: {other:?}"),
+            }
+        }
+        assert!(!marker.exists(), "nothing was executed");
+    }
+
     #[test]
     fn the_guard_runs_nothing() {
         let directory = tempfile::tempdir().unwrap();
         let log = directory.path().join("log");
         let runner = ProcessHookRunner {
             timeout: BEFORE_REMOVAL_TIMEOUT,
-            guard: Some(log.clone()),
+            guard: Some(TestGuard::recording_to(&log)),
             owner: 0,
         };
         assert!(matches!(

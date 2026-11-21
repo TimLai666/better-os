@@ -12,13 +12,14 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::io::Read;
+use std::path::Path;
 use std::process::{Command, Output, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use better_core::package_health::InstalledFiles;
+use better_core::test_guard::TestGuard;
 
 /// Where a package puts a user unit. systemd's own user search path is wider
 /// (and includes two per-user directories); what this looks at is the set of
@@ -26,12 +27,13 @@ use better_core::package_health::InstalledFiles;
 /// the component.
 pub const USER_UNIT_DIRECTORY: &str = "/usr/lib/systemd/user";
 
-/// Set in a test environment to a file path, it stops the real controller from
-/// ever running `systemctl`: each invocation is appended to that file instead
-/// and answered as if no user session existed. A test that drives the real
-/// binaries in their real mode sets it, so nothing it does can reach the user
-/// manager of the person running the tests.
-pub const SYSTEMCTL_GUARD_VARIABLE: &str = "BETTER_OS_TEST_SYSTEMCTL_GUARD";
+/// The test guard's flag (ticket 178): set to any non-empty value, the real
+/// controller never runs `systemctl` and answers as if no user session
+/// existed. It writes nothing; a test that wants the calls it held back names
+/// a file in [`better_core::test_guard::LOG_VARIABLE`]. A test that drives the
+/// real binaries in their real mode sets it, so nothing it does can reach the
+/// user manager of the person running the tests.
+pub const SYSTEMCTL_GUARD_VARIABLE: &str = better_core::test_guard::GUARD_VARIABLE;
 
 /// How long one `systemctl` call may take before it is abandoned. A user
 /// manager that is wedged must not hang a window or a command.
@@ -304,7 +306,7 @@ pub fn run_with_timeout(
 #[derive(Clone, Debug)]
 pub struct ProcessRunner {
     timeout: Duration,
-    guard: Option<PathBuf>,
+    guard: Option<TestGuard>,
 }
 
 impl ProcessRunner {
@@ -313,18 +315,17 @@ impl ProcessRunner {
     pub fn from_environment() -> Self {
         Self {
             timeout: SYSTEMCTL_TIMEOUT,
-            guard: std::env::var_os(SYSTEMCTL_GUARD_VARIABLE)
-                .filter(|value| !value.is_empty())
-                .map(PathBuf::from),
+            guard: TestGuard::from_environment(),
         }
     }
 
     /// A runner that never spawns anything and records each invocation in
-    /// `log`, which is what the guard variable selects.
-    pub fn guarded(log: impl Into<PathBuf>) -> Self {
+    /// `log` (an absolute path), which is what the guard and its log
+    /// variable select.
+    pub fn guarded(log: impl AsRef<Path>) -> Self {
         Self {
             timeout: SYSTEMCTL_TIMEOUT,
-            guard: Some(log.into()),
+            guard: Some(TestGuard::recording_to(log)),
         }
     }
 
@@ -336,19 +337,15 @@ impl ProcessRunner {
 
 impl SystemctlRunner for ProcessRunner {
     fn run(&self, invocation: &SystemctlInvocation) -> Result<String, SystemctlError> {
-        if let Some(log) = &self.guard {
+        if let Some(guard) = &self.guard {
             let line = std::iter::once(invocation.program.to_string())
                 .chain(invocation.arguments.iter().cloned())
                 .collect::<Vec<_>>()
                 .join(" ");
-            let _ = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(log)
-                .and_then(|mut file| writeln!(file, "{line}"));
+            guard.record(&line);
             return Err(SystemctlError {
                 kind: UnitFailureKind::NoSession,
-                message: format!("systemctl is not run while {SYSTEMCTL_GUARD_VARIABLE} is set"),
+                message: guard.reason("systemctl"),
             });
         }
 
