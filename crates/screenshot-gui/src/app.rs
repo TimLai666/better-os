@@ -24,6 +24,7 @@ use screenshot_core::files::{
 use screenshot_core::geometry::{Point, Rect, stage_of};
 use screenshot_core::interface::{Interface, Kind, Mode, Purpose};
 use screenshot_core::layout::{arrange, layout_area};
+use screenshot_core::lockdown::{Allowed, Asked, allowed};
 use screenshot_core::portal::{Outcome, color_of, may_start};
 use screenshot_core::recording::{Ending, elapsed_label};
 use screenshot_core::session::{Action, Holds, Remembered, Request, action_for};
@@ -41,6 +42,15 @@ pub const PACKAGE: &str = "better-os-session";
 /// D-Bus-activated portal backend waits longer, so the portal's next call
 /// finds it.
 pub const IDLE_EXIT: Duration = Duration::from_secs(5);
+/// GNOME's fade in and out of the interface (`ease({opacity, duration:
+/// 200, mode: EASE_OUT_QUAD})`, `js/ui/screenshot.js` `open` 1665–1668 and
+/// `close` 1710–1715).
+pub const FADE: Duration = Duration::from_millis(200);
+
+/// Clutter's `EASE_OUT_QUAD`.
+pub fn ease_out_quad(t: f32) -> f32 {
+    1.0 - (1.0 - t) * (1.0 - t)
+}
 pub const PORTAL_IDLE_EXIT: Duration = Duration::from_secs(60);
 
 /// One output of the frozen screen.
@@ -88,6 +98,8 @@ pub struct Open {
     /// For colour picking: where the pointer is, globally.
     pub pointer_at: Option<Point>,
     pub surfaces: Option<LayerSurfaces<OutputView>>,
+    /// The interface is fading out (spec O5); it takes no input.
+    pub closing: bool,
 }
 
 impl Open {
@@ -419,7 +431,7 @@ impl Shooter {
                 .as_ref()
                 .is_some_and(|surfaces| surfaces.windows().len() < open.outputs.len());
             if now != then || lost {
-                self.close_interface(cx);
+                self.close_instantly(cx);
             }
         }
 
@@ -665,6 +677,7 @@ impl Shooter {
             hover_window: None,
             pointer_at: None,
             surfaces: None,
+            closing: false,
         });
 
         let shooter = cx.entity();
@@ -725,6 +738,16 @@ impl Shooter {
     /// Closes the interface without capturing (spec O4); the portal hears
     /// "cancelled".
     pub fn close_interface(&mut self, cx: &mut Context<Self>) {
+        self.fade_out(cx);
+        if self.portal.is_some() {
+            self.answer_portal(Outcome::Cancelled);
+        }
+        cx.notify();
+    }
+
+    /// Closes without the fade, as GNOME's `close(true)` does when the
+    /// outputs change or a recording starts.
+    pub fn close_instantly(&mut self, cx: &mut Context<Self>) {
         if let Some(mut open) = self.open.take() {
             self.remember(&open);
             if let Some(surfaces) = open.surfaces.take() {
@@ -734,6 +757,34 @@ impl Shooter {
         if self.portal.is_some() {
             self.answer_portal(Outcome::Cancelled);
         }
+        cx.notify();
+    }
+
+    /// Fades the interface out over [`FADE`] and then closes its surfaces
+    /// (spec O5). It takes no input meanwhile.
+    fn fade_out(&mut self, cx: &mut Context<Self>) {
+        let Some(open) = &mut self.open else { return };
+        if open.closing {
+            return;
+        }
+        open.closing = true;
+        let area = open.area.geometry();
+        let kept = open.interface.kept();
+        self.remembered.area = Some(area);
+        self.remembered.kept = kept;
+        platform::save_remembered(self.state_path.as_deref(), &self.remembered);
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(FADE).await;
+            let _ = this.update(cx, |this, cx| {
+                if let Some(mut open) = this.open.take()
+                    && let Some(surfaces) = open.surfaces.take()
+                {
+                    surfaces.close_all(cx);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
         cx.notify();
     }
 
@@ -751,12 +802,10 @@ impl Shooter {
         }
         match open.interface.mode {
             Mode::Picture => {
+                // The picture is the frozen one, taken now; the interface
+                // fades out after it (`_onCaptureButtonClicked` 1879–1882).
                 let picture = open.picture();
-                let mut open = self.open.take().expect("checked above");
-                self.remember(&open);
-                if let Some(surfaces) = open.surfaces.take() {
-                    surfaces.close_all(cx);
-                }
+                self.fade_out(cx);
                 match picture {
                     Some(frame) => self.store(frame, cx),
                     None => self.answer_portal(Outcome::Refused("nothing chosen".into())),
@@ -789,6 +838,14 @@ impl Shooter {
     /// Shift+Print, Alt+Print, and the portal's non-interactive call: no
     /// interface (spec S8, A2).
     fn take_at_once(&mut self, window: bool, portal: Option<()>, cx: &mut Context<Self>) {
+        // The portal's instant picture saves, so it is refused outright
+        // while saving is disabled; the keys still copy (spec S6, A5).
+        if portal.is_some()
+            && allowed(Asked::PortalInstantPicture, platform::saving_disabled()) == Allowed::Refused
+        {
+            self.answer_portal(Outcome::Refused(self.words.saving_disabled.into()));
+            return;
+        }
         self.saving += 1;
         let task = cx.background_spawn(async move {
             WaylandCapture.snapshot(Want {
@@ -879,9 +936,15 @@ impl Shooter {
         platform::play_shutter();
         self.saving += 1;
         let locale = self.locale;
+        // Saving to disk disabled: the clipboard and the notification only
+        // (spec S6).
+        let save = allowed(Asked::Picture, platform::saving_disabled()) == Allowed::Everything;
         let task = cx.background_spawn(async move {
             let png = screenshot_capture::png::encode(&frame).map_err(|error| error.to_string())?;
             let hold = clipboard::hold_png(png.clone()).map_err(|error| error.to_string());
+            if !save {
+                return Ok::<_, String>((hold, None));
+            }
             let saved = platform::user_folder(files_platform::UserDirectory::Pictures)
                 .ok_or_else(|| "there is no home folder".to_string())
                 .and_then(|pictures| {
@@ -893,7 +956,7 @@ impl Shooter {
             if let Ok(path) = &saved {
                 platform::add_recent(path, "image/png");
             }
-            Ok::<_, String>((hold, saved))
+            Ok::<_, String>((hold, Some(saved)))
         });
         cx.spawn(async move |this, cx| {
             let result = task.await;
@@ -906,7 +969,13 @@ impl Shooter {
                             Err(error) => eprintln!("better-screenshot: clipboard: {error}"),
                         }
                         match saved {
-                            Ok(path) => {
+                            None => {
+                                this.answer_portal(Outcome::Refused(
+                                    this.words.saving_disabled.into(),
+                                ));
+                                this.notify(&NoticeKind::PictureCopiedOnly, None, None, cx);
+                            }
+                            Some(Ok(path)) => {
                                 this.answer_portal(Outcome::Picture(better_core::uri::file_uri(
                                     &path,
                                 )));
@@ -917,7 +986,7 @@ impl Shooter {
                                     cx,
                                 );
                             }
-                            Err(error) => {
+                            Some(Err(error)) => {
                                 this.answer_portal(Outcome::Refused(error.clone()));
                                 this.notify(&NoticeKind::PictureNotSaved(error), None, None, cx);
                             }
@@ -957,6 +1026,11 @@ impl Shooter {
         self.remember(&open);
         if let Some(surfaces) = open.surfaces.take() {
             surfaces.close_all(cx);
+        }
+        if allowed(Asked::Recording, platform::saving_disabled()) == Allowed::Refused {
+            let reason = self.words.saving_disabled.to_string();
+            self.notify(&NoticeKind::RecordingFailedToStart(reason), None, None, cx);
+            return;
         }
         let words = SaveWords::of(self.locale);
         let created = platform::user_folder(files_platform::UserDirectory::Videos)
@@ -1195,6 +1269,7 @@ mod tests {
             hover_window: None,
             pointer_at: None,
             surfaces: None,
+            closing: false,
         }
     }
 

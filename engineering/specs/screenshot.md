@@ -34,7 +34,7 @@ promise; ticket 253's notes say how each was checked.
 | O2 | The interface shows the screen as it was when it opened (a frozen picture of every output), and what is captured is that picture, so the interface itself, menus, and anything that changes after the key never get into the picture. | `open` 1612–1634 (`screenshot_stage_to_content`), `_saveScreenshot` 1893 |
 | O3 | Opening while a recording runs does not open the interface (Better Screenshot stops the recording instead, R6). | `open` 1569 |
 | O4 | Escape, the close button, or the interface losing its grab closes it without capturing. The close button sits at the panel's top corner on the side the desktop's window buttons put close. | `_closeButton` 1197–1218, `_refreshButtonLayout` 1486, `grab` 1652 |
-| O5 | The interface fades in and out over 200 ms. | `open` 1665, `close` 1710 |
+| O5 | The whole interface, the frozen screen included, fades in and out over 200 ms, easing out (Clutter's `EASE_OUT_QUAD`); it takes no input while it fades out. A capture fades it out after the picture is taken; starting a recording and an output change close it at once. | `open` 1665–1675, `close` 1701–1716, `_onCaptureButtonClicked` 1879–1886, `_startScreencast` 1976, `monitors-changed` 1394 |
 | O6 | An output added or removed while the interface is open closes it. | `monitors-changed` 1394 |
 | O7 | The panel (type buttons, picture/recording switch, capture button, pointer switch) is on the primary output's bottom centre, 4 em above the edge. Better Screenshot puts it on the output the pointer is on, because COSMIC has no primary output. | `_primaryMonitorBin` 1183, `_screenshot.scss` `.screenshot-ui-panel` |
 | O8 | Every button has a tooltip: "Area Selection", "Screen Selection", "Window Selection", "Take Screenshot", "Record Screen", "Capture", "Show Pointer". | 1263–1377 |
@@ -84,7 +84,7 @@ promise; ticket 253's notes say how each was checked.
 | S3 | It goes to the clipboard as `image/png` first, so a failed save still leaves it there. | `_storeScreenshot` 2215–2217 |
 | S4 | It is saved in `<Pictures>/<Screenshots>/<Screenshot from %Y-%m-%d %H-%M-%S>.png`, where Pictures is the person's `XDG_PICTURES_DIR` from `xdg-user-dirs` (the home folder when it has none) and the folder and file words are GNOME's translations (English "Screenshots", "Screenshot from %s"; zh-TW 「螢幕快照」, 「螢幕快照 %s」), so a person coming from GNOME finds them in the same folder; the folder is created when missing; an existing name gets `-1`, `-2`, … and is never overwritten. | `_storeScreenshot` 2272–2306, `po/zh_TW.po` |
 | S5 | The saved file is added to the recently used files (`$XDG_DATA_HOME/recently-used.xbel`). | `saveRecentFile` 2245–2265 |
-| S6 | When saving to disk is locked down (`org.gnome.desktop.lockdown disable-save-to-disk`), nothing is saved and the clipboard and notification still happen, without "Show in Files". | 2267–2272, 2343 |
+| S6 | When saving to disk is disabled (`org.gnome.desktop.lockdown disable-save-to-disk`, read at each request through the session's dconf profile, system databases and locks included), a picture from the interface, Shift+Print, or Alt+Print is still copied to the clipboard and still notified, but nothing is saved or added to the recently used files, and the notification has no "Show in Files" and opens nothing; a recording is refused at its start with "Screencast failed to start". | 2267–2272, 2343; service `ScreencastAsync` 626–631; `_screencastFailed` 2058–2063 |
 | S7 | A notification "Screenshot captured" / "You can paste the image from the clipboard." from "Screenshot", with the picture as its image; clicking it opens the file; its "Show in Files" action shows the file in the file manager. | 2326–2368 |
 | S8 | Shift+Print and Alt+Print go through the same S1–S7 without any interface. | 1422–1456 |
 
@@ -92,7 +92,7 @@ promise; ticket 253's notes say how each was checked.
 
 | # | Promise | Where GNOME does it |
 | --- | --- | --- |
-| R1 | A recording covers the chosen area or screen (never a window), records the live screen, with or without the pointer as P1 says, at 30 frames per second. | `_startScreencast` 1955–2025, service `DEFAULT_FRAMERATE` |
+| R1 | A recording covers the chosen area or screen (never a window), records the live screen, with or without the pointer as P1 says, at 30 frames per second, and has no sound: GNOME 46's recorder takes only the screen's video stream (`pipewiresrc` of Mutter's screen cast, then the encoder, the muxer, and `filesink`; no audio element in any of its pipelines). | `_startScreencast` 1955–2025, service `DEFAULT_FRAMERATE` 28, `PIPELINES` 33–79, `_createPipeline` 475–486 |
 | R2 | The interface closes at once (no fade) when recording starts, so the fade is not recorded. | 1975 |
 | R3 | While it runs, outside the recorded area is shaded on every output, and nothing of that shading is in the recording. | `_screencastAreaIndicator` 1141–1156 |
 | R4 | While it runs, an indicator shows the time as `m:ss`, counting each second from `0:00`, with a stop icon; pressing it stops the recording. GNOME draws it in the top bar; until Better OS's top bar exists, Better Screenshot draws it as its own small bar at the top of the output it records, and also offers a tray item that stops it. | `remoteAccess.js` `ScreenRecordingIndicator` 68–135 |
@@ -109,7 +109,7 @@ promise; ticket 253's notes say how each was checked.
 | A2 | A non-interactive call (the portal frontend has already asked the person through the Access dialog) takes every output at once, with a white flash over each that fades over 500 ms and the shutter sound, and answers its URI. | `ScreenshotAsync` 2650, `Flashspot` 3096–3123 |
 | A3 | `PickColor` shows the frozen screen with the pointer hidden and a colour-pick preview following it; a click answers the pixel's colour as `(ddd)` in 0–1; Escape answers cancelled. | `PickColorAsync` 2745, `PickPixel` 3004–3094 |
 | A4 | The portal's `Request.Close` on a pending call closes the interface and answers cancelled; a second call while one is pending is refused as busy. | `_createScreenshot` 2449 |
-| A5 | Saving locked down (S6) refuses a call that needs the disk. | `_createScreenshot` 2454 |
+| A5 | Saving disabled (S6) refuses the portal's non-interactive `Screenshot` before anything is copied (no flash) and gives the interactive one no file, so it hears that nothing was taken; `PickColor` saves nothing and still works. | `_createScreenshot` 2445–2457, `PickColorAsync` 2746, `InteractiveScreenshotAsync` 2681–2690 with `_saveScreenshot` 1951 |
 
 ### Where Better Screenshot differs, and what is not built yet
 
@@ -124,15 +124,25 @@ promise; ticket 253's notes say how each was checked.
   generated name without a suffix, so two recordings started in the same
   second would share it; Better Screenshot gives a recording the same
   `-1`, `-2` suffix as a picture.
-- **The fade out (O5) is not built.** The interface fades in over 200 ms and
-  closes at once; GNOME also fades it out.
-- **Saving locked down (S6, A5) is not built.** GNOME reads
-  `org.gnome.desktop.lockdown disable-save-to-disk`, an administrator's
-  setting with its locks in `/etc/dconf/db/`. Better OS's only dconf reader
-  (`defaults-platform`) reads the session's own user database through a
-  component's declared integration, not the system databases and their
-  locks, and the session's COSMIC has no lockdown of its own. Building it
-  needs a reader of the dconf profile's system databases.
+- **The pictures and recordings come from `ext-image-copy-capture`, not
+  from the ScreenCast portal** the ticket first named for recording: the
+  portal's COSMIC backend shows its own source picker on every call without
+  restore data (see "The compositor" below), which would be a second dialog
+  after Better Screenshot's own choice, and it copies through this same
+  protocol underneath. GNOME's own recorder likewise does not use the
+  portal; it asks Mutter's private screen cast API directly.
+- **Saving disabled reads the profile in force.** The lockdown key is read
+  through `defaults_platform::dconf_stack`, which follows `dconf_engine_read`
+  over every database the profile lists, system databases and their locks
+  included. The Better OS session's profile, `/usr/share/dconf/profile/betteros`
+  (better-os-session.md, the environment table), lists `user-db:betteros`
+  and `user-db:user` only, so an administrator's lockdown in a system
+  database (`/etc/dconf/db/local`, which GNOME sessions read only when
+  `/etc/dconf/profile/user` lists it) reaches the session only through an
+  `/etc/dconf/profile/betteros` of the administrator's own (dconf looks in
+  `/etc/dconf/profile/` before `XDG_DATA_DIRS`). Whether the session's
+  shipped profile should list the system databases is an open session
+  decision (ticket 253's notes).
 
 ### Not offered, and why
 
@@ -195,10 +205,19 @@ What running the capture against it showed (`screenshot-capture`'s
   roundtrip; the activated window is the focused one.
 - **The pointer.** A pointer cursor session on an output's source sends
   `enter` on the output under the pointer, which is how the panel's output
-  is chosen. In the nested compositor the pointer is the outer sway's and
-  `cosmic-comp` draws none, so a copy with `paint_cursors` is identical to
-  one without; whether the session's real pointer is painted into a copy is
-  for ticket 201's VM.
+  is chosen. `cosmic-comp`'s source at the pinned commit paints the pointer
+  into a copy when the session asked for `paint_cursors`: an output's copy
+  renders its workspace with `CursorMode::All` instead of `CursorMode::None`
+  (`src/wayland/handlers/image_copy_capture/render.rs` 356–359, passed to
+  `render_workspace` at 404 and 422, from `session.draw_cursor()` at 432),
+  and a window's copy draws the cursor only when the pointer is over that
+  window (same file 617–649), as GNOME's window picture does
+  (`UIWindowSelectorWindowContent` `has_pointer` 809). In the nested
+  compositor the copies with and without the pointer came out identical:
+  its pointer is drawn by the outer sway through the winit window, and why
+  `cosmic-comp` drew none into its copy there (no cursor image of its own
+  in the winit backend, or no cursor theme in the sandbox) is not
+  established; the real session is ticket 201's VM.
 - **Copy time.** Every output and every window, each twice, took 270–450 ms
   in the nested compositor, most of it waiting for the window state.
 - **Recording.** 30 frames a second of a 1280 × 800 output into
@@ -237,7 +256,12 @@ build; source at that commit, `src/screencast.rs`, `src/screenshot.rs`):
   key does, what is available), the window layout, composing a picture from
   frozen outputs at their scales with the pointer, the file names and
   folders by `xdg-user-dirs`, the recent-files entry, the recording's time
-  and states, the notification words, and the portal's answers.
+  and states, the notification words, the portal's answers, and what each
+  request may do while saving to disk is disabled (`lockdown`).
+- `defaults-platform`'s `dconf_stack`: the lockdown key through the dconf
+  profile's databases, system databases and locks included, by
+  `dconf_engine_read`'s rule; the one dconf reader the repository has,
+  extended rather than copied.
 - `screenshot-capture`: the `Capture` trait (outputs, windows, pictures, the
   pointer, the clipboard, recording frames) with a fake for tests, and the
   Wayland implementation on its own connection (GPUI's clipboard writes text

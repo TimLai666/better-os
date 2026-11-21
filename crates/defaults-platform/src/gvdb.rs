@@ -14,7 +14,7 @@
 //! that loops is refused rather than followed, and a value type this reader
 //! does not understand is reported as unsupported instead of being coerced.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use thiserror::Error;
 
@@ -68,11 +68,21 @@ pub enum GVariantValue {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct GvdbDatabase {
     values: BTreeMap<String, GVariantValue>,
+    /// The keys the database locks: a system database's `.locks` table,
+    /// which `dconf compile` fills from its keyfile directory's `locks/`
+    /// files (dconf 0.40 `engine/dconf-engine-source.c` reads it as
+    /// `gvdb_table_get_table (values, ".locks")`).
+    locks: BTreeSet<String>,
 }
 
 impl GvdbDatabase {
     pub fn get(&self, key: &str) -> Option<&GVariantValue> {
         self.values.get(key)
+    }
+
+    /// Whether the database locks `key`.
+    pub fn is_locked(&self, key: &str) -> bool {
+        self.locks.contains(key)
     }
 
     pub fn keys(&self) -> impl Iterator<Item = &str> {
@@ -92,15 +102,26 @@ impl GvdbDatabase {
         let items = hash_items(bytes, root_start, root_end)?;
 
         let mut values = BTreeMap::new();
+        let mut locks = BTreeSet::new();
         for (index, item) in items.iter().enumerate() {
-            if item.item_type != b'v' {
-                continue;
+            match item.item_type {
+                b'v' => {
+                    let key = full_key(bytes, &items, index)?;
+                    let data = slice(bytes, item.value_start, item.value_end)?;
+                    values.insert(key, decode_variant(data));
+                }
+                b'H' if full_key(bytes, &items, index)? == ".locks" => {
+                    let locked = hash_items(bytes, item.value_start, item.value_end)?;
+                    for (inner, entry) in locked.iter().enumerate() {
+                        if entry.item_type == b'v' {
+                            locks.insert(full_key(bytes, &locked, inner)?);
+                        }
+                    }
+                }
+                _ => {}
             }
-            let key = full_key(bytes, &items, index)?;
-            let data = slice(bytes, item.value_start, item.value_end)?;
-            values.insert(key, decode_variant(data));
         }
-        Ok(Self { values })
+        Ok(Self { values, locks })
     }
 }
 

@@ -82,7 +82,7 @@ configuration; until it exists nothing in a real session starts the program.
   interface as a promise (O, C, P, K, S, R, A rows) with where GNOME does
   it, what `cosmic-comp` and `xdg-desktop-portal-cosmic` serve, and how it is
   built.
-- `crates/screenshot-core` (no GPUI, no Wayland, 55 tests): GNOME's area
+- `crates/screenshot-core` (no GPUI, no Wayland, 57 tests): GNOME's area
   selector rule for rule (`UIAreaSelector`), the interface's state and keys,
   the window layout, composing a picture from frozen outputs at their scales
   and transforms, GNOME's file names and folders in both languages, the
@@ -137,8 +137,8 @@ files, and the state file.
 | Print opens the interface over every output, frozen screen (O1, O2) | yes | nested, every run (01) |
 | Opening during a recording stops it instead (O3, K3, R6) | yes | `--record` stopped a running recording in every run (08, 09); core test |
 | Escape and the close button close without a picture; close on the desktop's side (O4) | yes | Escape (11), portal answer 1; close side from GTK's `button-layout`, left side not seen |
-| Fade in 200 ms (O5) | yes | rendered with GPUI's animation; not captured mid-fade |
-| Fade out (O5) | **no** | see the spec |
+| Fade in 200 ms (O5) | yes | GPUI's animation, easing out as Clutter's `EASE_OUT_QUAD` |
+| Fade out 200 ms, the frozen screen included, no input meanwhile (O5) | yes | captured 60 ms after Escape half faded (`fade-and-lockdown/02-fading-out.png`: the shade at (100, 100) read 19, then 34, then 39 closed) |
 | An output change closes the interface (O6) | yes | not exercised: the nested compositor has one output |
 | Panel on the pointer's output, tooltips (O7, O8) | yes | nested (01); cursor session `enter` read |
 | Three types, one chosen, kept (C1) | yes | S, C, W keys and buttons (05, 06); state file |
@@ -155,7 +155,7 @@ files, and the state file.
 | Window: windows laid out, focused one chosen, check mark (C12) | yes | 06; at 150 % the six runs laid the fixture out at its buffer's size divided by the scale (a GPUI window drawing at 1), fixed to the compositor's logical width and seen again (`after-fixes/02-window-150.png`); arrows by core test |
 | Window unavailable without windows and in recording mode (C13) | yes | 07 (greyed); core tests |
 | Window picture is the window's own buffer (C14) | yes | `Alt+Print` saved 720 × 420 of the fixture |
-| Show Pointer (P1) | yes | the switch and copies work (04); the nested compositor draws no pointer, so both copies are equal: ticket 201's VM |
+| Show Pointer (P1) | yes | the switch and copies work (04); `cosmic-comp`'s source paints the pointer into a `paint_cursors` copy (`render.rs` 356–359, 404, 422; windows 617–649), but the nested compositor's copies came out equal: ticket 201's VM |
 | Picture/recording switch, red capture button (P2) | yes | 07 |
 | Recording button unavailable for the portal (P3) | yes | 12 |
 | Back to picture mode on close (P4) | yes | each reopening |
@@ -166,10 +166,10 @@ files, and the state file.
 | Clipboard first (S3) | yes | `wl-paste --type image/png` gave the saved file's bytes |
 | Saved under Pictures/Screenshots with GNOME's names, both languages, suffixes (S4) | yes | `Screenshot from …` and `螢幕快照/螢幕快照 …`; core tests |
 | Recently used files (S5) | yes | `recently-used.xbel` in each run |
-| Lockdown (S6, A5) | **no** | see the spec |
+| Saving disabled (S6, A5) | yes | the lock from a dconf-compiled database read through a sandbox profile (`fade-and-lockdown/`): Enter put a PNG on the clipboard (`wl-paste`) and saved nothing, the notification had no actions, the recording was refused with "Screencast failed to start", the portal's instant picture answered 2, PickColor still answered 0; `defaults-platform` `dconf_stack` tests (10) on fixture databases |
 | Notification with image, open, Show in Files (S7, R7) | yes | the stand-in service got title, body, image path, actions; its "Show in Files" press reached `FileManager1.ShowItems` with the file |
 | Shift+Print and Alt+Print without the interface (S8) | yes | `--screen` 1280 × 800, `--window` 720 × 420 |
-| Recording of an area or a screen, 30 fps, pointer (R1) | yes | WebM VP8 at the area's size × scale (`recording-discoverer.txt`) |
+| Recording of an area or a screen, 30 fps, pointer, no sound (R1) | yes | WebM VP8 at the area's size × scale, video only (`recording-discoverer.txt`), through `ext-image-copy-capture` (the spec says why not the ScreenCast portal); GNOME 46's recorder has no audio element in any pipeline either (`screencastService.js` 33–79, 480–486) |
 | Interface closes at once when recording starts (R2) | yes | 08 |
 | Shading outside the recorded area (R3) | yes | 08 |
 | Time indicator with stop (R4) | yes | the bar (08), stopped by pressing it once by hand; the tray item's `Title` read "Recording the screen, 0:03" and its `Activate` stopped the recording (`after-fixes/tray-item.txt`); no watcher runs in the session yet to show it |
@@ -186,9 +186,21 @@ files, and the state file.
   pointer in a picture (the nested compositor draws no pointer of its own),
   the tray item in a real top bar, several outputs, and the portal with
   COSMIC's own Access backend.
-- **Fade out and lockdown** (spec, "What is not built yet"): the lockdown
-  needs a reader of the dconf profile's system databases and their locks,
-  which Better OS does not have.
+- **An open session decision (the owner's or ticket 203's):** whether the
+  session's shipped dconf profile `/usr/share/dconf/profile/betteros`
+  (better-os-session.md, environment table: `user-db:betteros` then
+  `user-db:user`) also lists the administrator's system databases. As
+  decided, a lockdown an administrator puts in `/etc/dconf/db/local`
+  reaches the session only through an `/etc/dconf/profile/betteros` of
+  their own, which dconf reads before the shipped one; GNOME sessions read
+  it when `/etc/dconf/profile/user` lists it. Better Screenshot reads
+  whatever profile is in force, so either answer needs no change here.
+- **Untested:** the lockdown through a real `system-db` line (the sandbox
+  cannot write `/etc/dconf/db/`; the nested run used a `file-db` line,
+  which dconf opens and locks the same way, and the reader's tests cover
+  `system-db` paths), and a fade interrupted by a new Print Screen (GNOME
+  reopens from the fading state; Better Screenshot ignores the key until
+  the fade ends, 200 ms).
 - **What ticket 203 adds** to its package: `/usr/bin/better-screenshot`
   (`cargo build -p screenshot-gui`); the three files of
   `packaging/screenshot/` under `/usr/share/xdg-desktop-portal/portals/`,
@@ -207,3 +219,15 @@ files, and the state file.
   program then covers `better-screenshot`.
 - **better-os-session.md** still says "nobody yet" in the process table's
   Screenshot row; that file was outside this ticket's files.
+
+### Added on 2026-11-22 (coordinator's follow-up)
+
+- The fade out (O5) and saving disabled (S6, A5), above; the lockdown reader
+  is `crates/defaults-platform/src/dconf_stack.rs` with `gvdb.rs` reading a
+  database's `.locks` table, on fixture databases compiled by dconf 0.40's
+  own `dconf compile` (`tests/fixtures/dconf/system-local-locked`,
+  `system-site`, `user-lockdown-off`).
+- `better-os-session.md`'s Screenshot and media keys rows now name Better
+  Screenshot.
+- The copies of the StatusNotifierItem code and of the FileManager1 call:
+  tickets 300 and 301.

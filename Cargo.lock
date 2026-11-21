@@ -7114,6 +7114,7 @@ version = "0.2.16"
 dependencies = [
  "better-core",
  "better-ui",
+ "defaults-platform",
  "files-core",
  "files-platform",
  "gpui",

@@ -73,7 +73,8 @@
 //! - The later `user-db` lines are the databases beneath the session's own,
 //!   in order, for a reader that needs the value the session shows when its
 //!   own database holds nothing. `system-db` lines and their locks are not
-//!   read, as they were not before this module existed.
+//!   read here; [`crate::dconf_stack`] reads the whole profile, system
+//!   databases and locks included, for a key that needs them.
 //! - A process whose environment says COSMIC or Better OS and has no
 //!   `DCONF_PROFILE` was not started with the session's environment:
 //!   `start-cosmic` has exported it since `87a0644` (2024-12-04) and imported

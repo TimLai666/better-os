@@ -53,6 +53,23 @@ pub fn save_remembered(path: Option<&Path>, remembered: &Remembered) {
     }
 }
 
+/// Whether saving to disk is disabled (`org.gnome.desktop.lockdown
+/// disable-save-to-disk`), read through the session's dconf profile with its
+/// system databases and locks (`defaults_platform::dconf_stack`). Read at
+/// each request, as GNOME reads it. A profile dconf cannot resolve gives
+/// dconf's null configuration, where the schema's default, false, applies.
+pub fn saving_disabled() -> bool {
+    match defaults_platform::dconf_stack::session_stack() {
+        Ok(stack) => {
+            for note in &stack.notes {
+                eprintln!("better-screenshot: {note}");
+            }
+            stack.boolean(screenshot_core::lockdown::KEY, false)
+        }
+        Err(_) => false,
+    }
+}
+
 /// `$XDG_DATA_HOME/recently-used.xbel`.
 pub fn recent_list() -> Option<PathBuf> {
     files_platform::recent::recent_file_from_env()

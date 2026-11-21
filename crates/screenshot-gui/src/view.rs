@@ -23,7 +23,7 @@ use screenshot_core::geometry::{Point, Rect};
 use screenshot_core::interface::{Command, Direction, Key, Kind, Mode, navigate};
 use screenshot_core::recording::elapsed_label;
 
-use crate::app::{APP_ID, Open, Shooter, Use};
+use crate::app::{APP_ID, FADE, Open, Shooter, Use, ease_out_quad};
 use crate::assets::path;
 use crate::restart::{ScreenshotView, restart_blocked};
 
@@ -31,8 +31,6 @@ use crate::restart::{ScreenshotView, restart_blocked};
 /// (`_screenshot.scss`: `rgba(0,0,0,.5)` in the selector, `.3` outside it).
 const SHADE: u32 = 0x0000_0080;
 const RECORDING_SHADE: u32 = 0x0000_004d;
-/// GNOME's fade (`duration: 200`).
-const FADE: Duration = Duration::from_millis(200);
 /// GNOME's red for the recording capture button (`$red_4`).
 const RECORD_RED: u32 = 0xe0_1b_24_ff;
 
@@ -103,7 +101,9 @@ impl Shooter {
         ctrl: bool,
         cx: &mut Context<Self>,
     ) {
-        let Some(open) = &mut self.open else { return };
+        let Some(open) = self.open.as_mut().filter(|open| !open.closing) else {
+            return;
+        };
         if open.using == Use::PickColor {
             if button == MouseButton::Left {
                 self.pick(point, cx);
@@ -137,7 +137,9 @@ impl Shooter {
     }
 
     fn pointer_move(&mut self, point: Point, cx: &mut Context<Self>) {
-        let Some(open) = &mut self.open else { return };
+        let Some(open) = self.open.as_mut().filter(|open| !open.closing) else {
+            return;
+        };
         open.pointer_at = Some(point);
         match open.interface.kind {
             Kind::Selection => open.grip = open.area.motion(point, open.stage),
@@ -150,7 +152,9 @@ impl Shooter {
     }
 
     fn pointer_up(&mut self, point: Point, button: MouseButton, cx: &mut Context<Self>) {
-        let Some(open) = &mut self.open else { return };
+        let Some(open) = self.open.as_mut().filter(|open| !open.closing) else {
+            return;
+        };
         let button = match button {
             MouseButton::Left => AreaButton::Primary,
             MouseButton::Right => AreaButton::Secondary,
@@ -164,7 +168,9 @@ impl Shooter {
     }
 
     fn key(&mut self, key: Key, ctrl: bool, cx: &mut Context<Self>) {
-        let Some(open) = &mut self.open else { return };
+        let Some(open) = self.open.as_mut().filter(|open| !open.closing) else {
+            return;
+        };
         if open.using == Use::PickColor {
             if key == Key::Escape {
                 self.close_interface(cx);
@@ -769,6 +775,7 @@ impl Render for OutputView {
         };
         let origin = output.logical;
         let picture_mode = open.interface.mode == Mode::Picture;
+        let closing = open.closing;
         let background = if open.interface.show_pointer && open.using == Use::Capture {
             output.pointer.clone()
         } else {
@@ -815,12 +822,24 @@ impl Render for OutputView {
             cx,
         );
         let _ = window;
-        // GNOME fades the interface in over 200 ms (`open` 1665).
-        root.children(toasts)
-            .with_animation("fade-in", Animation::new(FADE), |root, delta| {
-                root.opacity(delta)
-            })
+        // GNOME fades the interface in and out over 200 ms (`open` 1665,
+        // `close` 1710), easing out.
+        let root = root.children(toasts);
+        if closing {
+            root.with_animation(
+                "fade-out",
+                Animation::new(FADE).with_easing(ease_out_quad),
+                |root, delta| root.opacity(1.0 - delta),
+            )
             .into_any_element()
+        } else {
+            root.with_animation(
+                "fade-in",
+                Animation::new(FADE).with_easing(ease_out_quad),
+                |root, delta| root.opacity(delta),
+            )
+            .into_any_element()
+        }
     }
 }
 

@@ -8,6 +8,7 @@ pub mod files;
 pub mod geometry;
 pub mod interface;
 pub mod layout;
+pub mod lockdown;
 pub mod portal;
 pub mod recording;
 pub mod session;

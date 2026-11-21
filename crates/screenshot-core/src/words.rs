@@ -69,6 +69,8 @@ pub struct InterfaceWords {
     pub recording_title: &'static str,
     /// Shown in window mode on an output with no window to take.
     pub no_windows_here: &'static str,
+    /// Why nothing is saved while the administrator disabled saving.
+    pub saving_disabled: &'static str,
 }
 
 impl InterfaceWords {
@@ -89,6 +91,7 @@ impl InterfaceWords {
                 stop_recording: "Stop Recording",
                 recording_title: "Recording the screen, {}",
                 no_windows_here: "No windows on this screen",
+                saving_disabled: "Saving to disk is turned off on this computer.",
             },
             Locale::TraditionalChinese => InterfaceWords {
                 selection: "選取範圍",
@@ -105,6 +108,7 @@ impl InterfaceWords {
                 stop_recording: "停止錄影",
                 recording_title: "正在錄製螢幕，{}",
                 no_windows_here: "這個螢幕上沒有視窗",
+                saving_disabled: "這台電腦已關閉存檔到磁碟的功能。",
             },
         }
     }
@@ -261,6 +265,7 @@ mod tests {
                 words.stop_recording,
                 words.recording_title,
                 words.no_windows_here,
+                words.saving_disabled,
             ] {
                 assert!(!word.trim().is_empty());
             }
