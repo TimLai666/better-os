@@ -148,6 +148,18 @@ Manager 的應用程式內更新就會透過特權服務，在同一個 apt 交�
 （ADR 0018）。下一個帶它的 release 會有 40 個
 `.deb`、40 個 `.deb.sha256`，共 82 個 assets。
 
+ticket 203 加了第十一個套件 `better-os-session`：Better OS 工作階段的啟動程式
+（`/usr/libexec/better-os/session/start`）、GDM 列出的工作階段檔、systemd user
+target 與 COSMIC daemon、Fcitx 5 的 unit、dconf profile、portal 設定，以及工作
+階段給 COSMIC 設定的預設值。它只給 Ubuntu 24.04 底的系統（ADR 0038：System76
+給 22.04 的合成器是 2025 年 1 月的 alpha），所以 `build-deb.sh` 與
+`verify-deb.sh` 在 `ubuntu-22.04` target 不建也不檢查它，CI 只在 24.04 的兩個
+job 要求它。它 `Depends` 那 14 個來自 System76 來源的套件，那個來源由
+`manager-daemon` 加上（ticket 204），所以沒有那個來源時 `apt install ./` 它會因
+相依套件找不到而失敗，這是預期的。帶它的第一個 release 會有 42 個 `.deb`
+（24.04 兩種架構各多一個）、42 個 `.deb.sha256`，共 86 個 assets。`install.sh`
+不裝它。
+
 第一個 release 發布於
 [`v0.1.0`](https://github.com/TimLai666/better-os/releases/tag/v0.1.0)，由
 merge commit `3a6d98b73b838c5a2c0d94404ae9313844009e56` 的 post-merge CI run

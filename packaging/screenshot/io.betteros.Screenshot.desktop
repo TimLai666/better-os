@@ -12,5 +12,4 @@ Exec=better-screenshot
 Icon=applets-screenshooter
 Terminal=false
 NoDisplay=true
-OnlyShowIn=BetterOS;
 Categories=Utility;

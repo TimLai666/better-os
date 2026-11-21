@@ -38,7 +38,9 @@ session, on Ubuntu 24.04 (systemd 255.4-1ubuntu8.19) and Zorin OS 18.1:
   `busctl monitor org.freedesktop.login1`).
 - **The fix in the session's configuration**, not in COSMIC's code: the
   session's `cosmic-idle` defaults (ticket 203's package data, through
-  `XDG_DATA_DIRS`) so that idle suspend honours inhibitors as GNOME does, or
+  `XDG_DATA_DIRS`; a directory there replaces COSMIC's
+  `com.system76.CosmicIdle/v1/` defaults whole, so it holds every key of it,
+  as the session's shortcut directory does) so that idle suspend honours inhibitors as GNOME does, or
   idle suspend handed to logind's own `IdleAction` path; and the idle times
   carried from GNOME's power settings (`org.gnome.settings-daemon.plugins.power`
   `sleep-inactive-ac-timeout` and `-battery-`), which ticket 208's table does

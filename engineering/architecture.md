@@ -129,13 +129,16 @@ revision ([ADR 0043](/engineering/decisions/0043-gpui-from-a-fork.md)).
 The owner chose a Better OS desktop session on COSMIC's compositor beside
 GNOME ([ADR 0038](/engineering/decisions/0038-cosmic-as-the-desktop.md)); what
 it promises is `engineering/specs/better-os-session.md`, and tickets 200 to 229
-build it. GNOME stays the default until the spec's bar is met. Nothing below
-exists yet; it is the structure the tickets build to.
+build it. GNOME stays the default until the spec's bar is met. The session
+package (`crates/session-launcher`, `packaging/session/`, ticket 203) exists;
+the rest below is the structure the other tickets build to.
 
 ```text
-GDM ──> better-os.desktop ──> session-launcher (start) ──> cosmic-comp ──> session-launcher --ready
-                                 environment, dconf profile    upstream,      imports env, starts
-                                 betteros, portal config       GPL-3.0-only   better-os-session.target
+GDM ──> better-os.desktop ──> session-launcher (start) ──child──> cosmic-comp (COSMIC_SESSION_SOCK)
+                                 environment, dconf profile       upstream, GPL-3.0-only; reports
+                                 betteros, portal config          WAYLAND_DISPLAY, DISPLAY when up
+                                 then imports env, starts better-os-session.target, runs the locker,
+                                 owns org.betteros.Session1 (Logout), ends it all at logout
                                                                  │
                      Wayland: layer-shell, toplevel info/manager, workspaces, image copy capture,
                      input method v2; later betteros-gesture-unstable-v1 (Better OS's patch)

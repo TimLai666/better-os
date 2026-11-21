@@ -160,18 +160,21 @@ its list of components is fixed in code (ADR 0038, `src/main.rs` lines
 
 ```text
 GDM ──> /usr/share/wayland-sessions/better-os.desktop
-         Exec=/usr/libexec/better-os/session/start          (Rust, better-os-session)
-           sets the environment below, then execs
-         cosmic-comp /usr/libexec/better-os/session/start --ready
-           (cosmic-comp runs that program once it is up: src/lib.rs 125–147)
-             --ready: imports WAYLAND_DISPLAY, DISPLAY, XDG_CURRENT_DESKTOP,
-             XDG_SESSION_DESKTOP, DCONF_PROFILE into the user manager and
-             D-Bus activation, starts better-os-session.target, waits;
-             on exit stops the target and unsets what it imported
+         Exec=/usr/libexec/better-os/session/start          (Rust, crate session-launcher)
+           sets the environment below, then starts as its child
+         cosmic-comp    with COSMIC_SESSION_SOCK naming one end of a socket pair
+           (once it is up cosmic-comp sends WAYLAND_DISPLAY and DISPLAY on it:
+            src/session.rs run_socket; cosmic-session starts it the same way)
+         the launcher then imports the session's variables into the user
+         manager and D-Bus activation, starts better-os-session.target, starts
+         the locker as its own child, and waits; at logout, a signal, or the
+         compositor's end it stops the target, ends its children and the
+         compositor, and puts the user manager's environment back
 
 better-os-session.target   BindsTo=graphical-session.target
                            Wants=graphical-session-pre.target
                            Wants=xdg-desktop-autostart.target
+                           Wants= each unit of the session (no enable step)
   ├── COSMIC (taken as released, from System76's pinned source)
   │     cosmic-settings-daemon, cosmic-osd (polkit agent, OSD), cosmic-idle,
   │     cosmic-bg, the cosmic-greeter locker, xdg-desktop-portal-cosmic
@@ -186,6 +189,23 @@ better-os-session.target   BindsTo=graphical-session.target
         graphical-session.target
 ```
 
+The compositor is the launcher's child and not its successor by `exec`
+(ticket 203): `cosmic-comp` given a program to run is in kiosk mode, and
+kiosk mode turns every key binding and system action off (`cosmic-comp`
+`src/config/mod.rs` at `6968c5d`, `Config::load`: "Kiosk mode disables
+shortcuts"). Ticket 201's stand-in ran it that way, so no key binding worked
+there. Being the parent also lets the launcher see the compositor end and end
+what it started.
+
+The launcher owns `org.betteros.Session1` (`Logout`, callable by Better
+Manager, `/usr/bin/better-manager`; the top bar's program is added when ticket
+160 ships it) and answers `com.system76.CosmicSession.Exit`, the call
+`cosmic-osd log-out` makes after its confirmation, from `/usr/bin/cosmic-osd`
+only (`session_launcher::callers`). After an update of its package it starts
+its new program in its own place with `exec`, keeping the compositor and the
+locker as its children (`session_launcher::resume`), so it never keeps
+running a `(deleted)` program.
+
 ### The environment the launcher sets
 
 | Variable | Value | Why |
@@ -193,21 +213,98 @@ better-os-session.target   BindsTo=graphical-session.target
 | `XDG_CURRENT_DESKTOP` | `BetterOS:COSMIC` | COSMIC's portal is `UseIn=COSMIC` and COSMIC's daemons look for it; `BetterOS` first so portal configuration and Better OS's own session matching pick the session's own rules (ADR 0038, "Portals") |
 | `XDG_SESSION_DESKTOP`, `DESKTOP_SESSION` | `better-os` | names the session; `better_core::desktop` reads `DESKTOP_SESSION` only as a fallback |
 | `XDG_SESSION_TYPE` | `wayland` | set by GDM; checked, not set |
-| `DCONF_PROFILE` | `betteros` | `/usr/share/dconf/profile/betteros` is `user-db:betteros` then `user-db:user`: every GSettings write in the session, `cosmic-settings-daemon`'s GTK theme and font syncing included, goes to `~/.config/dconf/betteros`, and GNOME's database is only read. This is COSMIC's own arrangement (`DCONF_PROFILE=cosmic`, ADR 0038) with Better OS's name |
-| `XDG_DATA_DIRS` | `/usr/share/better-os/session` prepended | the session's defaults for COSMIC's configuration are package data there: `cosmic-config` looks a key up in `~/.config/cosmic/` first, then `$XDG_DATA_HOME/cosmic/`, then `cosmic/` under each `XDG_DATA_DIRS` entry in order, key by key, so a default under the first entry wins over `/usr/share/cosmic/` and a key it does not hold still comes from `/usr/share/cosmic/` (ticket 201, both bases: `cosmic-bg` traced with `strace` read `is_dark` from a probe directory placed first and `CosmicBackground.Light/v1/all` from `/usr/share/cosmic/`; `ubuntu/out/osd.strace`, `bg2.strace`) |
+| `DCONF_PROFILE` | `betteros` | `/usr/share/dconf/profile/betteros` is `user-db:betteros` then `user-db:user`: every GSettings write in the session, `cosmic-settings-daemon`'s GTK theme and font syncing included, goes to `~/.config/dconf/betteros`, and GNOME's database is only read. This is COSMIC's own arrangement (`DCONF_PROFILE=cosmic`, ADR 0038) with Better OS's name. The session follows the machine's `user` profile: Zorin OS 18.1 (an installed system, its `/etc/dconf/profile/` holds only `ibus`) and Ubuntu 24.04 ship none, so dconf's default `user-db:user` applies and the shipped profile is exactly the session's; where an administrator's `user` profile adds `system-db` lines (defaults and locks), the launcher writes `user-db:betteros` over those lines to `$XDG_RUNTIME_DIR/better-os/session/dconf-profile` and `DCONF_PROFILE` names that path, so they apply in the session as in GNOME (`session_launcher::dconf`, ticket 203) |
+| `XDG_DATA_DIRS` | `/usr/share/better-os/session` prepended | the session's defaults for COSMIC's configuration are package data there. `cosmic-config` reads a key from `~/.config/cosmic/<id>/v<N>/` first; when the person has not set it, from the one default directory `cosmic/<id>/v<N>/` that `xdg`'s `find_data_file` finds first under `$XDG_DATA_HOME`, then each `XDG_DATA_DIRS` entry in order (libcosmic `cosmic-config` `Config::new`, `get_system_default`). The choice is per configuration and version, not per key: a configuration directory the session ships replaces COSMIC's `/usr/share/cosmic/` one for that configuration whole, so it must hold every key COSMIC's has, and every other configuration still comes from `/usr/share/cosmic/` (ticket 201, both bases: `cosmic-bg` traced with `strace` read `is_dark` from a probe directory placed first and `CosmicBackground.Light/v1/all` from `/usr/share/cosmic/`, two different configurations; `ubuntu/out/osd.strace`, `bg2.strace`; ticket 203 read the rule in the source) |
 | `QT_IM_MODULE`, `XMODIFIERS` | `fcitx`, `@im=fcitx` | Fcitx 5 for Qt and X11 clients (C4) |
-| `GTK_IM_MODULE` | **not set** | Wayland GTK 3 and 4 clients reach Fcitx 5 through text-input-v3 without it. Setting it to `fcitx` takes Chinese input away from every snap GTK application: the snap's `im-fcitx5.so` talks D-Bus to Fcitx 5 and AppArmor denies the call (`apparmor="DENIED" … interface="org.fcitx.Fcitx.InputMethod1" … label="snap.firefox.firefox"`), and Firefox then has no input context at all; with it unset, the same Firefox typed Zhuyin through text-input-v3 (ticket 201, Ubuntu, screenshots 19 to 22). Ticket 203 re-checks GTK applications on XWayland (Electron's default) without it, where GTK falls back to XIM through `XMODIFIERS` (**unverified**) |
+| `GTK_IM_MODULE` | **not set** | Wayland GTK 3 and 4 clients reach Fcitx 5 through text-input-v3 without it. Setting it to `fcitx` takes Chinese input away from every snap GTK application: the snap's `im-fcitx5.so` talks D-Bus to Fcitx 5 and AppArmor denies the call (`apparmor="DENIED" … interface="org.fcitx.Fcitx.InputMethod1" … label="snap.firefox.firefox"`), and Firefox then has no input context at all; with it unset, the same Firefox typed Zhuyin through text-input-v3 (ticket 201, Ubuntu, screenshots 19 to 22). GTK on XWayland (Electron's default) without it falls back to XIM through `XMODIFIERS`: ticket 203, Ubuntu, `GDK_BACKEND=x11 zenity --entry` with Fcitx 5 switched on by Ctrl+Space typed `su3cl3` to 你好, read back from its output (`/home/tim/Developer/better-os-evidence/203/`, screenshots 16 and 17) |
 
-Nothing the launcher imports outlives the session in the user manager: it is
-unset on exit, as sway's systemd integration does, so a GNOME login after a
+The launcher imports `WAYLAND_DISPLAY`, `DISPLAY`, `XDG_CURRENT_DESKTOP`,
+`XDG_SESSION_DESKTOP`, `DESKTOP_SESSION`, `DCONF_PROFILE`, `XDG_DATA_DIRS`,
+`QT_IM_MODULE`, and `XMODIFIERS` into the user manager and D-Bus activation,
+before it starts the target, and takes `GTK_IM_MODULE` out of the user
+manager for the length of the session (`session_launcher::environment`).
+`XDG_DATA_DIRS` has to reach the units, which read COSMIC's defaults through
+it.
+
+Nothing the launcher imports outlives the session in the user manager: each
+variable it changed is set back to the value it had before the session, or
+unset when it had none (the user manager already holds `XDG_DATA_DIRS` from
+Flatpak's and snapd's environment generators, so unsetting would lose it), as
+sway's systemd integration does, so a GNOME login after a
 Better OS one starts with GNOME's own environment (ticket 201's stand-in did
 this and the GNOME login after it showed no `DCONF_PROFILE` or
 `GTK_IM_MODULE` and GNOME's own `XDG_CURRENT_DESKTOP`, `QT_IM_MODULE`, and
-`XMODIFIERS` on both bases; ticket 203 checks the real launcher). The
-launcher also ends what it started: when the compositor ends, the session's
-scope stays in `stop-sigterm` until every child has gone, and ticket 201 saw
-`cosmic-settings-daemon` still there after 34 s of one logout (systemd killed
-it at 90 s); the launcher stops its children and does not rely on logind.
+`XMODIFIERS` on both bases). Ticket 203 checked the real launcher on Ubuntu:
+with the user manager kept alive across the logout, its environment after
+the session was byte-identical to before it, and the GNOME login after showed
+GNOME's own `XDG_CURRENT_DESKTOP` and `XDG_DATA_DIRS` and no `DCONF_PROFILE`
+or Fcitx variable. `WAYLAND_DISPLAY` and `DISPLAY` are always unset at the
+end, because `cosmic-comp` imports them itself before it tells the launcher.
+The launcher also ends what it started: when the compositor ends, the
+session's scope stays in `stop-sigterm` until every child has gone, and
+ticket 201 saw `cosmic-settings-daemon` still there after 34 s of one logout
+(systemd killed it at 90 s); the launcher stops the target, waits for
+`graphical-session.target` to stop, then ends its children and the
+compositor (SIGTERM, SIGKILL after 5 s), and does not rely on logind. Its
+children start with no signal blocked: `std`'s `Command` keeps the parent's
+mask, and before that fix the compositor, XWayland, and the locker ignored
+SIGTERM and every logout took 5 s; after it, 0.25 s (ticket 203).
+
+**However the launcher ends** (ticket 203's review). A launcher killed by
+SIGKILL, the OOM killer, or a panic runs none of the above, and without more
+the compositor (which ignores its session socket closing), the locker, the
+target with COSMIC's daemons, and `DCONF_PROFILE=betteros` would stay in the
+user manager for the next GNOME login to read and write. So:
+
+- The compositor and the locker have `PR_SET_PDEATHSIG` (SIGTERM), set from
+  the launcher's main thread, which is the thread the kernel ties it to and
+  the one that re-executes after an update, so adopted children keep it.
+- Before it starts the target, the launcher writes a record of what it
+  changed, with its own process id and start time, to
+  `$XDG_RUNTIME_DIR/better-os/session/restore.json` (`session_launcher::record`).
+  `better-os-session-guard.service`, which the target wants, runs as long as
+  that process does and then stops the target; the guard's `ExecStopPost=`
+  puts the user manager's and D-Bus activation's environment back when the
+  session is over (the launcher gone, or the target stopping) and leaves a
+  running session alone when the guard is only restarted. The target is not
+  `BindsTo=` the guard: an update of the package restarts its running units,
+  and in ticket 203's VM a bound target went down with the guard's restart
+  and took the session's units and environment with it. The launcher's own
+  end does the same with whatever the guard left (the first to take the
+  record does the work).
+- `better-os-session-leftovers.service`, enabled for every person at install
+  and `WantedBy=graphical-session-pre.target`, runs at the start of any
+  session of the person, GNOME's included, and puts back a record whose
+  launcher is gone; the launcher does the same before a new Better OS
+  session reads what is "before".
+- A value only the session sets (`DCONF_PROFILE=betteros`,
+  `BetterOS:COSMIC`, `better-os`, `XDG_DATA_DIRS` starting with the
+  session's directory, and beside those `QT_IM_MODULE=fcitx` and
+  `XMODIFIERS=@im=fcitx`) is never taken as the person's own "before".
+- When the user manager's environment cannot be read, the session still
+  sets its variables and at the end takes back only what is provably its
+  own: the session-only values, the displays, and its entry in
+  `XDG_DATA_DIRS`.
+- The target and every unit of the session but the leftovers unit carry
+  `ConditionPathExists=%t/better-os/session/restore.json`, so a start
+  outside a session (by hand, or by a manager that enables every unit of a
+  package) does nothing; a record left by a dead launcher makes the guard end
+  at once and takes the target down with it.
+
+**D-Bus activation.** `dbus-daemon` cannot unset a variable, and GNOME starts
+its DBusActivatable applications (Settings, Files, Text Editor) through
+activation with no `SystemdService=`, so a `DCONF_PROFILE` left there would
+send their settings to the session's database while the session bus lives
+on (a quick login, linger, ssh). At the end each variable is set back there
+to its value before the session, and where it had none, `DCONF_PROFILE` to a
+value that behaves as unset and `XDG_DATA_DIRS` to the specification's
+default. dconf treats a set `DCONF_PROFILE` naming a missing profile as the
+null configuration and an empty one as the directory `/etc/dconf/profile/`
+(`engine/dconf-engine-profile.c`), so neither `user` nor the empty string
+will do on a machine without a `user` profile: the value is the absolute
+path of the runtime or `user` profile dconf would pick, else the shipped
+`/usr/share/dconf/profile/betteros-default` (`user-db:user`, dconf's own
+fallback) (`session_launcher::dconf::default_profile`).
 
 ### Every process the session runs, and who provides it
 
@@ -215,12 +312,12 @@ it at 90 s); the launcher stops its children and does not rely on logind.
 | --- | --- | --- | --- |
 | Compositor, XWayland (rootless), window clipping to one radius, the four-finger workspace switch | `cosmic-comp` | COSMIC as released (C8), later Better OS's patched build (ticket 223) | Ticket 201, both bases: System76's `cosmic-comp 0.1~1795167359~24.04~6968c5d` ran from GDM on Ubuntu 24.04 (Mesa 25.2.8, Wayland 1.22.0, PipeWire 1.0.5, glib 2.80.0) and on Zorin OS 18.1 (the same Mesa from Ubuntu's archive, `gnome-shell 46.0-0ubuntu6~24.04.13+zorin2`, `gdm3 46.2-1ubuntu1~24.04.7+zorin1`); `ldd` finds every library of the ten ELF programs of the closure, and the journal has no symbol-lookup or missing-library line (`*/out/inv1/ldd.txt`, `journal-missing-symbols.txt`). XWayland starts eagerly with the compositor (`Xwayland :0 -rootless -terminate`, before any X11 client), and `DISPLAY=:0` reaches clients because `cosmic-comp` puts it in the environment of the program it runs, which imports it into the user manager and D-Bus activation (`xwayland.txt`) |
 | Login screen | GDM | Zorin's / Ubuntu's, unchanged (C3) | Ticket 201, both bases: GDM lists 「Better OS」 from `/usr/share/wayland-sessions/better-os.desktop`, starts it through `gdm-wayland-session`, preselects it at the next login from AccountsService's `Session=better-os`, and `display-manager.service` stays `gdm.service` through install and removal. Two limits: a greeter that was already running when the file appeared did not list it until GDM restarted (Ubuntu, screenshots 03 and 04), so whether the greeter a person sees after logging out of GNOME lists a session installed during that GNOME session is **unverified** (ticket 205); and after removal AccountsService still said `Session=better-os` until GDM fell back to the default session at the next login, so removal's step 2 is needed (Zorin) |
-| Session start and stop, environment, systemd target | `better-os-session` (`/usr/libexec/better-os/session/start`) | Better OS, new (ticket 203) | — |
+| Session start and stop, environment, systemd target | `better-os-session` (`/usr/libexec/better-os/session/start`, crate `session-launcher`) | Better OS, new (ticket 203) | Ticket 203, Ubuntu 24.04 VM, the built package installed by hand over ticket 201's closure: GDM listed and preselected it; the target, its five units, Tracker, and every Better OS component unit ran; the variables of the environment table held in the user manager, a terminal, and D-Bus-activated services; Super, Super+T, and Super+Shift+Escape worked; the units stopped at logout; an update of the package re-executed the launcher in the running session (`/home/tim/Developer/better-os-evidence/203/NOTES.md`). Zorin OS 18.1 was not run with the package |
 | Settings daemon (theme, fonts, GTK and Qt sync, brightness keys) | `cosmic-settings-daemon` | COSMIC | ran on both bases; its GSettings writes went to `~/.config/dconf/betteros` (font, icon theme, `button-layout`, window keybindings), and GNOME's `~/.config/dconf/user` kept its checksum through a Better OS login and logout (Ubuntu `home/`, Zorin `dconf-user-*-better-os-*.txt`) |
 | Portals: FileChooser, Screenshot, ScreenCast, RemoteDesktop, Settings, Access | `xdg-desktop-portal-cosmic` | COSMIC | Ticket 201, both bases: `xdg-desktop-portal` 1.18 ran with `XDG_CURRENT_DESKTOP=BetterOS:COSMIC`, read `betteros-portals.conf`, and started both backends. `xdg-desktop-portal-cosmic` segfaulted once when the compositor ended at logout (Ubuntu, `_usr_libexec_xdg-desktop-portal-cosmic.1000.crash`; apport then showed a crash dialog at the next login) |
 | Portals COSMIC lacks | `xdg-desktop-portal-gtk` | Ubuntu | serves its interfaces although its `.portal` file says `UseIn=gnome`, because `betteros-portals.conf` names it (both bases). No backend serves `Background`, `GlobalShortcuts`, `Wallpaper`, or `InputCapture` in the session (GNOME's backend has them; `portals.txt`): ticket 254 |
 | Secret portal and keyring | `gnome-keyring` (unlocked at login by GDM's PAM stack, again at unlock by `cosmic-greeter`'s), `oo7-portal` where installed | Ubuntu | Ticket 201, both bases: `gkr-pam: unlocked login keyring` from `gdm-password` at login and from `cosmic-greeter` at unlock, and the `login` collection's `Locked` is false. The Secret portal is offered only when `betteros-portals.conf` has `org.freedesktop.impl.portal.Secret=gnome-keyring;` as COSMIC's own file does (`gnome-keyring.portal` is `UseIn=gnome`): without the line `org.freedesktop.portal.Secret` did not exist, with it its version was 1 |
-| Polkit agent, volume and brightness pop-ups | `cosmic-osd` | COSMIC | `pkexec` showed `cosmic-osd`'s authentication dialog on both bases (screenshots `42-polkit-agent-cosmic-osd.png`, `60-polkit-agent.png`) |
+| Polkit agent, volume and brightness pop-ups | `cosmic-osd`, a unit of the session target (`better-os-session-osd.service`) | COSMIC | `pkexec` showed `cosmic-osd`'s authentication dialog on both bases (screenshots `42-polkit-agent-cosmic-osd.png`, `60-polkit-agent.png`); run as a user unit outside the session's scope it still did, and authenticated, because it registers for logind's `session/auto`, which names the person's display session (ticket 203, Ubuntu, screenshot `09-polkit-agent-from-the-osd-unit.png`) |
 | Screen lock | `cosmic-greeter` run inside the session's own scope, where in a user session it is the locker; it answers logind's `Lock` over `ext_session_lock_manager_v1` | COSMIC | Ticket 201, both bases: with no locker running, `loginctl lock-session` did nothing. `cosmic-greeter` started as a systemd user unit exits at once (`logind error: org.freedesktop.login1.NoSessionForPID`: it finds its session by its own PID, and a user unit is outside the session), so the launcher starts it as its own child (ticket 203). Started that way it locked on `loginctl lock-session` and unlocked with the password through PAM; it never set logind's `LockedHint` |
 | Blanking, idle, suspend on idle; `org.freedesktop.ScreenSaver` | `cosmic-idle` | COSMIC | owns `org.freedesktop.ScreenSaver` on both bases; honours only `org.freedesktop.ScreenSaver.Inhibit` (ADR 0038). In ticket 201's hour of use on Ubuntu (applications started by script, no keyboard or mouse input), the machine suspended 30 minutes after the last input; logind's journal does not name the caller, and `cosmic-idle`'s compiled-in default is the likely one (**unverified**). On Zorin, with a sleep inhibitor held through the hour, the session locked itself on idle (the locker above) and at 30 minutes a client of the person's asked logind to suspend ignoring the inhibitor, so polkit asked for an administrator's password behind the lock screen (`FAILED to authenticate … login1.suspend-ignore-inhibit`, every 30 minutes); on Ubuntu, a logout while such a request was pending once crashed `systemd-logind` (an assertion in `bus-polkit.c`) and left no login screen: ticket 256. GNOME's power settings are not carried over (ticket 256 adds them to ticket 208's table) |
 | Wallpaper, also on the lock screen | `cosmic-bg` | COSMIC | drew COSMIC's default wallpaper on both bases and under the locker |
@@ -242,9 +339,9 @@ it at 90 s); the launcher stops its children and does not rely on logind.
 | Screen sharing | `xdg-desktop-portal-cosmic` ScreenCast over `ext-image-copy-capture` and PipeWire | COSMIC, Ubuntu | Ticket 201, both bases on PipeWire 1.0.5: `CreateSession`, `SelectSources`, and `Start` answered 0 after COSMIC's picker, `OpenPipeWireRemote` gave a descriptor, and GStreamer's `pipewiresrc` took a 1920×1080 frame from the node (`screencast-check.py`, `41-screencast-frame-from-pipewire.png`, `51-screencast-frame.png`) |
 | XDG autostart | `systemd-xdg-autostart-generator`'s `xdg-desktop-autostart.target`, entries filtered by `OnlyShowIn`/`NotShowIn` against `XDG_CURRENT_DESKTOP` | systemd | Ticket 201: on Ubuntu `at-spi-dbus-bus`, `geoclue-demo-agent`, `nm-applet`, Evolution's alarm notifier, `update-notifier`, and (first login) Ubuntu's release-upgrade check ran; on Zorin also `touchegg` and Déjà Dup's monitor; every `org.gnome.SettingsDaemon.*`, `gnome-keyring-*`, Orca, Tracker, and `ibus-mozc` entry stayed out (`autostart.txt`). The ones that should not run in the session: ticket 255 |
 | Power: lid, suspend, battery | logind, UPower, power-profiles-daemon | Ubuntu, unchanged | — |
-| Media keys (volume, brightness, screenshot) | `cosmic-comp`'s shortcuts and `system_actions` | COSMIC | COSMIC's default `system_actions` (`/usr/share/cosmic/com.system76.CosmicSettings.Shortcuts/v1/system_actions`) names five programs the closure does not install: `cosmic-app-library` (AppLibrary), `cosmic-launcher` (Launcher, WindowSwitcher), `cosmic-screenshot` (Screenshot), `cosmic-term` (Terminal), `cosmic-workspaces` (WorkspaceOverview); every other entry names an installed program (`busctl`, `cosmic-osd`, `xdg-open`, `loginctl`, `wpctl`, `playerctl`, `systemctl`). The session's defaults replace each (ticket 203's test); the screenshot key names `better-screenshot` (ticket 253) |
-| Screenshot and screen recording (Print Screen, Shift+Print, Alt+Print, Ctrl+Shift+Alt+R; the Screenshot portal) | Better Screenshot, `better-screenshot` (`engineering/specs/screenshot.md`) | Better OS, new (ticket 253; shipped by ticket 203's package) | gap found by ticket 201: `cosmic-screenshot` is not in the closure, and the owner chose Better OS's own program over adding it (2026-11-21). Ticket 253 ran every feature of GNOME 46's interface in the nested `cosmic-comp`, pictures and recordings through `ext-image-copy-capture`, and the real `xdg-desktop-portal` 1.18.4 with `org.freedesktop.impl.portal.Screenshot=betteros-screenshot;` answering the portal's calls (`/home/tim/Developer/better-os-evidence/253/`); Print Screen in the real session waits for ticket 203's package, which binds the keys and adds the portal line beside `default=cosmic;gtk;` |
-| Terminal key | the person's default terminal | Ubuntu | gap found by ticket 201: `cosmic-term` is not installed; `~/.config/BetterOS-xdg-terminals.list` names `org.gnome.Terminal.desktop` after a session start (the files table below); the session's `Terminal` action names the person's terminal (ticket 203) |
+| Media keys (volume, brightness, screenshot) | `cosmic-comp`'s shortcuts and `system_actions` | COSMIC | COSMIC's default `system_actions` (`/usr/share/cosmic/com.system76.CosmicSettings.Shortcuts/v1/system_actions`) names five programs the closure does not install: `cosmic-app-library` (AppLibrary), `cosmic-launcher` (Launcher, WindowSwitcher), `cosmic-screenshot` (Screenshot), `cosmic-term` (Terminal), `cosmic-workspaces` (WorkspaceOverview); every other entry names an installed program (`busctl`, `cosmic-osd`, `xdg-open`, `loginctl`, `wpctl`, `playerctl`, `systemctl`). The session ships the whole `com.system76.CosmicSettings.Shortcuts/v1/` directory under `/usr/share/better-os/session/cosmic/` (a configuration's defaults come from one directory, the `XDG_DATA_DIRS` row): `defaults`, COSMIC's bindings with Super+Space on Better Launcher beside Super and Super+/, and `system_actions` with `Launcher: "better-launcher"`, `Terminal: "x-terminal-emulator"`, and COSMIC's other commands. An action with no Better OS program yet has neither a command nor a key, so its key reaches the focused window: AppLibrary (Super+A, S3 and ticket 210), WindowSwitcher (Alt+Tab, Super+Tab, ticket 211), WorkspaceOverview (Super+W, ticket 212). Print runs `better-screenshot` (`Screenshot`), and Shift+Print, Alt+Print, and Ctrl+Shift+Alt+R spawn it with `--screen`, `--window`, and `--record` (ticket 253). `crates/session-launcher/tests/shortcuts.rs` holds every command and spawned program to one the session package ships or depends on. `LogOut` stays `cosmic-osd log-out`, whose confirmation calls `com.system76.CosmicSession.Exit` on the launcher |
+| Screenshot and screen recording (Print Screen, Shift+Print, Alt+Print, Ctrl+Shift+Alt+R; the Screenshot portal) | Better Screenshot, `better-screenshot` (`engineering/specs/screenshot.md`) | Better OS, new (ticket 253; shipped by ticket 203's package) | gap found by ticket 201: `cosmic-screenshot` is not in the closure, and the owner chose Better OS's own program over adding it (2026-11-21). Ticket 253 ran every feature of GNOME 46's interface in the nested `cosmic-comp`, pictures and recordings through `ext-image-copy-capture`, and the real `xdg-desktop-portal` 1.18.4 with `org.freedesktop.impl.portal.Screenshot=betteros-screenshot;` answering the portal's calls (`/home/tim/Developer/better-os-evidence/253/`); ticket 203's package ships it, binds the keys, and adds the portal line beside `default=cosmic;gtk;`; in the session (ticket 203's Ubuntu VM) Print opened the interface, screen and window pictures carried the pointer, Shift+Print and Alt+Print saved at once, an application's interactive portal call got response 0 with the file's URI, and Ctrl+Shift+Alt+R recorded a WebM (ticket 253's notes); several outputs and the Access backend's non-interactive call are not run |
+| Terminal key | the person's default terminal | Ubuntu | gap found by ticket 201: `cosmic-term` is not installed; `~/.config/BetterOS-xdg-terminals.list` names `org.gnome.Terminal.desktop` after a session start (the files table below); the session's `Terminal` action (Super+T) runs `x-terminal-emulator`, Debian's alternative for the machine's terminal, which both bases point at `gnome-terminal` (ticket 203) |
 
 The last two rows, and the portal, autostart, second-secret-agent, and
 idle-suspend gaps in the rows above, are the duties ticket 201's inventory
@@ -276,6 +373,21 @@ sessions:
 The session's own surfaces are units of their own packages, enabled by
 `manager-core` like any component unit (AGENTS.md), `PartOf=better-os-session.target`
 and `WantedBy=better-os-session.target`, so they never start under GNOME.
+
+Besides these, the guard (bound to by the target) and the leftovers unit
+(the one unit that runs in any session) are described under "However the
+launcher ends" above.
+
+The session package's own units (`better-os-session-settings-daemon`,
+`-osd`, `-idle`, `-background`, and `-input-method` for Fcitx 5) are
+different: they have no `[Install]` section and the target names each with
+`Wants=`, so installing the package is all it takes and nobody enables them.
+Each is `PartOf=` and `After=better-os-session.target`, so stopping the target
+waits for them. A drop-in makes `tracker-miner-fs-3.service` `PartOf=` the
+target too; it changes nothing under GNOME, where the target never runs.
+`verify-deb.sh` and `crates/session-launcher/tests/units.rs` check that none
+of them is `WantedBy=graphical-session.target`.
+
 GNOME's own units (`org.gnome.Shell@wayland.service`, `gnome-session-*.target`,
 `org.gnome.SettingsDaemon.*`) are wanted by GNOME's targets, not by
 `graphical-session.target`, so they do not start in the session. The other

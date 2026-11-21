@@ -25,6 +25,10 @@
 #   dl-ubuntu/noble-server-cloudimg-amd64.img   (checksum and signature
 #                                                verified by the caller)
 #   dl-zorin/Zorin-OS-18.1-Core-64-bit.iso       (checksum verified)
+# GUEST_OUTPUTS (default 1) is how many displays the virtual GPU has.
+# GUEST_MEMORY (default 6G) is the guest's memory and SCOPE_MEMORY (default
+#   7G) the scope's cap; on a machine running builds beside the VM, 5G and
+#   6G (ticket 203).
 # Every image is a sparse qcow2 capped at 24 GiB, written with discard=unmap.
 # The script refuses to create or boot when / has less than 12 GiB free.
 #
@@ -94,10 +98,10 @@ launch() {
     # $@: extra qemu arguments. Runs detached in a capped user scope.
     running_pid >/dev/null && die "a VM is already running (PID $(running_pid))"
     rm -f "$VMDIR/qmp.sock" "$VMDIR/serial.log"
-    systemd-run --user --scope --quiet -p MemoryMax=7G -p MemorySwapMax=0 \
+    systemd-run --user --scope --quiet -p MemoryMax="${SCOPE_MEMORY:-7G}" -p MemorySwapMax=0 \
         --unit="better-os-vm201-$$" \
-        qemu-system-x86_64 -enable-kvm -cpu host -smp 4 -m 6G -machine q35 \
-        -device virtio-vga,xres=1920,yres=1080 -display none \
+        qemu-system-x86_64 -enable-kvm -cpu host -smp 4 -m "${GUEST_MEMORY:-6G}" -machine q35 \
+        -device "virtio-vga,xres=1920,yres=1080,max_outputs=${GUEST_OUTPUTS:-1}" -display none \
         -device qemu-xhci -device usb-tablet -device usb-kbd \
         -device intel-hda -device hda-duplex,audiodev=snd0 -audiodev none,id=snd0 \
         -nic "user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:${SSHPORT}-:22" \

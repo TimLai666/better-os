@@ -209,13 +209,13 @@ fi
 
 # --- a unit new in this version follows the component ----------------------
 reset_world
-touch "$WORK_DIR/root/units/better-awake.service"
+printf '[Install]\nWantedBy=graphical-session.target\n' > "$WORK_DIR/root/units/better-awake.service"
 logged_in 1000 better-awake.service
 logged_in 1001
 run_script 'better-awake.service better-awake-tray.service' \
     better_os_user_units_before_upgrade upgrade
 # dpkg unpacks the new unit file between the two scripts.
-touch "$WORK_DIR/root/units/better-awake-tray.service"
+printf '[Install]\nWantedBy=graphical-session.target\n' > "$WORK_DIR/root/units/better-awake-tray.service"
 run_script 'better-awake.service better-awake-tray.service' \
     better_os_user_units_after_upgrade 0.2.12
 expect_log "1000 enable better-awake-tray.service" \
@@ -224,6 +224,26 @@ expect_log "1000 try-restart better-awake.service" "the old unit is still restar
 expect_no_log '^1001 enable ' "a person with the component off gets no new unit"
 expect_no_log ' try-restart better-awake-tray.service$' \
     "the new unit is started by enable --now, not restarted"
+
+# --- a static unit never stands for the component, nor is enabled ----------
+# The Better OS session's units have no [Install] section: only its target
+# starts them (ticket 203). is-enabled answers yes for a static unit, so it
+# must not count as the component being on, and a new one must not be
+# enabled, which would start it under GNOME.
+reset_world
+printf '[Unit]\nPartOf=better-os-session.target\n' > "$WORK_DIR/root/units/better-os-session-idle.service"
+logged_in 1000 better-os-session-idle.service
+run_script 'better-os-session-idle.service better-os-session-osd.service' \
+    better_os_user_units_before_upgrade upgrade
+printf '[Unit]\nPartOf=better-os-session.target\n' > "$WORK_DIR/root/units/better-os-session-osd.service"
+# Even a person whose static unit reads as enabled gets no new unit started.
+printf '%s\n' better-os-session-osd.service >> "$WORK_DIR/root/state/1000/enabled"
+run_script 'better-os-session-idle.service better-os-session-osd.service' \
+    better_os_user_units_after_upgrade 0.2.16
+expect_no_log ' enable ' "a static unit new in this version is not enabled or started"
+expect_no_log ' is-enabled better-os-session' "a static unit is not asked whether it is enabled"
+expect_log "1000 try-restart better-os-session-idle.service" \
+    "a static unit that runs is still restarted after the upgrade"
 
 # --- with no record of what came before, nothing counts as new -------------
 reset_world

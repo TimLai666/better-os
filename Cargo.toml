@@ -73,6 +73,7 @@ members = [
     "crates/screenshot-core",
     "crates/screenshot-capture",
     "crates/screenshot-gui",
+    "crates/session-launcher",
 ]
 
 [workspace.package]

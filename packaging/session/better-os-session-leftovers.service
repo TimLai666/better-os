@@ -1,0 +1,17 @@
+[Unit]
+Description=Puts back what a Better OS session that ended without its launcher left
+# The one unit of this package that runs outside the Better OS session, on
+# purpose: in any session of the person (GNOME's too) it finds a session
+# record whose launcher is gone, stops that session's target if it still
+# runs, and puts the user manager's and D-Bus activation's environment back.
+# With no record, or with a launcher that runs, it does nothing. It is
+# enabled for every person at install and disabled at removal.
+ConditionPathExists=%t/better-os/session/restore.json
+Before=graphical-session-pre.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/better-os/session/start --leftovers
+
+[Install]
+WantedBy=graphical-session-pre.target

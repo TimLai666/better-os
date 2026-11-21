@@ -1,0 +1,34 @@
+[Unit]
+Description=Better OS session
+Documentation=https://github.com/TimLai666/better-os/blob/main/engineering/specs/better-os-session.md
+# Started by /usr/libexec/better-os/session/start once cosmic-comp is up and
+# the session's environment is imported, and stopped by it at logout.
+# Binding graphical-session.target is what starts and stops every existing
+# Better OS user unit (PartOf=, WantedBy= graphical-session.target) with this
+# session as with GNOME's, with no unit changed.
+BindsTo=graphical-session.target
+Before=graphical-session.target
+Wants=graphical-session-pre.target
+After=graphical-session-pre.target
+Wants=xdg-desktop-autostart.target
+# Only inside a Better OS session: the launcher writes its record before it
+# starts the target and every way the session ends takes it away, so a
+# start under GNOME (by hand, or by a manager that enables every unit of a
+# package) does nothing.
+ConditionPathExists=%t/better-os/session/restore.json
+# The guard runs as long as the launcher; when the launcher is gone,
+# however it went, the guard stops the target. Not BindsTo=: an update of
+# the package restarts the guard, and that must not take the session down.
+Wants=better-os-session-guard.service
+After=better-os-session-guard.service
+# The session's COSMIC daemons and its input method. They are named here and
+# not through [Install] WantedBy=, which would need an enable step for each
+# person: installing the package is all it takes (AGENTS.md).
+Wants=better-os-session-settings-daemon.service
+Wants=better-os-session-osd.service
+Wants=better-os-session-idle.service
+Wants=better-os-session-background.service
+Wants=better-os-session-input-method.service
+# The file search index, where it is installed. Its own unit is
+# WantedBy=gnome-session.target only, so nothing else starts it here.
+Wants=tracker-miner-fs-3.service

@@ -109,6 +109,12 @@ better_os_user_units_before_upgrade() {
     done
 }
 
+# True when the package's unit $1 has an [Install] section, so enabling it
+# means something; a static unit is started only by what wants it.
+better_os_unit_installable() {
+    grep -q '^\[Install\]' "$better_os_unit_dir/$1" 2>/dev/null
+}
+
 # postinst configure: for every person logged in, reloads their manager,
 # enables and starts the units that are new in this version if they had the
 # component enabled, and restarts the units that are running. $1 is the
@@ -139,12 +145,18 @@ better_os_user_units_after_upgrade() {
         better_os_user_systemctl "$better_os_uid" daemon-reload || continue
         better_os_component_on=no
         for better_os_unit in $better_os_old_units; do
+            # A unit with no [Install] section is static: is-enabled says yes
+            # for it whether or not the component is on, and only what wants
+            # it starts it (ticket 203: the Better OS session's units, which
+            # only its target starts). It says nothing about the person.
+            better_os_unit_installable "$better_os_unit" || continue
             if better_os_user_systemctl "$better_os_uid" is-enabled --quiet "$better_os_unit"; then
                 better_os_component_on=yes
             fi
         done
         if [ "$better_os_component_on" = yes ]; then
             for better_os_unit in $better_os_new_units; do
+                better_os_unit_installable "$better_os_unit" || continue
                 better_os_user_systemctl "$better_os_uid" enable --now --no-block \
                     "$better_os_unit" || true
             done
