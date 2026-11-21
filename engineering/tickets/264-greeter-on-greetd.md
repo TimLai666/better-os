@@ -1,7 +1,7 @@
 # Ticket 264 — `better-greeter`: the Better OS login screen on greetd
 
 **Spec:** `design/login-screen-spec.md` sections 3, 5.2, 5.3, 5.5 to 5.8; `engineering/specs/login-screen-security.md`; ADR 0044
-**Blocked by:** 260, 262, 263, 269, 279, the owner's decision L1 (B or C), and L7
+**Blocked by:** 260, 262, 263, 269, 279, and the owner's decision L7 (L1 is answered: B)
 
 ## Why
 
@@ -17,20 +17,28 @@ shares everything with it but the identity and the authentication path.
   surfaces at the overlay layer with exclusive keyboard on every output):
   accounts from AccountsService, the chooser and "Other account…", the
   session menu from `/usr/share/wayland-sessions/` (a GNOME session listed
-  only while `org.gnome.DisplayManager`'s `Version` answers, ticket 280), the
+  only while `org.gnome.DisplayManager`'s `Version` answers, ticket 280, and
+  checked again within 2 s right before `start_session`, with the spec's
+  "GNOME can't lock right now" message when it does not answer), the
   layout indicator from locale1, the status row (NetworkManager and UPower,
   read only), the power menu through logind, the accessibility switches in
   `/var/lib/better-os-greeter/settings.json`, Better OS's artwork (ticket
   279), the heartbeat in `/run/better-os-greeter/alive` (written when
   connected to the compositor, `ready` once the first frame is presented on
-  every output and the field has focus, then every 5 s), ticket 263's
+  every output and the field has focus, plus `ready-seen` once per boot,
+  then every 5 s), ticket 263's
   sandbox applied at start.
 - greetd's IPC: framing, every request and response of `greetd-ipc(7)`,
   answering every prompt in order, `start_session` with the session's `Exec`
   and the environment the session needs (`XDG_SESSION_TYPE=wayland`,
   `XDG_SESSION_DESKTOP` from the file), exit within 5 s after success; the
   last-start record and the "didn't start" state.
-- `SetSession` and `Language` written to AccountsService only after success.
+- The greeter writes nothing to AccountsService: another account's record
+  needs `org.freedesktop.accounts.user-administration` (`auth_admin_keep`).
+  It passes `BETTER_OS_LOGIN_SESSION` and `BETTER_OS_LOGIN_LANGUAGE` in
+  `start_session`'s environment, and `better-os-remember-login` (a small
+  program and an XDG autostart entry in this package) writes them as the
+  person, with `change-own-user-data`, once per login, in any session.
 - Tests against a fake greetd socket: success, `auth_error`, several secret
   prompts, `info` and `error` messages, a password change, a broken reply,
   greetd vanishing.
@@ -43,3 +51,8 @@ shares everything with it but the identity and the authentication path.
       `/home/tim/Developer/better-os-evidence/264/`.
 - [ ] The fake-greetd tests pass, and ticket 263's secret test passes for
       this binary.
+- [ ] After a login to GNOME and to the Better OS session, AccountsService
+      holds the chosen session and language for that account, written by
+      `better-os-remember-login`; a failed login writes nothing.
+- [ ] Starting GNOME with the unlock service stopped is refused with the
+      spec's message.
