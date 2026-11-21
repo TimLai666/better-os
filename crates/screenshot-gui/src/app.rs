@@ -19,19 +19,20 @@ use screenshot_capture::{Capture, Snapshot, Want};
 use screenshot_core::area::{AreaSelector, Grip};
 use screenshot_core::compose::{Frame, Placed, compose};
 use screenshot_core::files::{
-    create_unique, now, picture_folder, picture_stem, recording_folder, recording_stem, save_unique,
+    PORTAL_STEM, create_unique, now, picture_folder, picture_stem, portal_folder, recording_folder,
+    recording_stem, save_unique,
 };
 use screenshot_core::geometry::{Point, Rect, stage_of};
 use screenshot_core::interface::{Interface, Kind, Mode, Purpose};
 use screenshot_core::layout::{arrange, layout_area};
-use screenshot_core::lockdown::{Allowed, Asked, allowed};
-use screenshot_core::portal::{Outcome, color_of, may_start};
-use screenshot_core::recording::{Ending, elapsed_label};
-use screenshot_core::session::{Action, Holds, Remembered, Request, action_for};
+use screenshot_core::lockdown::{Allowed, Asked, Saving, allowed};
+use screenshot_core::portal::{Origin, Outcome, PortalSlot, RequestKind, color_of};
+use screenshot_core::recording::{Phase, Started, Stop, elapsed_label};
+use screenshot_core::session::{Action, Holds, Lock, Remembered, Request, Shown, action_for};
 use screenshot_core::words::{InterfaceWords, Locale, Notice, NoticeKind, SaveWords};
 
 use crate::platform;
-use crate::service::{self, Message, Service};
+use crate::service::{self, Message, NoticeImage, Service};
 use crate::view::{BarView, FlashView, OutputView, ShadeView};
 
 pub const APP_ID: &str = "io.betteros.Screenshot";
@@ -86,6 +87,8 @@ pub enum Use {
 /// The interface, open.
 pub struct Open {
     pub using: Use,
+    /// Who it was opened for: only that portal request is answered by it.
+    pub origin: Origin,
     pub outputs: Vec<OutputPlace>,
     pub windows: Vec<WindowPlace>,
     pub interface: Interface,
@@ -187,18 +190,13 @@ impl Open {
 
 /// A recording in progress.
 pub struct Run {
+    pub phase: Phase,
     pub recording: Option<Recording>,
     pub area: Rect,
     pub path: PathBuf,
     pub started: Instant,
     pub shade: Option<LayerSurfaces<ShadeView>>,
     pub bar: Option<LayerSurfaces<BarView>>,
-}
-
-/// A portal call waiting for the interface.
-struct Pending {
-    handle: String,
-    reply: smol::channel::Sender<Outcome>,
 }
 
 /// The controller.
@@ -217,8 +215,13 @@ pub struct Shooter {
     pub run: Option<Run>,
     clipboard: Vec<ClipboardHold>,
     saving: usize,
-    portal: Option<Pending>,
+    portal: PortalSlot<smol::channel::Sender<Outcome>>,
     portal_started: bool,
+    /// The session's lock, from logind.
+    pub lock: Lock,
+    /// Counts fades: a fade's end closes the interface only if no reopening
+    /// came after it began.
+    pub fade_generation: u64,
     flash: Option<LayerSurfaces<FlashView>>,
     /// The outputs of the last interface, by name, for placing the
     /// recording's bar.
@@ -341,6 +344,7 @@ impl Shooter {
             }
         }));
 
+        service::watch_session_lock(service.sender());
         let tracker = ProgramFile::current()
             .ok()
             .map(|program| UpdateTracker::new(program, Some(PACKAGE)));
@@ -357,8 +361,10 @@ impl Shooter {
             run: None,
             clipboard: Vec::new(),
             saving: 0,
-            portal: None,
+            portal: PortalSlot::default(),
             portal_started: first == Request::Portal,
+            lock: Lock::default(),
+            fade_generation: 0,
             flash: None,
             last_outputs: Vec::new(),
             idle_since: None,
@@ -381,14 +387,14 @@ impl Shooter {
                 .notifications
                 .load(std::sync::atomic::Ordering::SeqCst)
                 > 0,
-            portal_pending: self.portal.is_some(),
+            portal_pending: self.portal.is_pending(),
             saving: self.saving > 0 || self.flash.is_some(),
         }
     }
 
     fn tick(&mut self, cx: &mut Context<Self>) {
         // The recording.
-        if let Some(run) = &self.run {
+        if let Some(run) = self.run.as_ref().filter(|run| run.phase == Phase::Running) {
             let seconds = run.started.elapsed().as_secs() as u32;
             let label = elapsed_label(run.started.elapsed());
             let title = self.words.recording_title.replace("{}", &label);
@@ -462,26 +468,34 @@ impl Shooter {
         }
     }
 
+    /// Whether the interface is shown, for [`action_for`].
+    fn shown(&self) -> Shown {
+        match &self.open {
+            Some(open) if open.closing => Shown::Closing,
+            Some(_) => Shown::Open,
+            None if self.opening => Shown::Open,
+            None => Shown::Closed,
+        }
+    }
+
     pub fn on_message(&mut self, message: Message, cx: &mut Context<Self>) {
         match message {
             Message::Request(request) => {
                 if request == Request::Portal {
                     self.portal_started = true;
                 }
-                let action = action_for(
-                    request,
-                    self.run.is_some(),
-                    self.open.is_some() || self.opening,
-                );
+                let action = action_for(request, self.run.is_some(), self.shown(), self.lock);
                 match action {
                     Action::OpenInterface => {
-                        self.open_interface(Use::Capture, Purpose::Picture, cx)
+                        self.open_interface(Use::Capture, Purpose::Picture, Origin::Person, cx)
                     }
                     Action::OpenRecordingInterface => {
-                        self.open_interface(Use::Capture, Purpose::Recording, cx)
+                        self.open_interface(Use::Capture, Purpose::Recording, Origin::Person, cx)
                     }
-                    Action::TakeScreens => self.take_at_once(false, None, cx),
-                    Action::TakeFocusedWindow => self.take_at_once(true, None, cx),
+                    Action::Reopen => self.reopen(Purpose::Picture, cx),
+                    Action::ReopenRecording => self.reopen(Purpose::Recording, cx),
+                    Action::TakeScreens => self.take_at_once(false, Origin::Person, cx),
+                    Action::TakeFocusedWindow => self.take_at_once(true, Origin::Person, cx),
                     Action::StopRecording => self.stop_recording(cx),
                     Action::Nothing => {}
                 }
@@ -492,47 +506,75 @@ impl Shooter {
                 options,
                 reply,
             } => {
-                if let Err(refusal) =
-                    may_start(self.portal.is_some() || self.open.is_some() || self.opening)
+                let kind = if options.interactive {
+                    RequestKind::Interface
+                } else {
+                    RequestKind::Instant
+                };
+                // The instant picture opens nothing, so only another request
+                // keeps it waiting; the interface needs the screen free.
+                let busy = kind == RequestKind::Interface && self.shown() != Shown::Closed;
+                if let Err((reply, refusal)) = self.portal.begin(handle.clone(), kind, reply, busy)
                 {
                     let _ = reply.try_send(refusal);
                     return;
                 }
-                if options.interactive {
-                    self.portal = Some(Pending { handle, reply });
-                    self.open_interface(Use::Capture, Purpose::PictureOnly, cx);
-                } else {
-                    self.portal = Some(Pending { handle, reply });
-                    self.take_at_once(false, Some(()), cx);
+                let origin = Origin::Portal(handle);
+                match kind {
+                    RequestKind::Interface => {
+                        self.open_interface(Use::Capture, Purpose::PictureOnly, origin, cx)
+                    }
+                    _ => self.take_at_once(false, origin, cx),
                 }
             }
             Message::PortalPickColor { handle, reply } => {
-                if let Err(refusal) =
-                    may_start(self.portal.is_some() || self.open.is_some() || self.opening)
+                let busy = self.shown() != Shown::Closed;
+                if let Err((reply, refusal)) =
+                    self.portal
+                        .begin(handle.clone(), RequestKind::PickColor, reply, busy)
                 {
                     let _ = reply.try_send(refusal);
                     return;
                 }
-                self.portal = Some(Pending { handle, reply });
-                self.open_interface(Use::PickColor, Purpose::PictureOnly, cx);
+                self.open_interface(
+                    Use::PickColor,
+                    Purpose::PictureOnly,
+                    Origin::Portal(handle),
+                    cx,
+                );
             }
             Message::PortalClose { handle } => {
-                if self
-                    .portal
-                    .as_ref()
-                    .is_some_and(|pending| pending.handle == handle)
-                {
-                    self.close_interface(cx);
-                    self.answer_portal(Outcome::Cancelled);
+                // `Request.Close`, or the caller left the bus: the request
+                // ends as cancelled, its interface closes, and a capture still
+                // running for it is dropped when it finishes.
+                let origin = Origin::Portal(handle.clone());
+                if let Some(reply) = self.portal.close(&handle) {
+                    let _ = reply.try_send(Outcome::Cancelled);
+                }
+                if self.open.as_ref().is_some_and(|open| open.origin == origin) {
+                    self.fade_out(cx);
+                }
+            }
+            Message::SessionLocking => self.close_instantly(cx),
+            Message::LockedHint(locked) => {
+                self.lock.locked = locked;
+                if locked {
+                    self.close_instantly(cx);
                 }
             }
             Message::NotificationAction { key, path } => {
                 let connection = self.service.connection.clone();
+                let locale = self.locale;
                 cx.background_spawn(async move {
                     let result = if key == "show-in-files" {
                         service::show_in_files(&connection, &path)
                     } else {
-                        service::open_uri(&connection, &path)
+                        crate::open::open_file(
+                            &connection,
+                            &path,
+                            crate::open::mime_of(&path),
+                            locale,
+                        )
                     };
                     if let Err(error) = result {
                         eprintln!(
@@ -546,14 +588,46 @@ impl Shooter {
         }
     }
 
-    fn answer_portal(&mut self, outcome: Outcome) {
-        if let Some(pending) = self.portal.take() {
-            let _ = pending.reply.try_send(outcome);
+    /// Answers the portal request `origin` belongs to, if it is still
+    /// pending; the person's own captures answer nothing.
+    fn answer(&mut self, origin: &Origin, outcome: Outcome) {
+        if let Some(reply) = self.portal.take_for(origin) {
+            let _ = reply.try_send(outcome);
         }
     }
 
+    /// Print, or the recording key, while the interface fades out: it comes
+    /// back, as GNOME's `open` does from "in process of closing" (1579). An
+    /// interface that was a portal's is not the person's to reopen: it
+    /// finishes closing and the person's opens over the screen as it is now.
+    fn reopen(&mut self, purpose: Purpose, cx: &mut Context<Self>) {
+        let theirs = self
+            .open
+            .as_ref()
+            .is_some_and(|open| open.origin == Origin::Person && open.using == Use::Capture);
+        if !theirs {
+            self.close_instantly(cx);
+            self.open_interface(Use::Capture, purpose, Origin::Person, cx);
+            return;
+        }
+        self.fade_generation += 1;
+        if let Some(open) = &mut self.open {
+            open.closing = false;
+            if purpose == Purpose::Recording {
+                open.interface.set_mode(Mode::Recording);
+            }
+        }
+        cx.notify();
+    }
+
     /// Copies the screen and opens the interface over it (spec O1, O2).
-    pub fn open_interface(&mut self, using: Use, purpose: Purpose, cx: &mut Context<Self>) {
+    pub fn open_interface(
+        &mut self,
+        using: Use,
+        purpose: Purpose,
+        origin: Origin,
+        cx: &mut Context<Self>,
+    ) {
         if self.open.is_some() || self.opening {
             return;
         }
@@ -568,16 +642,23 @@ impl Shooter {
             let snapshot = task.await;
             let _ = this.update(cx, |this, cx| {
                 this.opening = false;
+                // Closed or locked meanwhile: nothing opens.
+                if !this.portal.wants(&origin) || this.lock.locked {
+                    return;
+                }
                 match snapshot {
-                    Ok(snapshot) => this.show(snapshot, using, purpose, cx),
+                    Ok(snapshot) => this.show(snapshot, using, purpose, origin, cx),
                     Err(error) => {
-                        this.answer_portal(Outcome::Refused(error.to_string()));
-                        this.notify(
-                            &NoticeKind::CaptureFailed(error.to_string()),
-                            None,
-                            None,
-                            cx,
-                        );
+                        let person = origin == Origin::Person;
+                        this.answer(&origin, Outcome::Refused(error.to_string()));
+                        if person {
+                            this.notify(
+                                &NoticeKind::CaptureFailed(error.to_string()),
+                                None,
+                                NoticeImage::None,
+                                cx,
+                            );
+                        }
                     }
                 }
             });
@@ -585,7 +666,17 @@ impl Shooter {
         .detach();
     }
 
-    fn show(&mut self, snapshot: Snapshot, using: Use, purpose: Purpose, cx: &mut Context<Self>) {
+    fn show(
+        &mut self,
+        snapshot: Snapshot,
+        using: Use,
+        purpose: Purpose,
+        origin: Origin,
+        cx: &mut Context<Self>,
+    ) {
+        for skipped in &snapshot.skipped {
+            eprintln!("better-screenshot: an output is left out: {skipped}");
+        }
         let pointer_output = snapshot.pointer_output.unwrap_or(0);
         let outputs: Vec<OutputPlace> = snapshot
             .outputs
@@ -600,7 +691,7 @@ impl Shooter {
             })
             .collect();
         if outputs.is_empty() {
-            self.answer_portal(Outcome::Refused("no outputs".into()));
+            self.answer(&origin, Outcome::Refused("no outputs".into()));
             return;
         }
         let stage = stage_of(outputs.iter().map(|output| &output.logical));
@@ -666,6 +757,7 @@ impl Shooter {
         );
         self.open = Some(Open {
             using,
+            origin,
             outputs,
             windows,
             interface,
@@ -724,8 +816,12 @@ impl Shooter {
                     }
                     Err(error) => {
                         eprintln!("better-screenshot: {error:?}");
-                        this.open = None;
-                        this.answer_portal(Outcome::Refused("the interface could not open".into()));
+                        if let Some(open) = this.open.take() {
+                            this.answer(
+                                &open.origin,
+                                Outcome::Refused("the interface could not open".into()),
+                            );
+                        }
                     }
                 }
                 cx.notify();
@@ -738,10 +834,10 @@ impl Shooter {
     /// Closes the interface without capturing (spec O4); the portal hears
     /// "cancelled".
     pub fn close_interface(&mut self, cx: &mut Context<Self>) {
-        self.fade_out(cx);
-        if self.portal.is_some() {
-            self.answer_portal(Outcome::Cancelled);
+        if let Some(origin) = self.open.as_ref().map(|open| open.origin.clone()) {
+            self.answer(&origin, Outcome::Cancelled);
         }
+        self.fade_out(cx);
         cx.notify();
     }
 
@@ -753,9 +849,7 @@ impl Shooter {
             if let Some(surfaces) = open.surfaces.take() {
                 surfaces.close_all(cx);
             }
-        }
-        if self.portal.is_some() {
-            self.answer_portal(Outcome::Cancelled);
+            self.answer(&open.origin, Outcome::Cancelled);
         }
         cx.notify();
     }
@@ -768,6 +862,8 @@ impl Shooter {
             return;
         }
         open.closing = true;
+        self.fade_generation += 1;
+        let generation = self.fade_generation;
         let area = open.area.geometry();
         let kept = open.interface.kept();
         self.remembered.area = Some(area);
@@ -776,6 +872,12 @@ impl Shooter {
         cx.spawn(async move |this, cx| {
             cx.background_executor().timer(FADE).await;
             let _ = this.update(cx, |this, cx| {
+                // Reopened meanwhile (Print during the fade): it stays.
+                if this.fade_generation != generation
+                    || !this.open.as_ref().is_some_and(|open| open.closing)
+                {
+                    return;
+                }
                 if let Some(mut open) = this.open.take()
                     && let Some(surfaces) = open.surfaces.take()
                 {
@@ -805,10 +907,11 @@ impl Shooter {
                 // The picture is the frozen one, taken now; the interface
                 // fades out after it (`_onCaptureButtonClicked` 1879–1882).
                 let picture = open.picture();
+                let origin = open.origin.clone();
                 self.fade_out(cx);
                 match picture {
-                    Some(frame) => self.store(frame, cx),
-                    None => self.answer_portal(Outcome::Refused("nothing chosen".into())),
+                    Some(frame) => self.store(frame, origin, cx),
+                    None => self.answer(&origin, Outcome::Refused("nothing chosen".into())),
                 }
             }
             Mode::Recording => self.start_recording(cx),
@@ -831,20 +934,24 @@ impl Shooter {
             }
             None => Outcome::Cancelled,
         };
-        self.answer_portal(outcome);
+        self.answer(&open.origin, outcome);
         cx.notify();
     }
 
     /// Shift+Print, Alt+Print, and the portal's non-interactive call: no
     /// interface (spec S8, A2).
-    fn take_at_once(&mut self, window: bool, portal: Option<()>, cx: &mut Context<Self>) {
-        // The portal's instant picture saves, so it is refused outright
-        // while saving is disabled; the keys still copy (spec S6, A5).
-        if portal.is_some()
-            && allowed(Asked::PortalInstantPicture, platform::saving_disabled()) == Allowed::Refused
-        {
-            self.answer_portal(Outcome::Refused(self.words.saving_disabled.into()));
-            return;
+    fn take_at_once(&mut self, window: bool, origin: Origin, cx: &mut Context<Self>) {
+        let portal = origin != Origin::Person;
+        // The portal's instant picture is a file and nothing else, so it is
+        // refused outright while saving is disabled (or not known to be
+        // allowed); the keys still copy (spec S6, A5).
+        if portal {
+            let saving = platform::saving();
+            if allowed(Asked::PortalInstantPicture, saving.disabled()) == Allowed::Refused {
+                let reason = self.saving_refusal(&saving);
+                self.answer(&origin, Outcome::Refused(reason));
+                return;
+            }
         }
         self.saving += 1;
         let task = cx.background_spawn(async move {
@@ -857,19 +964,29 @@ impl Shooter {
             let snapshot = task.await;
             let _ = this.update(cx, |this, cx| {
                 this.saving -= 1;
+                // Closed while it was taken (`Request.Close`, the caller
+                // gone): dropped, nothing written.
+                if !this.portal.wants(&origin) {
+                    return;
+                }
                 let snapshot = match snapshot {
                     Ok(snapshot) => snapshot,
                     Err(error) => {
-                        this.answer_portal(Outcome::Refused(error.to_string()));
-                        this.notify(
-                            &NoticeKind::CaptureFailed(error.to_string()),
-                            None,
-                            None,
-                            cx,
-                        );
+                        this.answer(&origin, Outcome::Refused(error.to_string()));
+                        if !portal {
+                            this.notify(
+                                &NoticeKind::CaptureFailed(error.to_string()),
+                                None,
+                                NoticeImage::None,
+                                cx,
+                            );
+                        }
                         return;
                     }
                 };
+                for skipped in &snapshot.skipped {
+                    eprintln!("better-screenshot: an output is left out: {skipped}");
+                }
                 let frame = if window {
                     snapshot.windows.first().map(|(_, shot)| shot.plain.clone())
                 } else {
@@ -884,7 +1001,7 @@ impl Shooter {
                     stage_of(snapshot.outputs.iter().map(|(info, _)| &info.logical))
                         .and_then(|stage| compose(stage, &placed))
                 };
-                if portal.is_some() {
+                if portal {
                     this.flash(
                         snapshot
                             .outputs
@@ -894,13 +1011,61 @@ impl Shooter {
                         cx,
                     );
                 }
-                match frame {
-                    Some(frame) => this.store(frame, cx),
-                    None => this.answer_portal(Outcome::Refused("no picture".into())),
+                match (frame, portal) {
+                    (Some(frame), false) => this.store(frame, origin, cx),
+                    (Some(frame), true) => this.store_for_portal(frame, origin, cx),
+                    (None, _) => this.answer(&origin, Outcome::Refused("no picture".into())),
                 }
             });
         })
         .detach();
+    }
+
+    /// The portal's instant picture: GNOME's portal backend asks the shell
+    /// for the file `Screenshot.png` (or `Screenshot-N.png`) in Pictures, or
+    /// the home folder, and that is all: no clipboard, no notification, no
+    /// recently used file (spec A2; `xdg-desktop-portal-gnome` 46
+    /// `screenshotdialog.c` 249–252, `js/ui/screenshot.js` 2497–2515).
+    fn store_for_portal(&mut self, frame: Frame, origin: Origin, cx: &mut Context<Self>) {
+        platform::play_shutter();
+        self.saving += 1;
+        let task = cx.background_spawn(async move {
+            let png = screenshot_capture::png::encode(&frame).map_err(|error| error.to_string())?;
+            let home = platform::user_folder(files_platform::UserDirectory::Home)
+                .ok_or_else(|| "there is no home folder".to_string())?;
+            let pictures = platform::user_folder(files_platform::UserDirectory::Pictures);
+            let folder = portal_folder(pictures.as_deref(), &home);
+            save_unique(&folder, PORTAL_STEM, "png", &png).map_err(|error| error.to_string())
+        });
+        cx.spawn(async move |this, cx| {
+            let saved = task.await;
+            let _ = this.update(cx, |this, _| {
+                this.saving -= 1;
+                match saved {
+                    Ok(path) => {
+                        // Closed meanwhile: the file is not the caller's.
+                        if this.portal.wants(&origin) {
+                            this.answer(
+                                &origin,
+                                Outcome::Picture(better_core::uri::file_uri(&path)),
+                            );
+                        } else {
+                            let _ = std::fs::remove_file(&path);
+                        }
+                    }
+                    Err(error) => this.answer(&origin, Outcome::Refused(error)),
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// The sentence that says why nothing is saved.
+    fn saving_refusal(&self, saving: &Saving) -> String {
+        match saving {
+            Saving::Unknown(reason) => self.words.saving_unknown.replace("{}", reason),
+            _ => self.words.saving_disabled.to_string(),
+        }
     }
 
     /// The white flash over every output that fades in 500 ms (spec A2).
@@ -932,13 +1097,20 @@ impl Shooter {
 
     /// The picture to the clipboard, the Pictures folder, the recently used
     /// files, and a notification (spec S1–S7); the portal gets its URI.
-    fn store(&mut self, frame: Frame, cx: &mut Context<Self>) {
+    fn store(&mut self, frame: Frame, origin: Origin, cx: &mut Context<Self>) {
         platform::play_shutter();
         self.saving += 1;
         let locale = self.locale;
-        // Saving to disk disabled: the clipboard and the notification only
-        // (spec S6).
-        let save = allowed(Asked::Picture, platform::saving_disabled()) == Allowed::Everything;
+        // Saving to disk disabled, or not known to be allowed: the clipboard
+        // and the notification only, with the picture in it (spec S6).
+        let saving = platform::saving();
+        let save = allowed(Asked::Picture, saving.disabled()) == Allowed::Everything;
+        let reason = match &saving {
+            Saving::Unknown(_) => Some(self.saving_refusal(&saving)),
+            _ => None,
+        };
+        let refusal = self.saving_refusal(&saving);
+        let thumbnail = (!save).then(|| frame.thumbnail(256));
         let task = cx.background_spawn(async move {
             let png = screenshot_capture::png::encode(&frame).map_err(|error| error.to_string())?;
             let hold = clipboard::hold_png(png.clone()).map_err(|error| error.to_string());
@@ -970,31 +1142,49 @@ impl Shooter {
                         }
                         match saved {
                             None => {
-                                this.answer_portal(Outcome::Refused(
-                                    this.words.saving_disabled.into(),
-                                ));
-                                this.notify(&NoticeKind::PictureCopiedOnly, None, None, cx);
+                                this.answer(&origin, Outcome::Refused(refusal));
+                                let image = match &thumbnail {
+                                    Some(frame) => NoticeImage::Pixels(frame),
+                                    None => NoticeImage::None,
+                                };
+                                this.notify(
+                                    &NoticeKind::PictureCopiedOnly(reason),
+                                    None,
+                                    image,
+                                    cx,
+                                );
                             }
                             Some(Ok(path)) => {
-                                this.answer_portal(Outcome::Picture(better_core::uri::file_uri(
-                                    &path,
-                                )));
+                                this.answer(
+                                    &origin,
+                                    Outcome::Picture(better_core::uri::file_uri(&path)),
+                                );
                                 this.notify(
                                     &NoticeKind::PictureSaved,
                                     Some(&path),
-                                    Some(&path),
+                                    NoticeImage::Path(&path),
                                     cx,
                                 );
                             }
                             Some(Err(error)) => {
-                                this.answer_portal(Outcome::Refused(error.clone()));
-                                this.notify(&NoticeKind::PictureNotSaved(error), None, None, cx);
+                                this.answer(&origin, Outcome::Refused(error.clone()));
+                                this.notify(
+                                    &NoticeKind::PictureNotSaved(error),
+                                    None,
+                                    NoticeImage::None,
+                                    cx,
+                                );
                             }
                         }
                     }
                     Err(error) => {
-                        this.answer_portal(Outcome::Refused(error.clone()));
-                        this.notify(&NoticeKind::CaptureFailed(error), None, None, cx);
+                        this.answer(&origin, Outcome::Refused(error.clone()));
+                        this.notify(
+                            &NoticeKind::CaptureFailed(error),
+                            None,
+                            NoticeImage::None,
+                            cx,
+                        );
                     }
                 }
             });
@@ -1006,7 +1196,7 @@ impl Shooter {
         &self,
         kind: &NoticeKind,
         file: Option<&Path>,
-        image: Option<&Path>,
+        image: NoticeImage<'_>,
         _cx: &mut Context<Self>,
     ) {
         let notice = Notice::of(kind, self.locale);
@@ -1027,9 +1217,18 @@ impl Shooter {
         if let Some(surfaces) = open.surfaces.take() {
             surfaces.close_all(cx);
         }
-        if allowed(Asked::Recording, platform::saving_disabled()) == Allowed::Refused {
-            let reason = self.words.saving_disabled.to_string();
-            self.notify(&NoticeKind::RecordingFailedToStart(reason), None, None, cx);
+        let saving = platform::saving();
+        if allowed(Asked::Recording, saving.disabled()) == Allowed::Refused {
+            let reason = self.saving_refusal(&saving);
+            self.notify(
+                &NoticeKind::RecordingFailedToStart(reason),
+                None,
+                NoticeImage::None,
+                cx,
+            );
+            return;
+        }
+        if self.lock.locked {
             return;
         }
         let words = SaveWords::of(self.locale);
@@ -1044,11 +1243,17 @@ impl Shooter {
         let path = match created {
             Ok(path) => path,
             Err(error) => {
-                self.notify(&NoticeKind::RecordingFailedToStart(error), None, None, cx);
+                self.notify(
+                    &NoticeKind::RecordingFailedToStart(error),
+                    None,
+                    NoticeImage::None,
+                    cx,
+                );
                 return;
             }
         };
         self.run = Some(Run {
+            phase: Phase::Starting { cancelled: false },
             recording: None,
             area,
             path: path.clone(),
@@ -1064,19 +1269,41 @@ impl Shooter {
         let task = cx.background_spawn(async move { recorder::start(request) });
         cx.spawn(async move |this, cx| {
             let started = task.await;
-            let _ = this.update(cx, |this, cx| match started {
-                Ok(recording) => {
-                    if let Some(run) = &mut this.run {
-                        run.recording = Some(recording);
-                        run.started = Instant::now();
+            let _ = this.update(cx, |this, cx| {
+                let started_as = this.run.as_mut().map(|run| run.phase.started());
+                match (started, started_as) {
+                    (Ok(recording), Some(Started::Show)) => {
+                        if let Some(run) = &mut this.run {
+                            run.recording = Some(recording);
+                            run.started = Instant::now();
+                        }
+                        this.show_recording(cx);
                     }
-                    this.show_recording(cx);
-                }
-                Err(ending) => {
-                    this.run = None;
-                    let _ = std::fs::remove_file(&path);
-                    this.notify(&ending.notice(), None, None, cx);
-                    this.service.set_recording(false, 0, "");
+                    // Stopped while it was starting: the recorder is stopped
+                    // and waited for, its file deleted, and nothing ever said
+                    // it was recording.
+                    (Ok(recording), _) => {
+                        this.run = None;
+                        this.saving += 1;
+                        let path = path.clone();
+                        let discard = cx.background_spawn(async move {
+                            let _ = recording.stop();
+                            let _ = std::fs::remove_file(&path);
+                        });
+                        cx.spawn(async move |this, cx| {
+                            discard.await;
+                            let _ = this.update(cx, |this, _| this.saving -= 1);
+                        })
+                        .detach();
+                    }
+                    (Err(ending), started_as) => {
+                        this.run = None;
+                        let _ = std::fs::remove_file(&path);
+                        if started_as == Some(Started::Show) {
+                            this.notify(&ending.notice(), None, NoticeImage::None, cx);
+                        }
+                        this.service.set_recording(false, 0, "");
+                    }
                 }
             });
         })
@@ -1149,6 +1376,15 @@ impl Shooter {
 
     /// Stops the recording, finishes the file, and says so (spec R6–R8).
     pub fn stop_recording(&mut self, cx: &mut Context<Self>) {
+        // Still starting: it is remembered as stopped, and the start's
+        // completion discards it (the `Recording` is not lost).
+        if let Some(run) = &mut self.run
+            && run.phase.stop() == Stop::CancelStart
+        {
+            self.service.set_recording(false, 0, "");
+            cx.notify();
+            return;
+        }
         let Some(mut run) = self.run.take() else {
             return;
         };
@@ -1171,13 +1407,10 @@ impl Shooter {
                 this.saving -= 1;
                 if ending.keeps_file() {
                     platform::add_recent(&path, "video/webm");
-                    this.notify(&ending.notice(), Some(&path), None, cx);
+                    this.notify(&ending.notice(), Some(&path), NoticeImage::None, cx);
                 } else {
                     let _ = std::fs::remove_file(&path);
-                    this.notify(&ending.notice(), None, None, cx);
-                }
-                if matches!(ending, Ending::Stopped) {
-                    eprintln!("better-screenshot: recorded {}", path.display());
+                    this.notify(&ending.notice(), None, NoticeImage::None, cx);
                 }
             });
         })
@@ -1246,6 +1479,7 @@ mod tests {
         let window_frame = Frame::filled(30, 20, BLUE);
         Open {
             using: Use::Capture,
+            origin: screenshot_core::portal::Origin::Person,
             outputs: vec![
                 output("A", Rect::new(0, 0, 100, 100), 1, RED),
                 output("B", Rect::new(100, 0, 100, 100), 2, BLUE),

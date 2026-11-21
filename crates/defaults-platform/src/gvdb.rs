@@ -26,7 +26,7 @@ const HASH_ITEM_SIZE: usize = 24;
 /// bloom shift, which this reader does not need.
 const BLOOM_WORD_MASK: u32 = (1 << 20) - 1;
 
-#[derive(Debug, Error, Eq, PartialEq)]
+#[derive(Clone, Debug, Error, Eq, PartialEq)]
 pub enum GvdbError {
     #[error("not a GVDB database")]
     NotGvdb,
@@ -73,11 +73,20 @@ pub struct GvdbDatabase {
     /// files (dconf 0.40 `engine/dconf-engine-source.c` reads it as
     /// `gvdb_table_get_table (values, ".locks")`).
     locks: BTreeSet<String>,
+    /// Why the `.locks` table could not be read, when it could not. The
+    /// values are read all the same, as before locks were read, so a damaged
+    /// lock table never makes the settings themselves unreadable.
+    lock_problem: Option<GvdbError>,
 }
 
 impl GvdbDatabase {
     pub fn get(&self, key: &str) -> Option<&GVariantValue> {
         self.values.get(key)
+    }
+
+    /// Why the lock table could not be read, if it could not.
+    pub fn lock_problem(&self) -> Option<&GvdbError> {
+        self.lock_problem.as_ref()
     }
 
     /// Whether the database locks `key`.
@@ -103,6 +112,7 @@ impl GvdbDatabase {
 
         let mut values = BTreeMap::new();
         let mut locks = BTreeSet::new();
+        let mut lock_problem = None;
         for (index, item) in items.iter().enumerate() {
             match item.item_type {
                 b'v' => {
@@ -111,18 +121,50 @@ impl GvdbDatabase {
                     values.insert(key, decode_variant(data));
                 }
                 b'H' if full_key(bytes, &items, index)? == ".locks" => {
-                    let locked = hash_items(bytes, item.value_start, item.value_end)?;
-                    for (inner, entry) in locked.iter().enumerate() {
-                        if entry.item_type == b'v' {
-                            locks.insert(full_key(bytes, &locked, inner)?);
-                        }
+                    match read_locks(bytes, item.value_start, item.value_end) {
+                        Ok(read) => locks = read,
+                        Err(error) => lock_problem = Some(error),
                     }
                 }
                 _ => {}
             }
         }
-        Ok(Self { values, locks })
+        Ok(Self {
+            values,
+            locks,
+            lock_problem,
+        })
     }
+}
+
+/// Points a database's `.locks` table outside the file, for tests of what a
+/// damaged lock table does.
+#[cfg(test)]
+pub(crate) fn damage_lock_table(bytes: &mut [u8]) {
+    let (start, end) = root(bytes).unwrap();
+    let items = hash_items(bytes, start, end).unwrap();
+    let index = (0..items.len())
+        .find(|index| {
+            items[*index].item_type == b'H' && full_key(bytes, &items, *index).unwrap() == ".locks"
+        })
+        .expect("a .locks table");
+    // The item's value end, 20 bytes into its 24-byte record.
+    let bloom = (read_u32(bytes, start).unwrap() & BLOOM_WORD_MASK) as usize;
+    let buckets = read_u32(bytes, start + 4).unwrap() as usize;
+    let record = start + 8 + bloom * 4 + buckets * 4 + index * HASH_ITEM_SIZE;
+    bytes[record + 20..record + 24].copy_from_slice(&u32::MAX.to_le_bytes());
+}
+
+/// The keys a `.locks` table lists.
+fn read_locks(bytes: &[u8], start: usize, end: usize) -> Result<BTreeSet<String>, GvdbError> {
+    let locked = hash_items(bytes, start, end)?;
+    let mut locks = BTreeSet::new();
+    for (inner, entry) in locked.iter().enumerate() {
+        if entry.item_type == b'v' {
+            locks.insert(full_key(bytes, &locked, inner)?);
+        }
+    }
+    Ok(locks)
 }
 
 /// The default a compiled GSettings schema gives the key at `key_path`
@@ -516,6 +558,25 @@ mod tests {
             database.get("/org/gnome/desktop/wm/keybindings/minimize"),
             None
         );
+    }
+
+    /// A dconf-compiled database that sets and locks
+    /// `/org/gnome/desktop/lockdown/disable-save-to-disk`, with its `.locks`
+    /// table's bounds pointed outside the file.
+    #[test]
+    fn a_damaged_lock_table_is_noted_and_the_values_still_read() {
+        let mut bytes = include_bytes!("../tests/fixtures/dconf/system-local-locked").to_vec();
+        let key = "/org/gnome/desktop/lockdown/disable-save-to-disk";
+        let intact = GvdbDatabase::parse(&bytes).unwrap();
+        assert!(intact.is_locked(key));
+        assert!(intact.lock_problem().is_none());
+
+        damage_lock_table(&mut bytes);
+
+        let damaged = GvdbDatabase::parse(&bytes).unwrap();
+        assert_eq!(damaged.lock_problem(), Some(&GvdbError::Truncated));
+        assert!(!damaged.is_locked(key));
+        assert_eq!(damaged.get(key), Some(&GVariantValue::Boolean(true)));
     }
 
     #[test]

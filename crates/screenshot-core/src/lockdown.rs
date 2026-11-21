@@ -16,6 +16,23 @@
 //!   `screencastService.js` 626–631), which the interface reports as
 //!   "Screencast failed to start" (`_screencastFailed` 2058–2063).
 
+/// Whether saving to disk is allowed, as far as it could be read.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Saving {
+    Allowed,
+    Disabled,
+    /// It could not be read; treated as disabled, never guessed allowed
+    /// (AGENTS.md: an unknown is not turned into a plausible value). The
+    /// reason goes into the notification.
+    Unknown(String),
+}
+
+impl Saving {
+    pub fn disabled(&self) -> bool {
+        !matches!(self, Saving::Allowed)
+    }
+}
+
 /// What a request may do while saving to disk is disabled.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Allowed {
@@ -57,6 +74,14 @@ pub const KEY: &str = "/org/gnome/desktop/lockdown/disable-save-to-disk";
 #[cfg(test)]
 mod tests {
     use super::{Allowed, Asked, KEY, allowed};
+
+    #[test]
+    fn an_unknown_answer_counts_as_disabled() {
+        use super::Saving;
+        assert!(!Saving::Allowed.disabled());
+        assert!(Saving::Disabled.disabled());
+        assert!(Saving::Unknown("no profile".into()).disabled());
+    }
 
     #[test]
     fn nothing_changes_while_saving_is_allowed() {

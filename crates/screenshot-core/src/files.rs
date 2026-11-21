@@ -61,6 +61,22 @@ pub fn recording_stem(time: &LocalTime, words: &SaveWords) -> String {
     words.screencast_from.replace("{}", &timestamp(time))
 }
 
+/// The stem of the portal's instant picture: `xdg-desktop-portal-gnome` 46
+/// asks GNOME Shell for the relative name `"Screenshot"`
+/// (`src/screenshotdialog.c` 249–252), untranslated.
+pub const PORTAL_STEM: &str = "Screenshot";
+
+/// Where the portal's instant picture is written: GNOME Shell's
+/// `_resolveRelativeFilename` (`js/ui/screenshot.js` 2497–2515) takes the
+/// Pictures folder when it exists and the home folder otherwise, with no
+/// Screenshots folder under it.
+pub fn portal_folder(pictures: Option<&Path>, home: &Path) -> PathBuf {
+    pictures
+        .filter(|pictures| pictures.is_dir())
+        .unwrap_or(home)
+        .to_path_buf()
+}
+
 /// The names tried in order: `stem.ext`, `stem-1.ext`, `stem-2.ext`, …
 pub fn candidate(folder: &Path, stem: &str, extension: &str, index: u32) -> PathBuf {
     if index == 0 {
@@ -258,6 +274,19 @@ mod tests {
             recording_stem(&time, &chinese),
             "Screencast from 2026-11-21 09-05-03"
         );
+    }
+
+    #[test]
+    fn the_portals_instant_picture_goes_to_pictures_or_home_as_screenshot() {
+        use super::{PORTAL_STEM, portal_folder};
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        let pictures = home.join("Pictures");
+        assert_eq!(portal_folder(Some(&pictures), home), home);
+        std::fs::create_dir(&pictures).unwrap();
+        assert_eq!(portal_folder(Some(&pictures), home), pictures);
+        assert_eq!(portal_folder(None, home), home);
+        assert_eq!(PORTAL_STEM, "Screenshot");
     }
 
     #[test]

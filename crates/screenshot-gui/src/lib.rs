@@ -6,6 +6,7 @@
 pub mod app;
 pub mod assets;
 pub mod cli;
+pub mod open;
 pub mod platform;
 pub mod restart;
 pub mod service;

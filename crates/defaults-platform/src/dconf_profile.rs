@@ -700,6 +700,24 @@ fn open_silently(path: &Path) -> Option<String> {
 
 /// The profile in force, by rules 1 to 3 above.
 pub fn resolve_profile(environment: &ProfileEnvironment) -> Result<DconfProfile, ProfileError> {
+    resolve(environment, true)
+}
+
+/// The profile dconf itself puts in force, by rules 1 to 3 alone: unlike
+/// [`resolve_profile`], a COSMIC or Better OS environment without
+/// `DCONF_PROFILE` is not refused but read as dconf reads it (the runtime
+/// profile, then `user`, then the built-in one). For a reader that must
+/// see what GSettings shows in such a process, such as a lockdown key.
+pub fn resolve_profile_as_dconf(
+    environment: &ProfileEnvironment,
+) -> Result<DconfProfile, ProfileError> {
+    resolve(environment, false)
+}
+
+fn resolve(
+    environment: &ProfileEnvironment,
+    refuse_outside_the_session: bool,
+) -> Result<DconfProfile, ProfileError> {
     let mandatory = environment.mandatory_dir.join(environment.uid.to_string());
     if let Some(text) = open_silently(&mandatory) {
         return Ok(parse_profile(&text, ProfileOrigin::Mandatory(mandatory)));
@@ -726,7 +744,7 @@ pub fn resolve_profile(environment: &ProfileEnvironment) -> Result<DconfProfile,
         };
     }
     for desktop in ["COSMIC", "BetterOS"] {
-        if environment.desktop.includes(desktop) {
+        if refuse_outside_the_session && environment.desktop.includes(desktop) {
             return Err(ProfileError::NotTheSessionEnvironment {
                 desktop: environment.desktop.identity(),
             });

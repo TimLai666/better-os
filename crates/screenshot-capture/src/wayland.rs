@@ -42,7 +42,10 @@ use wayland_protocols::ext::workspace::v1::client::{
 use wayland_protocols::xdg::xdg_output::zv1::client::{zxdg_output_manager_v1, zxdg_output_v1};
 
 use crate::protocols::toplevel_info_v1::{zcosmic_toplevel_handle_v1, zcosmic_toplevel_info_v1};
-use crate::{Capture, CaptureError, OutputInfo, Shot, Snapshot, Want, WindowInfo};
+use crate::{
+    Capture, CaptureError, OutputCopy, OutputInfo, Shot, Snapshot, Want, WindowInfo,
+    assemble_outputs,
+};
 
 /// How long a copy may take before it counts as refused.
 pub const COPY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -56,15 +59,33 @@ pub(crate) struct OutputState {
     pub(crate) name: Option<String>,
     pub(crate) logical_position: Option<(i32, i32)>,
     pub(crate) logical_size: Option<(i32, i32)>,
-    pub(crate) mode: Option<(i32, i32)>,
 }
 
 impl OutputState {
-    fn info(&self) -> Option<OutputInfo> {
-        let (x, y) = self.logical_position.unwrap_or((0, 0));
-        let (width, height) = self.logical_size.or(self.mode)?;
-        Some(OutputInfo {
-            name: self.name.clone().unwrap_or_default(),
+    /// The output's place, or why it has none. Its name comes from
+    /// `wl_output` 4 (or `xdg_output`), its place and size only from
+    /// `xdg_output`: a mode is in device pixels and says nothing of where
+    /// the output is, so an output without `xdg_output` is left out rather
+    /// than put at (0, 0) with a guessed size.
+    pub(crate) fn info(&self) -> Result<OutputInfo, String> {
+        let name = self
+            .name
+            .clone()
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| {
+                "an output has no name (wl_output older than 4 and no xdg_output)".to_string()
+            })?;
+        let (Some((x, y)), Some((width, height))) = (self.logical_position, self.logical_size)
+        else {
+            return Err(format!(
+                "{name}: the compositor gave no logical place (xdg_output)"
+            ));
+        };
+        if width <= 0 || height <= 0 {
+            return Err(format!("{name}: its logical size is {width} × {height}"));
+        }
+        Ok(OutputInfo {
+            name,
             logical: Rect::new(x, y, width, height),
         })
     }
@@ -297,7 +318,7 @@ impl Client {
         }
     }
 
-    pub(crate) fn output_infos(&self) -> Vec<Option<OutputInfo>> {
+    pub(crate) fn output_infos(&self) -> Vec<Result<OutputInfo, String>> {
         self.state.outputs.iter().map(OutputState::info).collect()
     }
 
@@ -503,7 +524,7 @@ impl Capture for WaylandCapture {
         let windows_wanted = want.windows || want.focused_window_only;
         let mut client = Client::connect(windows_wanted)?;
         let infos = client.output_infos();
-        if infos.iter().all(Option::is_none) {
+        if infos.iter().all(Result::is_err) {
             return Err(CaptureError::NoOutputs);
         }
 
@@ -522,7 +543,7 @@ impl Capture for WaylandCapture {
                 let Some(output) = client.state.outputs[index].output.clone() else {
                     continue;
                 };
-                if infos[index].is_none() {
+                if infos[index].is_err() {
                     continue;
                 }
                 let source =
@@ -623,21 +644,30 @@ impl Capture for WaylandCapture {
         let _ = client.roundtrip();
 
         let mut snapshot = Snapshot::default();
+        let mut copies = Vec::new();
         for (index, plain, with_pointer, source) in output_jobs {
-            let plain = client.take_frame(plain)?;
+            let plain = client.take_frame(plain);
             let with_pointer = client.take_frame(with_pointer).ok();
             source.destroy();
-            let info = infos[index].clone().expect("checked above");
-            if client.state.pointer_on == Some(index) {
-                snapshot.pointer_output = Some(snapshot.outputs.len());
-            }
-            snapshot.outputs.push((
+            let Ok(info) = infos[index].clone() else {
+                continue;
+            };
+            copies.push(OutputCopy {
                 info,
-                Shot {
-                    plain,
-                    with_pointer,
-                },
-            ));
+                plain,
+                with_pointer,
+                pointer_here: client.state.pointer_on == Some(index),
+            });
+        }
+        snapshot.skipped = infos
+            .iter()
+            .filter_map(|info| info.as_ref().err().cloned())
+            .collect();
+        if !want.focused_window_only {
+            let (outputs, skipped, pointer_output) = assemble_outputs(copies)?;
+            snapshot.outputs = outputs;
+            snapshot.skipped.extend(skipped);
+            snapshot.pointer_output = pointer_output;
         }
         for (info, plain, with_pointer, source) in window_jobs {
             let plain = client.take_frame(plain);
@@ -691,10 +721,10 @@ impl Dispatch<wl_output::WlOutput, usize> for State {
         let Some(output) = state.outputs.get_mut(*index) else {
             return;
         };
-        match event {
-            wl_output::Event::Name { name } => output.name = Some(name),
-            wl_output::Event::Mode { width, height, .. } => output.mode = Some((width, height)),
-            _ => {}
+        // Only the name: an output's mode is in device pixels and says
+        // nothing of its place, which comes from `xdg_output`.
+        if let wl_output::Event::Name { name } = event {
+            output.name = Some(name);
         }
     }
 }
@@ -1053,5 +1083,30 @@ impl Client {
             eprintln!("workspaces {:?}", self.state.workspaces);
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::OutputState;
+    use screenshot_core::geometry::Rect;
+
+    #[test]
+    fn an_output_without_xdg_output_or_a_name_is_left_out_not_guessed() {
+        let mut output = OutputState::default();
+        assert!(output.info().unwrap_err().contains("no name"));
+        output.name = Some("HDMI-A-1".into());
+        let missing = output.info().unwrap_err();
+        assert!(missing.contains("HDMI-A-1") && missing.contains("xdg_output"));
+        output.logical_position = Some((1280, 0));
+        assert!(
+            output.info().is_err(),
+            "a place without a size is not enough"
+        );
+        output.logical_size = Some((1920, 1080));
+        assert_eq!(
+            output.info().unwrap().logical,
+            Rect::new(1280, 0, 1920, 1080)
+        );
     }
 }

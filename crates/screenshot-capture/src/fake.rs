@@ -85,6 +85,7 @@ mod tests {
                 ),
             ],
             pointer_output: Some(0),
+            skipped: Vec::new(),
         }
     }
 

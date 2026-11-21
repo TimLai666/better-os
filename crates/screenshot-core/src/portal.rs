@@ -81,6 +81,159 @@ pub fn may_start(pending: bool) -> Result<(), Outcome> {
     }
 }
 
+/// Who a capture is for. Only a capture the portal request started may
+/// answer it: a Shift+Print while the portal's interface is open is the
+/// person's own picture, not the application's.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Origin {
+    /// Print Screen, its keys, or `org.betteros.Screenshot1`.
+    Person,
+    /// The portal call with this request handle.
+    Portal(String),
+}
+
+/// What a portal request asked for.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RequestKind {
+    /// `Screenshot` with `interactive`: the interface.
+    Interface,
+    /// `Screenshot` without it: every output at once, a file only.
+    Instant,
+    PickColor,
+}
+
+/// The one portal request in flight, with the way to answer it.
+#[derive(Debug)]
+pub struct Pending<T> {
+    pub handle: String,
+    pub kind: RequestKind,
+    pub reply: T,
+}
+
+/// The portal request in flight, at most one (A4).
+#[derive(Debug)]
+pub struct PortalSlot<T> {
+    pending: Option<Pending<T>>,
+}
+
+impl<T> Default for PortalSlot<T> {
+    fn default() -> Self {
+        PortalSlot { pending: None }
+    }
+}
+
+impl<T> PortalSlot<T> {
+    /// Takes a new request, or gives its reply back with the refusal when one
+    /// is pending or the interface is busy with someone else.
+    pub fn begin(
+        &mut self,
+        handle: String,
+        kind: RequestKind,
+        reply: T,
+        busy: bool,
+    ) -> Result<(), (T, Outcome)> {
+        if let Err(refusal) = may_start(self.pending.is_some() || busy) {
+            return Err((reply, refusal));
+        }
+        self.pending = Some(Pending {
+            handle,
+            kind,
+            reply,
+        });
+        Ok(())
+    }
+
+    pub fn is_pending(&self) -> bool {
+        self.pending.is_some()
+    }
+
+    pub fn kind(&self) -> Option<RequestKind> {
+        self.pending.as_ref().map(|pending| pending.kind)
+    }
+
+    /// Whether a capture for `origin` is still wanted: the person's always,
+    /// a portal request's only while that request is pending.
+    pub fn wants(&self, origin: &Origin) -> bool {
+        match origin {
+            Origin::Person => true,
+            Origin::Portal(handle) => self
+                .pending
+                .as_ref()
+                .is_some_and(|pending| &pending.handle == handle),
+        }
+    }
+
+    /// The reply of the request `origin` belongs to, taken; `None` for the
+    /// person's own captures and for any other request.
+    pub fn take_for(&mut self, origin: &Origin) -> Option<T> {
+        match origin {
+            Origin::Person => None,
+            Origin::Portal(_) if self.wants(origin) => {
+                self.pending.take().map(|pending| pending.reply)
+            }
+            Origin::Portal(_) => None,
+        }
+    }
+
+    /// `Request.Close`, or the caller leaving the bus: the request ends, and
+    /// any capture still running for it is dropped (`wants` turns false).
+    pub fn close(&mut self, handle: &str) -> Option<T> {
+        self.take_for(&Origin::Portal(handle.to_string()))
+    }
+}
+
+#[cfg(test)]
+mod slot_tests {
+    use super::{Origin, Outcome, PortalSlot, RequestKind};
+
+    #[test]
+    fn a_persons_capture_never_answers_a_pending_request() {
+        let mut slot = PortalSlot::default();
+        slot.begin("/r/a".into(), RequestKind::PickColor, "reply-a", false)
+            .unwrap();
+        // Shift+Print finishes while PickColor waits.
+        assert_eq!(slot.take_for(&Origin::Person), None);
+        assert!(slot.is_pending());
+        // Another request's capture does not answer it either.
+        assert_eq!(slot.take_for(&Origin::Portal("/r/b".into())), None);
+        assert!(slot.wants(&Origin::Person));
+        assert!(!slot.wants(&Origin::Portal("/r/b".into())));
+        // Its own does.
+        assert_eq!(
+            slot.take_for(&Origin::Portal("/r/a".into())),
+            Some("reply-a")
+        );
+        assert!(!slot.is_pending());
+    }
+
+    #[test]
+    fn one_request_at_a_time_and_none_over_a_busy_interface() {
+        let mut slot = PortalSlot::default();
+        slot.begin("/r/a".into(), RequestKind::Instant, 1, false)
+            .unwrap();
+        let (reply, refusal) = slot
+            .begin("/r/b".into(), RequestKind::Interface, 2, false)
+            .unwrap_err();
+        assert_eq!(reply, 2);
+        assert!(matches!(refusal, Outcome::Refused(_)));
+        let mut idle = PortalSlot::default();
+        assert!(
+            idle.begin("/r/c".into(), RequestKind::Interface, 3, true)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn closing_a_request_drops_the_capture_running_for_it() {
+        let mut slot = PortalSlot::default();
+        slot.begin("/r/a".into(), RequestKind::Instant, 1, false)
+            .unwrap();
+        assert_eq!(slot.close("/r/x"), None);
+        assert_eq!(slot.close("/r/a"), Some(1));
+        assert!(!slot.wants(&Origin::Portal("/r/a".into())));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Outcome, Response, color_of, may_start};

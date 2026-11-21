@@ -52,6 +52,56 @@ impl Ending {
     }
 }
 
+/// Where a recording is. Starting takes up to the first frame and the
+/// encoder (seconds on a slow machine), and the person may stop it before it
+/// has started.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Phase {
+    Starting { cancelled: bool },
+    Running,
+}
+
+/// What the start's completion does.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Started {
+    /// Show the shading and the bar; the recording runs.
+    Show,
+    /// It was stopped while starting: stop the recorder, wait for it, and
+    /// delete its file; nothing is shown and nothing says "recording".
+    Discard,
+}
+
+/// What a stop does.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Stop {
+    /// Finish the file and say so.
+    Finish,
+    /// Remember it, and let the start's completion discard it.
+    CancelStart,
+}
+
+impl Phase {
+    pub fn stop(&mut self) -> Stop {
+        match self {
+            Phase::Starting { cancelled } => {
+                *cancelled = true;
+                Stop::CancelStart
+            }
+            Phase::Running => Stop::Finish,
+        }
+    }
+
+    pub fn started(&mut self) -> Started {
+        match *self {
+            Phase::Starting { cancelled: true } => Started::Discard,
+            _ => {
+                *self = Phase::Running;
+                Started::Show
+            }
+        }
+    }
+}
+
 /// Whether an I/O error text from the encoder means the disk is full. GStreamer
 /// reports `GST_RESOURCE_ERROR_NO_SPACE_LEFT` from `filesink` with the C
 /// library's message for `ENOSPC`.
@@ -62,7 +112,19 @@ pub fn is_out_of_space(message: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{Ending, elapsed_label, frame_interval, is_out_of_space};
+    use super::{Ending, Phase, Started, Stop, elapsed_label, frame_interval, is_out_of_space};
+
+    #[test]
+    fn a_recording_stopped_while_starting_is_discarded_and_never_shown() {
+        let mut phase = Phase::Starting { cancelled: false };
+        assert_eq!(phase.stop(), Stop::CancelStart);
+        assert_eq!(phase.started(), Started::Discard);
+
+        let mut phase = Phase::Starting { cancelled: false };
+        assert_eq!(phase.started(), Started::Show);
+        assert_eq!(phase, Phase::Running);
+        assert_eq!(phase.stop(), Stop::Finish);
+    }
     use crate::words::NoticeKind;
     use std::time::Duration;
 

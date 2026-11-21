@@ -776,6 +776,8 @@ impl Render for OutputView {
         let origin = output.logical;
         let picture_mode = open.interface.mode == Mode::Picture;
         let closing = open.closing;
+        // A reopening during the fade starts the fade in again.
+        let generation = shooter.fade_generation as usize;
         let background = if open.interface.show_pointer && open.using == Use::Capture {
             output.pointer.clone()
         } else {
@@ -827,14 +829,14 @@ impl Render for OutputView {
         let root = root.children(toasts);
         if closing {
             root.with_animation(
-                "fade-out",
+                ("fade-out", generation),
                 Animation::new(FADE).with_easing(ease_out_quad),
                 |root, delta| root.opacity(1.0 - delta),
             )
             .into_any_element()
         } else {
             root.with_animation(
-                "fade-in",
+                ("fade-in", generation),
                 Animation::new(FADE).with_easing(ease_out_quad),
                 |root, delta| root.opacity(delta),
             )

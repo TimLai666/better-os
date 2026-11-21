@@ -38,12 +38,23 @@ pub fn supported() -> Result<(), String> {
     Ok(())
 }
 
+/// How `appsrc` takes frames: live, timestamped by the recorder, and holding
+/// at most [`QUEUED_FRAMES`] frames; when the encoder falls behind, the oldest
+/// waiting frame is dropped rather than kept (`leaky-type=downstream`,
+/// GStreamer 1.20 and later, the version on Ubuntu 22.04). GNOME's
+/// `pipewiresrc` has a fixed number of buffers and so drops frames the same
+/// way; without a bound, a 2880 × 1800 output at 30 frames a second queues
+/// about 600 MB a second the encoder cannot take.
+pub const SOURCE_PROPERTIES: &str = "is-live=true format=time do-timestamp=false max-buffers=2 max-bytes=0 max-time=0 leaky-type=downstream";
+/// The frames `appsrc` may hold.
+pub const QUEUED_FRAMES: u32 = 2;
+
 /// GNOME's pipeline after the source, with its thread count.
 pub fn encoder_description(threads: usize) -> String {
     let threads = threads.clamp(1, 64);
     format!(
         "videoconvert chroma-mode=none dither=none matrix-mode=output-only n-threads={threads} ! \
-         queue ! \
+         queue max-size-buffers=2 max-size-bytes=0 max-size-time=0 ! \
          vp8enc cpu-used=16 max-quantizer=17 deadline=1 keyframe-mode=disabled threads={threads} static-threshold=1000 buffer-size=20000 ! \
          queue ! \
          webmmux"
@@ -89,6 +100,19 @@ impl Recording {
     }
 }
 
+/// A recording dropped without [`Recording::stop`] (a stop that came while
+/// it was starting, a process that ends) still stops: the thread is told
+/// and waited for, so nothing keeps copying the screen into a file nobody
+/// will be told about.
+impl Drop for Recording {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
 /// Starts recording. It fails at once when the encoder cannot be built or
 /// the compositor will not copy; later failures end the recording, and
 /// [`Recording::stop`] reports them.
@@ -112,7 +136,10 @@ pub fn start(request: RecordingRequest) -> Result<Recording, Ending> {
             Err(ending)
         }
         Err(_) => {
+            // Told to stop and waited for, so it cannot create the file again
+            // after the caller has deleted it.
             stop.store(true, Ordering::SeqCst);
+            let _ = thread.join();
             Err(Ending::FailedToStart(
                 "the compositor did not give the first frame in time".into(),
             ))
@@ -144,7 +171,7 @@ fn run(
     let infos = client.output_infos();
     let mut sources = Vec::new();
     for (index, info) in infos.iter().enumerate() {
-        let Some(info) = info else { continue };
+        let Ok(info) = info else { continue };
         if info.logical.intersection(&request.area).is_none() {
             continue;
         }
@@ -188,7 +215,8 @@ fn run(
         .map(|count| count.get())
         .unwrap_or(1);
     let description = format!(
-        "appsrc name=source is-live=true format=time do-timestamp=false ! {} ! filesink name=sink",
+        "appsrc name=source {} ! {} ! filesink name=sink",
+        SOURCE_PROPERTIES,
         encoder_description(threads)
     );
     let pipeline = match gst::parse::launch(&description)
@@ -394,6 +422,97 @@ fn refire(client: &mut Client, index: usize) -> Result<(), CaptureError> {
 #[cfg(test)]
 mod tests {
     use super::{ELEMENTS, encoder_description};
+
+    #[test]
+    fn the_source_holds_two_frames_and_drops_the_oldest() {
+        use super::{QUEUED_FRAMES, SOURCE_PROPERTIES};
+        use gstreamer::prelude::*;
+        assert!(SOURCE_PROPERTIES.contains("leaky-type=downstream"));
+        assert!(SOURCE_PROPERTIES.contains(&format!("max-buffers={QUEUED_FRAMES}")));
+        // GStreamer accepts the whole description.
+        test_prerequisites::require_that!(
+            "GStreamer with appsrc and vp8enc",
+            gstreamer::init().is_ok()
+                && gstreamer::ElementFactory::find("appsrc").is_some()
+                && gstreamer::ElementFactory::find("vp8enc").is_some()
+        );
+        let description = format!(
+            "appsrc name=source {SOURCE_PROPERTIES} ! {} ! fakesink",
+            super::encoder_description(2)
+        );
+        let pipeline = gstreamer::parse::launch(&description).unwrap();
+        let pipeline = pipeline.downcast::<gstreamer::Bin>().unwrap();
+        let source = pipeline.by_name("source").unwrap();
+        assert_eq!(source.property::<u64>("max-buffers"), 2);
+    }
+
+    /// Behind a consumer that takes 50 ms a frame, 40 frames pushed at once
+    /// leave the source holding no more than its two: the rest are dropped,
+    /// not queued.
+    #[test]
+    fn a_slow_encoder_makes_the_source_drop_frames_rather_than_queue_them() {
+        use super::SOURCE_PROPERTIES;
+        use gstreamer::prelude::*;
+        test_prerequisites::require_that!(
+            "GStreamer with appsrc",
+            gstreamer::init().is_ok() && gstreamer::ElementFactory::find("appsrc").is_some()
+        );
+        let description = format!(
+            "appsrc name=source {SOURCE_PROPERTIES} caps=video/x-raw,format=BGRx,width=64,height=64,framerate=30/1 \
+             ! identity sleep-time=50000 ! fakesink sync=false"
+        );
+        let pipeline = gstreamer::parse::launch(&description)
+            .unwrap()
+            .downcast::<gstreamer::Pipeline>()
+            .unwrap();
+        let source = pipeline
+            .by_name("source")
+            .unwrap()
+            .downcast::<gstreamer_app::AppSrc>()
+            .unwrap();
+        pipeline.set_state(gstreamer::State::Playing).unwrap();
+        let mut most = 0u64;
+        for index in 0..40u64 {
+            let mut buffer = gstreamer::Buffer::with_size(64 * 64 * 4).unwrap();
+            buffer
+                .get_mut()
+                .unwrap()
+                .set_pts(gstreamer::ClockTime::from_mseconds(index * 33));
+            source.push_buffer(buffer).unwrap();
+            most = most.max(source.property::<u64>("current-level-buffers"));
+        }
+        pipeline.set_state(gstreamer::State::Null).unwrap();
+        assert!(most <= 2, "the source held {most} frames");
+    }
+
+    #[test]
+    fn dropping_a_recording_stops_its_thread_and_waits_for_it() {
+        use super::Recording;
+        use screenshot_core::recording::Ending;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::time::{Duration, Instant};
+        let stop = Arc::new(AtomicBool::new(false));
+        let finished = Arc::new(AtomicBool::new(false));
+        let (flag, done) = (stop.clone(), finished.clone());
+        let thread = std::thread::spawn(move || {
+            while !flag.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            done.store(true, Ordering::SeqCst);
+            Ending::Stopped
+        });
+        let recording = Recording {
+            stop,
+            started: Instant::now(),
+            thread: Some(thread),
+        };
+        drop(recording);
+        assert!(
+            finished.load(Ordering::SeqCst),
+            "the thread was not waited for"
+        );
+    }
 
     #[test]
     fn the_encoder_is_gnomes_vp8_into_webm() {

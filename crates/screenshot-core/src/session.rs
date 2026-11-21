@@ -80,18 +80,56 @@ pub enum Action {
     TakeScreens,
     TakeFocusedWindow,
     StopRecording,
-    /// Already busy with the interface (or a portal call), or nothing to do.
+    /// Bring a fading interface back, in picture mode.
+    Reopen,
+    /// Bring a fading interface back, in recording mode.
+    ReopenRecording,
+    /// Already busy with the interface (or a portal call), refused while
+    /// locked, or nothing to do.
     Nothing,
 }
 
-/// The decision: Print and the recording key stop a running recording (K3,
-/// R6); nothing opens over an interface already open (GNOME's
-/// `_openingCoroutineInProgress`, `open` 1566); the instant pictures wait
-/// for nothing.
-pub fn action_for(request: Request, recording: bool, interface_open: bool) -> Action {
+/// The interface's state, as a request sees it.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum Shown {
+    #[default]
+    Closed,
+    /// Open, or being opened.
+    Open,
+    /// Fading out (O5): a new Print brings it back, as GNOME's `open` does
+    /// "from in process of closing" (1579).
+    Closing,
+}
+
+/// The session's lock, as logind reports it.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct Lock {
+    /// logind's `LockedHint`: a lock screen is up.
+    pub locked: bool,
+}
+
+/// The decision:
+///
+/// - Print and the recording key stop a running recording (K3, R6).
+/// - While the session is locked, the recording interface and the window
+///   picture are refused, as GNOME binds them in `restrictedModes`
+///   (1400–1404, 1414–1427) and allows no recording on its lock screen
+///   (`allowScreencast` 1469–1473). The interface is refused too, where
+///   GNOME's Print (`uiModes`, 1406–1412) opens it over its own lock screen:
+///   COSMIC's lock is an `ext-session-lock` surface that hides every layer
+///   surface and takes all input, so an interface there could be neither
+///   seen nor used. Shift+Print stays, as GNOME's `screenshot` binding is in
+///   `uiModes`.
+/// - Nothing opens over an interface already open (`open` 1566); one
+///   fading out comes back.
+/// - The instant pictures wait for nothing.
+pub fn action_for(request: Request, recording: bool, shown: Shown, lock: Lock) -> Action {
     match request {
         Request::Interface | Request::Recording if recording => Action::StopRecording,
-        Request::Interface | Request::Recording if interface_open => Action::Nothing,
+        Request::Interface | Request::Recording | Request::Window if lock.locked => Action::Nothing,
+        Request::Interface | Request::Recording if shown == Shown::Open => Action::Nothing,
+        Request::Interface if shown == Shown::Closing => Action::Reopen,
+        Request::Recording if shown == Shown::Closing => Action::ReopenRecording,
         Request::Interface => Action::OpenInterface,
         Request::Recording => Action::OpenRecordingInterface,
         Request::Screen => Action::TakeScreens,
@@ -127,8 +165,11 @@ impl Holds {
     }
 }
 
-/// What Better Screenshot keeps between runs (spec C9): the area, the type,
-/// and the pointer switch, in `$XDG_STATE_HOME/better-os/screenshot/state.json`.
+/// What Better Screenshot keeps between runs within one login (spec C9,
+/// P1): the area, the type, and the pointer switch, as GNOME keeps them for
+/// as long as its shell runs. They live in the login's private runtime
+/// directory (`$XDG_RUNTIME_DIR/better-os/screenshot/state.json`), which
+/// logind removes at logout, so the next login starts as GNOME's would.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Remembered {
@@ -150,7 +191,7 @@ impl Remembered {
 
 #[cfg(test)]
 mod tests {
-    use super::{Action, Holds, Remembered, Request, action_for};
+    use super::{Action, Holds, Lock, Remembered, Request, Shown, action_for};
     use crate::geometry::Rect;
     use crate::interface::{Kept, Kind};
 
@@ -191,32 +232,70 @@ mod tests {
 
     #[test]
     fn the_keys_stop_a_recording_and_nothing_opens_twice() {
+        let open =
+            |request, recording, shown| action_for(request, recording, shown, Lock::default());
         assert_eq!(
-            action_for(Request::Interface, false, false),
+            open(Request::Interface, false, Shown::Closed),
             Action::OpenInterface
         );
         assert_eq!(
-            action_for(Request::Recording, false, false),
+            open(Request::Recording, false, Shown::Closed),
             Action::OpenRecordingInterface
         );
         assert_eq!(
-            action_for(Request::Recording, true, false),
+            open(Request::Recording, true, Shown::Closed),
             Action::StopRecording
         );
         assert_eq!(
-            action_for(Request::Interface, true, false),
+            open(Request::Interface, true, Shown::Closed),
             Action::StopRecording
         );
-        assert_eq!(action_for(Request::Interface, false, true), Action::Nothing);
         assert_eq!(
-            action_for(Request::Screen, true, false),
+            open(Request::Interface, false, Shown::Open),
+            Action::Nothing
+        );
+        assert_eq!(
+            open(Request::Screen, true, Shown::Closed),
             Action::TakeScreens
         );
         assert_eq!(
-            action_for(Request::Window, false, true),
+            open(Request::Window, false, Shown::Open),
             Action::TakeFocusedWindow
         );
-        assert_eq!(action_for(Request::Portal, false, false), Action::Nothing);
+        assert_eq!(open(Request::Portal, false, Shown::Closed), Action::Nothing);
+    }
+
+    #[test]
+    fn print_during_the_fade_out_brings_the_interface_back() {
+        let lock = Lock::default();
+        assert_eq!(
+            action_for(Request::Interface, false, Shown::Closing, lock),
+            Action::Reopen
+        );
+        assert_eq!(
+            action_for(Request::Recording, false, Shown::Closing, lock),
+            Action::ReopenRecording
+        );
+    }
+
+    #[test]
+    fn a_locked_session_refuses_the_interface_the_recording_and_the_window() {
+        let locked = Lock { locked: true };
+        for request in [Request::Interface, Request::Recording, Request::Window] {
+            assert_eq!(
+                action_for(request, false, Shown::Closed, locked),
+                Action::Nothing
+            );
+        }
+        assert_eq!(
+            action_for(Request::Screen, false, Shown::Closed, locked),
+            Action::TakeScreens
+        );
+        // A running recording can still be stopped.
+        assert_eq!(
+            action_for(Request::Recording, true, Shown::Closed, locked),
+            Action::StopRecording
+        );
     }
 
     #[test]

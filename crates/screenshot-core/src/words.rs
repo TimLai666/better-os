@@ -71,6 +71,9 @@ pub struct InterfaceWords {
     pub no_windows_here: &'static str,
     /// Why nothing is saved while the administrator disabled saving.
     pub saving_disabled: &'static str,
+    /// Why nothing is saved when whether saving is allowed could not be
+    /// read; `{}` the reason.
+    pub saving_unknown: &'static str,
 }
 
 impl InterfaceWords {
@@ -92,6 +95,7 @@ impl InterfaceWords {
                 recording_title: "Recording the screen, {}",
                 no_windows_here: "No windows on this screen",
                 saving_disabled: "Saving to disk is turned off on this computer.",
+                saving_unknown: "Nothing was saved, because whether saving to disk is allowed on this computer could not be read: {}",
             },
             Locale::TraditionalChinese => InterfaceWords {
                 selection: "選取範圍",
@@ -109,6 +113,7 @@ impl InterfaceWords {
                 recording_title: "正在錄製螢幕，{}",
                 no_windows_here: "這個螢幕上沒有視窗",
                 saving_disabled: "這台電腦已關閉存檔到磁碟的功能。",
+                saving_unknown: "沒有存檔，因為讀不到這台電腦是否允許存檔到磁碟：{}",
             },
         }
     }
@@ -132,8 +137,9 @@ pub struct Notice {
 pub enum NoticeKind {
     /// A picture was copied and saved (S7).
     PictureSaved,
-    /// A picture was copied; saving is locked down (S6).
-    PictureCopiedOnly,
+    /// A picture was copied; saving is disabled (S6), or could not be known
+    /// to be allowed (the reason, to append).
+    PictureCopiedOnly(Option<String>),
     /// A picture was copied, and saving it failed with this reason.
     PictureNotSaved(String),
     /// A recording was saved (R7).
@@ -177,13 +183,19 @@ impl Notice {
                 show_in_files: show,
                 icon: picture_icon,
             },
-            NoticeKind::PictureCopiedOnly => Notice {
+            NoticeKind::PictureCopiedOnly(reason) => Notice {
                 app_name,
                 title: pick("已擷取螢幕快照", "Screenshot captured"),
-                body: pick(
-                    "可以從剪貼簿貼上這張圖片。",
-                    "You can paste the image from the clipboard.",
-                ),
+                body: {
+                    let body = pick(
+                        "可以從剪貼簿貼上這張圖片。",
+                        "You can paste the image from the clipboard.",
+                    );
+                    match reason {
+                        Some(reason) => format!("{body} {reason}"),
+                        None => body,
+                    }
+                },
                 show_in_files: None,
                 icon: picture_icon,
             },
@@ -266,6 +278,7 @@ mod tests {
                 words.recording_title,
                 words.no_windows_here,
                 words.saving_disabled,
+                words.saving_unknown,
             ] {
                 assert!(!word.trim().is_empty());
             }
@@ -282,7 +295,15 @@ mod tests {
         assert_eq!(saved.title, "Screenshot captured");
         assert_eq!(saved.body, "You can paste the image from the clipboard.");
         assert_eq!(saved.show_in_files, Some("Show in Files"));
-        let copied = Notice::of(&NoticeKind::PictureCopiedOnly, Locale::TraditionalChinese);
+        let copied = Notice::of(
+            &NoticeKind::PictureCopiedOnly(None),
+            Locale::TraditionalChinese,
+        );
+        let unknown = Notice::of(
+            &NoticeKind::PictureCopiedOnly(Some("why".into())),
+            Locale::English,
+        );
+        assert!(unknown.body.ends_with(" why"));
         assert_eq!(copied.title, "已擷取螢幕快照");
         assert_eq!(copied.show_in_files, None);
     }

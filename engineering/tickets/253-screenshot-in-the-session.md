@@ -139,6 +139,8 @@ files, and the state file.
 | Escape and the close button close without a picture; close on the desktop's side (O4) | yes | Escape (11), portal answer 1; close side from GTK's `button-layout`, left side not seen |
 | Fade in 200 ms (O5) | yes | GPUI's animation, easing out as Clutter's `EASE_OUT_QUAD` |
 | Fade out 200 ms, the frozen screen included, no input meanwhile (O5) | yes | captured 60 ms after Escape half faded (`fade-and-lockdown/02-fading-out.png`: the shade at (100, 100) read 19, then 34, then 39 closed) |
+| Print during the fade out brings it back (O5) | yes | core test (`Shown::Closing` → `Reopen`); nested: Escape then Print, the interface was open after (`review-checks/1-reopened.png`), but whether the second Print landed inside the 200 ms was not measured |
+| The session's lock (O9) | yes | core test of the decision; logind's `Lock` and `LockedHint` are read from the system bus and were not exercised (no test may lock the owner's session; ticket 201's VM) |
 | An output change closes the interface (O6) | yes | not exercised: the nested compositor has one output |
 | Panel on the pointer's output, tooltips (O7, O8) | yes | nested (01); cursor session `enter` read |
 | Three types, one chosen, kept (C1) | yes | S, C, W keys and buttons (05, 06); state file |
@@ -149,7 +151,7 @@ files, and the state file.
 | Area: rubber band at the edge (C6) | yes | core test |
 | Area: click makes a 40 px square (C7) | yes | core test |
 | Area: panel fades while dragging (C8) | yes | code; not captured mid-drag |
-| Area remembered and reset (C9) | yes | the portal's interface reopened on the last area; core tests |
+| Area remembered and reset (C9) | yes | the portal's interface reopened on the last area; core tests; kept in the login's runtime directory since the review |
 | Area across outputs (C10) | yes | core and controller tests with two outputs; one nested output only |
 | Screen: choose by click and arrows (C11) | yes | 05; arrows by core test |
 | Window: windows laid out, focused one chosen, check mark (C12) | yes | 06; at 150 % the six runs laid the fixture out at its buffer's size divided by the scale (a GPUI window drawing at 1), fixed to the compositor's logical width and seen again (`after-fixes/02-window-150.png`); arrows by core test |
@@ -167,7 +169,7 @@ files, and the state file.
 | Saved under Pictures/Screenshots with GNOME's names, both languages, suffixes (S4) | yes | `Screenshot from …` and `螢幕快照/螢幕快照 …`; core tests |
 | Recently used files (S5) | yes | `recently-used.xbel` in each run |
 | Saving disabled (S6, A5) | yes | the lock from a dconf-compiled database read through a sandbox profile (`fade-and-lockdown/`): Enter put a PNG on the clipboard (`wl-paste`) and saved nothing, the notification had no actions, the recording was refused with "Screencast failed to start", the portal's instant picture answered 2, PickColor still answered 0; `defaults-platform` `dconf_stack` tests (10) on fixture databases |
-| Notification with image, open, Show in Files (S7, R7) | yes | the stand-in service got title, body, image path, actions; its "Show in Files" press reached `FileManager1.ShowItems` with the file |
+| Notification with image, open, Show in Files (S7, R7) | yes | the stand-in service got title, body, image path, actions, and no `transient` hint; its "Show in Files" press reached `FileManager1.ShowItems` with the file; its body press opened the picture in a fixture viewer named the default for `image/png` in the sandbox's `mimeapps.list` (`open-from-notification/viewer.log`) |
 | Shift+Print and Alt+Print without the interface (S8) | yes | `--screen` 1280 × 800, `--window` 720 × 420 |
 | Recording of an area or a screen, 30 fps, pointer, no sound (R1) | yes | WebM VP8 at the area's size × scale, video only (`recording-discoverer.txt`), through `ext-image-copy-capture` (the spec says why not the ScreenCast portal); GNOME 46's recorder has no audio element in any pipeline either (`screencastService.js` 33–79, 480–486) |
 | Interface closes at once when recording starts (R2) | yes | 08 |
@@ -176,9 +178,9 @@ files, and the state file.
 | WebM under Videos/Screencasts, GNOME's names (R5) | yes | every run |
 | Failure notices (R8) | yes | core tests; disk full not provoked |
 | Portal interactive: interface, URI, cancel (A1) | yes | real frontend: response 0 with the URI (12), Escape → 1 |
-| Portal non-interactive: flash, URI (A2) | yes | real frontend after the permission store said yes: response 0, the flash captured; "Deny" in the Access dialog → response 2, no file |
+| Portal non-interactive: flash, URI, a file only (A2) | yes | real frontend after the permission store said yes: response 0 with `file://…/Screenshot.png` in the home folder (the sandbox had no Pictures), clipboard empty before and after, no notification, no recent list (`review-checks/2-*`); "Deny" in the Access dialog → response 2, no file |
 | PickColor (A3) | yes | real frontend: response 0 with `(ddd)` (13) |
-| Request.Close; one request at a time (A4) | yes | Close closed the interface; busy refusal by core test |
+| Request.Close, the caller leaving, one request at a time, only the frontend served (A4) | yes | Close closed the interface (`review-checks/4-after-close.png`); a PickColor stayed pending through a Shift+Print and was answered by the click (`review-checks/3-pickcolor.txt`); the caller leaving and a caller other than the frontend by private-bus tests; busy and binding by core tests |
 
 ### What is left, and why
 
@@ -198,9 +200,7 @@ files, and the state file.
 - **Untested:** the lockdown through a real `system-db` line (the sandbox
   cannot write `/etc/dconf/db/`; the nested run used a `file-db` line,
   which dconf opens and locks the same way, and the reader's tests cover
-  `system-db` paths), and a fade interrupted by a new Print Screen (GNOME
-  reopens from the fading state; Better Screenshot ignores the key until
-  the fade ends, 200 ms).
+  `system-db` paths).
 - **What ticket 203 adds** to its package: `/usr/bin/better-screenshot`
   (`cargo build -p screenshot-gui`); the three files of
   `packaging/screenshot/` under `/usr/share/xdg-desktop-portal/portals/`,
@@ -231,3 +231,58 @@ files, and the state file.
   Screenshot.
 - The copies of the StatusNotifierItem code and of the FileManager1 call:
   tickets 300 and 301.
+
+### The independent review of 2026-11-22
+
+`better-os-evidence/253/review-2026-11-22.md`; every finding was checked
+against the code and fixed. Each fix has a test that fails without it unless
+said otherwise.
+
+- **P1 portal answered by another capture:** `screenshot_core::portal::
+  PortalSlot` binds the pending request to the capture it started
+  (`Origin`); a person's capture never answers it (`slot_tests`), and the
+  interface, pictures, and `pick` answer only their own origin.
+- **P2 a stop while the recording starts:** `recording::Phase` remembers
+  the stop and the start's completion stops the recorder, waits, and deletes
+  the file; `Recording` stops and joins its thread on drop
+  (`dropping_a_recording_stops_its_thread_and_waits_for_it`); the first-frame
+  timeout joins the thread before the file is deleted.
+- **P3 unbounded `appsrc`:** two frames, oldest dropped, and a two-frame
+  queue (`a_slow_encoder_makes_the_source_drop_frames_rather_than_queue_them`:
+  39 frames waiting before, at most 2 after). 2880 × 1800 nested recording,
+  34 s of a moving picture: 372 MB peak in its scope, with or without the
+  bound on this machine (`memory/`).
+- **P4 opening from the notification:** `screenshot_gui::open` launches the
+  `mimeapps.list` default through `app-chooser-core` and
+  `app-catalog-platform`'s launcher, then the portal's `OpenFile` with a
+  descriptor; Show in Files falls back to `OpenDirectory` with one. Seen in
+  the nested run; the portal fallbacks were not run.
+- **P2-level: the portal's instant picture** now writes only
+  `Screenshot.png` (spec A2; `the_portals_instant_picture_goes_to_pictures_or_home_as_screenshot`).
+- **The lockdown read** fails closed: `platform::saving_from` (test
+  `only_dconfs_null_configuration_reads_as_allowed`), `lockdown::Saving`;
+  `dconf_stack` reads a COSMIC or Better OS process without `DCONF_PROFILE`
+  as dconf does (`resolve_profile_as_dconf`), and a damaged `.locks` is noted
+  with the values still read (`gvdb` and `dconf_stack` tests).
+- **P3-level:** a caller leaving the bus closes its request and only the
+  frontend is served (private-bus tests in `service.rs`); Show Pointer and
+  the area are kept per login (spec C9, P1); the lock (O9); notifications
+  not transient, the copied-only one with `image-data`; the notification
+  listener ends at its deadline without any signal (private-bus test);
+  outputs without `xdg_output` or a picture are left out with the reason
+  (`assemble_outputs` and `OutputState` tests); the current mode only;
+  the vendored protocol notices are in `docs/third-party-licenses.md` from
+  `packaging/generate-third-party-notices.sh`; Better Screenshot reads the
+  XDG data directories through `files_platform::xdg` and keeps no state
+  path of its own, and ticket 302 folds the other copies; the recorded
+  path is no longer printed; Print during the fade reopens.
+- **Transforms:** the rotations were applied the wrong way round; now the
+  inverse, tested against the protocol's definition and seen at `_90`,
+  `Flipped90`, and `Flipped180` in the nested compositor; `_270` could not
+  be checked there (spec, "The compositor").
+- **Who may call the backend:** recorded in the spec's portal section; only
+  the frontend's name owner is answered.
+
+Retaken after the fixes: `zh_TW-dark-1`, `en_US-light-1.5`, and the window
+mode at 150 % in both languages and both themes (`zh_TW-dark-1.5`,
+`zh_TW-light-1.5`, `en_US-dark-1.5`, `en_US-light-1.5`, screenshot 06).

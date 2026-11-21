@@ -1,13 +1,16 @@
 //! What Better Screenshot reads and writes on the machine: the Pictures and
 //! Videos folders (through `files_platform::xdg`, the one reader of
-//! `xdg-user-dirs`), its state file, the recently used files, and the
-//! shutter sound.
+//! `xdg-user-dirs`), its state file, the recently used files, the lockdown
+//! key, and the shutter sound.
 
 use std::path::{Path, PathBuf};
 
+use defaults_platform::dconf_profile::ProfileError;
+use defaults_platform::dconf_stack::DatabaseStack;
 use files_core::location::Location;
 use files_platform::{UserDirectories, UserDirectory};
 use screenshot_core::files::{RecentEntry, record_recent, xbel_stamp};
+use screenshot_core::lockdown::Saving;
 use screenshot_core::session::Remembered;
 
 /// The Pictures or Videos folder, or the home folder when there is neither.
@@ -23,17 +26,19 @@ pub fn user_folder(directory: UserDirectory) -> Option<PathBuf> {
         .or_else(|| directories.home().and_then(local))
 }
 
-/// `$XDG_STATE_HOME/better-os/screenshot/state.json`.
+/// `$XDG_RUNTIME_DIR/better-os/screenshot/state.json`: what is remembered
+/// lasts as long as the login, as GNOME keeps it in the shell's memory for
+/// the session (spec C9, P1). The runtime directory goes at logout, so the
+/// next login starts with GNOME's defaults. Without a private runtime
+/// directory nothing is remembered beyond the process.
 pub fn state_path() -> Option<PathBuf> {
-    let state = std::env::var_os("XDG_STATE_HOME")
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute())
-        .or_else(|| {
-            std::env::var_os("HOME")
-                .map(PathBuf::from)
-                .map(|home| home.join(".local/state"))
-        })?;
-    Some(state.join("better-os/screenshot/state.json"))
+    match better_core::private_dir::private_session_dir(&["better-os", "screenshot"]) {
+        Ok(dir) => Some(dir.join("state.json")),
+        Err(error) => {
+            eprintln!("better-screenshot: nothing is remembered: {error}");
+            None
+        }
+    }
 }
 
 pub fn load_remembered(path: Option<&Path>) -> Remembered {
@@ -53,20 +58,48 @@ pub fn save_remembered(path: Option<&Path>, remembered: &Remembered) {
     }
 }
 
-/// Whether saving to disk is disabled (`org.gnome.desktop.lockdown
-/// disable-save-to-disk`), read through the session's dconf profile with its
-/// system databases and locks (`defaults_platform::dconf_stack`). Read at
-/// each request, as GNOME reads it. A profile dconf cannot resolve gives
-/// dconf's null configuration, where the schema's default, false, applies.
-pub fn saving_disabled() -> bool {
-    match defaults_platform::dconf_stack::session_stack() {
-        Ok(stack) => {
-            for note in &stack.notes {
-                eprintln!("better-screenshot: {note}");
-            }
-            stack.boolean(screenshot_core::lockdown::KEY, false)
+/// Whether saving to disk is allowed (`org.gnome.desktop.lockdown
+/// disable-save-to-disk`), read through the profile dconf puts in force with
+/// its system databases and locks (`defaults_platform::dconf_stack`). Read
+/// at each request, as GNOME reads it.
+pub fn saving() -> Saving {
+    let stack = defaults_platform::dconf_stack::session_stack();
+    if let Ok(stack) = &stack {
+        for note in &stack.notes {
+            eprintln!("better-screenshot: {note}");
         }
-        Err(_) => false,
+    }
+    saving_from(stack)
+}
+
+/// The decision over a read stack:
+///
+/// - The key true is disabled, whatever else was noted.
+/// - A database that could not be read, or whose locks could not, leaves
+///   the answer unknown: it might have set or locked the key.
+/// - `DCONF_PROFILE` naming a profile that is missing or unreadable is
+///   dconf's null configuration (`dconf-engine-profile.c`, "using the null
+///   configuration"), where the schema's default, false, is what GSettings
+///   shows: allowed.
+/// - Any other profile dconf could not be followed through is unknown.
+///
+/// Unknown is never turned into allowed (AGENTS.md); the caller treats it as
+/// disabled and says why.
+pub fn saving_from(stack: Result<DatabaseStack, ProfileError>) -> Saving {
+    match stack {
+        Ok(stack) => {
+            if stack.boolean(screenshot_core::lockdown::KEY, false) {
+                Saving::Disabled
+            } else if !stack.notes.is_empty() {
+                Saving::Unknown(stack.notes.join("; "))
+            } else {
+                Saving::Allowed
+            }
+        }
+        Err(ProfileError::NamedProfileMissing { .. } | ProfileError::Unreadable { .. }) => {
+            Saving::Allowed
+        }
+        Err(error) => Saving::Unknown(error.to_string()),
     }
 }
 
@@ -96,16 +129,13 @@ pub fn add_recent(path: &Path, mime: &'static str) {
 
 /// The sound theme's `screen-capture` sound (the freedesktop sound naming
 /// specification's name, which GNOME plays, `js/ui/screenshot.js` 2392):
-/// the first of `$XDG_DATA_DIRS/sounds/<theme>/stereo/screen-capture.*`
-/// in the freedesktop theme.
+/// the first `sounds/freedesktop/stereo/screen-capture.*` in the XDG data
+/// directories (`files_platform::xdg::data_dirs_from_env`, the one reading
+/// of that rule).
 pub fn shutter_sound() -> Option<PathBuf> {
-    let dirs = std::env::var("XDG_DATA_DIRS")
-        .ok()
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| "/usr/local/share:/usr/share".into());
-    for dir in dirs.split(':').filter(|dir| !dir.is_empty()) {
+    for dir in files_platform::xdg::data_dirs_from_env() {
         for extension in ["oga", "ogg", "wav"] {
-            let path = Path::new(dir)
+            let path = dir
                 .join("sounds/freedesktop/stereo")
                 .join(format!("screen-capture.{extension}"));
             if path.is_file() {
@@ -148,7 +178,32 @@ pub fn play_shutter() {
 
 #[cfg(test)]
 mod tests {
-    use super::{load_remembered, save_remembered};
+    use super::{load_remembered, save_remembered, saving_from};
+    use defaults_platform::dconf_profile::ProfileError;
+    use defaults_platform::dconf_stack::DatabaseStack;
+    use screenshot_core::lockdown::Saving;
+
+    #[test]
+    fn only_dconfs_null_configuration_reads_as_allowed() {
+        let empty = DatabaseStack {
+            sources: Vec::new(),
+            notes: Vec::new(),
+        };
+        assert_eq!(saving_from(Ok(empty)), Saving::Allowed);
+        let noted = DatabaseStack {
+            sources: Vec::new(),
+            notes: vec!["system-db:local is not readable".into()],
+        };
+        assert!(matches!(saving_from(Ok(noted)), Saving::Unknown(_)));
+        let missing = ProfileError::NamedProfileMissing {
+            name: "betteros".into(),
+            searched: Vec::new(),
+        };
+        assert_eq!(saving_from(Err(missing)), Saving::Allowed);
+        let other = ProfileError::InvalidDatabaseName { name: "a/b".into() };
+        assert!(matches!(saving_from(Err(other)), Saving::Unknown(_)));
+    }
+
     use screenshot_core::geometry::Rect;
     use screenshot_core::session::Remembered;
 

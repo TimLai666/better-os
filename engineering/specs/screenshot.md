@@ -34,10 +34,11 @@ promise; ticket 253's notes say how each was checked.
 | O2 | The interface shows the screen as it was when it opened (a frozen picture of every output), and what is captured is that picture, so the interface itself, menus, and anything that changes after the key never get into the picture. | `open` 1612–1634 (`screenshot_stage_to_content`), `_saveScreenshot` 1893 |
 | O3 | Opening while a recording runs does not open the interface (Better Screenshot stops the recording instead, R6). | `open` 1569 |
 | O4 | Escape, the close button, or the interface losing its grab closes it without capturing. The close button sits at the panel's top corner on the side the desktop's window buttons put close. | `_closeButton` 1197–1218, `_refreshButtonLayout` 1486, `grab` 1652 |
-| O5 | The whole interface, the frozen screen included, fades in and out over 200 ms, easing out (Clutter's `EASE_OUT_QUAD`); it takes no input while it fades out. A capture fades it out after the picture is taken; starting a recording and an output change close it at once. | `open` 1665–1675, `close` 1701–1716, `_onCaptureButtonClicked` 1879–1886, `_startScreencast` 1976, `monitors-changed` 1394 |
+| O5 | The whole interface, the frozen screen included, fades in and out over 200 ms, easing out (Clutter's `EASE_OUT_QUAD`); it takes no input while it fades out. A capture fades it out after the picture is taken; starting a recording and an output change close it at once. Print (or the recording key) during the fade out brings it back as it was. | `open` 1665–1675 and 1579 ("in process of closing"), `close` 1701–1716, `_onCaptureButtonClicked` 1879–1886, `_startScreencast` 1976, `monitors-changed` 1394 |
 | O6 | An output added or removed while the interface is open closes it. | `monitors-changed` 1394 |
 | O7 | The panel (type buttons, picture/recording switch, capture button, pointer switch) is on the primary output's bottom centre, 4 em above the edge. Better Screenshot puts it on the output the pointer is on, because COSMIC has no primary output. | `_primaryMonitorBin` 1183, `_screenshot.scss` `.screenshot-ui-panel` |
 | O8 | Every button has a tooltip: "Area Selection", "Screen Selection", "Window Selection", "Take Screenshot", "Record Screen", "Capture", "Show Pointer". | 1263–1377 |
+| O9 | While the session is locked (logind's `LockedHint`), Alt+Print and the recording key do nothing and no recording starts, as in GNOME; Shift+Print still takes the screens, as in GNOME. Print does nothing either, where GNOME opens the interface over its lock screen: COSMIC's lock is an `ext-session-lock` surface that hides every layer surface and takes all input, so the interface could be neither seen nor used. logind's `Lock` (the request to lock) and `LockedHint` turning true close an open interface at once, as GNOME closes it on every session mode change, and a pending portal call hears "cancelled". `cosmic-greeter` never sets `LockedHint` (ticket 201); until ticket 262 makes it follow the lock, only `Lock` closes the interface, and a Print while locked opens one the lock hides until it is unlocked. | `uiModes` and `restrictedModes` 1400–1427, `_sessionUpdated` 1463–1465, `allowScreencast` 1469–1473 |
 
 ### Choosing what is captured
 
@@ -51,7 +52,7 @@ promise; ticket 253's notes say how each was checked.
 | C6 | Area: moving keeps the size when it reaches a screen edge, and the pointer then slides relative to the area ("rubber band"); resizing stops at the screen edges. | `_onMotion` 547–615 |
 | C7 | Area: a click without a drag makes a 40 px × scale square around the point, kept inside the screen. | `stopDrag` 392–421 |
 | C8 | Area: while dragging, the panel and close button fade to 100/255. | `drag-started`/`drag-ended` 1220–1243 |
-| C9 | Area: the area is kept for the next time the interface opens; it is reset to the middle quarter of the primary output (from 3/8 to 5/8 of each side) when it no longer fits the outputs. Better Screenshot keeps it across runs in its state file, since it is not a resident shell. | `reset` 284–312 |
+| C9 | Area: the area is kept for the next time the interface opens; it is reset to the middle quarter of the primary output (from 3/8 to 5/8 of each side) when it no longer fits the outputs. GNOME keeps it, with the type and the pointer switch, as long as the shell runs, which is the login; Better Screenshot, which is not resident, keeps the three in `$XDG_RUNTIME_DIR/better-os/screenshot/state.json`, which logind removes at logout, so each login starts with GNOME's defaults. | `reset` 284–312 |
 | C10 | Area: an area may span outputs (the stage is one surface in GNOME). | `UIAreaSelector` binds to the stage |
 | C11 | Screen: each output is a button; the primary is chosen when the interface opens (Better Screenshot: the one with the pointer); clicking one chooses it; arrow keys move between them. | `_rebuildMonitorBins` 1529–1562, key handler 2177–2200 |
 | C12 | Window: the windows of the current workspace on each output, without override-redirect windows, are laid out over that output as in the overview, each a picture of the window as it was; the focused window is chosen at open; clicking one chooses it; arrow keys move between them; the chosen one has a border and a check mark. | `UIWindowSelector.capture` 1009–1041, `UIWindowSelectorLayout` 710, `UIWindowSelectorWindowContent` 775–929 |
@@ -62,7 +63,7 @@ promise; ticket 253's notes say how each was checked.
 
 | # | Promise | Where GNOME does it |
 | --- | --- | --- |
-| P1 | "Show Pointer" puts the pointer into the picture (area, screen, or window) or the recording; it is off when the interface opens; while on, the frozen pointer is drawn over the frozen screen. | `_showPointerButton` 1366–1388, `_saveScreenshot` 1900–1931, `_startScreencast` 1960 |
+| P1 | "Show Pointer" puts the pointer into the picture (area, screen, or window) or the recording; it is off the first time the interface opens in a login and then stays as it was left (GNOME never resets it, only the picture/recording switch, `_finishClosing` 1677–1698; Better Screenshot keeps it with the area, C9); while on, the frozen pointer is drawn over the frozen screen. | `_showPointerButton` 1366–1388, `_saveScreenshot` 1900–1931, `_startScreencast` 1960 |
 | P2 | The picture/recording switch: two buttons (camera and video camera), exactly one on; recording mode hides the frozen picture so the live screen shows, and gives the capture button its red recording look. | `_shotButton`/`_castButton` 1309–1341, `_onShotButtonToggled` 1809, `_onCastButtonToggled` 1825 |
 | P3 | The recording button is shown only when recording is supported, and is unavailable when the interface was opened for a picture only (the portal). | `_syncCastButton` 1467 |
 | P4 | Closing the interface switches back to picture mode. | `_finishClosing` 1682 |
@@ -84,8 +85,8 @@ promise; ticket 253's notes say how each was checked.
 | S3 | It goes to the clipboard as `image/png` first, so a failed save still leaves it there. | `_storeScreenshot` 2215–2217 |
 | S4 | It is saved in `<Pictures>/<Screenshots>/<Screenshot from %Y-%m-%d %H-%M-%S>.png`, where Pictures is the person's `XDG_PICTURES_DIR` from `xdg-user-dirs` (the home folder when it has none) and the folder and file words are GNOME's translations (English "Screenshots", "Screenshot from %s"; zh-TW 「螢幕快照」, 「螢幕快照 %s」), so a person coming from GNOME finds them in the same folder; the folder is created when missing; an existing name gets `-1`, `-2`, … and is never overwritten. | `_storeScreenshot` 2272–2306, `po/zh_TW.po` |
 | S5 | The saved file is added to the recently used files (`$XDG_DATA_HOME/recently-used.xbel`). | `saveRecentFile` 2245–2265 |
-| S6 | When saving to disk is disabled (`org.gnome.desktop.lockdown disable-save-to-disk`, read at each request through the session's dconf profile, system databases and locks included), a picture from the interface, Shift+Print, or Alt+Print is still copied to the clipboard and still notified, but nothing is saved or added to the recently used files, and the notification has no "Show in Files" and opens nothing; a recording is refused at its start with "Screencast failed to start". | 2267–2272, 2343; service `ScreencastAsync` 626–631; `_screencastFailed` 2058–2063 |
-| S7 | A notification "Screenshot captured" / "You can paste the image from the clipboard." from "Screenshot", with the picture as its image; clicking it opens the file; its "Show in Files" action shows the file in the file manager. | 2326–2368 |
+| S6 | When saving to disk is disabled (`org.gnome.desktop.lockdown disable-save-to-disk`, read at each request through the dconf profile in force, system databases and locks included), a picture from the interface, Shift+Print, or Alt+Print is still copied to the clipboard and still notified with the picture as its image (`image-data`), but nothing is saved or added to the recently used files, and the notification has no "Show in Files" and opens nothing; a recording is refused at its start with "Screencast failed to start". When whether saving is allowed cannot be read (a database or its lock table that cannot be read, a profile dconf could not be followed through), it counts as disabled and the notification says why; only `DCONF_PROFILE` naming a profile that is missing or unreadable is dconf's null configuration, where the schema's default (allowed) is what GSettings shows. | 2267–2272, 2343; service `ScreencastAsync` 626–631; `_screencastFailed` 2058–2063 |
+| S7 | A notification "Screenshot captured" / "You can paste the image from the clipboard." from "Screenshot", with the picture as its image; it stays in the notification list after its banner (not transient); clicking it opens the file with the person's default application for it; its "Show in Files" action shows the file in the file manager. | 2326–2368 |
 | S8 | Shift+Print and Alt+Print go through the same S1–S7 without any interface. | 1422–1456 |
 
 ### The recording
@@ -98,7 +99,7 @@ promise; ticket 253's notes say how each was checked.
 | R4 | While it runs, an indicator shows the time as `m:ss`, counting each second from `0:00`, with a stop icon; pressing it stops the recording. GNOME draws it in the top bar; until Better OS's top bar exists, Better Screenshot draws it as its own small bar at the top of the output it records, and also offers a tray item that stops it. | `remoteAccess.js` `ScreenRecordingIndicator` 68–135 |
 | R5 | It is saved as `<Videos>/<Screencasts>/<Screencast from %Y-%m-%d %H-%M-%S>.webm` (VP8 in WebM), Videos from `xdg-user-dirs` (home when none), folder created when missing; zh-TW's folder is 「螢幕錄影」 and the file word stays English, because GNOME 46's zh_TW translation of "Screencast from %d %t" is the stale one with `.webm` and so is not used (`po/zh_TW.po` line 1797). | `_startScreencast` 1994–2005, service `_generateFilePath` 575–620, `_getAbsolutePath` 564 |
 | R6 | It stops from the indicator, the tray item, Ctrl+Shift+Alt+R, or Print. | ticket 253, `stopScreencast` 2027 |
-| R7 | After it stops: a notification "Screencast recorded" with "Click here to view the video." that opens the video, and "Show in Files"; the file is added to the recently used files. | `stopScreencast` 2049, `_showNotification` 2084–2126, service `_addRecentItem` |
+| R7 | After it stops: a notification "Screencast recorded" with "Click here to view the video." that opens the video with the default application, and "Show in Files"; the file is added to the recently used files. A stop that comes while the recording is still starting (before its first frame) ends it: the recorder is stopped and waited for, its file deleted, and nothing says it was recording. | `stopScreencast` 2049, `_showNotification` 2084–2126, service `_addRecentItem` |
 | R8 | A failure says which: "Screencast failed to start", "Screencast ended: Out of disk space", "Screencast ended unexpectedly". | `_screencastFailed` 2052–2082 |
 
 ### The Screenshot portal
@@ -106,9 +107,9 @@ promise; ticket 253's notes say how each was checked.
 | # | Promise | Where GNOME does it |
 | --- | --- | --- |
 | A1 | An application's interactive `org.freedesktop.portal.Screenshot.Screenshot` opens the same interface in picture-only mode (no recording button); Capture answers response 0 with the saved file's URI; leaving answers response 1 (cancelled). | `InteractiveScreenshotAsync` 2673–2699, `UIMode.SCREENSHOT_ONLY` |
-| A2 | A non-interactive call (the portal frontend has already asked the person through the Access dialog) takes every output at once, with a white flash over each that fades over 500 ms and the shutter sound, and answers its URI. | `ScreenshotAsync` 2650, `Flashspot` 3096–3123 |
+| A2 | A non-interactive call (the portal frontend has already asked the person through the Access dialog) takes every output at once, with a white flash over each that fades over 500 ms and the shutter sound, writes it as `Screenshot.png` (`Screenshot-1.png`, … when taken) in the Pictures folder, or the home folder when there is none, and answers its URI. That is all it does: nothing goes to the clipboard, no notification, no recently used file, and nothing into Pictures/Screenshots, because GNOME's portal backend asks the shell for the relative file name `Screenshot` and the shell only writes it. A call closed before the picture is written (A4) writes nothing. | `ScreenshotAsync` 2650, `_resolveRelativeFilename` 2497–2515, `_onScreenshotComplete` with a file name; `xdg-desktop-portal-gnome` 46 `screenshotdialog.c` 249–252; `Flashspot` 3096–3123 |
 | A3 | `PickColor` shows the frozen screen with the pointer hidden and a colour-pick preview following it; a click answers the pixel's colour as `(ddd)` in 0–1; Escape answers cancelled. | `PickColorAsync` 2745, `PickPixel` 3004–3094 |
-| A4 | The portal's `Request.Close` on a pending call closes the interface and answers cancelled; a second call while one is pending is refused as busy. | `_createScreenshot` 2449 |
+| A4 | The portal's `Request.Close` on a pending call, or the caller leaving the bus, ends it as cancelled and closes the interface that call opened; a capture still running for it is dropped. Only the capture a call started answers it: a Shift+Print, Alt+Print, or `org.betteros.Screenshot1` capture meanwhile is the person's own and leaves the call waiting. A second call while one is pending is refused as busy. Only the portal frontend (the owner of `org.freedesktop.portal.Desktop`) is served. | `_createScreenshot` 2449, `_onNameVanished` 2477, `DBusSenderChecker` 2431 |
 | A5 | Saving disabled (S6) refuses the portal's non-interactive `Screenshot` before anything is copied (no flash) and gives the interactive one no file, so it hears that nothing was taken; `PickColor` saves nothing and still works. | `_createScreenshot` 2445–2457, `PickColorAsync` 2746, `InteractiveScreenshotAsync` 2681–2690 with `_saveScreenshot` 1951 |
 
 ### Where Better Screenshot differs, and what is not built yet
@@ -142,7 +143,11 @@ promise; ticket 253's notes say how each was checked.
   `/etc/dconf/profile/betteros` of the administrator's own (dconf looks in
   `/etc/dconf/profile/` before `XDG_DATA_DIRS`). Whether the session's
   shipped profile should list the system databases is an open session
-  decision (ticket 253's notes).
+  decision (ticket 253's notes). A process without `DCONF_PROFILE` (one
+  D-Bus started outside the session's environment) reads the profile dconf
+  itself would (`resolve_profile_as_dconf`: the runtime profile, then
+  `user`), never an empty answer; a damaged `.locks` table is noted and the
+  values are still read.
 
 ### Not offered, and why
 
@@ -190,10 +195,21 @@ What running the capture against it showed (`screenshot-capture`'s
 - **Pixel formats.** A copy session offers `wl_shm` `abgr8888`, `xbgr8888`,
   `abgr2101010`, and `xbgr2101010` only (its GLES renderer), never
   `argb8888`/`xrgb8888`; the capture reads `xbgr8888` and swaps red and blue.
-- **Transforms.** The nested output is `Flipped180` (the harness's
-  `outputs.ron`), and a copy arrives upside down with
-  `ext_image_copy_capture_frame_v1.transform` saying so; the capture applies
-  the transform. Rotated outputs (90°, 270°) are untested.
+- **Transforms.** A copy arrives in the output's own orientation with
+  `ext_image_copy_capture_frame_v1.transform` naming it, and the capture
+  applies its inverse (`Frame::upright`: `wl_output.transform`'s rotations
+  are counter-clockwise, the flipped values mirrored first, so a 90° copy is
+  turned clockwise). With a surface fixed at the logical top-left, the
+  upright copy had it at the top-left at `Flipped180` (the harness's
+  default), `_90`, and `Flipped90` (`better-os-evidence/253/transform`).
+  At `_270` the nested `cosmic-comp` filled only an 800 × 800 part of the
+  1280 × 800 buffer and left the rest black, with the surface outside it,
+  so that transform could not be checked there; the screen itself showed
+  the surface where it belongs.
+- **An output without a picture.** An output with no logical place
+  (`xdg_output`) or whose copy fails (off, changing mode) is left out with
+  the reason in the log; the others' pictures are kept, and only no picture
+  at all is an error.
 - **A window's picture** is the client's own surface: 720 × 420 for a window
   whose `zcosmic_toplevel_handle_v1.geometry` is 720 × 456, because
   `cosmic-comp` draws its server-side title bar outside the surface, so a
@@ -224,7 +240,16 @@ What running the capture against it showed (`screenshot-capture`'s
   `appsrc ! videoconvert ! vp8enc ! webmmux` wrote a playable WebM (VP8,
   read back by `gst-discoverer-1.0`); a copy is delivered only when the
   output changed, and the last picture is repeated at the stop so the video
-  lasts as long as the recording.
+  lasts as long as the recording. `appsrc` holds at most two frames and
+  drops the oldest when the encoder falls behind (`leaky-type=downstream`,
+  GStreamer 1.20 and later), and the queue after it holds two; unbounded, a
+  test with a consumer taking 50 ms a frame had 39 frames waiting after 40
+  pushes, bounded at most two. A 34-second whole-screen recording of a
+  2880 × 1800 output (1280 × 800 at 225 %) with a moving test picture had a
+  peak of 372 MB in its own scope (`memory.peak`) and wrote a playable
+  2880 × 1800 WebM; this machine's encoder kept up, so the same run without
+  the bound peaked the same, and the bound is what keeps a slower machine
+  there (`better-os-evidence/253/memory`).
 - **The clipboard.** `ext_data_control_v1` holds `image/png` with no
   focused surface; `wl-paste --type image/png` in the nested session read
   back the same bytes as the saved file.
@@ -240,6 +265,15 @@ build; source at that commit, `src/screencast.rs`, `src/screenshot.rs`):
   through `ext-image-copy-capture` itself, the protocol that portal uses
   underneath, and encodes with GStreamer; no second dialog, no helper of
   another desktop.
+- Who may call a Screenshot backend: `cosmic-comp` offers its capture
+  globals to every client that is not sandboxed (`src/state.rs` 691–698,
+  `client_not_sandboxed`), and `xdg-desktop-portal-cosmic`'s Screenshot
+  handler takes any caller on the bus, leaving the check to the frontend.
+  Better Screenshot serves its portal methods only to the owner of
+  `org.freedesktop.portal.Desktop`, so the frontend's permission store and
+  Access dialog cannot be stepped around by calling the backend's name; an
+  unsandboxed program gains nothing from that path it does not already have
+  through the compositor, and a sandboxed one cannot reach the name.
 - Its Screenshot backend has an interactive editor of its own
   (`screenshot.rs` 486–540, shown when `interactive` is true), and
   `cosmic-screenshot` is only a command that asks the portal for it. The

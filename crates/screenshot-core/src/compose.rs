@@ -167,9 +167,14 @@ impl Transform {
 }
 
 impl Frame {
-    /// The picture as the screen shows it: the buffer with its transform
-    /// applied. Seen on `cosmic-comp`'s nested output, which is
-    /// `Flipped180` and copies upside down until this turns it.
+    /// The picture as the screen shows it. The buffer holds the logical
+    /// picture with `transform` applied (mirrored around the vertical axis
+    /// for the flipped values, then turned counter-clockwise), so this
+    /// applies its inverse: a 90° buffer is turned 90° clockwise, a 270° one
+    /// 90° counter-clockwise; 180° and every flipped value undo themselves.
+    /// Seen on `cosmic-comp`'s nested output at `Flipped180` (its default),
+    /// `_90`, `_270`, and `Flipped90`, with a surface at the logical top-left
+    /// found there in the upright picture (ticket 253's notes).
     pub fn upright(&self, transform: Transform) -> Frame {
         if transform == Transform::Normal {
             return self.clone();
@@ -185,9 +190,9 @@ impl Frame {
             for x in 0..width {
                 let (ox, oy) = match transform {
                     Transform::Normal => (x, y),
-                    Transform::Rotate90 => (w - 1 - y, x),
+                    Transform::Rotate90 => (y, h - 1 - x),
                     Transform::Rotate180 => (w - 1 - x, h - 1 - y),
-                    Transform::Rotate270 => (y, h - 1 - x),
+                    Transform::Rotate270 => (w - 1 - y, x),
                     Transform::Flipped => (w - 1 - x, y),
                     Transform::Flipped90 => (y, x),
                     Transform::Flipped180 => (x, h - 1 - y),
@@ -203,6 +208,41 @@ impl Frame {
             height,
             stride: width * 4,
             alpha: self.alpha,
+            data,
+        }
+    }
+}
+
+impl Frame {
+    /// A smaller copy whose longer side is at most `max` pixels (nearest
+    /// pixel), for a notification's image; a frame already that small is
+    /// copied as it is.
+    pub fn thumbnail(&self, max: u32) -> Frame {
+        let longest = self.width.max(self.height).max(1);
+        if longest <= max {
+            return Frame {
+                width: self.width,
+                height: self.height,
+                stride: self.width * 4,
+                alpha: self.alpha,
+                data: self.to_bgra(),
+            };
+        }
+        let width = (u64::from(self.width) * u64::from(max) / u64::from(longest)).max(1) as u32;
+        let height = (u64::from(self.height) * u64::from(max) / u64::from(longest)).max(1) as u32;
+        let mut data = Vec::with_capacity((width * height * 4) as usize);
+        for y in 0..height {
+            let sy = (u64::from(y) * u64::from(self.height) / u64::from(height)) as u32;
+            for x in 0..width {
+                let sx = (u64::from(x) * u64::from(self.width) / u64::from(width)) as u32;
+                data.extend_from_slice(&self.pixel(sx, sy));
+            }
+        }
+        Frame {
+            width,
+            height,
+            stride: width * 4,
+            alpha: Alpha::Straight,
             data,
         }
     }
@@ -360,27 +400,101 @@ mod tests {
         )
     }
 
+    /// The protocol's definition, built from two plain operations: a mirror
+    /// around the vertical axis and a turn of 90° counter-clockwise.
+    fn mirrored(frame: &Frame) -> Frame {
+        let mut out = frame.clone();
+        for y in 0..frame.height {
+            for x in 0..frame.width {
+                let to = ((y * frame.width + x) * 4) as usize;
+                out.data[to..to + 4].copy_from_slice(&frame.pixel(frame.width - 1 - x, y));
+            }
+        }
+        out
+    }
+
+    fn turned_counter_clockwise(frame: &Frame) -> Frame {
+        // The right-hand column becomes the top row.
+        let (width, height) = (frame.height, frame.width);
+        let mut data = Vec::with_capacity((width * height * 4) as usize);
+        for y in 0..height {
+            for x in 0..width {
+                data.extend_from_slice(&frame.pixel(frame.width - 1 - y, x));
+            }
+        }
+        Frame {
+            width,
+            height,
+            stride: width * 4,
+            alpha: frame.alpha,
+            data,
+        }
+    }
+
+    /// What a compositor puts in the buffer for a logical picture under
+    /// `transform` (`wl_output.transform`: "90 degrees counter-clockwise",
+    /// "flip around a vertical axis" first for the flipped values).
+    fn as_buffer(logical: &Frame, transform: super::Transform) -> Frame {
+        use super::Transform::*;
+        let flipped = matches!(transform, Flipped | Flipped90 | Flipped180 | Flipped270);
+        let turns = match transform {
+            Normal | Flipped => 0,
+            Rotate90 | Flipped90 => 1,
+            Rotate180 | Flipped180 => 2,
+            Rotate270 | Flipped270 => 3,
+        };
+        let mut frame = if flipped {
+            mirrored(logical)
+        } else {
+            logical.clone()
+        };
+        for _ in 0..turns {
+            frame = turned_counter_clockwise(&frame);
+        }
+        frame
+    }
+
     #[test]
     fn every_transform_turns_the_buffer_upright() {
         use super::Transform;
         // 0 1 2
         // 3 4 5
         let frame = numbered();
-        let cases = [
-            (Transform::Normal, (3, 2, vec![0, 1, 2, 3, 4, 5])),
-            (Transform::Rotate90, (2, 3, vec![2, 5, 1, 4, 0, 3])),
-            (Transform::Rotate180, (3, 2, vec![5, 4, 3, 2, 1, 0])),
-            (Transform::Rotate270, (2, 3, vec![3, 0, 4, 1, 5, 2])),
-            (Transform::Flipped, (3, 2, vec![2, 1, 0, 5, 4, 3])),
-            (Transform::Flipped90, (2, 3, vec![0, 3, 1, 4, 2, 5])),
-            (Transform::Flipped180, (3, 2, vec![3, 4, 5, 0, 1, 2])),
-            (Transform::Flipped270, (2, 3, vec![5, 2, 4, 1, 3, 0])),
-        ];
-        for (transform, want) in cases {
-            assert_eq!(numbers(&frame.upright(transform)), want, "{transform:?}");
+        // The turn itself, against the protocol's words.
+        assert_eq!(
+            numbers(&turned_counter_clockwise(&frame)),
+            (2, 3, vec![2, 5, 1, 4, 0, 3])
+        );
+        for transform in [
+            Transform::Normal,
+            Transform::Rotate90,
+            Transform::Rotate180,
+            Transform::Rotate270,
+            Transform::Flipped,
+            Transform::Flipped90,
+            Transform::Flipped180,
+            Transform::Flipped270,
+        ] {
+            let buffer = as_buffer(&frame, transform);
+            assert_eq!(
+                numbers(&buffer.upright(transform)),
+                numbers(&frame),
+                "{transform:?}"
+            );
         }
         assert_eq!(Transform::from_protocol(6), Transform::Flipped180);
         assert_eq!(Transform::from_protocol(99), Transform::Normal);
+    }
+
+    #[test]
+    fn a_thumbnail_keeps_the_shape_within_the_limit() {
+        let frame = Frame::filled(2000, 1000, RED);
+        let small = frame.thumbnail(512);
+        assert_eq!((small.width, small.height), (512, 256));
+        assert_eq!(small.pixel(511, 255), RED);
+        assert_eq!(small.data.len(), 512 * 256 * 4);
+        let tiny = Frame::filled(10, 5, BLUE).thumbnail(512);
+        assert_eq!((tiny.width, tiny.height), (10, 5));
     }
 
     #[test]

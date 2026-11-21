@@ -37,7 +37,8 @@
 use std::path::{Path, PathBuf};
 
 use crate::dconf_profile::{
-    DconfProfile, ProfileEnvironment, ProfileError, ProfileSource, SessionDatabase, resolve_profile,
+    DconfProfile, ProfileEnvironment, ProfileError, ProfileSource, SessionDatabase,
+    resolve_profile_as_dconf,
 };
 use crate::gvdb::{GVariantValue, GvdbDatabase};
 
@@ -120,7 +121,15 @@ impl DatabaseStack {
                 };
                 let database = match std::fs::read(&path) {
                     Ok(bytes) => match GvdbDatabase::parse(&bytes) {
-                        Ok(database) => Some(database),
+                        Ok(database) => {
+                            if let Some(problem) = database.lock_problem() {
+                                notes.push(format!(
+                                    "{source} ({}): its lock table is not readable: {problem}",
+                                    path.display()
+                                ));
+                            }
+                            Some(database)
+                        }
                         Err(error) => {
                             notes.push(format!(
                                 "{source} ({}) is not readable: {error}",
@@ -200,14 +209,16 @@ impl DatabaseStack {
     }
 }
 
-/// The stack of the profile in force for this process.
+/// The stack of the profile dconf puts in force for this process.
 pub fn session_stack() -> Result<DatabaseStack, ProfileError> {
     stack_in(&ProfileEnvironment::from_env())
 }
 
-/// The stack of the profile `environment` puts in force.
+/// The stack of the profile dconf puts in force in `environment`
+/// ([`resolve_profile_as_dconf`]: a COSMIC or Better OS process without
+/// `DCONF_PROFILE` reads the `user` profile, as dconf would).
 pub fn stack_in(environment: &ProfileEnvironment) -> Result<DatabaseStack, ProfileError> {
-    let profile = resolve_profile(environment)?;
+    let profile = resolve_profile_as_dconf(environment)?;
     let dirs = StackDirs::of(environment);
     let nfs_rule = if environment.config_home_on_nfs {
         environment.dconf_uses_safe_writer_on_nfs
@@ -411,6 +422,52 @@ mod tests {
             stack.read("/org/example/plain/shown").value,
             Some(GVariantValue::Text("from site".into()))
         );
+    }
+
+    #[test]
+    fn a_session_environment_without_dconf_profile_reads_the_user_profile_as_dconf_does() {
+        let machine = machine();
+        let root = machine.dirs.config_home.parent().unwrap().to_path_buf();
+        write(
+            &root.join("etc/dconf/profile/user"),
+            b"user-db:user\nsystem-db:local\n",
+        );
+        write(&machine.dirs.sysconf_dir.join("dconf/db/local"), LOCAL);
+        let mut environment = ProfileEnvironment::from_lookup(
+            |name| match name {
+                "XDG_CURRENT_DESKTOP" => Some("BetterOS:COSMIC".into()),
+                "HOME" => Some(root.join("home").to_string_lossy().into_owned()),
+                "XDG_CONFIG_HOME" => Some(machine.dirs.config_home.to_string_lossy().into_owned()),
+                "XDG_RUNTIME_DIR" => Some(machine.dirs.runtime_dir.to_string_lossy().into_owned()),
+                "XDG_DATA_DIRS" => Some(root.join("share").to_string_lossy().into_owned()),
+                _ => None,
+            },
+            1000,
+        );
+        environment.sysconf_dir = machine.dirs.sysconf_dir.clone();
+        environment.mandatory_dir = root.join("run/dconf/user");
+        // The writer's rule refuses this environment; the reader follows dconf.
+        assert!(crate::dconf_profile::resolve_profile(&environment).is_err());
+        let stack = stack_in(&environment).unwrap();
+        assert!(stack.boolean(LOCKDOWN, false));
+        assert!(stack.read(LOCKDOWN).locked);
+    }
+
+    #[test]
+    fn a_damaged_lock_table_is_noted_in_the_stack() {
+        let machine = machine();
+        let mut bytes = LOCAL.to_vec();
+        crate::gvdb::damage_lock_table(&mut bytes);
+        write(&machine.dirs.sysconf_dir.join("dconf/db/local"), &bytes);
+        let stack = stack(&machine, "user-db:user\nsystem-db:local\n");
+        assert_eq!(stack.notes.len(), 1, "{:?}", stack.notes);
+        assert!(stack.notes[0].contains("lock table"));
+        // The value still reads; the lock it held cannot be seen.
+        assert_eq!(
+            stack.read(LOCKDOWN).value,
+            Some(GVariantValue::Boolean(true))
+        );
+        assert!(!stack.read(LOCKDOWN).locked);
     }
 
     #[test]

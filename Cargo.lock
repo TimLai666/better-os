@@ -7090,6 +7090,7 @@ dependencies = [
  "libc",
  "screenshot-core",
  "tempfile",
+ "test-prerequisites",
  "thiserror 2.0.19",
  "wayland-backend",
  "wayland-client",
@@ -7112,6 +7113,9 @@ dependencies = [
 name = "screenshot-gui"
 version = "0.2.16"
 dependencies = [
+ "app-catalog-core",
+ "app-catalog-platform",
+ "app-chooser-core",
  "better-core",
  "better-ui",
  "defaults-platform",
@@ -7129,6 +7133,7 @@ dependencies = [
  "serde_json",
  "smol",
  "tempfile",
+ "test-prerequisites",
  "uuid",
  "zbus",
 ]
