@@ -1,7 +1,7 @@
 # Ticket 261 — GPUI: a session lock window kind and a password field the input method leaves alone
 
 **Spec:** `design/login-screen-spec.md` section 5.4
-**Blocked by:** 257, the owner's decision L6
+**Blocked by:** 257 (the owner answered L6 (a) on 2026-11-22; the new record L6 asks for is written in this ticket)
 
 ## Why
 
