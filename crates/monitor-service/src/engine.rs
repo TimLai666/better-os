@@ -95,11 +95,26 @@ pub struct ServiceConfig {
 }
 
 /// The roots a fixture tree laid out as `<root>/sys` gives: its `sys`, and
-/// the machine's own `/proc` and accounts, which a sandbox does not stand in
-/// for. An empty value is no tree.
+/// its `proc` and `etc/passwd` when it has them (so a screenshot names
+/// fixture processes, never the machine's), the machine's own otherwise. An
+/// empty value is no tree.
 pub fn debug_roots(root: Option<std::ffi::OsString>) -> Option<Roots> {
     let root = PathBuf::from(root.filter(|root| !root.is_empty())?);
-    Some(Roots::new("/proc", root.join("sys"), "/etc/passwd"))
+    let proc = root.join("proc");
+    let passwd = root.join("etc/passwd");
+    Some(Roots::new(
+        if proc.is_dir() {
+            proc
+        } else {
+            PathBuf::from("/proc")
+        },
+        root.join("sys"),
+        if passwd.is_file() {
+            passwd
+        } else {
+            PathBuf::from("/etc/passwd")
+        },
+    ))
 }
 
 impl Default for ServiceConfig {
@@ -866,5 +881,13 @@ mod tests {
         assert_eq!(roots.proc("stat"), std::path::Path::new("/proc/stat"));
         assert!(debug_roots(None).is_none());
         assert!(debug_roots(Some("".into())).is_none());
+    }
+
+    #[test]
+    fn a_fixture_tree_with_processes_stands_in_for_them_too() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("proc")).unwrap();
+        let roots = debug_roots(Some(dir.path().as_os_str().to_owned())).unwrap();
+        assert_eq!(roots.proc("stat"), dir.path().join("proc/stat"));
     }
 }

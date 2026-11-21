@@ -280,7 +280,7 @@ async fn the_mode_item_is_on_the_bus_only_while_it_has_a_mode() {
     let power = tray.power_connection().await.expect("the item came");
     let name = power.unique_name().unwrap().to_string();
     assert_ne!(name, main);
-    assert_eq!(items.lock().unwrap().as_slice(), [name.clone()]);
+    assert_eq!(*items.lock().unwrap(), vec![name.clone()]);
     let item = ItemProxy::builder(&panel)
         .destination(name.as_str())
         .unwrap()

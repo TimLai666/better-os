@@ -95,8 +95,10 @@ release.
   unreadable), `monitor-gui` (`popup::tests`), `manager-gui`.
 - Screenshots in `/home/tim/Developer/better-os-evidence/295/`, headless
   GNOME Shell 46 with the Zorin AppIndicator extension, a stand-in daemon on
-  a private system bus, a fixture `/sys`: each mode with the menu open,
-  English and zh-TW, dark and light; the popup; no modes. Never the
+  a private system bus, a fixture `/sys` and `/proc` (processes `systemd`
+  and `bash`): each mode with the menu open, English and zh-TW, dark and
+  light (`mode-*`), the popup (`popup-*`), and no modes
+  (`no-power-modes-zh-TW-light.png`: the item has left the panel). Never the
   machine's own power mode.
 - Read from source only, not run: COSMIC's status area (ignores `Status`),
   dbus-daemon's and dbus-broker's activation errors. Not checked: swaybar,
