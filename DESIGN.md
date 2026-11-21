@@ -179,6 +179,13 @@ GNOME's compositor draws no frame for a Wayland window, so every application dra
 - **Light and dark.** The frame is drawn in the window's own appearance, which follows the desktop's `color-scheme` when the person chose "system" (owner, 2026-11-14): a window someone set to light has a light frame on a dark desktop, as a libadwaita application that forces its scheme does.
 - **Without GTK.** On a desktop where GTK 4 cannot be loaded, the kit draws Adwaita's frame itself (12px corners, a 47px header, round title buttons), never the old Windows caption buttons.
 
+## Login and lock screen
+
+The login screen and the lock screen (`design/login-screen-spec.md`) are full-screen surfaces with no window, and their numbers come from `login-screen-core`'s `layout` module, which both programs read.
+
+- **The clock's display sizes.** The clock group is this screen's one exception to "Nothing is larger than Title": the weekday at 120/120 weight 600 over the time at 56/64 weight 300 with tabular figures, and 88 over 44 below 1100 logical pixels of width. The period (18/24) and the date (20/28) are display text too. Nothing else on these screens is larger than Title; the person's name in the card is Title.
+- **White over a scrim, in both appearances.** The clock group's text is white whatever the appearance, with a 0 2 24 shadow at 25% black, over a gradient scrim from 45% black at the bottom start corner to clear at the middle, so it reads on any picture. The period is 75% white, the divider 35%, the date 90%. The card follows the appearance like any flyout: the flyout fill at 88% over a blurred copy of the picture, the 8px radius of what floats.
+
 ## Components
 
 - **Buttons.** One accent button per surface, for the action the person came to do. Everything else is a standard button with the control fill and stroke. Text is a verb.

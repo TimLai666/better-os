@@ -42,6 +42,43 @@ shares everything with it but the identity and the authentication path.
 - Tests against a fake greetd socket: success, `auth_error`, several secret
   prompts, `info` and `error` messages, a password change, a broken reply,
   greetd vanishing.
+- What `login-screen-core` (ticket 260) leaves to this program, from its
+  security review of 2026-11-22:
+  - write `login_screen_core::NOT_LOCKED_LOG_LINE` to the journal once when
+    a field's `Secret::lock_warning()` says its pages are not locked;
+  - make the field's buffer with `Secret::try_new()` (the only public
+    constructor); when it fails, send the view model
+    `Event::ServiceNotResponding` (「登入服務沒有回應。請重新開機。」, the
+    power menu still works) and log the error, never end the greeter;
+  - create `/run/better-os-greeter/` (owned by `_better-greeter`, 0700) so
+    that it **survives a restart of `better-os-greeter.service`**: a
+    `tmpfiles.d` entry, or `RuntimeDirectory=` with
+    `RuntimeDirectoryPreserve=yes` (without it systemd deletes the
+    directory when the unit stops, and every retry of the supervisor would
+    end every wait); a container check restarts the unit and finds
+    `attempts.json` still there;
+  - load `Attempts` from `attempts::GREETER_RECORD` with
+    `Attempts::load(path, boot_time_now())` into `Screen::login(…)
+    .with_attempts(…)`, and save it whenever `Effects::attempts_changed`;
+    log a record that cannot be read by its error (which names only the
+    kind) and start empty;
+  - pass `Screen::with_resolver(Box::new(attempts::NameService))` so a
+    typed name counts under its account (`getpwnam_r`'s `pw_name`): the
+    sandbox (ticket 263) must leave the name service reachable
+    (`/etc/passwd`, `/etc/nsswitch.conf`, and `sssd`'s socket where it is
+    used);
+  - write the frame with `GreetdMessage::frame_bytes()` and wipe it, and add
+    that socket writer to `READERS` in
+    `crates/login-screen-core/tests/one_secret_reader.rs`, with its review;
+  - pass `boot_time_now()` (`CLOCK_BOOTTIME`) as every event's time;
+  - tag every greetd reply with the `ConversationId` of the
+    `create_session` it answers (greetd replies in order, so the greeter
+    counts its requests), and drop none itself: the view model drops stale
+    ones;
+  - read the session menu with `sessions::read_sessions(…,
+    &app_catalog_platform::HostProbe::from_env())` so `TryExec` is honoured;
+  - send `Event::Suspending` and `Event::Resumed` from logind's
+    `PrepareForSleep(true / false)`.
 
 ## Done when
 

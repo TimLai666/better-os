@@ -4418,6 +4418,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "login-screen-core"
+version = "0.2.16"
+dependencies = [
+ "app-catalog-core",
+ "better-core",
+ "hardware-core",
+ "image",
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "test-prerequisites",
+ "thiserror 2.0.19",
+ "unicode-properties",
+ "zeroize",
+]
+
+[[package]]
 name = "loop9"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"

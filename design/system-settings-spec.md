@@ -699,7 +699,8 @@ the store the bar reads (section 2.1).
 | --- | --- | --- |
 | Title | 系統 › 通知 | System › Notifications |
 | Do not disturb (toggle) | 勿擾 · 通知會直接放進通知中心，不會跳出 | Do not disturb · Notifications go straight to the notification center |
-| Lock screen (toggle) | 在鎖定畫面顯示通知 | Show notifications on the lock screen |
+| Lock screen (toggle, on by default; the copy of `design/login-screen-spec.md` section 4.2) | 在鎖定畫面上顯示通知 | Show notifications on the lock screen |
+| …under it (toggle, on by default, off while the one above is off; the Better OS session only, because GNOME has no key for it and its per-application rows are the only control there) | 顯示內容 | Show their content |
 | Group | 來自應用程式的通知 | Notifications from apps |
 | App row (`SettingsExpander`, toggle) | {application} · 橫幅、音效 | {application} · Banners, sounds |
 | …rows | 顯示通知橫幅 · 播放音效 · 在鎖定畫面顯示內容 | Show banners · Play a sound · Show content on the lock screen |
