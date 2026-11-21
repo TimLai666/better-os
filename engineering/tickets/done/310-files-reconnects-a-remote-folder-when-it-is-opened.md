@@ -158,5 +158,58 @@ reconnecting, back on the same selection, folder gone and the nearest above,
 name not found, refused, share gone, wrong password asked again, sign-in
 refused, address needed, no network) in light and dark, English and zh-TW,
 from a sandbox with a fixture disk only, against loopback `sshd` and `smbd`
-in a headless sway. Not done here: the owner's own servers and tailnet, and a
-GNOME desktop.
+in a headless sway. The four Address-needed shots were taken again in the
+second round: the page names the folder by GVfs's mount name
+(`dav+sd:host=Cloud._webdav._tcp.local/data`), no runtime path or user id.
+Not done here: the owner's own servers and tailnet, and a GNOME desktop.
+
+**Second review round (2026-11-22, `review-2-2026-11-22.md`).** The retry
+rule was decided by the coordinator and replaces the first round's "stop on
+another network" and "a server that answers at first look let the mount go";
+the spec has it once, under "A connection that drops while a folder is
+open comes back by itself".
+- No fact from GVfs tells a requested unmount from a drop: recorded with
+  `dbus-monitor` on the sandbox's bus, `gio mount -u` and a stopped `sshd`
+  both make the backend call `UnregisterMount` and the tracker send the same
+  `Unmounted`; the unmount request goes over GVfs's private peer connection
+  (after `GetConnection`). Better Files unmounts no server, so every drop
+  reconnects: `a_mount_let_go_elsewhere_comes_back_by_itself`.
+- No network (empty routes) is waited out with no limit and nothing sent;
+  the same network back reconnects by itself; another network, or one that
+  cannot be told apart, shows the new "another network" page with Connect.
+  Networks: default routes, NetworkManager's primary profile UUID (system
+  bus), gateway hardware address (`/proc/net/arp`). Tests:
+  `a_network_that_goes_and_comes_back_reconnects_by_itself`,
+  `a_folder_comes_back_after_sleep_on_the_same_network`,
+  `a_drop_onto_another_network_waits_for_a_click`,
+  `a_dropped_connection_keeps_trying_until_the_server_is_back` (server
+  restart), `retries_stop_at_their_limit`,
+  `networks_are_the_same_only_when_that_is_known`,
+  `a_gateway_s_hardware_address_is_read_from_the_neighbour_table`. The limit
+  is now 10 minutes of time with a network (a NAS restart takes minutes).
+- The host look no longer rewrites GVfs's failure; when it cannot resolve
+  or reach, GVfs itself is asked every 30 s. `remote_servers_tests.rs` opens
+  the SFTP server by an alias in the sandbox's own `ssh_config`: opened,
+  dropped and back by itself, and its failure while away GVfs's
+  "Connection refused by server". `smb://no-such-host.invalid` now shows
+  "could not connect" with GVfs's "Invalid argument".
+- Found by that test: a dropped connection past its first 30 s (its page
+  showing why) was never taken back when a try succeeded, because landing
+  and refusing only took links still "connecting". Fixed in `land` and
+  `refuse`; the alias test fails without it.
+- P3: `a_held_paste_whose_tab_goes_elsewhere_says_so_and_never_runs`,
+  `a_paste_waiting_for_its_listing_is_said_not_done_when_the_connection_is_cancelled`
+  (the waiting paste is set by a test helper; its timing is GVfs's),
+  `an_address_typed_for_a_server_already_mounted_still_rewrites_the_favourite`,
+  the empty user in `a_password_in_an_address_never_reaches_the_location_or_the_spec`;
+  the bookmarks temporary file is created with the target's mode (read, not
+  tested: the moment before the rename cannot be observed), and the rename
+  race is stated in the spec.
+- Mount names, seen in the sandbox with `gio mount`: `smb://…/DATA` and
+  `smb://LOCALHOST…/Data` are mounted as `share=data`, `server=localhost`;
+  `sftp://[::1]:p/` as `sftp:host=%3A%3A1,port=p`. The identity folds them
+  the same way (`an_address_matches_the_mount_name_gvfs_folds_it_to`), and
+  the real-server test opens a mounted share written in capitals and an
+  `[::1]` address with no second mount.
+- Not seen: the "another network" page on screen (the sandbox cannot change
+  the network), NetworkManager's UUID on a real Wi-Fi change.

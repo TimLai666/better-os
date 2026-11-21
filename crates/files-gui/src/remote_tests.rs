@@ -1005,6 +1005,7 @@ fn a_network_that_goes_and_comes_back_reconnects_by_itself() {
     assert!(pump_until(&mut session, |s| shows(s, &shown.join("srv"))));
     world.join(crate::remote::Network::default());
     world.drop_connection(NAS);
+    assert!(pump_until(&mut session, |s| s.link().is_some()));
     // Longer than the limit, with no network: nothing is tried, nothing
     // gives up.
     pump_for(&mut session, Duration::from_secs(3), |_| false);
