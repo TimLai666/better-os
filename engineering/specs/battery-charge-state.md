@@ -157,43 +157,73 @@ picture is the power mode's mark, a gap of 4 pixels, then the readings
 (`monitor_tray::picture`, GPUI-free, so the Better OS session's top bar,
 tickets 156 and 157, composes the same picture).
 
+- The picture is an SVG document 16 logical pixels tall, so a panel draws
+  it at the display's own resolution.
 - The mark is the desktop's own icon, `power-profile-power-saver-symbolic`,
   `-balanced-` or `-performance-`, found in the current icon theme by the Icon
   Theme Specification's lookup (the theme, what it inherits, then `hicolor`;
-  SVG files only) and drawn with `resvg`, the renderer GPUI already brings. It
-  is tinted by the readings' rule, light ink with a dark edge. The theme's
-  name comes from the settings portal (`org.gnome.desktop.interface`
-  `icon-theme`) and is followed through its `SettingChanged` signal. A theme
-  without the icon gets no mark; the tooltip and menu still name the mode.
-- The readings are drawn on their own 22-pixel canvas as before and scaled
-  to the picture's height; the mark adds width beside them and takes none,
-  and they are the same pixels with and without it.
+  SVG files only) and nested in the picture as it is, its colours replaced by
+  the panel's foreground as a symbolic icon's are: white on a dark panel,
+  `#2e3436` on a light one. Which the panel is comes from the settings
+  portal's `org.freedesktop.appearance` `color-scheme` (2 is light; no
+  preference is GNOME Shell's own dark panel); the icon theme comes from
+  `org.gnome.desktop.interface` `icon-theme`; both are followed through
+  `SettingChanged`. A theme without the icon gets no mark; the tooltip and
+  menu still name the mode. `resvg`, GPUI's own renderer, checks that the
+  icon can be drawn and draws the picture in the tests.
+- The readings are their 22-pixel canvas's pixels as squares, scaled to 16
+  with `shape-rendering="crispEdges"` so every edge falls on a display pixel;
+  the mark adds width beside them and takes none, and they are the same
+  pixels with and without it at 100 %, 125 %, 150 % and 200 % (tested).
 - With no mode to show (no daemon, a masked or stopped one, a mode this
   version does not know, a daemon that cannot be read, or "Power mode"
   unticked under "Show in the taskbar") there is no mark, and the item is
   the square pixmaps it always was.
-- How a panel gets a picture wider than tall: GNOME's AppIndicator extension
+- How a panel gets a picture wider than tall. GNOME's AppIndicator extension
   (Zorin's copy, `/usr/share/gnome-shell/extensions/zorin-appindicator@zorinos.com/appIndicator.js`,
-  and Ubuntu's upstream at `fbc758a4`, the same code) fits every
+  and Ubuntu's upstream at `fbc758a4`, read: the same code) fits every
   `IconPixmap` into a square of the panel's icon size, keeping its aspect
-  (`_createIconFromPixmap`, `_setImageContent(imageContent, scaledSize,
-  scaledSize)` with `RESIZE_ASPECT`: Zorin's lines 1421-1444), so a wide
-  pixmap shrinks to a strip. An `IconName` that is the path of a PNG in a
-  place the person can write and at least half again as wide as tall is
-  drawn at the file's own pixel size (`_createIconByIconData`, line 1271,
-  and `_loadCustomImage`). Seen in a headless GNOME Shell 46:
-  `better-os-evidence/295/wide-pixmap-vs-file.png` (real size) and
-  `wide-pixmap-vs-file-zoom4.png`. So while there is a mark the item writes
-  the picture as a PNG 16 pixels tall (GNOME's panel icon size) under
-  `$XDG_RUNTIME_DIR/better-os/monitor-tray/`, a new name each time, names it
-  in `IconName`, and sends no pixmaps, because the extension would draw them
-  over the file (`_createIcon`, line 1579).
-- What that costs: the file is drawn one file pixel to one logical pixel, so
-  on a scale-2 display the picture is scaled up and soft, and the
-  extension's own "icon size" setting (20 or 24) does not grow it. A panel
-  that does not take a path in `IconName` shows no icon while there is a mark.
-  COSMIC's status area takes one (`Path::new(&icon_name).exists()`, read from
-  source at `cb3ea91a`); KDE, waybar and swaybar were not read or run.
+  (`_createIconFromPixmap`, lines 1421-1444), so a wide pixmap shrinks to a
+  strip. An `IconName` that is the path of an image in a place the person
+  can write and at least half again as wide as tall is drawn at the image's
+  own size (`_createIconByIconData`, line 1271; `_loadCustomImage`, line
+  1290: `load_file_async(file, -1, height, 1, iconScaling)`, the actor
+  `width * scaleFactor` by `height * scaleFactor`). An SVG's own size is in
+  logical pixels and St rasterises it at the stage's scale, so it is sharp at
+  200 %; a PNG is scaled up. Seen in a headless GNOME Shell 46:
+  `better-os-evidence/295/wide-pixmap-vs-file.png` (scale 1) and
+  `scale2-png-vs-svg.png` (scale 2, PNG left, SVG right). So while there is a
+  mark the item writes the picture as an SVG under
+  `$XDG_RUNTIME_DIR/better-os/monitor-tray/`, a new name per change, and
+  names it in `IconName`.
+- The pixmaps: GNOME's extension draws a wide file without handing a result
+  back and then falls through to the pixmaps, which would cover it
+  (`_createIcon`, line 1579), so while its watcher (the process owning
+  `org.kde.StatusNotifierWatcher` is `gnome-shell`) draws the item, the
+  pixmaps are left out while the file is named. Every other panel keeps them
+  beside the file and draws the readings without the mark when it cannot use
+  the path: waybar loads a path starting with `/` and falls back to the
+  pixmap (`src/modules/sni/item.cpp` at `b4f03e63`, `loadIconFromNameOrFile`),
+  KDE Plasma falls back to the pixmap when the name gives no icon
+  (`applets/systemtray/statusnotifieritemsource.cpp`, `loadIcon`), swaybar
+  looks the name up only in icon themes and then uses the pixmap
+  (`swaybar/tray/item.c`, `reload_sni`), COSMIC's status area loads a path
+  that exists (`cb3ea91a`). All four were read from source only.
+- What it costs: the file follows the readings, so it is written each time
+  their drawing changes: 34 times in a minute of this machine's live readings
+  in the sandbox at scale 2, on the runtime directory's tmpfs; in that minute
+  the tray used 0.44 s of processor and GNOME Shell 0.61 s, against 0.45 s
+  and 0.37 s with no mark (pixmaps only). The extension has no second layer
+  for an item (its overlay icon is an emblem at a fifth of the size,
+  `_updateIcon`, `iconSize / 1.6`), so the readings cannot stay pixmaps
+  beside a file.
+- The extension's own icon size (its `icon-size` key: 20 or 24) does not
+  change a picture drawn at its own size, so the item stays 16 pixels tall
+  there (`icon-size-24-*`); following it would mean reading that extension's
+  private settings, which differ by distribution, so it is not done.
+- Fractional scales: 125 % and 150 % were set in the sandbox through
+  Mutter's `scale-monitor-framebuffer` and drawn sharp (`*-scale125-*`,
+  `*-scale150-*`).
 - The modes are the ones power-profiles-daemon lists (`Profiles`), read the
   way the System page reads them (`hardware_platform::bus::power_profiles`).
   Better OS never reads or writes `platform_profile` itself (ADR 0017).

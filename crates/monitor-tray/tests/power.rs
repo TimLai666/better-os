@@ -309,19 +309,24 @@ async fn the_mark_is_in_the_one_items_picture_and_follows_the_mode() {
     tray.announce(changes).await;
     let first = item.icon_name().await.unwrap();
     assert!(first.starts_with(files.path().to_str().unwrap()), "{first}");
-    // No pixmap beside it: GNOME's extension would draw the square pixmap
-    // over the wide file.
-    assert!(item.icon_pixmap().await.unwrap().is_empty());
-    let png = std::fs::read(&first).unwrap();
-    assert!(png.starts_with(b"\x89PNG"));
-    // Wider than tall by at least half, so the extension draws it at its own
-    // size rather than fitting it into a square.
-    let (width, height) = (
-        u32::from_be_bytes(png[16..20].try_into().unwrap()),
-        u32::from_be_bytes(png[20..24].try_into().unwrap()),
+    // This test's watcher is not GNOME Shell's, so the pixmaps stay beside
+    // the file for a panel that cannot use it.
+    assert_eq!(item.icon_pixmap().await.unwrap().len(), 2);
+    let svg = std::fs::read_to_string(&first).unwrap();
+    let image = monitor_tray::picture::render(&svg, 1.0).unwrap();
+    // Wider than tall by at least half, so GNOME's extension draws it at its
+    // own size rather than fitting it into a square.
+    assert_eq!(image.height, monitor_tray::picture::HEIGHT);
+    assert!(
+        image.width * 2 >= image.height * 3,
+        "{}x{}",
+        image.width,
+        image.height
     );
-    assert_eq!(height, monitor_tray::picture::HEIGHT);
-    assert!(width * 2 >= height * 3, "{width}x{height}");
+    // GNOME's extension draws the pixmaps over the file, so for it they go.
+    tray.state.lock().await.pixmaps_cover_file = true;
+    assert!(item.icon_pixmap().await.unwrap().is_empty());
+    tray.state.lock().await.pixmaps_cover_file = false;
 
     // Another program changes the mode: the same item, a new picture.
     let mut icons_changed = item.receive_new_icon().await.unwrap();

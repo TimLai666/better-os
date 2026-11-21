@@ -13,10 +13,12 @@
 //! 295): the power mode in force, read from power-profiles-daemon the way
 //! the System page reads it ([`power`]), is the desktop's own power mode
 //! icon drawn beside the readings in the same picture ([`picture`]). A
-//! picture wider than tall is handed to the panel as a PNG file named by
+//! picture wider than tall is handed to the panel as an SVG file named by
 //! `IconName`, because GNOME's AppIndicator extension fits a pixmap into a
-//! square and draws a file of a wide picture at its own size
-//! ([`picture_file`]); without a mark the item keeps its square pixmaps.
+//! square and draws a file of a wide picture at its own size, an SVG at the
+//! display's scale ([`picture_file`]); without a mark the item keeps its
+//! square pixmaps. The pixmaps stay beside the file for every panel but
+//! GNOME's, so a panel that cannot use the file draws the readings.
 //!
 //! The StatusNotifierItem and dbusmenu interfaces are written directly on
 //! zbus, the same way Better Awake's tray does (see its `sni` module for why
@@ -65,9 +67,13 @@ pub struct TrayState {
     pub mark_mode: Option<hardware_core::power::Profile>,
     /// Where the marks come from: the icon theme and its directories.
     pub marks: icon_theme::Marks,
-    /// The picture with the mark, or `None` when there is no mark and the
-    /// square pixmaps are the icon.
-    pub picture: Option<Image>,
+    /// The picture with the mark as an SVG document, or `None` when there
+    /// is no mark and the square pixmaps are the icon.
+    pub picture: Option<String>,
+    /// Whether the panel draws the pixmaps over a file named by `IconName`
+    /// (GNOME's AppIndicator extension does, `appIndicator.js` `_createIcon`),
+    /// so they are left out while the file is named.
+    pub pixmaps_cover_file: bool,
     /// The file that picture was last written to (`IconName`).
     pub picture_file: Option<PathBuf>,
     pub choice: IconChoice,
@@ -193,6 +199,7 @@ impl TrayState {
             mark_mode: None,
             marks: icon_theme::Marks::default(),
             picture: None,
+            pixmaps_cover_file: false,
             picture_file: None,
             choice,
             choice_path,
@@ -245,16 +252,13 @@ impl TrayState {
         );
         let mark_mode = menu::mark_mode(&self.power, &self.choice);
         let picture = mark_mode
-            .and_then(|mode| self.marks.mark(mode, picture::HEIGHT))
+            .and_then(|mode| self.marks.mark(mode))
             .and_then(|mark| {
                 let readings = icon
                     .iter()
                     .find(|(width, height, _)| *width == 22 && *height == 22)
                     .map(|(w, h, argb)| Image::from_argb(*w, *h, argb))?;
-                Some(picture::compose(
-                    &picture::scaled(&readings, picture::HEIGHT),
-                    Some(&mark),
-                ))
+                Some(picture::compose(&readings, Some(&mark)))
             });
         let mut changes = self.install(menu, now);
         changes.icon = icon != self.icon || picture != self.picture;
@@ -354,6 +358,12 @@ impl TrayState {
     /// Adopt the desktop's icon theme now (`None` when it cannot be read).
     pub fn adopt_icon_theme(&mut self, theme: Option<String>) -> Changes {
         self.marks.set_theme(theme);
+        self.redraw()
+    }
+
+    /// Adopt whether the panel is light or dark now.
+    pub fn adopt_panel(&mut self, panel: picture::Panel) -> Changes {
+        self.marks.set_panel(panel);
         self.redraw()
     }
 
@@ -530,9 +540,23 @@ impl Tray {
         layout
     }
 
-    /// A panel started or restarted; see [`TrayState::host_changed`].
+    /// A panel started or restarted; see [`TrayState::host_changed`]. Which
+    /// panel it is decides whether the pixmaps go beside the picture's file.
     pub async fn host_changed(&self) {
-        let changes = self.state.lock().await.host_changed(Instant::now());
+        let connection = self.connection.lock().await.clone();
+        let gnome = match &connection {
+            Some(connection) => watcher_is_gnome_shell(connection).await,
+            None => false,
+        };
+        let changes = {
+            let mut state = self.state.lock().await;
+            let mut changes = state.host_changed(Instant::now());
+            if state.pixmaps_cover_file != gnome {
+                state.pixmaps_cover_file = gnome;
+                changes.icon = true;
+            }
+            changes
+        };
         self.announce(changes).await;
     }
 
@@ -646,14 +670,16 @@ impl StatusNotifierItem {
             .unwrap_or_default()
     }
 
-    /// The square pixmaps, or none while `IconName` names the wide picture:
-    /// GNOME's AppIndicator extension draws a wide file without handing a
-    /// result back and then falls through to the pixmaps, which would cover
-    /// it with the square picture (`appIndicator.js`, `_createIcon`).
+    /// The square pixmaps; for GNOME's AppIndicator extension none while
+    /// `IconName` names the wide picture, because it draws a wide file
+    /// without handing a result back and then falls through to the pixmaps,
+    /// which would cover it with the square picture (`appIndicator.js`,
+    /// `_createIcon`). waybar, KDE, swaybar and COSMIC draw `IconName` when
+    /// they can and fall back to the pixmaps, so they keep them.
     #[zbus(property)]
     async fn icon_pixmap(&self) -> Vec<(i32, i32, Vec<u8>)> {
         let state = self.tray.state.lock().await;
-        if state.picture_file.is_some() {
+        if state.picture_file.is_some() && state.pixmaps_cover_file {
             return Vec::new();
         }
         state.icon.clone()
@@ -986,6 +1012,30 @@ pub fn lists(entry: &str, name: &str) -> bool {
         || entry
             .strip_prefix(name)
             .is_some_and(|path| path.starts_with('/'))
+}
+
+/// Whether the panel's watcher is GNOME Shell's AppIndicator extension: the
+/// process that owns `org.kde.StatusNotifierWatcher` is `gnome-shell`.
+pub async fn watcher_is_gnome_shell(connection: &zbus::Connection) -> bool {
+    let Ok(dbus) = zbus::fdo::DBusProxy::new(connection).await else {
+        return false;
+    };
+    let Ok(name) = zbus::names::BusName::try_from(WATCHER_SERVICE) else {
+        return false;
+    };
+    match dbus.get_connection_unix_process_id(name).await {
+        Ok(pid) => is_gnome_shell(
+            std::fs::read_to_string(format!("/proc/{pid}/comm"))
+                .ok()
+                .as_deref(),
+        ),
+        Err(_) => false,
+    }
+}
+
+/// A process's `comm` is GNOME Shell's.
+pub fn is_gnome_shell(comm: Option<&str>) -> bool {
+    comm.is_some_and(|comm| comm.trim() == "gnome-shell")
 }
 
 /// Keep the item registered with whichever watcher the panel runs.
@@ -1370,7 +1420,8 @@ mod tests {
         let first = state.adopt_power(modes("balanced"));
         assert!(first.icon && first.layout && first.tooltip);
         let balanced = state.picture.clone().expect("the mark is drawn");
-        assert_eq!(balanced.width, 16 + picture::GAP + 16);
+        let drawn = |svg: &str| picture::render(svg, 2.0).unwrap();
+        assert_eq!(drawn(&balanced).width, 2 * (16 + picture::GAP + 16));
         let line = state.menu.find_by_label("Power mode: Balanced").unwrap().id;
 
         // The System page, the charger switch or another program set it.
@@ -1381,15 +1432,14 @@ mod tests {
         assert_eq!(changes.properties, vec![(line, vec!["label".to_string()])]);
         let performance = state.picture.clone().unwrap();
         assert_ne!(balanced, performance);
-        // The readings are the same pixels beside either mark.
-        let readings = picture::scaled(
-            &Image::from_argb(state.icon[0].0, state.icon[0].1, &state.icon[0].2),
-            picture::HEIGHT,
-        );
+        // The readings are the same pixels beside either mark as alone.
+        let readings = Image::from_argb(state.icon[0].0, state.icon[0].1, &state.icon[0].2);
+        let alone = drawn(&picture::compose(&readings, None));
         for picture in [&balanced, &performance] {
+            let offset = 2 * (16 + picture::GAP);
             assert_eq!(
-                picture.region(16 + picture::GAP, 0, readings.width, readings.height),
-                readings.region(0, 0, readings.width, readings.height)
+                drawn(picture).region(offset, 0, alone.width, alone.height),
+                alone.region(0, 0, alone.width, alone.height)
             );
         }
 
@@ -1405,6 +1455,25 @@ mod tests {
                 .find_by_label("Power mode: Best performance")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn only_gnome_shells_watcher_loses_the_pixmaps_beside_the_file() {
+        assert!(is_gnome_shell(Some("gnome-shell\n")));
+        assert!(!is_gnome_shell(Some("plasmashell\n")));
+        assert!(!is_gnome_shell(Some("waybar")));
+        assert!(!is_gnome_shell(None));
+    }
+
+    #[test]
+    fn a_light_panel_redraws_the_mark_in_dark_ink() {
+        let dir = theme();
+        let mut state = themed(&dir);
+        state.adopt_power(modes("balanced"));
+        let dark = state.picture.clone().unwrap();
+        let changes = state.adopt_panel(picture::Panel::Light);
+        assert!(changes.icon);
+        assert_ne!(state.picture.clone().unwrap(), dark);
     }
 
     #[test]

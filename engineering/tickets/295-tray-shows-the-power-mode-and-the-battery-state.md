@@ -68,18 +68,23 @@ a release.
   the battery is rewritten without it when the item starts (the battery
   alone falls back to processor and memory). The readings have their widths
   from before ticket 295.
-- The picture (`monitor_tray::picture`, GPUI-free): the theme's
-  `power-profile-*-symbolic` found by the Icon Theme Specification's lookup
-  (`picture::find_icon`), drawn with `resvg` (`resvg 0.46`, GPUI's own),
-  tinted by the readings' rule, then a gap, then the readings scaled to 16
-  pixels. The theme comes from the settings portal and is followed
-  (`icon_theme`). No mark, no icon: the picture is the square pixmaps.
-- GNOME's AppIndicator extension fits a pixmap into a square and draws a
-  wide PNG named by `IconName` at its own size (spec, with file and line), so
-  with a mark the item writes the picture under
-  `$XDG_RUNTIME_DIR/better-os/monitor-tray/` (`picture_file`) and sends no
-  pixmaps. A mode change is a new picture on the same item: no second item,
-  no second connection, no new registration.
+- The picture (`monitor_tray::picture`, GPUI-free) is an SVG document 16
+  logical pixels tall: the theme's `power-profile-*-symbolic` found by the
+  Icon Theme Specification's lookup and nested as it is, recoloured to the
+  panel's foreground (white on dark, `#2e3436` on light, from the portal's
+  `color-scheme`), a gap, then the readings' canvas as crisp squares. The
+  icon theme and the colour scheme are followed through the settings portal
+  (`icon_theme`). No mark, no file: the item is its square pixmaps.
+- The panel gets it as a file: GNOME's AppIndicator extension fits a pixmap
+  into a square but draws a wide image named by `IconName` at its own size,
+  and an SVG at the display's scale (spec, file and line; seen at scale 2 in
+  `scale2-png-vs-svg.png`, where a PNG was soft). The file is written under
+  `$XDG_RUNTIME_DIR/better-os/monitor-tray/` with a new name per change
+  (`picture_file`). The pixmaps are left out only for GNOME Shell's watcher,
+  which would draw them over the file; waybar, KDE, swaybar and COSMIC keep
+  them and fall back to the readings (read from source).
+- A mode change is a new picture on the same item: no second item, no
+  second connection, no new registration.
 - The menu, the tooltip and the popup name the mode and the System page's
   caution sentences through one rule, `hardware_core::power::mode_shown`.
 - The modes come from power-profiles-daemon; every call carries
@@ -96,13 +101,17 @@ a release.
 
 ### Limits found
 
-- The wide picture is drawn one file pixel to one logical pixel: soft on a
-  scale-2 display, and the extension's "icon size" setting does not grow it
-  (`icon-size-24-balanced-zh-TW-light-panel-zoom6.png`). Without a mark the
-  item is its pixmaps and follows both, as before.
-- A panel that does not take a path in `IconName` shows nothing while there
-  is a mark. COSMIC's status area does take one (read from source); KDE,
-  waybar and swaybar were not read or run.
+- The file follows the readings: 34 writes in a minute of live readings
+  (sandbox, scale 2, tmpfs); in that minute the tray used 0.44 s of
+  processor and GNOME Shell 0.61 s, against 0.45 s and 0.37 s without the
+  mark. The extension has no second layer to keep the readings as pixmaps
+  beside a file (its overlay is a small emblem).
+- The extension's own `icon-size` setting (20, 24) does not grow a picture
+  drawn at its own size; the item stays 16 pixels tall
+  (`icon-size-24-*`). Following it would mean reading that extension's
+  private settings.
+- Light or dark comes from the portal's `color-scheme`; a light shell theme
+  chosen without that preference (some Zorin layouts) is drawn as dark.
 
 ### Checked
 
@@ -116,11 +125,14 @@ a release.
   GNOME Shell 46 with the Zorin AppIndicator extension and the Adwaita icon
   theme, a stand-in daemon on a private system bus, fixture `/sys` and
   `/proc` with invented round figures: each mode with the menu open and the
-  panel at real size and zoomed 6×, English and zh-TW, dark and light
-  (`mode-*`); the extension at icon size 24; the popup (`popup-*`); no
-  modes; the wide pixmap against the wide file (`wide-pixmap-vs-file*`).
-  Never the machine's own power mode.
+  panel at real size and zoomed, English and zh-TW, dark and light, at
+  scale 1 and 2 (`mode-*-scale1-*`, `mode-*-scale2-*`); 125 % and 150 % with
+  Mutter's `scale-monitor-framebuffer` (`*-scale125-*`, `*-scale150-*`);
+  the extension at icon size 20 and 24; the popup; no modes; the wide
+  pixmap against the wide file, and a PNG against an SVG at scale 2. Never
+  the machine's own power mode.
 - Read from source only: Ubuntu's AppIndicator extension (`fbc758a4`, the
-  same rule as Zorin's copy), COSMIC's status area, dbus-daemon's and
-  dbus-broker's activation errors. Not checked: KDE, waybar, swaybar, a
-  scale-2 display, the owner's desktop.
+  same rule as Zorin's copy), waybar (`b4f03e63`), KDE Plasma's system
+  tray, swaybar, COSMIC's status area (`cb3ea91a`), dbus-daemon's and
+  dbus-broker's activation errors. Not run: KDE, waybar, swaybar, COSMIC,
+  the owner's desktop.

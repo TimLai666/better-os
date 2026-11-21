@@ -150,6 +150,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tokio::spawn(watch)
     };
     report(register_and_verify(&connection, &unique).await);
+    // Which panel draws the item decides whether the pixmaps go beside the
+    // picture's file (GNOME's extension draws them over it).
+    tray.host_changed().await;
 
     // The power mode beside the icon, followed on the system bus.
     monitor_tray::power::spawn(tray.clone());
