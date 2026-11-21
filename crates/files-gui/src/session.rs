@@ -551,6 +551,9 @@ pub struct FilesSession {
     /// into it. Set by a click on an unmounted row and cleared by the mount.
     pending_open: Option<String>,
     pub preview: PreviewPanel,
+    /// The large preview's program when a test names it; `None` is the
+    /// companion rule's.
+    preview_program: Option<String>,
     pub search: SearchState,
     /// How much each folder in view holds (ticket 126).
     pub folder_sizes: crate::folder_sizes::FolderSizes,
@@ -722,6 +725,7 @@ impl FilesSession {
             devices: DeviceInventory::default(),
             pending_open: None,
             preview,
+            preview_program: None,
             search: SearchState::default(),
             folder_sizes: crate::folder_sizes::FolderSizes::default()
                 .watching_with(Arc::clone(&hub)),
@@ -3643,11 +3647,18 @@ impl FilesSession {
             self.notice = Some(Notice::Command(CommandRefusal::NothingToActOn));
             return;
         };
-        let invocation = app_catalog_core::Invocation {
-            program: preview_program(),
-            arguments: vec![path],
+        let program = match self.preview_program.clone() {
+            Some(program) => Ok(program),
+            None => preview_program(),
         };
-        if self.spawner.spawn(&invocation).is_err() {
+        let started = program.ok().is_some_and(|program| {
+            let invocation = app_catalog_core::Invocation {
+                program,
+                arguments: vec![path],
+            };
+            self.spawner.spawn(&invocation).is_ok()
+        });
+        if !started {
             // No separate preview: the side pane shows what it can.
             if !self.preview.open {
                 self.toggle_preview();
@@ -3672,6 +3683,13 @@ impl FilesSession {
             }
             None => false,
         }
+    }
+
+    /// Starts `program` for the large preview instead of the one the
+    /// companion rule finds. For tests, whose executable has no preview
+    /// program beside it.
+    pub fn set_preview_program(&mut self, program: impl Into<String>) {
+        self.preview_program = Some(program.into());
     }
 
     /// Uses `root` as the home trash for what undo puts away, instead of the
@@ -3758,15 +3776,13 @@ fn mirror(preferences: &mut FilesPreferences, view: FolderView) {
     preferences.set_order(view.order());
 }
 
-/// The preview program: `better-files-preview` beside this executable, or on
-/// `$PATH` when this one is not where it can be found.
-pub fn preview_program() -> String {
-    std::env::current_exe()
-        .ok()
-        .map(|exe| exe.with_file_name("better-files-preview"))
-        .filter(|candidate| candidate.is_file())
-        .map(|candidate| candidate.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "better-files-preview".to_string())
+/// The preview program by the companion rule (`better_core::companion`,
+/// ticket 179): `better-files-preview` beside this executable, then where the
+/// package installs it for an installed Better Files, and never a name looked
+/// up through `$PATH`, which would give a build the installed preview.
+pub fn preview_program() -> Result<String, better_core::companion::Refusal> {
+    better_core::companion::locate(&better_core::companion::FILES_PREVIEW)
+        .map(|program| program.to_string_lossy().into_owned())
 }
 
 /// How often a visible folder whose changes are not announced (a network or

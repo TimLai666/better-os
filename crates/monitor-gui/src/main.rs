@@ -132,10 +132,10 @@ fn main() {
 /// person who quit it, or whose login started it before the service could
 /// answer, finds it again by opening the window.
 mod tray {
+    use std::path::Path;
     use std::process::{Command, Stdio};
 
-    /// The program the taskbar item's autostart entry runs.
-    pub(crate) const TRAY_PROGRAM: &str = "better-monitor-tray";
+    use better_core::companion::{MONITOR_TRAY, StartPlan};
 
     /// The item's user unit, and where the package installs it.
     pub(crate) const TRAY_UNIT: &str = "better-monitor-tray.service";
@@ -152,17 +152,39 @@ mod tray {
         bus.name_has_owner(name).ok()
     }
 
-    /// Whether a failed activation should be followed by starting the
-    /// program directly. Only when the bus has no activation file for the
-    /// name at all (a development build run from the source tree): an
-    /// installed package always has one, and there the item must run under
-    /// its unit, which Better Manager stops when Better Monitor is disabled.
+    /// Whether a failed activation of an installed window's item should be
+    /// followed by starting the program directly, by the companion rule's
+    /// path. Only when the bus has no activation file for the name at all:
+    /// an installed package always has one, and there the item must run
+    /// under its unit, which Better Manager stops when Better Monitor is
+    /// disabled.
     pub(crate) fn spawn_directly_after(error: &str) -> bool {
         error.contains("ServiceUnknown")
     }
 
+    /// Start the program at `path`, with no argument and no shell, and reap
+    /// it when it exits.
+    fn spawn(path: &Path) {
+        match Command::new(path)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .spawn()
+        {
+            Ok(mut child) => {
+                let _ = child.wait();
+            }
+            Err(error) => {
+                eprintln!("better-monitor: the taskbar item could not be started: {error}")
+            }
+        }
+    }
+
     /// Start the taskbar item when none is running, off the window's thread.
-    /// The bus starts it through `better-monitor-tray.service`.
+    /// An installed window asks the bus, which starts it through
+    /// `better-monitor-tray.service`; a window run from a build directory
+    /// starts the item built beside it and never asks the bus by name,
+    /// which would start the installed one (ticket 179).
     pub(crate) fn ensure_running() {
         std::thread::spawn(|| {
             let Ok(connection) = zbus::blocking::Connection::session() else {
@@ -174,10 +196,21 @@ mod tray {
             if !should_start(tray_is_running(&bus)) {
                 return;
             }
+            match better_core::companion::plan(&MONITOR_TRAY) {
+                StartPlan::Refused(refusal) => {
+                    eprintln!("better-monitor: the taskbar item is not started: {refusal}");
+                    return;
+                }
+                StartPlan::Path(sibling) => {
+                    spawn(&sibling);
+                    return;
+                }
+                StartPlan::ByName => {}
+            }
             // Better Monitor switched off in Better Manager stays off: the
             // window does not bring its taskbar item back.
             let on = crate::startup::component_on(
-                std::path::Path::new(TRAY_UNIT_PATH).exists(),
+                Path::new(TRAY_UNIT_PATH).exists(),
                 crate::startup::unit_enabled(
                     &crate::startup::RealSystemctl::from_environment(),
                     TRAY_UNIT,
@@ -197,17 +230,10 @@ mod tray {
                 eprintln!("better-monitor: the taskbar item could not be started: {error}");
                 return;
             }
-            match Command::new(TRAY_PROGRAM)
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::inherit())
-                .spawn()
-            {
-                Ok(mut child) => {
-                    let _ = child.wait();
-                }
-                Err(error) => {
-                    eprintln!("better-monitor: the taskbar item could not be started: {error}")
+            match better_core::companion::locate(&MONITOR_TRAY) {
+                Ok(path) => spawn(&path),
+                Err(refusal) => {
+                    eprintln!("better-monitor: the taskbar item is not started: {refusal}")
                 }
             }
         });
@@ -239,7 +265,7 @@ mod tray {
             let unit = include_str!("../../../packaging/monitor/better-monitor-tray.service");
             assert!(
                 unit.lines()
-                    .any(|line| line == format!("ExecStart=/usr/bin/{TRAY_PROGRAM}"))
+                    .any(|line| line == format!("ExecStart={}", MONITOR_TRAY.installed))
             );
             let activation =
                 include_str!("../../../packaging/monitor/org.betteros.MonitorTray1.service");

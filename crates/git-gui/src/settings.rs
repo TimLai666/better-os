@@ -267,16 +267,18 @@ pub fn terminal_launch(
     })
 }
 
-/// Better Files on the folder, or the desktop's file manager when Better
-/// Files is not installed.
-pub fn files_launch(folder: &Path, exists: impl Fn(&str) -> bool) -> Launch {
-    let program = if exists("better-files") {
-        "better-files"
-    } else {
-        "xdg-open"
+/// Better Files on the folder, or the desktop's file manager when there is
+/// no Better Files. `better_files` is the companion rule's answer
+/// (`better_core::companion::FILES_WINDOW`, ticket 179): the one built beside
+/// a Better Git run from a build directory, the installed one beside an
+/// installed Better Git, never a name looked up through `PATH`.
+pub fn files_launch(folder: &Path, better_files: Option<&Path>) -> Launch {
+    let program = match better_files {
+        Some(program) => program.to_string_lossy().into_owned(),
+        None => "xdg-open".to_string(),
     };
     Launch {
-        program: program.into(),
+        program,
         args: Vec::new(),
         path_arg: Some(folder.to_path_buf()),
         working_dir: folder.to_path_buf(),

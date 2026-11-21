@@ -212,6 +212,11 @@ contract.
   `PATH`, and is ended by PID when done. A sandbox GNOME Shell otherwise starts
   its own `ibus-daemon`, which has grown to 12 and 21 GB, and the kernel's OOM
   kill took the owner's Claude Desktop down with it twice (2026-11-14, -15).
+  Its session bus is started with `dbus-run-session --config-file <file>`
+  (or `dbus-daemon --config-file`), a copy of the session config whose only
+  `<servicedir>` holds the activation files that test needs, so the
+  system's installed Better OS services can never be activated there;
+  `busctl --user list` inside the sandbox shows none of them (ticket 179).
 - A test module inside a file that does `use gpui::*` imports what it needs
   by name, never `use super::*`: the glob brings gpui's own `#[test]` macro
   in, which shadows the standard one and fails to compile with a recursion

@@ -705,11 +705,17 @@ fn launches_use_argument_vectors() {
     assert_eq!(gnome.args, vec!["--working-directory=/r"]);
     assert!(crate::settings::terminal_launch(&settings, Path::new("/r"), |_| false).is_none());
     assert_eq!(
-        crate::settings::files_launch(Path::new("/r"), |p| p == "better-files").program,
-        "better-files"
+        // The path the companion rule found (ticket 179), never a name for
+        // `PATH` to resolve.
+        crate::settings::files_launch(
+            Path::new("/r"),
+            Some(Path::new("/src/target/debug/better-files"))
+        )
+        .program,
+        "/src/target/debug/better-files"
     );
     assert_eq!(
-        crate::settings::files_launch(Path::new("/r"), |_| false).program,
+        crate::settings::files_launch(Path::new("/r"), None).program,
         "xdg-open"
     );
 }

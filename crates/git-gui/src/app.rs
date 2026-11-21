@@ -1074,7 +1074,12 @@ impl GitApp {
     pub(crate) fn show_in_files(&mut self, path: Option<PathBuf>) {
         let folder = path.or_else(|| self.session.repo.as_ref().map(|r| r.root.clone()));
         if let Some(folder) = folder {
-            self.launch(Some(settings::files_launch(&folder, Self::exists)));
+            let better_files =
+                better_core::companion::locate(&better_core::companion::FILES_WINDOW).ok();
+            self.launch(Some(settings::files_launch(
+                &folder,
+                better_files.as_deref(),
+            )));
         }
     }
 

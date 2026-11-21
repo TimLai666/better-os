@@ -13,16 +13,20 @@
 //! the one an update restarts and an uninstall stops. It asks only while the
 //! unit is enabled, read from the enablement link `systemctl --user enable`
 //! leaves in the user's configuration: a component switched off in Better
-//! Manager stays off. Only where no unit is installed (a development build) is
-//! the program spawned directly, with no argument and no shell.
+//! Manager stays off.
+//!
+//! All of that is for an installed window. A window run from a build
+//! directory never asks the bus by name, which would start the installed
+//! tray: it starts the tray built beside it, or nothing (ticket 179). Under
+//! the test guard an installed window starts nothing either. Either way the
+//! program is found by `better_core::companion`, started with no argument and
+//! no shell, and never looked up through `PATH`.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use awake_ipc::notification::TRAY_BUS_NAME;
-
-/// The program the tray's user unit runs.
-pub(crate) const TRAY_PROGRAM: &str = "awake-tray";
+use better_core::companion::{AWAKE_TRAY, Refusal, StartPlan};
 
 /// The tray's user unit, and where the package installs it.
 pub(crate) const TRAY_UNIT: &str = "better-awake-tray.service";
@@ -69,20 +73,36 @@ pub(crate) enum TrayStart {
     Activate,
     /// The unit is installed and not enabled, so the component is off.
     ComponentOff,
-    /// No unit is installed: spawn the program.
-    Spawn,
+    /// Start the program at this path: the tray built beside a window run
+    /// from a build directory, or an installed tray with no unit.
+    Spawn(PathBuf),
+    /// Start nothing, for this reason (the test guard, or a build with no
+    /// tray beside it).
+    Refused(Refusal),
 }
 
-/// Decides how to bring the tray back. Runs nothing.
-pub(crate) fn plan(name_has_owner: Option<bool>, unit_installed: bool, enabled: bool) -> TrayStart {
+/// Decides how to bring the tray back. Runs nothing. `companion` is the
+/// companion rule's answer for the tray, and `installed` finds the installed
+/// tray's path for an installed window whose unit is missing.
+pub(crate) fn plan(
+    name_has_owner: Option<bool>,
+    companion: StartPlan,
+    unit_installed: bool,
+    enabled: bool,
+    installed: impl FnOnce() -> Result<PathBuf, Refusal>,
+) -> TrayStart {
     if !should_start(name_has_owner) {
-        TrayStart::NotNeeded
-    } else if !unit_installed {
-        TrayStart::Spawn
-    } else if enabled {
-        TrayStart::Activate
-    } else {
-        TrayStart::ComponentOff
+        return TrayStart::NotNeeded;
+    }
+    match companion {
+        StartPlan::Refused(refusal) => TrayStart::Refused(refusal),
+        StartPlan::Path(sibling) => TrayStart::Spawn(sibling),
+        StartPlan::ByName if !unit_installed => match installed() {
+            Ok(path) => TrayStart::Spawn(path),
+            Err(refusal) => TrayStart::Refused(refusal),
+        },
+        StartPlan::ByName if enabled => TrayStart::Activate,
+        StartPlan::ByName => TrayStart::ComponentOff,
     }
 }
 
@@ -115,9 +135,11 @@ pub(crate) fn ensure_running() {
         );
         let outcome = plan(
             tray_is_running(&bus),
+            better_core::companion::plan(&AWAKE_TRAY),
             Path::new(TRAY_UNIT_PATH).exists(),
             // A symlink, so `exists` follows it: a dangling link is not enabled.
             link.is_some_and(|link| link.exists()),
+            || better_core::companion::locate(&AWAKE_TRAY),
         );
         match outcome {
             TrayStart::NotNeeded | TrayStart::ComponentOff => {}
@@ -131,7 +153,10 @@ pub(crate) fn ensure_running() {
                     eprintln!("awake-gui: asking the bus for the tray did not finish: {error}");
                 }
             }
-            TrayStart::Spawn => match Command::new(TRAY_PROGRAM)
+            TrayStart::Refused(refusal) => {
+                eprintln!("awake-gui: the tray is not started: {refusal}");
+            }
+            TrayStart::Spawn(program) => match Command::new(program)
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::inherit())
@@ -162,7 +187,7 @@ mod tests {
         let unit = include_str!("../../../packaging/awake/better-awake-tray.service");
         assert!(
             unit.lines()
-                .any(|line| line == format!("ExecStart=/usr/bin/{TRAY_PROGRAM}"))
+                .any(|line| line == format!("ExecStart={}", AWAKE_TRAY.installed))
         );
         assert!(
             unit.lines()
@@ -195,27 +220,86 @@ mod tests {
         )));
     }
 
+    fn installed_tray() -> Result<PathBuf, Refusal> {
+        Ok(PathBuf::from("/usr/bin/awake-tray"))
+    }
+
+    fn never_asked() -> Result<PathBuf, Refusal> {
+        panic!("the installed tray must not be looked for here")
+    }
+
     #[test]
     fn an_installed_and_enabled_tray_is_brought_back_by_its_unit() {
-        assert_eq!(plan(Some(false), true, true), TrayStart::Activate);
+        assert_eq!(
+            plan(Some(false), StartPlan::ByName, true, true, never_asked),
+            TrayStart::Activate
+        );
     }
 
     #[test]
     fn a_component_switched_off_is_not_started_from_the_window() {
-        assert_eq!(plan(Some(false), true, false), TrayStart::ComponentOff);
+        assert_eq!(
+            plan(Some(false), StartPlan::ByName, true, false, never_asked),
+            TrayStart::ComponentOff
+        );
     }
 
     #[test]
     fn a_running_tray_or_an_unreachable_bus_starts_nothing() {
         for enabled in [true, false] {
-            assert_eq!(plan(Some(true), true, enabled), TrayStart::NotNeeded);
-            assert_eq!(plan(None, true, enabled), TrayStart::NotNeeded);
+            assert_eq!(
+                plan(Some(true), StartPlan::ByName, true, enabled, never_asked),
+                TrayStart::NotNeeded
+            );
+            assert_eq!(
+                plan(None, StartPlan::ByName, true, enabled, never_asked),
+                TrayStart::NotNeeded
+            );
         }
     }
 
     #[test]
-    fn only_a_build_with_no_unit_spawns_the_program() {
-        assert_eq!(plan(Some(false), false, false), TrayStart::Spawn);
+    fn an_installed_window_with_no_unit_spawns_the_installed_tray_by_its_path() {
+        assert_eq!(
+            plan(Some(false), StartPlan::ByName, false, false, installed_tray),
+            TrayStart::Spawn(PathBuf::from("/usr/bin/awake-tray"))
+        );
+    }
+
+    /// Ticket 179: a build window on a machine where Better Awake is
+    /// installed and enabled starts the tray built beside it, never the
+    /// installed one through the bus.
+    #[test]
+    fn a_build_starts_the_tray_beside_it_even_where_the_unit_is_installed() {
+        let sibling = PathBuf::from("/src/target/debug/better-awake-tray");
+        assert_eq!(
+            plan(
+                Some(false),
+                StartPlan::Path(sibling.clone()),
+                true,
+                true,
+                never_asked
+            ),
+            TrayStart::Spawn(sibling)
+        );
+    }
+
+    #[test]
+    fn a_refusal_starts_nothing() {
+        let refusal = Refusal::NotBeside {
+            program: "better-awake-tray".to_string(),
+            directory: PathBuf::from("/src/target/debug"),
+        };
+        assert_eq!(
+            plan(
+                Some(false),
+                StartPlan::Refused(refusal.clone()),
+                true,
+                true,
+                never_asked
+            ),
+            TrayStart::Refused(refusal)
+        );
     }
 
     #[test]

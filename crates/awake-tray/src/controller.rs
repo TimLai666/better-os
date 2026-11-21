@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 use awake_ipc::{
     AwakeRequest, QuickSessions, RequestBody, StatusDocument, WireEnd, WireIndicator, WireSession,
 };
+use better_core::companion::Companion;
 use tokio::sync::{Mutex, Notify};
 use zbus::zvariant::OwnedValue;
 
@@ -137,8 +138,10 @@ enum MenuUpdate {
 ///
 /// This is a direct execution of a known first-party binary with a fixed
 /// argument list. It is not a shell, and no part of it comes from a rule, a
-/// menu label, or any other input.
-pub const APPLICATION_BINARY: &str = "better-manager";
+/// menu label, or any other input. The binary is found by the companion rule
+/// (`better_core::companion`, ticket 179): beside this tray, then where the
+/// package installs it, never through `PATH`.
+pub const APPLICATION_BINARY: Companion = better_core::companion::MANAGER_WINDOW;
 
 /// The page the tray opens, and the one with the "Until a time" dialog.
 pub const KEEP_AWAKE_PAGE: [&str; 2] = ["--page", "keep-awake"];
@@ -147,11 +150,11 @@ pub const UNTIL_A_TIME_PAGE: [&str; 2] = ["--page", "keep-awake/until"];
 /// The window opened when Better Manager is missing or refuses the page,
 /// which a Better Manager older than the Keep awake page does (ticket 60).
 /// It stays installed until ticket 91 retires it.
-pub const FALLBACK_BINARY: &str = "awake-gui";
+pub const FALLBACK_BINARY: Companion = better_core::companion::AWAKE_WINDOW;
 
 /// What opening the window runs for an action: the program and its
 /// arguments, fixed at build time.
-pub fn window_command(action: MenuAction) -> (&'static str, [&'static str; 2]) {
+pub fn window_command(action: MenuAction) -> (Companion, [&'static str; 2]) {
     match action {
         MenuAction::StartUntilTime => (APPLICATION_BINARY, UNTIL_A_TIME_PAGE),
         _ => (APPLICATION_BINARY, KEEP_AWAKE_PAGE),
@@ -921,7 +924,18 @@ impl TrayController {
     fn open_application(&self, action: MenuAction) {
         // Failure is not fatal to the tray: the session it is showing is
         // unaffected by whether a window opened.
-        let (program, arguments) = window_command(action);
+        let (companion, arguments) = window_command(action);
+        let program = match better_core::companion::locate(&companion) {
+            Ok(program) => program,
+            Err(refusal) => {
+                eprintln!(
+                    "better-awake-tray: Better Manager is not opened ({refusal}); opening the \
+                     Better Awake window instead"
+                );
+                open_fallback();
+                return;
+            }
+        };
         match std::process::Command::new(program).args(arguments).spawn() {
             // Reaped when it closes, so no zombie stays behind the tray. A
             // Better Manager that refuses the page (one older than it) exits
@@ -1023,7 +1037,14 @@ impl TrayController {
 /// Opens the old window, for a machine whose Better Manager cannot show the
 /// page.
 fn open_fallback() {
-    match std::process::Command::new(FALLBACK_BINARY).spawn() {
+    let program = match better_core::companion::locate(&FALLBACK_BINARY) {
+        Ok(program) => program,
+        Err(refusal) => {
+            eprintln!("better-awake-tray: the Better Awake window is not opened: {refusal}");
+            return;
+        }
+    };
+    match std::process::Command::new(program).spawn() {
         Ok(mut child) => {
             std::thread::spawn(move || {
                 let _ = child.wait();
@@ -1542,18 +1563,20 @@ mod tests {
     /// page, and "Until a time…" opens it with the time dialog.
     #[test]
     fn the_window_entries_open_the_keep_awake_page() {
+        let manager = better_core::companion::MANAGER_WINDOW;
+        assert_eq!(manager.installed, "/usr/bin/better-manager");
         assert_eq!(
             window_command(MenuAction::OpenApplication),
-            ("better-manager", ["--page", "keep-awake"])
+            (manager, ["--page", "keep-awake"])
         );
         assert_eq!(
             window_command(MenuAction::ChangeSession),
-            ("better-manager", ["--page", "keep-awake"])
+            (manager, ["--page", "keep-awake"])
         );
         assert_eq!(
             window_command(MenuAction::StartUntilTime),
-            ("better-manager", ["--page", "keep-awake/until"])
+            (manager, ["--page", "keep-awake/until"])
         );
-        assert_eq!(FALLBACK_BINARY, "awake-gui");
+        assert_eq!(FALLBACK_BINARY.installed, "/usr/bin/awake-gui");
     }
 }
