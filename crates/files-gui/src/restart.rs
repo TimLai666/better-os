@@ -51,6 +51,27 @@ fn reopenable(uri: &str) -> Option<Location> {
     }
 }
 
+/// The window a start opens first: the one asked for on the command line,
+/// or, for `better-files --service` (the bus started it for "Show in
+/// folder", ticket 129), none unless a restart left a hand-off, which is a
+/// window an update replaced and which must come back. A restart reuses the
+/// arguments it was started with, so a window opened by a service process
+/// comes back through here.
+pub fn first_window(
+    command_line: Option<crate::launch::StartPlan>,
+    handoff_left: bool,
+) -> Option<crate::launch::StartPlan> {
+    match command_line {
+        Some(plan) => Some(plan),
+        None if handoff_left => Some(crate::launch::StartPlan {
+            target: None,
+            problem: None,
+            ignored: 0,
+        }),
+        None => None,
+    }
+}
+
 static OPEN_WINDOWS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// One Better Files window counted among the process's open windows, until it
@@ -216,7 +237,23 @@ impl FilesSession {
 
 #[cfg(test)]
 mod tests {
-    use super::{SendCounter, WindowCount};
+    use super::{SendCounter, WindowCount, first_window};
+
+    /// Ticket 129: a window a `--service` process opened is replaced by an
+    /// update, and the restart runs `better-files --service` again. The
+    /// hand-off it left brings the window back; with none, the service
+    /// opens nothing until a call asks.
+    #[test]
+    fn a_service_start_reopens_the_window_a_restart_handed_off() {
+        assert!(first_window(None, true).is_some(), "the window comes back");
+        assert!(first_window(None, false).is_none(), "nothing asked for one");
+        let asked = crate::launch::StartPlan {
+            target: None,
+            problem: None,
+            ignored: 2,
+        };
+        assert_eq!(first_window(Some(asked.clone()), false), Some(asked));
+    }
 
     #[test]
     fn a_restart_waits_until_one_window_is_left() {

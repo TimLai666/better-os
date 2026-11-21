@@ -1014,6 +1014,107 @@ if ls "${TMPDIR:-/tmp}"/better-os-accounts.* >/dev/null 2>&1; then
 fi
 printf 'Removing Better Manager undid the fix, as the person, and left nothing\n'
 
+printf '== removing Better Files gives the file manager back (ticket 129) ==\n'
+# The same person, whose Default apps page made Better Files the program the
+# session bus starts for "Show in folder": Better OS's activation file in
+# their home, and their own file it kept aside. apt removes Better Files with
+# no Better Manager to run the before-removal program, so its postrm acts for
+# each person. Each check below the removal proves the step ran as uid
+# $FIX_UID: the step touches a file only when its own uid owns it (`test -O`),
+# so a step running as root would have changed nothing.
+FILES_DEB="$(find_package better-files)"
+files_home="$(getent passwd "$FIX_UID" | cut -d: -f6)"
+files_services="$files_home/.local/share/dbus-1/services"
+files_activation="$files_services/org.freedesktop.FileManager1.service"
+files_aside="$files_services/.org.freedesktop.FileManager1.service.before-better-os"
+own_activation='[D-BUS Service]
+Name=org.freedesktop.FileManager1
+Exec=/usr/bin/nautilus --gapplication-service
+'
+mkdir -p "$files_services"
+printf '[D-BUS Service]\nName=org.freedesktop.FileManager1\nExec=/usr/bin/better-files --service\n' > "$files_activation"
+printf '%s' "$own_activation" > "$files_aside"
+chmod 0640 "$files_aside"
+chown -R "$FIX_UID:$FIX_UID" "$files_home/.local"
+timeout -s KILL 300 env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "$FILES_DEB" \
+    > /tmp/files-install.log 2>&1 || {
+    printf 'Installing Better Files failed or did not finish:\n' >&2
+    cat /tmp/files-install.log >&2
+    exit 1
+}
+# An upgrade (here a reinstall, which runs the postrm with "upgrade") leaves
+# the person's files alone.
+timeout -s KILL 300 env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends --reinstall "$FILES_DEB" \
+    > /tmp/files-reinstall.log 2>&1 || {
+    printf 'Reinstalling Better Files failed or did not finish:\n' >&2
+    cat /tmp/files-reinstall.log >&2
+    exit 1
+}
+# Each check says what it expected and what it found before it fails.
+found_activation="$(cat "$files_activation" 2>&1 || true)"
+if [[ "$found_activation" != *'Exec=/usr/bin/better-files --service'* || ! -f "$files_aside" ]]; then
+    printf 'An upgrade of Better Files changed the activation files.\n' >&2
+    printf 'Expected Better OS'"'"'s file in place and the person'"'"'s kept aside; found:\n%s\n' "$found_activation" >&2
+    ls -la "$files_services" >&2 || true
+    cat /tmp/files-reinstall.log >&2
+    exit 1
+fi
+remove_status=0
+timeout -s KILL 300 env DEBIAN_FRONTEND=noninteractive apt-get remove -y better-files \
+    > /tmp/files-remove.log 2>&1 || remove_status=$?
+if [[ "$remove_status" -ne 0 ]]; then
+    printf 'Removing Better Files failed or did not finish: expected exit 0, found %s (124 or 137 is the time limit)\n' \
+        "$remove_status" >&2
+    cat /tmp/files-remove.log >&2
+    exit 1
+fi
+if installer_reports_installed better-files; then
+    printf 'Better Files is still installed after its removal: expected not installed, found %s\n' \
+        "$(dpkg-query -W -f='${db:Status-Abbrev}' better-files 2>&1 || true)" >&2
+    exit 1
+fi
+if ! cmp -s <(printf '%s' "$own_activation") "$files_activation"; then
+    printf 'The person'"'"'s own activation file is not back in place.\nExpected:\n%s\nFound:\n%s\n' \
+        "$own_activation" "$(cat "$files_activation" 2>&1 || true)" >&2
+    ls -la "$files_services" >&2 || true
+    cat /tmp/files-remove.log >&2
+    exit 1
+fi
+if [[ -e "$files_aside" || -L "$files_aside" ]]; then
+    printf 'The kept-aside file outlived Better Files: expected no %s, found:\n' "$files_aside" >&2
+    ls -la "$files_aside" >&2 || true
+    exit 1
+fi
+restored_owner_mode="$(stat -c '%u %a' "$files_activation" 2>&1 || true)"
+if [[ "$restored_owner_mode" != "$FIX_UID 640" ]]; then
+    printf 'The person'"'"'s file came back wrong: expected owner and mode "%s 640", found "%s"\n' \
+        "$FIX_UID" "$restored_owner_mode" >&2
+    exit 1
+fi
+# apt runs dpkg on a pseudo-terminal, so the maintainer scripts' lines reach
+# the log ending in a carriage return and a newline.
+files_name="$(getent passwd "$FIX_UID" | cut -d: -f1)"
+expected_line="Better OS ($files_name): your own org.freedesktop.FileManager1.service is back in use"
+if ! tr -d '\r' < /tmp/files-remove.log | grep -qxF "$expected_line"; then
+    printf 'The removal did not tell the person running apt: expected the line\n%s\nfound these lines from Better OS:\n' \
+        "$expected_line" >&2
+    grep -a 'Better OS' /tmp/files-remove.log | od -c >&2 || true
+    cat /tmp/files-remove.log >&2
+    exit 1
+fi
+for leftover in "${TMPDIR:-/tmp}"/better-os-accounts.*; do
+    if [[ -e "$leftover" ]]; then
+        printf 'A maintainer script left its account library behind: expected none, found %s\n' "$leftover" >&2
+        exit 1
+    fi
+done
+audit="$(dpkg --audit 2>&1)" || true
+if [[ -n "$audit" ]]; then
+    printf 'dpkg is not consistent after removing Better Files: expected no output from dpkg --audit, found:\n%s\n' "$audit" >&2
+    exit 1
+fi
+printf 'Removing Better Files put the person'"'"'s file manager back, as the person\n'
+
 "$INSTALLER" --uninstall
 for package_name in better-manager better-manager-daemon better-shell-adapter; do
     if installer_reports_installed "$package_name"; then

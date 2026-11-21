@@ -105,6 +105,9 @@ pub struct DeviceRow {
     /// `IdentityConfidence::Volatile` means. A weak identity is still
     /// persistable and is not flagged.
     pub identity_volatile: bool,
+    /// True when the identity is only descriptive (`weak`): two devices
+    /// alike can share it. A destructive action says so (ticket 171).
+    pub identity_weak: bool,
     pub mount_point: Option<PathBuf>,
     pub policy: RemovalPolicy,
     pub state: DeviceStateKind,
@@ -125,6 +128,34 @@ pub struct DeviceRow {
     pub filesystem: Option<String>,
     /// An image is being written to this device's drive.
     pub erasing: bool,
+    /// What of the running system its drive holds (ticket 171), by this
+    /// window's own reading of `storage_platform::system_use` for the drive
+    /// the service names: the service's reports carry no such field, so a
+    /// released Better Files can still read them. Only `Free` is ejected or
+    /// formatted; a row whose drive the window has not read yet is Unknown.
+    pub system_use: storage_platform::SystemUse,
+}
+
+/// What a Format or Write to Drive confirmation says when the device cannot
+/// be told from another one like it (a weak or volatile identity, ticket
+/// 171): what the person can check, its label, size and model. `None` for a
+/// device with a stable identity.
+pub fn erase_caution(row: &DeviceRow, c: &crate::i18n::Copy) -> Option<String> {
+    if !(row.identity_weak || row.identity_volatile) {
+        return None;
+    }
+    let mut parts = vec![row.label.clone()];
+    if row.size > 0 {
+        parts.push(crate::format::bytes(row.size));
+    }
+    if let Some(name) = &row.drive_name {
+        parts.push(name.clone());
+    }
+    Some(
+        c.errors
+            .erase_identity_caution
+            .replace("{device}", &parts.join(" · ")),
+    )
 }
 
 /// A drive a disk image can be written to, and what writing it erases.
@@ -139,10 +170,12 @@ pub struct ImageTarget {
 }
 
 /// The drives in an inventory an image could be written to, each with the
-/// volumes it would erase. A drive already being written to is left out.
+/// volumes it would erase. A drive already being written to is left out, and
+/// so is one that holds anything of the running system or cannot be told
+/// apart from one (ticket 171).
 pub fn image_targets(rows: &[DeviceRow]) -> Vec<ImageTarget> {
     rows.iter()
-        .filter(|row| row.whole_disk && !row.erasing)
+        .filter(|row| row.whole_disk && !row.erasing && row.system_use.permits_removal())
         .filter_map(|disk| {
             let drive = disk.drive.as_ref()?;
             let name = format!(
@@ -348,11 +381,15 @@ pub trait DeviceLink: Send + Sync {
 pub enum EraseRequest {
     Format {
         object_path: String,
+        /// The device the person confirmed, by its stable identity: a
+        /// different device now at the same object path is refused.
+        identity: String,
         filesystem: storage_platform::FilesystemKind,
         label: String,
     },
     WriteImage {
         object_path: String,
+        identity: String,
         image: PathBuf,
     },
 }
@@ -453,9 +490,25 @@ pub struct DeviceInventory {
     /// the user dismisses them: a warning about data that may not have been
     /// written must not disappear with the row that caused it.
     warnings: HashMap<String, UnsafeRemoval>,
+    /// Which drives hold the running system, from the window's own drive
+    /// scan; unknown until the first one.
+    system: storage_platform::SystemDrives,
 }
 
 impl DeviceInventory {
+    /// Takes a new reading of which drives hold the running system and
+    /// stamps every row with its drive's answer.
+    pub fn set_system(&mut self, system: storage_platform::SystemDrives) {
+        self.system = system;
+        self.stamp();
+    }
+
+    fn stamp(&mut self) {
+        for row in &mut self.rows {
+            row.system_use = self.system.of_drive(row.drive.as_deref());
+        }
+    }
+
     pub fn rows(&self) -> &[DeviceRow] {
         &self.rows
     }
@@ -503,6 +556,7 @@ impl DeviceInventory {
     /// Replaces the rows from a full inventory.
     pub fn apply_inventory(&mut self, reports: Vec<DeviceReport>) {
         self.rows = reports.into_iter().map(row_from).collect();
+        self.stamp();
     }
 
     /// Removes a device and returns the mount point it had, so the caller knows
@@ -559,6 +613,7 @@ pub fn row_from(report: DeviceReport) -> DeviceRow {
         label: display_label(&report),
         object_path: report.object_path,
         identity_volatile: report.identity_confidence == "volatile",
+        identity_weak: report.identity_confidence == "weak",
         identity: report.identity,
         mount_point: report.mount_point.map(PathBuf::from),
         policy: report.policy,
@@ -571,6 +626,8 @@ pub fn row_from(report: DeviceReport) -> DeviceRow {
         whole_disk: report.whole_disk,
         filesystem: report.filesystem,
         erasing: report.erasing,
+        // Stamped by the inventory from the window's own reading.
+        system_use: storage_platform::SystemUse::Unknown,
     }
 }
 

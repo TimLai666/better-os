@@ -207,8 +207,11 @@ impl DeviceLink for Arc<FakeLink> {
                 object_path,
                 filesystem,
                 label,
+                ..
             } => format!("format {object_path} {} {label}", filesystem.udisks_type()),
-            crate::devices::EraseRequest::WriteImage { object_path, image } => {
+            crate::devices::EraseRequest::WriteImage {
+                object_path, image, ..
+            } => {
                 format!("write image {object_path} {}", image.display())
             }
         });
@@ -237,12 +240,31 @@ fn report(object_path: &str, mount_point: Option<&str>, state: StateReport) -> D
         mount_point: mount_point.map(str::to_string),
         policy: RemovalPolicy::DirectRemoval,
         state,
-        drive: None,
+        // On a drive the window has read and found free (see `rig`).
+        drive: Some("/drives/a-stick".to_string()),
         drive_name: None,
         size: 0,
         whole_disk: false,
         erasing: false,
     }
+}
+
+/// Which drives hold the running system, as a window's own drive scan would
+/// have read them: `held` is at `/`, every other drive is free.
+fn system_drives(held: &[&str]) -> storage_platform::SystemDrives {
+    let devices: Vec<storage_platform::PlatformDevice> = held
+        .iter()
+        .map(|drive| {
+            let mut device = storage_platform::fake::usb_stick("/b/root", "/dev/sdz2", "root");
+            device.drive.as_mut().unwrap().object_path = drive.to_string();
+            device.mount_point = Some("/".into());
+            device
+        })
+        .collect();
+    storage_platform::SystemDrives::find(
+        &devices,
+        Some(&storage_platform::SystemSources::default()),
+    )
 }
 
 fn ready() -> StateReport {
@@ -295,7 +317,7 @@ fn rig_sized(
         ..EngineConfig::default()
     }));
 
-    let session = FilesSession::new(SessionSetup {
+    let mut session = FilesSession::new(SessionSetup {
         start: Location::local(home.join("Documents")).unwrap(),
         preferences: FilesPreferences::default(),
         preference_store: PreferenceStore::at_path(root.path().join("prefs.json")),
@@ -311,6 +333,8 @@ fn rig_sized(
         link: Box::new(link.clone()),
         preview: PreviewPanel::default(),
     });
+    // As a window's drive scan finds a machine whose system is on no stick.
+    session.devices.set_system(system_drives(&[]));
     (
         Rig {
             _root: root,
@@ -1040,6 +1064,133 @@ fn leaving_a_device_location_does_not_unmount_it() {
     assert!(session.device_rows()[0].is_mounted());
 }
 
+/// Ticket 171: a request for the running system's drive, or one that cannot
+/// be told apart from it, never reaches the storage layer, whatever asked
+/// for it (a menu line, the row's button, a dialog left open).
+#[test]
+fn the_drive_the_system_runs_from_is_never_ejected_or_formatted_from_the_session() {
+    let (rig, mut session) = plain();
+    let mut system = report("/dev/obj", Some("/"), ready());
+    system.whole_disk = true;
+    system.drive = Some("/drives/usb".into());
+    // A device with no drive object cannot be told apart from one.
+    let mut doubtful = report("/dev/other", Some("/media/X"), ready());
+    doubtful.drive = None;
+    rig.link
+        .push(DeviceNotice::Inventory(vec![system, doubtful]));
+    session.pump();
+    session.devices.set_system(system_drives(&["/drives/usb"]));
+
+    session.eject_device("/dev/obj");
+    assert_eq!(
+        session.notice,
+        Some(Notice::Key("storage.system.running_system".into()))
+    );
+    session.request_format("/dev/obj");
+    assert_eq!(session.dialog, None, "no Format dialog opens");
+    session.eject_device("/dev/other");
+    assert_eq!(
+        session.notice,
+        Some(Notice::Key("storage.system.unknown".into()))
+    );
+    assert!(
+        session.image_targets().is_empty(),
+        "Write to Drive does not list it"
+    );
+    assert!(rig.link.calls().is_empty(), "{:?}", rig.link.calls());
+    // In both languages, the refusal is the menu's own line.
+    assert_eq!(
+        crate::errors::explain("storage.system.running_system", &crate::i18n::EN_US),
+        crate::i18n::EN_US.errors.system_running
+    );
+    assert_eq!(
+        crate::errors::explain("storage.system.folder:/home", &crate::i18n::ZH_TW),
+        crate::i18n::ZH_TW.errors.system_folder
+    );
+}
+
+/// Ticket 171: the Format dialog is open for stick A; A is pulled and stick
+/// C arrives at the same object path. The dialog closes and says why, and a
+/// confirmation that still reaches the session erases nothing.
+#[test]
+fn a_format_dialog_closes_when_its_stick_is_replaced_at_the_same_path() {
+    let (rig, mut session) = plain();
+    rig.link.push(DeviceNotice::Inventory(vec![report(
+        "/dev/obj",
+        Some("/media/A"),
+        ready(),
+    )]));
+    session.pump();
+    session.request_format("/dev/obj");
+    assert!(matches!(session.dialog, Some(PendingDialog::Format { .. })));
+    let held = session.dialog.clone();
+
+    let mut other = report("/dev/obj", Some("/media/C"), ready());
+    other.identity = "uuid:C0C0-0001".into();
+    rig.link.push(DeviceNotice::Inventory(vec![other]));
+    session.pump();
+    assert_eq!(session.dialog, None, "the dialog closed");
+    assert_eq!(
+        session.notice,
+        Some(Notice::Key(crate::session::DEVICE_CHANGED.into()))
+    );
+
+    // A confirmation already on its way names A, and C is not erased.
+    session.dialog = held;
+    session.confirm_erase("PHOTOS");
+    assert!(rig.link.calls().is_empty(), "{:?}", rig.link.calls());
+    assert_eq!(
+        crate::errors::explain(crate::session::DEVICE_CHANGED, &crate::i18n::ZH_TW),
+        crate::i18n::ZH_TW.errors.erase_device_changed
+    );
+}
+
+/// Ticket 171, second review: a device whose identity is only descriptive or
+/// this connection's is named in the confirmation by what the person can
+/// check, with the sentence that it cannot be told from another like it; a
+/// stable one gets no such sentence.
+#[test]
+fn an_erase_of_a_device_with_a_weak_identity_says_what_to_check() {
+    let (rig, mut session) = plain();
+    let mut weak = report("/dev/obj", Some("/media/A"), ready());
+    weak.identity_confidence = "weak".into();
+    weak.display_name = "PHOTOS".into();
+    weak.size = 32_000_000_000;
+    weak.drive_name = Some("Generic Flash Disk".into());
+    rig.link.push(DeviceNotice::Inventory(vec![weak]));
+    session.pump();
+    session.request_format("/dev/obj");
+    let caution = session
+        .erase_caution()
+        .expect("a caution for a weak identity");
+    // The row's own name (here its mount point's), size and model.
+    assert_eq!(
+        caution,
+        crate::i18n::copy(session.locale)
+            .errors
+            .erase_identity_caution
+            .replace("{device}", "A · 29.8 GB · Generic Flash Disk")
+    );
+
+    session.dialog = None;
+    rig.link.push(DeviceNotice::Inventory(vec![report(
+        "/dev/obj",
+        Some("/media/A"),
+        ready(),
+    )]));
+    session.pump();
+    session.request_format("/dev/obj");
+    assert_eq!(
+        session.erase_caution(),
+        None,
+        "a stable identity says nothing"
+    );
+    assert_eq!(
+        crate::errors::explain("storage.erase.ambiguous", &crate::i18n::ZH_TW),
+        crate::i18n::ZH_TW.errors.erase_ambiguous
+    );
+}
+
 #[test]
 fn eject_is_available_and_reports_what_actually_happened() {
     let (rig, mut session) = plain();
@@ -1109,6 +1260,7 @@ fn a_device_the_drive_listing_has_is_named_as_its_sidebar_row_names_it() {
             uuid: None,
             size: 1,
             ejectable: false,
+            system_use: crate::drives::SystemUse::RunningSystem,
             capacity: None,
             auto_mount: None,
             form: None,

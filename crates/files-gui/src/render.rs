@@ -398,33 +398,11 @@ impl FilesApp {
                     .drives()
                     .iter()
                     .find(|drive| crate::drives::is_device(drive, device));
-                sidebar_menu(
-                    SidebarKind::Device {
-                        mounted: device.mount_point.is_some(),
-                        ejectable: true,
-                        formattable: true,
-                        auto_mount: drive.map_or(
-                            crate::context_menu::AutoMountLine::None,
-                            crate::context_menu::AutoMountLine::of,
-                        ),
-                        failed: drive.is_some_and(drive_mounts::choice::failed),
-                    },
-                    c,
-                )
+                sidebar_menu(crate::context_menu::device_row_kind(device, drive), c)
             }
             (MenuTarget::Sidebar(_), Some(NavTarget::Drive(key))) => {
                 match self.session.drives().iter().find(|drive| drive.key == *key) {
-                    Some(drive) => sidebar_menu(
-                        SidebarKind::Device {
-                            mounted: drive.mount_point.is_some(),
-                            ejectable: drive.ejectable
-                                && drive.kind != crate::drives::DriveKind::System,
-                            formattable: false,
-                            auto_mount: crate::context_menu::AutoMountLine::of(drive),
-                            failed: drive_mounts::choice::failed(drive),
-                        },
-                        c,
-                    ),
+                    Some(drive) => sidebar_menu(crate::context_menu::drive_row_kind(drive), c),
                     None => Vec::new(),
                 }
             }
@@ -449,6 +427,7 @@ impl FilesApp {
             .into_iter()
             .map(|line| match line {
                 MenuLine::Separator => MenuEntry::Separator,
+                MenuLine::Note(text) => MenuItem::new(text).disabled(true).entry(),
                 MenuLine::Command {
                     command,
                     label,

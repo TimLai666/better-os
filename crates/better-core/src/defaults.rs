@@ -312,7 +312,23 @@ pub struct KeyObservation {
     pub observed: ObservedValue,
 }
 
+/// How a `user-service` reading says the setting is Better OS's and another
+/// program still owns the name until it exits (ADR 0041): `owned-by:` and the
+/// executable. It is the one reading that is waiting rather than changed.
+pub const OWNED_BY_PREFIX: &str = "owned-by:";
+
 impl ObservedValue {
+    /// Whether this is a written setting another running program still
+    /// answers for (`owned-by:…`): waiting, never changed externally.
+    pub fn is_pending_owner(&self) -> bool {
+        matches!(
+            self,
+            Self::Set {
+                value: DefaultsValue::Text(text)
+            } if text.starts_with(OWNED_BY_PREFIX)
+        )
+    }
+
     pub fn value(&self) -> Option<&DefaultsValue> {
         match self {
             Self::Set { value } => Some(value),

@@ -19,6 +19,8 @@
 //!   verify`] re-reads through the declared verify adapter and compares.
 
 pub mod applications;
+#[cfg(feature = "session-bus")]
+pub mod bus_activation;
 pub mod dconf;
 pub mod dconf_profile;
 #[cfg(feature = "dconf-write")]
@@ -45,6 +47,8 @@ pub use app_catalog_core::{DesktopId, MimeType};
 pub use applications::{
     ApplicationCatalog, ApplicationChoice, InstalledApplications, LazyApplications,
 };
+#[cfg(feature = "session-bus")]
+pub use bus_activation::BusActivationAdapter;
 pub use dconf::DconfAdapter;
 pub use gsettings::{LauncherEntryAdapter, ToolEntryPointAdapter};
 pub use mock::{InMemoryAdapter, MockBehavior, MockDesktop};

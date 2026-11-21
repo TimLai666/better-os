@@ -60,7 +60,10 @@ fn the_desktop_integration_is_declared_and_is_not_implied_by_installing() {
         .map(|integration| integration.kind)
         .collect();
     assert!(kinds.contains(&IntegrationKind::ApplicationHandler));
-    assert!(kinds.contains(&IntegrationKind::ToolEntryPoint));
+    // "Show in folder": the bus name, not the key GNOME 46 does not have
+    // (ticket 129, ADR 0041).
+    assert!(kinds.contains(&IntegrationKind::UserService));
+    assert!(!kinds.contains(&IntegrationKind::ToolEntryPoint));
     assert!(kinds.contains(&IntegrationKind::DesktopLauncherEntry));
 
     // Installing the package makes nothing the default. Every one of these is
@@ -112,7 +115,7 @@ fn restoring_returns_to_the_captured_value_rather_than_a_guessed_default() {
         );
     }
     // The exclusive ones — the two that take something over — all capture.
-    for id in ["default-file-manager", "file-manager-tool-entry-point"] {
+    for id in ["default-file-manager", "file-manager-service"] {
         let integration = manifest
             .default_integrations
             .iter()

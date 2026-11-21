@@ -498,7 +498,23 @@ GUI or dependency compiles when the relevant command was not executed.
   as each person in the login range, because Better Manager cannot remove
   itself (`packaging/maintainer/before-removal-accounts.sh`, sharing
   `accounts.sh` and `account-step.sh` with the autostart postrm: accounts
-  from `getent passwd`, each person's step under `timeout -s KILL 30`). The gesture service's first run puts the Mac-style preset in
+  from `getent passwd`, each person's step under `timeout -s KILL 30`).
+  Better Files' postrm takes its user-level activation file away through
+  the same library (`files-activation.sh`, ticket 129); any maintainer
+  script that acts in a person's home goes through `account_block` and
+  `better_os_for_each_account`, never a copy of them.
+  A package may also ship
+  `/usr/lib/better-os/on-disable/<package>` (ticket 129), under the same
+  rules (only a regular, root-owned file nobody else can write, found in
+  dpkg's file list, run as the person, never blocking, exit 3 a warning, exit
+  4 pending and finished at Better Manager's next start): manager-core runs
+  it when the component is turned off, after its units and extensions, and
+  with `--undo` when it is turned on again, so what it took over in the
+  person's session is given back while it is off. Better Manager's start
+  finishes every component's pending put-back or take-back by the record
+  (installed, on or off), not only by whether it is installed. Better Files
+  is the one package that ships it; ticket 176 folds it into one mechanism
+  for every component. The gesture service's first run puts the Mac-style preset in
   force when no gesture file exists yet. Without both processes the Gestures
   screen and the `touchpad.gesture_bridge` health check say which is missing:
   the service owns `org.betteros.TouchpadGestures1` while it runs, and an
@@ -598,6 +614,18 @@ GUI or dependency compiles when the relevant command was not executed.
   carries application back, forward, zoom, and rotate because Issue #3's table
   does, and every adapter reports all four unsupported. A four-row preview that
   says "no backend can do this yet" is honest but it is not a feature.
+- Better Files becomes the desktop's file manager (ticket 129, ADR 0041) by a
+  user-level D-Bus activation file for `org.freedesktop.FileManager1` that
+  runs `better-files --service`; a running owner is never stopped.
+  Removal puts the previous file (or none) back through
+  `/usr/lib/better-os/before-removal/better-files`, a removal by `apt` through
+  the package's postrm, and Better Manager's start finishes what either
+  left; turning Better Files off runs the same program from
+  `/usr/lib/better-os/on-disable/` and turning it on its `--undo`. The routing has run only on a private
+  `dbus-daemon` with stand-in file managers: nobody has watched a real
+  "Show in folder" open Better Files on GNOME, nor a real Nautilus give the
+  name up, and the adapter's executable table is the only thing that may
+  name a program for a bus name.
 - Better Defaults writes GNOME keybindings and desktop settings through the
   dconf service now, and the write has only ever reached a real `dconf-service`
   on a private bus. Nobody has watched GNOME Shell or Settings pick up a change

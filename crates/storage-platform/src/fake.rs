@@ -30,6 +30,10 @@ pub struct FakeDeviceControl {
     /// While set, an image write waits here after its first chunk, so a
     /// test can try other operations on the drive meanwhile.
     image_gate: Arc<Mutex<Option<std::sync::mpsc::Receiver<()>>>>,
+    /// What the fake system has mounted and swapped: nothing, until a test
+    /// says otherwise, so every fake drive is free. `Some(None)` is a mount
+    /// table that cannot be read.
+    system: Arc<Mutex<Option<Option<crate::system_use::SystemSources>>>>,
 }
 
 impl FakeDeviceControl {
@@ -87,6 +91,12 @@ impl FakeDeviceControl {
             .cloned()
     }
 
+    /// What the running system is said to have mounted and swapped
+    /// (ticket 171); `None` is a mount table that could not be read.
+    pub fn set_system_sources(&self, sources: Option<crate::system_use::SystemSources>) {
+        *self.system.lock().expect("system lock") = Some(sources);
+    }
+
     /// The operations that reached this control, in order.
     pub fn calls(&self) -> Vec<String> {
         self.calls.lock().expect("call lock").clone()
@@ -107,6 +117,14 @@ impl FakeDeviceControl {
 }
 
 impl DeviceControl for FakeDeviceControl {
+    fn system_sources(&self) -> Option<crate::system_use::SystemSources> {
+        self.system
+            .lock()
+            .expect("system lock")
+            .clone()
+            .unwrap_or_else(|| Some(crate::system_use::SystemSources::default()))
+    }
+
     async fn enumerate(&self) -> Result<Vec<PlatformDevice>, PlatformError> {
         self.record("enumerate");
         Ok(self

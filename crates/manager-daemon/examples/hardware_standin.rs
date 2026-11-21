@@ -213,6 +213,11 @@ fn drives_standin(
                 filesystem: drive.filesystem.unwrap_or_else(|| "ext4".into()),
                 usage: "filesystem".into(),
                 removable: matches!(drive.kind.as_str(), "removable" | "optical"),
+                system_use: if drive.kind == "system" {
+                    drive_mounts::listing::SystemUse::RunningSystem
+                } else {
+                    drive_mounts::listing::SystemUse::Free
+                },
                 mount_points: drive.mount_point.into_iter().map(Into::into).collect(),
                 names: drive_mounts::fstab::DriveNames {
                     uuid,

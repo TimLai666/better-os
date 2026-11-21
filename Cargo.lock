@@ -1732,7 +1732,9 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "test-prerequisites",
  "thiserror 2.0.19",
+ "zbus",
 ]
 
 [[package]]

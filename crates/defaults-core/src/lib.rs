@@ -23,6 +23,7 @@
 pub mod adapters;
 pub mod engine;
 pub mod plan;
+pub mod removal;
 pub mod status;
 
 pub use adapters::{AdapterMode, AdapterSession, AdapterSessionError};

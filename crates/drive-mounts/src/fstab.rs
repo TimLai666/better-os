@@ -13,11 +13,11 @@ use std::path::Path;
 
 use crate::ids::{mount_point, valid_uuid};
 
-/// The line the block starts with.
-pub const BEGIN: &str =
-    "# >>> Better OS drive mounting (written by Better Manager; do not edit inside this block)";
+/// The line the block starts with. Defined beside the rule that reads the
+/// block as Better OS's own (`storage_platform::system_use`, ticket 171).
+pub const BEGIN: &str = storage_platform::system_use::FSTAB_BEGIN;
 /// The line the block ends with.
-pub const END: &str = "# <<< Better OS drive mounting";
+pub const END: &str = storage_platform::system_use::FSTAB_END;
 
 /// The options every entry carries: `nosuid` and `nodev` so nothing on the
 /// drive can raise privileges or open a device node (UDisks2's own defaults

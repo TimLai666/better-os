@@ -240,6 +240,10 @@ jobs:
           bash packaging/tests/before-removal-accounts.test.sh
           shellcheck packaging/tests/account-scripts.test.sh
           bash packaging/tests/account-scripts.test.sh
+          sh -n packaging/maintainer/files-activation.sh
+          shellcheck --shell=sh packaging/maintainer/files-activation.sh
+          shellcheck packaging/tests/files-activation.test.sh
+          bash packaging/tests/files-activation.test.sh
           bash -n packaging/boot-watch/run.sh packaging/boot-watch/check.sh
           shellcheck packaging/boot-watch/run.sh packaging/boot-watch/check.sh
           bash -n packaging/hardware-unit/run.sh packaging/hardware-unit/check.sh

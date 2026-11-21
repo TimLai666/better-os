@@ -380,7 +380,7 @@ async fn an_image_write_reports_progress_and_never_holds_the_service_while_it_co
         let heard = heard.clone();
         tokio::spawn(async move {
             storage
-                .write_image(DISK, &image, true, move |written, total| {
+                .write_image(DISK, &image, true, None, move |written, total| {
                     heard.lock().unwrap().push((written, total))
                 })
                 .await

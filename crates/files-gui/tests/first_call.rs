@@ -43,9 +43,12 @@ struct ActivatingBus {
 
 impl ActivatingBus {
     fn start() -> Option<Self> {
+        // One directory per bus: two tests in this binary run at once.
+        static BUSES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let directory = std::env::temp_dir().join(format!(
-            "better-os-first-call-files-gui-{}",
-            std::process::id()
+            "better-os-first-call-files-gui-{}-{}",
+            std::process::id(),
+            BUSES.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
         ));
         let _ = std::fs::remove_dir_all(&directory);
         let services = directory.join("services");
@@ -171,13 +174,22 @@ fn every_start_answers_the_call_that_activated_it() {
             "start {start}: the name was granted: {reply:?}"
         );
 
+        // The window side: the request arrives, the window "opens", and only
+        // then is the call answered (ticket 129).
+        let reached = requests.recv_timeout(ANSWER_TIMEOUT).ok().map(
+            |request: files_gui::filemanager1::ShowRequest| {
+                let target = request.target.clone();
+                request.opened();
+                target
+            },
+        );
         match answers.recv_timeout(ANSWER_TIMEOUT) {
             Ok(answer) => {
                 // The caller has sent its answer, so its thread is ending.
                 let _ = call.join();
                 match answer {
                     Ok(()) => assert_eq!(
-                        requests.try_recv().ok(),
+                        reached,
                         Some(expected.clone()),
                         "start {start}: the answered call reached the window"
                     ),
@@ -210,4 +222,98 @@ fn every_start_answers_the_call_that_activated_it() {
         unanswered.len()
     );
     eprintln!("{STARTS} of {STARTS} starts answered the call that activated them");
+}
+
+/// Ticket 129: a call is answered once its window is open, and a call whose
+/// window never opens (the process was on its way out) fails for the caller
+/// instead of being answered and lost.
+#[test]
+fn a_call_is_answered_only_once_its_window_opened() {
+    let bus = test_prerequisites::require!(
+        "dbus-daemon",
+        ActivatingBus::start().ok_or("a private dbus-daemon did not start")
+    );
+    let (sender, requests) = std::sync::mpsc::channel();
+    let (connection, reply) = serve_on(bus.builder(), sender).expect("served on the bus");
+    assert!(reply.is_ok());
+    let caller = bus.builder().build().expect("a client connection");
+    let call = |caller: zbus::blocking::Connection| {
+        let (answer, answers) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let reply = caller.call_method(
+                Some(BUS_NAME),
+                OBJECT_PATH,
+                Some("org.freedesktop.FileManager1"),
+                "ShowItems",
+                &(vec!["file:///tmp/a.txt".to_string()], ""),
+            );
+            let _ = answer.send(reply.map(|_| ()).map_err(|error| error.to_string()));
+        });
+        answers
+    };
+
+    let answers = call(caller.clone());
+    let request: files_gui::filemanager1::ShowRequest = requests
+        .recv_timeout(ANSWER_TIMEOUT)
+        .expect("the request arrived");
+    assert!(
+        answers.recv_timeout(Duration::from_millis(300)).is_err(),
+        "not answered before the window is open"
+    );
+    request.opened();
+    assert_eq!(answers.recv_timeout(ANSWER_TIMEOUT).unwrap(), Ok(()));
+
+    let answers = call(caller);
+    let request = requests
+        .recv_timeout(ANSWER_TIMEOUT)
+        .expect("the request arrived");
+    drop(request);
+    assert!(
+        answers.recv_timeout(ANSWER_TIMEOUT).unwrap().is_err(),
+        "a window that never opened is not reported as shown"
+    );
+    let _ = connection.release_name(BUS_NAME);
+}
+
+/// Second review: a service process leaving gives the name back first, and a
+/// call it had already received and was opening a window for still gets its
+/// answer: the connection stays until the process ends.
+#[test]
+fn a_call_received_before_the_name_is_given_back_is_still_answered() {
+    let bus = test_prerequisites::require!(
+        "dbus-daemon",
+        ActivatingBus::start().ok_or("a private dbus-daemon did not start")
+    );
+    let (sender, requests) = std::sync::mpsc::channel();
+    let (connection, reply) = serve_on(bus.builder(), sender).expect("served on the bus");
+    assert!(reply.is_ok());
+    let hold = files_gui::filemanager1::NameHold::of(connection);
+    let caller = bus.builder().build().expect("a client connection");
+    let (answer, answers) = std::sync::mpsc::channel();
+    {
+        let caller = caller.clone();
+        std::thread::spawn(move || {
+            let reply = caller.call_method(
+                Some(BUS_NAME),
+                OBJECT_PATH,
+                Some("org.freedesktop.FileManager1"),
+                "ShowItems",
+                &(vec!["file:///tmp/a.txt".to_string()], ""),
+            );
+            let _ = answer.send(reply.map(|_| ()).map_err(|error| error.to_string()));
+        });
+    }
+    let request: files_gui::filemanager1::ShowRequest = requests
+        .recv_timeout(ANSWER_TIMEOUT)
+        .expect("the request arrived");
+    hold.release();
+    let dbus = zbus::blocking::fdo::DBusProxy::new(&caller).unwrap();
+    assert!(
+        !dbus
+            .name_has_owner(zbus::names::BusName::try_from(BUS_NAME).unwrap())
+            .unwrap(),
+        "the name was given back"
+    );
+    request.opened();
+    assert_eq!(answers.recv_timeout(ANSWER_TIMEOUT).unwrap(), Ok(()));
 }

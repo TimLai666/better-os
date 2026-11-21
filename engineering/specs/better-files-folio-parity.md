@@ -134,8 +134,13 @@ Status at the end of the fifth ticket-93 pass: **108 of 113 lines ticked**, 5 de
       `src/filemanager1.cpp`. `filemanager1.rs`: `ShowFolders`, `ShowItems`,
       `ShowItemProperties`; each opens a window in this process, the item
       selected. Taken only when no other file manager owns the name. URI
-      handling tested in `tests/filemanager1.rs`; the bus call itself was not
-      exercised.
+      handling tested in `tests/filemanager1.rs`. Becoming what the session
+      bus starts for the name is Better Defaults' `file-manager-service`
+      (ticket 129, ADR 0041): a user-level activation file that runs
+      `better-files --service`, a running owner left alone until it exits,
+      Restore and removal putting the previous file (or none) back;
+      `defaults-core/tests/bus_activation.rs` routes real `ShowItems` calls
+      on a private bus.
 
 ## 3. Selection
 

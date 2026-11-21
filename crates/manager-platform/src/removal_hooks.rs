@@ -52,6 +52,20 @@ pub trait RemovalHookRunner: Send + Sync {
     fn run(&self, program: &Path, undo: bool) -> HookOutcome;
 }
 
+/// Where a package puts the program Better Manager runs when the component
+/// is turned off, and with [`UNDO_ARGUMENT`] when it is turned on again
+/// (ticket 129): what the component took over in the person's session is
+/// given back while it is off, and taken again when it is on, so "it stays
+/// off until enabled again" holds for what dpkg cannot see. The same program
+/// as its before-removal one, with the same exit statuses.
+pub const ON_DISABLE_DIRECTORY: &str = "/usr/lib/better-os/on-disable";
+
+/// The package's turn-off program, when its file list has one.
+pub fn on_disable_hook(package: &str, files: &InstalledFiles) -> Option<PathBuf> {
+    let wanted = Path::new(ON_DISABLE_DIRECTORY).join(package);
+    files.paths.iter().find(|path| **path == wanted).cloned()
+}
+
 /// The package's before-removal program, when its file list has one.
 pub fn before_removal_hook(package: &str, files: &InstalledFiles) -> Option<PathBuf> {
     let wanted = Path::new(BEFORE_REMOVAL_DIRECTORY).join(package);
@@ -255,6 +269,37 @@ mod tests {
             ))
         );
         assert_eq!(before_removal_hook("better-awake", &list), None);
+    }
+
+    /// Ticket 129: the turn-off program is found the same way, only at the
+    /// package's own exact path, and a hostile file there is never run: the
+    /// runner refuses it before anything executes, as for before-removal.
+    #[test]
+    fn the_turn_off_program_is_found_and_refused_like_the_removal_one() {
+        let list = files(&[
+            "/usr/lib/better-os/on-disable",
+            "/usr/lib/better-os/on-disable/better-files",
+            "/usr/lib/better-os/before-removal/better-files",
+        ]);
+        assert_eq!(
+            on_disable_hook("better-files", &list),
+            Some(PathBuf::from("/usr/lib/better-os/on-disable/better-files"))
+        );
+        assert_eq!(on_disable_hook("better-git", &list), None);
+
+        let directory = tempfile::tempdir().unwrap();
+        let marker = directory.path().join("ran");
+        let program = script(directory.path(), &format!("touch '{}'", marker.display()));
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o775)).unwrap();
+        for undo in [false, true] {
+            match ProcessHookRunner::owned_by(me()).run(&program, undo) {
+                HookOutcome::NotRestored(reason) => {
+                    assert!(reason.contains("changed by others"), "{reason}")
+                }
+                other => panic!("a group-writable program ran: {other:?}"),
+            }
+        }
+        assert!(!marker.exists(), "nothing was executed");
     }
 
     #[test]

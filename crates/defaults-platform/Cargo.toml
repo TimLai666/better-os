@@ -9,7 +9,10 @@ license.workspace = true
 # The dconf write path: a `ca.desrt.dconf.Writer.Change` call over the session
 # bus. Without it the GNOME adapters read and verify, and report Manual action
 # required for a change, and the crate links no D-Bus stack.
-dconf-write = ["dep:zbus", "dep:tokio"]
+dconf-write = ["session-bus", "dep:tokio"]
+# The session bus itself: the `user-service` adapter's `ReloadConfig` and
+# name-owner reads (ticket 129, ADR 0041), and the dconf writer's call.
+session-bus = ["dep:zbus"]
 # A real dconf-service on a private bus, for other crates' tests. No shipped
 # binary enables it.
 test-support = ["dconf-write", "dep:tempfile", "dep:test-prerequisites"]

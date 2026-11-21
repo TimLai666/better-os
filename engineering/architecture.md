@@ -771,3 +771,26 @@ verification contract.
 - [ADR 0039: How Better OS keeps its patch to cosmic-comp](decisions/0039-compositor-fork-policy.md) (proposed)
 - [ADR 0040: What Better OS is, now that it has a session of its own](decisions/0040-what-better-os-is.md) (proposed)
 - [ADR 0043: Better OS builds GPUI from its own fork of Zed](decisions/0043-gpui-from-a-fork.md)
+
+## Per-package programs run as the person
+
+A package may ship two programs Better Manager runs as the person, for what
+the component changed in the person's session that dpkg cannot see:
+
+- `/usr/lib/better-os/before-removal/<package>`: right before the daemon
+  removes the package (after its units stop), and with `--undo` when the
+  daemon then refuses the removal (ticket 88).
+- `/usr/lib/better-os/on-disable/<package>`: when the component is turned
+  off (after its units and extensions), and with `--undo` when it is turned
+  on again (ticket 129).
+
+Both are found only in dpkg's own file list for the package, never at a path
+a manifest names, and are run only when they are a regular file (not a link)
+owned by root that neither group nor others can write
+(`manager_platform::removal_hooks::refuse_program`). Neither blocks the
+operation: exit 0 is done, exit 3 is a warning in Activity, exit 4 means
+there was no session to write in and a pending marker that Better Manager
+finishes at its next start in the person's session, by the record
+(installed, on or off). Tests never run them while
+`BETTER_OS_TEST_SYSTEMCTL_GUARD` is set. Ticket 176 makes this one
+mechanism for every component's defaults.
