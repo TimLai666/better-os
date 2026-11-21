@@ -138,8 +138,23 @@ The VM run is in `/home/tim/Developer/better-os-evidence/203/NOTES.md` with
 session, and GTK on XWayland typing Zhuyin without `GTK_IM_MODULE`. Three
 defects found there are fixed in this change (kiosk mode, the compositor's
 displays left in the user manager, children inheriting the blocked SIGTERM).
-**Not run:** Zorin OS 18.1 with the package (ticket 201 ran the closure and a
-stand-in there; the package's files do not differ by base).
+Zorin OS 18.1 (the live ISO, checked against help.zorin.com's SHA-256, run
+in the review round with the package of this branch): the closure added 80
+packages, removed and changed none, and took exactly the 14 from System76;
+GDM listed Better OS (screenshot 40); the session ran the target, its six
+units, Tracker, and every component unit, with the spec's environment in
+the user manager, a terminal (41), and the D-Bus-activated portal; a
+GSettings write went to `betteros`; Print opened Better Screenshot (42); the
+Zorin Desktop login after it showed GNOME's own environment (43). Records:
+`/home/tim/Developer/better-os-evidence/203/zorin/`. This run found that
+`better-os-session.target` wanting `xdg-desktop-autostart.target` without
+`Before=` ordered it after that target (a target is ordered after what it
+wants), a cycle through `graphical-session.target` that systemd broke by
+dropping every autostart entry; with `Before=xdg-desktop-autostart.target`
+the entries ran (`nm-applet`, `touchegg`, update-notifier, Déjà Dup) and
+the journal had no cycle (unit test and `verify-deb.sh` hold it). The first
+Ubuntu run had the same cycle unnoticed, so ticket 201's autostart list,
+taken with its stand-in that had the `Before=`, is the one to trust.
 
 ### What is left, and on what
 

@@ -383,7 +383,12 @@ The session package's own units (`better-os-session-settings-daemon`,
 different: they have no `[Install]` section and the target names each with
 `Wants=`, so installing the package is all it takes and nobody enables them.
 Each is `PartOf=` and `After=better-os-session.target`, so stopping the target
-waits for them. A drop-in makes `tracker-miner-fs-3.service` `PartOf=` the
+waits for them; being after it also keeps systemd from ordering the target
+after them, which it does for whatever a target wants. For the same reason
+the target is `Before=xdg-desktop-autostart.target`: without it the target
+was ordered after the autostart target, whose entries are after
+`graphical-session.target`, which is after this target, and systemd broke
+the cycle by dropping every autostart entry (ticket 203, Zorin OS 18.1). A drop-in makes `tracker-miner-fs-3.service` `PartOf=` the
 target too; it changes nothing under GNOME, where the target never runs.
 `verify-deb.sh` and `crates/session-launcher/tests/units.rs` check that none
 of them is `WantedBy=graphical-session.target`.

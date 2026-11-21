@@ -1108,6 +1108,7 @@ if [[ "$RELEASE_TARGET" != ubuntu-22.04 ]]; then
         'BindsTo=graphical-session.target' \
         'Wants=graphical-session-pre.target' \
         'Wants=xdg-desktop-autostart.target' \
+        'Before=xdg-desktop-autostart.target' \
         'Wants=tracker-miner-fs-3.service'; do
         grep -qxF "$line" "$session_target" || {
             printf 'better-os-session.target does not say %s\n' "$line" >&2

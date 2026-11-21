@@ -114,6 +114,32 @@ fn every_session_unit_is_the_targets_and_never_graphical_sessions() {
     }
 }
 
+#[test]
+fn the_target_wants_nothing_it_would_be_ordered_after_in_a_cycle() {
+    // A target is After= every unit it Wants= unless that unit is already
+    // ordered after it. Autostart entries are After=graphical-session.target,
+    // which is after this target: without Before= the implicit order is a
+    // cycle, and systemd broke it on Zorin OS 18.1 by dropping every
+    // autostart entry.
+    let target = target();
+    assert!(values(&target, "Before").contains(&"xdg-desktop-autostart.target".to_string()));
+    // Each unit of the session it wants is ordered after it.
+    for unit in SESSION_UNITS.iter().chain([&session_launcher::GUARD_UNIT]) {
+        if *unit == session_launcher::GUARD_UNIT {
+            // The guard is the one the target is after, on purpose: it has
+            // no ordering of its own against the target.
+            let guard = unit_lines(&read(&format!("packaging/session/{unit}")));
+            assert!(values(&guard, "After").is_empty() && values(&guard, "Before").is_empty());
+            continue;
+        }
+        let lines = unit_lines(&read(&format!("packaging/session/{unit}")));
+        assert!(
+            values(&lines, "After").contains(&session_launcher::TARGET.to_string()),
+            "{unit}"
+        );
+    }
+}
+
 /// The condition every unit that may run only in the session carries.
 const IN_SESSION: &str = "%t/better-os/session/restore.json";
 
