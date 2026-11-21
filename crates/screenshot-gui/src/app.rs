@@ -8,10 +8,10 @@ use std::time::{Duration, Instant};
 
 use better_core::self_update::{ProgramFile, UpdateState, UpdateTracker};
 use better_ui::layer::{
-    Edges, ExclusiveZone, Extent, Keyboard, Layer, LayerSurfaces, Margin, OutputInfo as LayerOutput,
-    Placement, SurfaceSpec,
+    Edges, ExclusiveZone, Extent, Keyboard, Layer, LayerSurfaces, Margin,
+    OutputInfo as LayerOutput, Placement, SurfaceSpec,
 };
-use gpui::{App, AppContext as _, Context, Entity, RenderImage, Task, WeakEntity};
+use gpui::{App, AppContext as _, Context, Entity, RenderImage, Task};
 use screenshot_capture::clipboard::{self, ClipboardHold};
 use screenshot_capture::recorder::{self, Recording, RecordingRequest};
 use screenshot_capture::wayland::WaylandCapture;
@@ -102,8 +102,12 @@ impl Open {
     pub fn pixel_at(&self, point: Point) -> Option<[u8; 4]> {
         let output = &self.outputs[self.output_at(point)?];
         let scale = f64::from(output.frame.width) / f64::from(output.logical.width.max(1));
-        let x = ((point.x - f64::from(output.logical.x)) * scale).floor().max(0.0) as u32;
-        let y = ((point.y - f64::from(output.logical.y)) * scale).floor().max(0.0) as u32;
+        let x = ((point.x - f64::from(output.logical.x)) * scale)
+            .floor()
+            .max(0.0) as u32;
+        let y = ((point.y - f64::from(output.logical.y)) * scale)
+            .floor()
+            .max(0.0) as u32;
         (x < output.frame.width && y < output.frame.height).then(|| output.frame.pixel(x, y))
     }
 
@@ -128,7 +132,10 @@ impl Open {
             }
             Kind::Screen => self.outputs.get(self.interface.screen).map(|output| {
                 if pointer {
-                    output.frame_pointer.clone().unwrap_or_else(|| output.frame.clone())
+                    output
+                        .frame_pointer
+                        .clone()
+                        .unwrap_or_else(|| output.frame.clone())
                 } else {
                     output.frame.clone()
                 }
@@ -136,7 +143,10 @@ impl Open {
             Kind::Window => {
                 let window = self.windows.get(self.interface.window?)?;
                 Some(if pointer {
-                    window.frame_pointer.clone().unwrap_or_else(|| window.frame.clone())
+                    window
+                        .frame_pointer
+                        .clone()
+                        .unwrap_or_else(|| window.frame.clone())
                 } else {
                     window.frame.clone()
                 })
@@ -203,7 +213,6 @@ pub struct Shooter {
     last_outputs: Vec<(String, Rect)>,
     idle_since: Option<Instant>,
     tracker: Option<UpdateTracker>,
-    weak: WeakEntity<Shooter>,
     _tasks: Vec<Task<()>>,
 }
 
@@ -211,6 +220,22 @@ fn render_image(frame: &Frame) -> Arc<RenderImage> {
     let buffer = image::RgbaImage::from_raw(frame.width, frame.height, frame.to_bgra())
         .unwrap_or_else(|| image::RgbaImage::new(1, 1));
     Arc::new(RenderImage::new(vec![image::Frame::new(buffer)]))
+}
+
+/// A window's size in logical pixels: its width as the compositor says,
+/// with its picture's shape; without one, its picture at the output's scale.
+pub fn window_size(logical_width: Option<i32>, picture: &Frame, output_scale: f64) -> (i32, i32) {
+    let width = picture.width.max(1);
+    match logical_width.filter(|width| *width > 0) {
+        Some(logical) => (
+            logical,
+            (f64::from(picture.height) * f64::from(logical) / f64::from(width)).round() as i32,
+        ),
+        None => (
+            (f64::from(picture.width) / output_scale).round() as i32,
+            (f64::from(picture.height) / output_scale).round() as i32,
+        ),
+    }
 }
 
 /// GPUI names a Wayland output by a UUID made from its name
@@ -326,7 +351,6 @@ impl Shooter {
             last_outputs: Vec::new(),
             idle_since: None,
             tracker,
-            weak: cx.weak_entity(),
             _tasks: tasks,
         };
         shooter.on_message(Message::Request(first), cx);
@@ -369,6 +393,36 @@ impl Shooter {
         }
         self.clipboard.retain(ClipboardHold::is_held);
 
+        // An output came or went while the interface is open: it closes, as
+        // GNOME's does ("Nope, not dealing with monitor changes", 1394).
+        if let Some(open) = &self.open
+            && open.surfaces.is_some()
+        {
+            let mut now: Vec<String> = cx
+                .displays()
+                .iter()
+                .filter_map(|display| display.uuid().ok())
+                .map(|uuid| uuid.to_string())
+                .collect();
+            let mut then: Vec<String> = open
+                .outputs
+                .iter()
+                .map(|output| display_key(&output.name))
+                .collect();
+            now.sort();
+            then.sort();
+            // GPUI at the pinned revision never drops a removed output from
+            // its list (better-os-session.md, "Surfaces on layer-shell"), but
+            // the compositor closes that output's surface.
+            let lost = open
+                .surfaces
+                .as_ref()
+                .is_some_and(|surfaces| surfaces.windows().len() < open.outputs.len());
+            if now != then || lost {
+                self.close_interface(cx);
+            }
+        }
+
         // An update replaced the program: a process holding nothing that a
         // restart would lose leaves, and the next key press starts the new
         // one. With the interface open, its window says it waits.
@@ -402,9 +456,15 @@ impl Shooter {
                 if request == Request::Portal {
                     self.portal_started = true;
                 }
-                let action = action_for(request, self.run.is_some(), self.open.is_some() || self.opening);
+                let action = action_for(
+                    request,
+                    self.run.is_some(),
+                    self.open.is_some() || self.opening,
+                );
                 match action {
-                    Action::OpenInterface => self.open_interface(Use::Capture, Purpose::Picture, cx),
+                    Action::OpenInterface => {
+                        self.open_interface(Use::Capture, Purpose::Picture, cx)
+                    }
                     Action::OpenRecordingInterface => {
                         self.open_interface(Use::Capture, Purpose::Recording, cx)
                     }
@@ -420,7 +480,9 @@ impl Shooter {
                 options,
                 reply,
             } => {
-                if let Err(refusal) = may_start(self.portal.is_some() || self.open.is_some() || self.opening) {
+                if let Err(refusal) =
+                    may_start(self.portal.is_some() || self.open.is_some() || self.opening)
+                {
                     let _ = reply.try_send(refusal);
                     return;
                 }
@@ -433,7 +495,9 @@ impl Shooter {
                 }
             }
             Message::PortalPickColor { handle, reply } => {
-                if let Err(refusal) = may_start(self.portal.is_some() || self.open.is_some() || self.opening) {
+                if let Err(refusal) =
+                    may_start(self.portal.is_some() || self.open.is_some() || self.opening)
+                {
                     let _ = reply.try_send(refusal);
                     return;
                 }
@@ -441,7 +505,11 @@ impl Shooter {
                 self.open_interface(Use::PickColor, Purpose::PictureOnly, cx);
             }
             Message::PortalClose { handle } => {
-                if self.portal.as_ref().is_some_and(|pending| pending.handle == handle) {
+                if self
+                    .portal
+                    .as_ref()
+                    .is_some_and(|pending| pending.handle == handle)
+                {
                     self.close_interface(cx);
                     self.answer_portal(Outcome::Cancelled);
                 }
@@ -455,7 +523,10 @@ impl Shooter {
                         service::open_uri(&connection, &path)
                     };
                     if let Err(error) = result {
-                        eprintln!("better-screenshot: could not open {}: {error}", path.display());
+                        eprintln!(
+                            "better-screenshot: could not open {}: {error}",
+                            path.display()
+                        );
                     }
                 })
                 .detach();
@@ -489,7 +560,12 @@ impl Shooter {
                     Ok(snapshot) => this.show(snapshot, using, purpose, cx),
                     Err(error) => {
                         this.answer_portal(Outcome::Refused(error.to_string()));
-                        this.notify(&NoticeKind::CaptureFailed(error.to_string()), None, None, cx);
+                        this.notify(
+                            &NoticeKind::CaptureFailed(error.to_string()),
+                            None,
+                            None,
+                            cx,
+                        );
                     }
                 }
             });
@@ -539,12 +615,7 @@ impl Shooter {
             let scale = f64::from(output.frame.width) / f64::from(output.logical.width.max(1));
             let sizes: Vec<(i32, i32)> = on_here
                 .iter()
-                .map(|(_, shot)| {
-                    (
-                        (f64::from(shot.plain.width) / scale).round() as i32,
-                        (f64::from(shot.plain.height) / scale).round() as i32,
-                    )
-                })
+                .map(|(info, shot)| window_size(info.logical_width, &shot.plain, scale))
                 .collect();
             let rects = arrange(&sizes, layout_area(output.logical, index == panel_output));
             for ((info, shot), rect) in on_here.into_iter().zip(rects) {
@@ -560,15 +631,19 @@ impl Shooter {
                 });
             }
         }
-        let focused = windows.iter().position(|window| window.activated).or(
-            (!windows.is_empty()).then_some(0),
-        );
+        let focused = windows
+            .iter()
+            .position(|window| window.activated)
+            .or((!windows.is_empty()).then_some(0));
 
         let mut area = match self.remembered.area {
             Some(rect) => AreaSelector::remembered(rect, 1.0),
             None => AreaSelector::new(1.0),
         };
-        area.reset(stage, outputs.get(panel_output).map(|output| output.logical));
+        area.reset(
+            stage,
+            outputs.get(panel_output).map(|output| output.logical),
+        );
         let interface = Interface::open(
             self.remembered.kept,
             purpose,
@@ -596,7 +671,12 @@ impl Shooter {
         let keys: Vec<String> = self
             .open
             .as_ref()
-            .map(|open| open.outputs.iter().map(|output| display_key(&output.name)).collect())
+            .map(|open| {
+                open.outputs
+                    .iter()
+                    .map(|output| display_key(&output.name))
+                    .collect()
+            })
             .unwrap_or_default();
         // A surface draws its first frame while it opens, and that frame
         // reads this controller, so the surfaces open after this update.
@@ -724,7 +804,12 @@ impl Shooter {
                     Ok(snapshot) => snapshot,
                     Err(error) => {
                         this.answer_portal(Outcome::Refused(error.to_string()));
-                        this.notify(&NoticeKind::CaptureFailed(error.to_string()), None, None, cx);
+                        this.notify(
+                            &NoticeKind::CaptureFailed(error.to_string()),
+                            None,
+                            None,
+                            cx,
+                        );
                         return;
                     }
                 };
@@ -743,7 +828,14 @@ impl Shooter {
                         .and_then(|stage| compose(stage, &placed))
                 };
                 if portal.is_some() {
-                    this.flash(snapshot.outputs.iter().map(|(info, _)| info.name.clone()).collect(), cx);
+                    this.flash(
+                        snapshot
+                            .outputs
+                            .iter()
+                            .map(|(info, _)| info.name.clone())
+                            .collect(),
+                        cx,
+                    );
                 }
                 match frame {
                     Some(frame) => this.store(frame, cx),
@@ -815,8 +907,15 @@ impl Shooter {
                         }
                         match saved {
                             Ok(path) => {
-                                this.answer_portal(Outcome::Picture(better_core::uri::file_uri(&path)));
-                                this.notify(&NoticeKind::PictureSaved, Some(&path), Some(&path), cx);
+                                this.answer_portal(Outcome::Picture(better_core::uri::file_uri(
+                                    &path,
+                                )));
+                                this.notify(
+                                    &NoticeKind::PictureSaved,
+                                    Some(&path),
+                                    Some(&path),
+                                    cx,
+                                );
                             }
                             Err(error) => {
                                 this.answer_portal(Outcome::Refused(error.clone()));
@@ -834,7 +933,13 @@ impl Shooter {
         .detach();
     }
 
-    fn notify(&self, kind: &NoticeKind, file: Option<&Path>, image: Option<&Path>, _cx: &mut Context<Self>) {
+    fn notify(
+        &self,
+        kind: &NoticeKind,
+        file: Option<&Path>,
+        image: Option<&Path>,
+        _cx: &mut Context<Self>,
+    ) {
         let notice = Notice::of(kind, self.locale);
         eprintln!("better-screenshot: {} — {}", notice.title, notice.body);
         self.service.notify(&notice, file, image);
@@ -843,7 +948,9 @@ impl Shooter {
     /// Starts recording what the interface chose (spec R1, R2).
     fn start_recording(&mut self, cx: &mut Context<Self>) {
         let Some(open) = &self.open else { return };
-        let Some(area) = open.recorded_area() else { return };
+        let Some(area) = open.recorded_area() else {
+            return;
+        };
         let pointer = open.interface.show_pointer;
         // Closed at once, so no fade is recorded.
         let mut open = self.open.take().expect("checked above");
@@ -968,7 +1075,9 @@ impl Shooter {
 
     /// Stops the recording, finishes the file, and says so (spec R6–R8).
     pub fn stop_recording(&mut self, cx: &mut Context<Self>) {
-        let Some(mut run) = self.run.take() else { return };
+        let Some(mut run) = self.run.take() else {
+            return;
+        };
         if let Some(shade) = run.shade.take() {
             shade.close_all(cx);
         }
@@ -1010,10 +1119,6 @@ impl Shooter {
             .find(|(name, _)| display_key(name) == key)
             .map(|(_, rect)| *rect)
     }
-
-    pub fn weak(&self) -> WeakEntity<Shooter> {
-        self.weak.clone()
-    }
 }
 
 fn close_on_left() -> bool {
@@ -1032,4 +1137,148 @@ pub fn start(
     cx: &mut App,
 ) -> Entity<Shooter> {
     cx.new(|cx| Shooter::new(service, messages, first, cx))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Open, OutputPlace, Use, WindowPlace, display_key, render_image, window_size};
+    use screenshot_core::area::{AreaSelector, Grip};
+    use screenshot_core::compose::Frame;
+    use screenshot_core::geometry::{Point, Rect};
+    use screenshot_core::interface::{Interface, Kept, Kind, Mode, Purpose};
+
+    const RED: [u8; 4] = [0, 0, 255, 255];
+    const BLUE: [u8; 4] = [255, 0, 0, 255];
+    const GREEN: [u8; 4] = [0, 255, 0, 255];
+
+    fn output(name: &str, logical: Rect, scale: u32, colour: [u8; 4]) -> OutputPlace {
+        let frame = Frame::filled(
+            logical.width as u32 * scale,
+            logical.height as u32 * scale,
+            colour,
+        );
+        let with = Frame::filled(frame.width, frame.height, GREEN);
+        OutputPlace {
+            name: name.into(),
+            logical,
+            plain: render_image(&frame),
+            pointer: render_image(&with),
+            frame,
+            frame_pointer: Some(with),
+        }
+    }
+
+    fn open() -> Open {
+        let window_frame = Frame::filled(30, 20, BLUE);
+        Open {
+            using: Use::Capture,
+            outputs: vec![
+                output("A", Rect::new(0, 0, 100, 100), 1, RED),
+                output("B", Rect::new(100, 0, 100, 100), 2, BLUE),
+            ],
+            windows: vec![WindowPlace {
+                title: "fixture".into(),
+                output: 0,
+                rect: Rect::new(10, 10, 30, 20),
+                image: render_image(&window_frame),
+                image_pointer: render_image(&window_frame),
+                frame: window_frame,
+                frame_pointer: None,
+                activated: true,
+            }],
+            interface: Interface::open(Kept::default(), Purpose::Picture, true, true, 0, Some(0)),
+            area: AreaSelector::remembered(Rect::new(50, 0, 100, 50), 1.0),
+            stage: Rect::new(0, 0, 200, 100),
+            panel_output: 0,
+            grip: Grip::Crosshair,
+            hover_screen: None,
+            hover_window: None,
+            pointer_at: None,
+            surfaces: None,
+        }
+    }
+
+    #[test]
+    fn a_window_is_laid_out_at_its_logical_size_whatever_its_buffer() {
+        // A window drawn at scale 1 on a 150 % output: its buffer is its
+        // logical size; the compositor's width says so.
+        let buffer = Frame::filled(720, 420, RED);
+        assert_eq!(window_size(Some(720), &buffer, 1.5), (720, 420));
+        // Drawn at scale 2 on the same output.
+        let sharp = Frame::filled(1440, 840, RED);
+        assert_eq!(window_size(Some(720), &sharp, 1.5), (720, 420));
+        // Without the compositor's width, the output's scale.
+        assert_eq!(window_size(None, &sharp, 2.0), (720, 420));
+        assert_eq!(window_size(Some(0), &buffer, 1.0), (720, 420));
+    }
+
+    #[test]
+    fn gpui_names_an_output_by_the_uuid_of_its_name() {
+        // `gpui_linux` `wayland/display.rs`: Uuid::new_v5(NAMESPACE_DNS, name).
+        assert_eq!(
+            display_key("WINIT-0"),
+            uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_DNS, b"WINIT-0").to_string()
+        );
+        assert_ne!(display_key("eDP-1"), display_key("HDMI-A-1"));
+    }
+
+    #[test]
+    fn each_type_takes_its_own_picture_and_the_pointer_switch_picks_the_copy() {
+        let mut open = open();
+        // An area across both outputs, at the higher scale.
+        let area = open.picture().unwrap();
+        assert_eq!((area.width, area.height), (200, 100));
+        assert_eq!(area.pixel(0, 0), RED);
+        assert_eq!(area.pixel(199, 0), BLUE);
+
+        open.interface.choose(Kind::Screen);
+        open.interface.screen = 1;
+        let screen = open.picture().unwrap();
+        assert_eq!((screen.width, screen.height), (200, 200));
+        open.interface.show_pointer = true;
+        assert_eq!(open.picture().unwrap().pixel(0, 0), GREEN);
+
+        open.interface.show_pointer = false;
+        open.interface.choose(Kind::Window);
+        let window = open.picture().unwrap();
+        assert_eq!((window.width, window.height), (30, 20));
+        // A window with no pointer copy keeps its own picture.
+        open.interface.show_pointer = true;
+        assert_eq!(open.picture().unwrap().pixel(0, 0), BLUE);
+    }
+
+    #[test]
+    fn a_recording_covers_the_area_or_the_screen_never_a_window() {
+        let mut open = open();
+        assert_eq!(open.recorded_area(), Some(Rect::new(50, 0, 100, 50)));
+        open.interface.choose(Kind::Screen);
+        open.interface.screen = 1;
+        assert_eq!(open.recorded_area(), Some(Rect::new(100, 0, 100, 100)));
+        open.interface.choose(Kind::Window);
+        assert_eq!(open.recorded_area(), None);
+        assert!(open.interface.set_mode(Mode::Recording));
+        assert_eq!(open.interface.kind, Kind::Selection);
+    }
+
+    #[test]
+    fn a_picked_colour_is_the_frozen_pixel_under_the_pointer() {
+        let open = open();
+        assert_eq!(open.pixel_at(Point::new(10.0, 10.0)), Some(RED));
+        assert_eq!(open.pixel_at(Point::new(150.5, 99.5)), Some(BLUE));
+        assert_eq!(open.pixel_at(Point::new(250.0, 10.0)), None);
+        assert_eq!(open.output_at(Point::new(100.0, 0.0)), Some(1));
+    }
+
+    #[test]
+    fn the_arrow_keys_choose_among_screens_or_windows() {
+        let mut open = open();
+        assert!(open.choices().is_empty());
+        open.interface.choose(Kind::Screen);
+        assert_eq!(
+            open.choices(),
+            vec![Rect::new(0, 0, 100, 100), Rect::new(100, 0, 100, 100)]
+        );
+        open.interface.choose(Kind::Window);
+        assert_eq!(open.choices(), vec![Rect::new(10, 10, 30, 20)]);
+    }
 }

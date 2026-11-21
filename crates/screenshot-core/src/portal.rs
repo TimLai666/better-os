@@ -87,7 +87,10 @@ mod tests {
 
     #[test]
     fn outcomes_become_the_portals_numbers() {
-        assert_eq!(Outcome::Picture("file:///x.png".into()).response().code(), 0);
+        assert_eq!(
+            Outcome::Picture("file:///x.png".into()).response().code(),
+            0
+        );
         assert_eq!(Outcome::Color(0.0, 0.0, 0.0).response(), Response::Success);
         assert_eq!(Outcome::Cancelled.response().code(), 1);
         assert_eq!(Outcome::Refused("locked down".into()).response().code(), 2);

@@ -40,7 +40,10 @@ fn main() {
         .filter(|arg| !arg.starts_with("--"))
         .map(|arg| arg.parse().expect("whole pixels"))
         .collect();
-    assert!(numbers.len() >= 4 && numbers.len() % 2 == 0, "pointer-drag W H X Y [X Y ...]");
+    assert!(
+        numbers.len() >= 4 && numbers.len().is_multiple_of(2),
+        "pointer-drag W H X Y [X Y ...]"
+    );
     let (width, height) = (numbers[0], numbers[1]);
     let points: Vec<(u32, u32)> = numbers[2..].chunks(2).map(|p| (p[0], p[1])).collect();
 
@@ -48,8 +51,9 @@ fn main() {
     let (globals, mut queue) = registry_queue_init::<State>(&connection).expect("globals");
     let qh = queue.handle();
     let seat: wl_seat::WlSeat = globals.bind(&qh, 1..=1, ()).expect("a seat");
-    let manager: zwlr_virtual_pointer_manager_v1::ZwlrVirtualPointerManagerV1 =
-        globals.bind(&qh, 1..=2, ()).expect("zwlr_virtual_pointer_manager_v1");
+    let manager: zwlr_virtual_pointer_manager_v1::ZwlrVirtualPointerManagerV1 = globals
+        .bind(&qh, 1..=2, ())
+        .expect("zwlr_virtual_pointer_manager_v1");
     let pointer = manager.create_virtual_pointer(Some(&seat), &qh, ());
     let _ = manager.version();
     queue.roundtrip(&mut State).expect("roundtrip");
@@ -78,8 +82,10 @@ fn main() {
     for &(tx, ty) in &points[1..] {
         let steps = 12;
         for step in 1..=steps {
-            let fx = f64::from(last.0) + (f64::from(tx) - f64::from(last.0)) * f64::from(step) / f64::from(steps);
-            let fy = f64::from(last.1) + (f64::from(ty) - f64::from(last.1)) * f64::from(step) / f64::from(steps);
+            let fx = f64::from(last.0)
+                + (f64::from(tx) - f64::from(last.0)) * f64::from(step) / f64::from(steps);
+            let fy = f64::from(last.1)
+                + (f64::from(ty) - f64::from(last.1)) * f64::from(step) / f64::from(steps);
             pointer.motion_absolute(time(), fx.round() as u32, fy.round() as u32, width, height);
             pointer.frame();
             flush(&mut queue, 15);

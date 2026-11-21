@@ -27,7 +27,7 @@ use screenshot_core::session::Request;
 use screenshot_core::words::Notice;
 use zbus::blocking::Connection;
 use zbus::object_server::SignalEmitter;
-use zbus::zvariant::{ObjectPath, OwnedObjectPath, OwnedValue, Value};
+use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value};
 
 pub const BUS_NAME: &str = "org.betteros.Screenshot";
 pub const OBJECT_PATH: &str = "/org/betteros/Screenshot";
@@ -195,9 +195,7 @@ impl Portal {
                 .unwrap_or_else(|_| Outcome::Refused("the window is gone".into())),
             Err(_) => Outcome::Refused("the window is gone".into()),
         };
-        let _ = server
-            .remove::<PortalRequest, _>(handle.as_ref())
-            .await;
+        let _ = server.remove::<PortalRequest, _>(handle.as_ref()).await;
         if let Outcome::Refused(reason) = &outcome {
             eprintln!("better-screenshot: portal screenshot refused: {reason}");
         }
@@ -234,9 +232,7 @@ impl Portal {
                 .unwrap_or_else(|_| Outcome::Refused("the window is gone".into())),
             Err(_) => Outcome::Refused("the window is gone".into()),
         };
-        let _ = server
-            .remove::<PortalRequest, _>(handle.as_ref())
-            .await;
+        let _ = server.remove::<PortalRequest, _>(handle.as_ref()).await;
         (outcome.response().code(), results(&outcome))
     }
 
@@ -246,6 +242,9 @@ impl Portal {
         2
     }
 }
+
+/// A StatusNotifierItem tool tip: icon name, icon pixmaps, title, text.
+type ToolTip = (String, Vec<(i32, i32, Vec<u8>)>, String, String);
 
 /// The recording's tray item (spec R4, R6): its title has the time, and
 /// pressing it stops the recording.
@@ -280,7 +279,10 @@ impl Item {
 
     #[zbus(property)]
     fn title(&self) -> String {
-        self.title.lock().map(|title| title.clone()).unwrap_or_default()
+        self.title
+            .lock()
+            .map(|title| title.clone())
+            .unwrap_or_default()
     }
 
     #[zbus(property)]
@@ -299,8 +301,12 @@ impl Item {
     }
 
     #[zbus(property)]
-    fn tool_tip(&self) -> (String, Vec<(i32, i32, Vec<u8>)>, String, String) {
-        let title = self.title.lock().map(|title| title.clone()).unwrap_or_default();
+    fn tool_tip(&self) -> ToolTip {
+        let title = self
+            .title
+            .lock()
+            .map(|title| title.clone())
+            .unwrap_or_default();
         ("media-record".into(), Vec::new(), title, String::new())
     }
 
@@ -582,11 +588,6 @@ pub fn open_uri(connection: &Connection, path: &Path) -> Result<(), String> {
         )
         .map(|_| ())
         .map_err(|error| error.to_string())
-}
-
-/// The object path type the portal's handle arrives as, for tests.
-pub fn handle_path(path: &str) -> Option<ObjectPath<'_>> {
-    ObjectPath::try_from(path).ok()
 }
 
 #[cfg(test)]

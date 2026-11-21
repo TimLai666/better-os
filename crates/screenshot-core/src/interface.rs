@@ -268,7 +268,8 @@ mod tests {
     #[test]
     fn the_recording_key_opens_in_recording_mode_when_it_can() {
         assert_eq!(open(Purpose::Recording).mode, Mode::Recording);
-        let unsupported = Interface::open(Kept::default(), Purpose::Recording, false, true, 0, None);
+        let unsupported =
+            Interface::open(Kept::default(), Purpose::Recording, false, true, 0, None);
         assert_eq!(unsupported.mode, Mode::Picture);
         assert!(!unsupported.recording_shown());
     }
@@ -279,7 +280,10 @@ mod tests {
         assert!(interface.recording_shown());
         assert!(!interface.recording_available());
         assert!(!interface.set_mode(Mode::Recording));
-        assert_eq!(interface.command_for(Key::Letter('v'), false), Command::Nothing);
+        assert_eq!(
+            interface.command_for(Key::Letter('v'), false),
+            Command::Nothing
+        );
     }
 
     #[test]
@@ -306,7 +310,10 @@ mod tests {
         assert_eq!(interface.kind, Kind::Selection);
         assert!(!interface.window_available());
         assert!(!interface.choose(Kind::Window));
-        assert_eq!(interface.command_for(Key::Letter('w'), false), Command::Nothing);
+        assert_eq!(
+            interface.command_for(Key::Letter('w'), false),
+            Command::Nothing
+        );
         interface.set_mode(Mode::Picture);
         assert!(interface.window_available());
     }
@@ -316,7 +323,10 @@ mod tests {
         let interface = open(Purpose::Picture);
         assert_eq!(interface.command_for(Key::Enter, false), Command::Capture);
         assert_eq!(interface.command_for(Key::Space, false), Command::Capture);
-        assert_eq!(interface.command_for(Key::Letter('c'), true), Command::Capture);
+        assert_eq!(
+            interface.command_for(Key::Letter('c'), true),
+            Command::Capture
+        );
         assert_eq!(interface.command_for(Key::Escape, false), Command::Close);
         assert_eq!(
             interface.command_for(Key::Letter('s'), false),
@@ -330,13 +340,22 @@ mod tests {
             interface.command_for(Key::Letter('w'), false),
             Command::Choose(Kind::Window)
         );
-        assert_eq!(interface.command_for(Key::Letter('p'), false), Command::TogglePointer);
-        assert_eq!(interface.command_for(Key::Letter('v'), false), Command::ToggleMode);
+        assert_eq!(
+            interface.command_for(Key::Letter('p'), false),
+            Command::TogglePointer
+        );
+        assert_eq!(
+            interface.command_for(Key::Letter('v'), false),
+            Command::ToggleMode
+        );
         assert_eq!(
             interface.command_for(Key::Arrow(Direction::Left), false),
             Command::Navigate(Direction::Left)
         );
-        assert_eq!(interface.command_for(Key::Letter('x'), false), Command::Nothing);
+        assert_eq!(
+            interface.command_for(Key::Letter('x'), false),
+            Command::Nothing
+        );
         assert_eq!(interface.command_for(Key::Other, false), Command::Nothing);
     }
 

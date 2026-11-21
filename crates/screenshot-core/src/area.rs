@@ -598,10 +598,7 @@ mod tests {
         let mut selector = area(Rect::new(100, 100, 50, 50));
         selector.press(p(600.0, 400.0), Button::Primary, false);
         assert!(!selector.press(p(10.0, 10.0), Button::Secondary, false));
-        assert_eq!(
-            selector.release(Button::Secondary, STAGE),
-            DragEnd::Ignored
-        );
+        assert_eq!(selector.release(Button::Secondary, STAGE), DragEnd::Ignored);
         assert!(selector.is_dragging());
         assert_eq!(selector.release(Button::Primary, STAGE), DragEnd::Ended);
     }

@@ -37,6 +37,10 @@ pub struct WindowInfo {
     pub output: Option<String>,
     /// It has the keyboard (`zcosmic_toplevel_handle_v1` state `activated`).
     pub activated: bool,
+    /// Its width in logical pixels, when the compositor says
+    /// (`zcosmic_toplevel_handle_v1.geometry`). Its picture is its buffer,
+    /// which a client drawing at another scale makes larger or smaller.
+    pub logical_width: Option<i32>,
 }
 
 /// A picture copied twice: as the screen shows it without the pointer, and

@@ -12,11 +12,11 @@ use better_ui::layer::{self, InputRegion};
 use better_ui::restart::{Blocker, Restartable, UpdateRestart};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    Animation, AnimationExt as _, AnyElement, App, Context, CursorStyle,
-    DispatchPhase, Entity, FocusHandle, Focusable, HitboxBehavior, InteractiveElement as _,
-    IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    ParentElement as _, Pixels, Render, Rgba, SharedString, StatefulInteractiveElement as _,
-    Styled as _, Subscription, Window, canvas, div, img, px, rgba, svg,
+    Animation, AnimationExt as _, AnyElement, App, Context, CursorStyle, DispatchPhase, Entity,
+    FocusHandle, Focusable, HitboxBehavior, InteractiveElement as _, IntoElement, KeyDownEvent,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Render,
+    Rgba, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window, canvas,
+    div, img, px, rgba, svg,
 };
 use screenshot_core::area::{Button as AreaButton, Grip};
 use screenshot_core::geometry::{Point, Rect};
@@ -31,6 +31,8 @@ use crate::restart::{ScreenshotView, restart_blocked};
 /// (`_screenshot.scss`: `rgba(0,0,0,.5)` in the selector, `.3` outside it).
 const SHADE: u32 = 0x0000_0080;
 const RECORDING_SHADE: u32 = 0x0000_004d;
+/// GNOME's fade (`duration: 200`).
+const FADE: Duration = Duration::from_millis(200);
 /// GNOME's red for the recording capture button (`$red_4`).
 const RECORD_RED: u32 = 0xe0_1b_24_ff;
 
@@ -94,7 +96,13 @@ impl Shooter {
         }
     }
 
-    fn pointer_down(&mut self, point: Point, button: MouseButton, ctrl: bool, cx: &mut Context<Self>) {
+    fn pointer_down(
+        &mut self,
+        point: Point,
+        button: MouseButton,
+        ctrl: bool,
+        cx: &mut Context<Self>,
+    ) {
         let Some(open) = &mut self.open else { return };
         if open.using == Use::PickColor {
             if button == MouseButton::Left {
@@ -170,7 +178,8 @@ impl Shooter {
                 let rects = open.choices();
                 match open.interface.kind {
                     Kind::Screen => {
-                        if let Some(next) = navigate(&rects, Some(open.interface.screen), direction) {
+                        if let Some(next) = navigate(&rects, Some(open.interface.screen), direction)
+                        {
                             open.interface.screen = next;
                         }
                     }
@@ -302,9 +311,19 @@ fn around(hole: Option<Rect>, output: Rect, color: Rgba) -> Vec<AnyElement> {
     };
     let pieces = [
         Rect::new(local.x, local.y, local.width, hole.y - local.y),
-        Rect::new(local.x, hole.bottom(), local.width, local.bottom() - hole.bottom()),
+        Rect::new(
+            local.x,
+            hole.bottom(),
+            local.width,
+            local.bottom() - hole.bottom(),
+        ),
         Rect::new(local.x, hole.y, hole.x - local.x, hole.height),
-        Rect::new(hole.right(), hole.y, local.right() - hole.right(), hole.height),
+        Rect::new(
+            hole.right(),
+            hole.y,
+            local.right() - hole.right(),
+            hole.height,
+        ),
     ];
     pieces
         .into_iter()
@@ -358,7 +377,9 @@ impl OutputView {
                         return;
                     }
                     let point = global(event.position);
-                    up.update(cx, |shooter, cx| shooter.pointer_up(point, event.button, cx));
+                    up.update(cx, |shooter, cx| {
+                        shooter.pointer_up(point, event.button, cx)
+                    });
                 });
             },
         )
@@ -489,7 +510,12 @@ impl OutputView {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child(svg().path(path::CHECK).size(px(24.0)).text_color(p.text_on_accent))
+                    .child(
+                        svg()
+                            .path(path::CHECK)
+                            .size(px(24.0))
+                            .text_color(p.text_on_accent),
+                    )
                     .into_any_element(),
                 );
             }
@@ -504,7 +530,12 @@ impl OutputView {
         let dragging = open.area.is_dragging();
         let recording = interface.mode == Mode::Recording;
 
-        let kind_button = |id: &'static str, kind: Kind, label: &'static str, tip: &'static str, glyph: &'static str, enabled: bool| {
+        let kind_button = |id: &'static str,
+                           kind: Kind,
+                           label: &'static str,
+                           tip: &'static str,
+                           glyph: &'static str,
+                           enabled: bool| {
             let shooter = shooter.clone();
             Button::toggle(id, label, interface.kind == kind)
                 .icon(icon(glyph))
@@ -512,7 +543,11 @@ impl OutputView {
                 .disabled(!enabled)
                 .on_click(move |_, cx| shooter.update(cx, |s, cx| s.set_kind(kind, cx)))
         };
-        let mode_button = |id: &'static str, mode: Mode, tip: &'static str, glyph: &'static str, enabled: bool| {
+        let mode_button = |id: &'static str,
+                           mode: Mode,
+                           tip: &'static str,
+                           glyph: &'static str,
+                           enabled: bool| {
             let shooter = shooter.clone();
             Button::new(id, ButtonKind::Subtle)
                 .icon(icon(glyph))
@@ -525,7 +560,11 @@ impl OutputView {
         let capture = {
             let shooter = shooter.clone();
             let ring = p.text_primary;
-            let fill = if recording { rgba(RECORD_RED) } else { p.text_primary };
+            let fill = if recording {
+                rgba(RECORD_RED)
+            } else {
+                p.text_primary
+            };
             div()
                 .id("capture")
                 .size(px(56.0))
@@ -556,9 +595,29 @@ impl OutputView {
 
         let close = {
             let shooter = shooter.clone();
-            Button::icon_button("close", icon(path::CLOSE), words.close_tip)
-                .kind(ButtonKind::Standard)
-                .on_click(move |_, cx| shooter.update(cx, |s, cx| s.close_interface(cx)))
+            // GNOME's close button is round, like a window's
+            // (`.screenshot-ui-close-button` extends `.window-close`).
+            div()
+                .id("close")
+                .size(px(32.0))
+                .rounded_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(p.flyout)
+                .border_1()
+                .border_color(p.card_stroke)
+                .shadow_md()
+                .cursor_pointer()
+                .hover(|button| button.bg(p.control_fill_secondary))
+                .tooltip(fluent::dialog::tooltip_builder(words.close_tip.into()))
+                .on_click(move |_, _, cx| shooter.update(cx, |s, cx| s.close_interface(cx)))
+                .child(
+                    svg()
+                        .path(path::CLOSE)
+                        .size(px(16.0))
+                        .text_color(p.text_primary),
+                )
         };
 
         let close_on_left = self.shooter.read(cx).close_on_left;
@@ -581,8 +640,22 @@ impl OutputView {
                 div()
                     .flex()
                     .gap(px(12.0))
-                    .child(kind_button("selection", Kind::Selection, words.selection, words.selection_tip, path::AREA, true))
-                    .child(kind_button("screen", Kind::Screen, words.screen, words.screen_tip, path::SCREEN, true))
+                    .child(kind_button(
+                        "selection",
+                        Kind::Selection,
+                        words.selection,
+                        words.selection_tip,
+                        path::AREA,
+                        true,
+                    ))
+                    .child(kind_button(
+                        "screen",
+                        Kind::Screen,
+                        words.screen,
+                        words.screen_tip,
+                        path::SCREEN,
+                        true,
+                    ))
                     .child(kind_button(
                         "window",
                         Kind::Window,
@@ -604,7 +677,13 @@ impl OutputView {
                             .p(px(3.0))
                             .rounded_full()
                             .bg(p.control_fill)
-                            .child(mode_button("picture", Mode::Picture, words.picture_tip, path::CAMERA, true))
+                            .child(mode_button(
+                                "picture",
+                                Mode::Picture,
+                                words.picture_tip,
+                                path::CAMERA,
+                                true,
+                            ))
                             .when(interface.recording_shown(), |pill| {
                                 pill.child(mode_button(
                                     "recording",
@@ -664,7 +743,14 @@ impl OutputView {
                 .bg(p.flyout)
                 .shadow_md()
                 .text_color(p.text_primary)
-                .child(div().size(px(24.0)).rounded(px(4.0)).bg(color).border_1().border_color(p.card_stroke))
+                .child(
+                    div()
+                        .size(px(24.0))
+                        .rounded(px(4.0))
+                        .bg(color)
+                        .border_1()
+                        .border_color(p.card_stroke),
+                )
                 .child(hex)
                 .into_any_element(),
         )
@@ -696,7 +782,8 @@ impl Render for OutputView {
             .track_focus(&self.focus)
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
                 let (key, ctrl) = key_of(event);
-                this.shooter.update(cx, |shooter, cx| shooter.key(key, ctrl, cx));
+                this.shooter
+                    .update(cx, |shooter, cx| shooter.key(key, ctrl, cx));
             }))
             // The frozen screen, while taking a picture (O2, P2).
             .when(picture_mode, |root| {
@@ -728,7 +815,12 @@ impl Render for OutputView {
             cx,
         );
         let _ = window;
-        root.children(toasts).into_any_element()
+        // GNOME fades the interface in over 200 ms (`open` 1665).
+        root.children(toasts)
+            .with_animation("fade-in", Animation::new(FADE), |root, delta| {
+                root.opacity(delta)
+            })
+            .into_any_element()
     }
 }
 
@@ -841,7 +933,7 @@ impl FlashView {
         layer::apply_input_region(window, &InputRegion::Nothing);
         let done = cx.spawn(async move |_, cx| {
             cx.background_executor().timer(FLASH).await;
-            let _ = shooter.update(cx, |shooter, cx| shooter.flash_done(cx));
+            shooter.update(cx, |shooter, cx| shooter.flash_done(cx));
         });
         FlashView { _done: done }
     }

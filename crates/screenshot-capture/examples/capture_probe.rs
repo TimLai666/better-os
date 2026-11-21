@@ -11,7 +11,10 @@ use screenshot_capture::{Capture, Want, clipboard, png, recorder};
 
 fn main() {
     let mut args = std::env::args().skip(1);
-    let out = PathBuf::from(args.next().expect("capture-probe OUT_DIR [--record S] [--clipboard]"));
+    let out = PathBuf::from(
+        args.next()
+            .expect("capture-probe OUT_DIR [--record S] [--clipboard]"),
+    );
     let rest: Vec<String> = args.collect();
     std::fs::create_dir_all(&out).expect("the output folder");
 
@@ -39,19 +42,39 @@ fn main() {
             shot.plain.alpha,
             shot.with_pointer.is_some()
         );
-        let differ = shot.with_pointer.as_ref().map(|with| with.data != shot.plain.data);
+        let differ = shot
+            .with_pointer
+            .as_ref()
+            .map(|with| with.data != shot.plain.data);
         println!("  with-pointer copy differs from plain: {differ:?}");
-        std::fs::write(out.join(format!("output-{index}.png")), png::encode(&shot.plain).unwrap()).unwrap();
+        std::fs::write(
+            out.join(format!("output-{index}.png")),
+            png::encode(&shot.plain).unwrap(),
+        )
+        .unwrap();
         if let Some(with) = &shot.with_pointer {
-            std::fs::write(out.join(format!("output-{index}-pointer.png")), png::encode(with).unwrap()).unwrap();
+            std::fs::write(
+                out.join(format!("output-{index}-pointer.png")),
+                png::encode(with).unwrap(),
+            )
+            .unwrap();
         }
     }
     for (index, (info, shot)) in snapshot.windows.iter().enumerate() {
         println!(
             "window {index} title {:?} app {:?} output {:?} activated {} frame {}x{}",
-            info.title, info.app_id, info.output, info.activated, shot.plain.width, shot.plain.height
+            info.title,
+            info.app_id,
+            info.output,
+            info.activated,
+            shot.plain.width,
+            shot.plain.height
         );
-        std::fs::write(out.join(format!("window-{index}.png")), png::encode(&shot.plain).unwrap()).unwrap();
+        std::fs::write(
+            out.join(format!("window-{index}.png")),
+            png::encode(&shot.plain).unwrap(),
+        )
+        .unwrap();
     }
 
     let focused = capture.snapshot(Want {
@@ -79,7 +102,10 @@ fn main() {
     }
 
     if let Some(position) = rest.iter().position(|arg| arg == "--record") {
-        let seconds: u64 = rest.get(position + 1).and_then(|s| s.parse().ok()).unwrap_or(3);
+        let seconds: u64 = rest
+            .get(position + 1)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(3);
         println!("recording supported: {:?}", recorder::supported());
         let area = snapshot.outputs[0].0.logical;
         let path = out.join("recording.webm");

@@ -111,6 +111,29 @@ promise; ticket 253's notes say how each was checked.
 | A4 | The portal's `Request.Close` on a pending call closes the interface and answers cancelled; a second call while one is pending is refused as busy. | `_createScreenshot` 2449 |
 | A5 | Saving locked down (S6) refuses a call that needs the disk. | `_createScreenshot` 2454 |
 
+### Where Better Screenshot differs, and what is not built yet
+
+- **Pictures without `xdg-user-dirs`.** When `user-dirs.dirs` does not name
+  Pictures or Videos, GLib answers nothing and GNOME saves under the home
+  folder; Better OS has one reader of that file (`files_platform::xdg`,
+  AGENTS.md's one-place rule), which answers `~/Pictures` and `~/Videos`,
+  and Better Screenshot uses its answer. Every Ubuntu and Zorin desktop
+  writes the file at first login, so this differs only on a machine without
+  it.
+- **Recording names are never reused.** GNOME's recorder writes to its
+  generated name without a suffix, so two recordings started in the same
+  second would share it; Better Screenshot gives a recording the same
+  `-1`, `-2` suffix as a picture.
+- **The fade out (O5) is not built.** The interface fades in over 200 ms and
+  closes at once; GNOME also fades it out.
+- **Saving locked down (S6, A5) is not built.** GNOME reads
+  `org.gnome.desktop.lockdown disable-save-to-disk`, an administrator's
+  setting with its locks in `/etc/dconf/db/`. Better OS's only dconf reader
+  (`defaults-platform`) reads the session's own user database through a
+  component's declared integration, not the system databases and their
+  locks, and the session's COSMIC has no lockdown of its own. Building it
+  needs a reader of the dconf profile's system databases.
+
 ### Not offered, and why
 
 - GNOME Shell's private `org.gnome.Shell.Screenshot` and
@@ -150,6 +173,42 @@ capture was run.
 | Surfaces over every output | `zwlr_layer_shell_v1` 5 | yes |
 | A workspace picture | `zcosmic_workspace_image_capture_source_manager_v1` 1 | yes, unused |
 | `wlr-screencopy` | `zwlr_screencopy_manager_v1` | **no** |
+
+What running the capture against it showed (`screenshot-capture`'s
+`capture-probe` example, 2026-11-22):
+
+- **Pixel formats.** A copy session offers `wl_shm` `abgr8888`, `xbgr8888`,
+  `abgr2101010`, and `xbgr2101010` only (its GLES renderer), never
+  `argb8888`/`xrgb8888`; the capture reads `xbgr8888` and swaps red and blue.
+- **Transforms.** The nested output is `Flipped180` (the harness's
+  `outputs.ron`), and a copy arrives upside down with
+  `ext_image_copy_capture_frame_v1.transform` saying so; the capture applies
+  the transform. Rotated outputs (90°, 270°) are untested.
+- **A window's picture** is the client's own surface: 720 × 420 for a window
+  whose `zcosmic_toplevel_handle_v1.geometry` is 720 × 456, because
+  `cosmic-comp` draws its server-side title bar outside the surface, so a
+  window picture has no COSMIC title bar (a GNOME window picture has the
+  window's own frame).
+- **Window state** (`output_enter`, `ext_workspace_enter`, `state`) for a
+  handle asked with `get_cosmic_toplevel` arrives at the compositor's next
+  refresh, with `zcosmic_toplevel_info_v1.done`, not in answer to a
+  roundtrip; the activated window is the focused one.
+- **The pointer.** A pointer cursor session on an output's source sends
+  `enter` on the output under the pointer, which is how the panel's output
+  is chosen. In the nested compositor the pointer is the outer sway's and
+  `cosmic-comp` draws none, so a copy with `paint_cursors` is identical to
+  one without; whether the session's real pointer is painted into a copy is
+  for ticket 201's VM.
+- **Copy time.** Every output and every window, each twice, took 270–450 ms
+  in the nested compositor, most of it waiting for the window state.
+- **Recording.** 30 frames a second of a 1280 × 800 output into
+  `appsrc ! videoconvert ! vp8enc ! webmmux` wrote a playable WebM (VP8,
+  read back by `gst-discoverer-1.0`); a copy is delivered only when the
+  output changed, and the last picture is repeated at the stop so the video
+  lasts as long as the recording.
+- **The clipboard.** `ext_data_control_v1` holds `image/png` with no
+  focused surface; `wl-paste --type image/png` in the nested session read
+  back the same bytes as the saved file.
 
 `xdg-desktop-portal-cosmic` 1.11.0~1795035856~24.04~7b0864c (the closure's
 build; source at that commit, `src/screencast.rs`, `src/screenshot.rs`):
@@ -212,6 +271,14 @@ it holds the clipboard (an `ext_data_control` source lives only as long as
 its client; it leaves when another program takes the clipboard), while a
 notification it raised is open, and while a portal call is pending; then it
 exits.
+
+The real `xdg-desktop-portal` 1.18.4 frontend, run on the nested sandbox's
+bus with only `packaging/screenshot/betteros-screenshot.portal` and a
+`betteros-portals.conf` naming it (ticket 253's notes), offered
+`org.freedesktop.portal.Screenshot` only once an Access backend was named as
+well: the frontend builds its Screenshot portal from the Screenshot and the
+Access backends together, so the session's configuration keeps COSMIC's
+Access (`default=cosmic;gtk;`) beside the Screenshot line.
 
 ### What ticket 203's package adds
 

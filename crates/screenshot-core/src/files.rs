@@ -96,7 +96,12 @@ pub fn create_unique(folder: &Path, stem: &str, extension: &str) -> io::Result<(
 
 /// Saves bytes under the first free name, and returns the path. A write that
 /// fails leaves no half-written file behind.
-pub fn save_unique(folder: &Path, stem: &str, extension: &str, bytes: &[u8]) -> io::Result<PathBuf> {
+pub fn save_unique(
+    folder: &Path,
+    stem: &str,
+    extension: &str,
+    bytes: &[u8],
+) -> io::Result<PathBuf> {
     let (mut file, path) = create_unique(folder, stem, extension)?;
     let written = file.write_all(bytes).and_then(|()| file.sync_all());
     if let Err(error) = written {
@@ -239,7 +244,10 @@ mod tests {
             picture_folder(Path::new("/home/a/圖片"), &chinese),
             Path::new("/home/a/圖片/螢幕快照")
         );
-        assert_eq!(picture_stem(&time, &chinese), "螢幕快照 2026-11-21 09-05-03");
+        assert_eq!(
+            picture_stem(&time, &chinese),
+            "螢幕快照 2026-11-21 09-05-03"
+        );
         assert_eq!(
             recording_folder(Path::new("/home/a/影片"), &chinese),
             Path::new("/home/a/影片/螢幕錄影")
@@ -293,7 +301,9 @@ mod tests {
         assert_eq!(xbel_stamp(1_795_251_903), "2026-11-21T09:05:03Z");
         let new = add_recent(None, &entry()).unwrap();
         assert!(new.starts_with("<?xml"));
-        assert!(new.contains("href=\"file:///home/a/Pictures/Screenshots/Screenshot%20from%20x.png\""));
+        assert!(
+            new.contains("href=\"file:///home/a/Pictures/Screenshots/Screenshot%20from%20x.png\"")
+        );
         assert!(new.contains("<mime:mime-type type=\"image/png\"/>"));
         assert!(new.trim_end().ends_with("</xbel>"));
 

@@ -85,7 +85,12 @@ impl Rect {
     /// The same rectangle moved so `origin` is its top left corner's new
     /// origin of coordinates.
     pub fn relative_to(&self, origin_x: i32, origin_y: i32) -> Rect {
-        Rect::new(self.x - origin_x, self.y - origin_y, self.width, self.height)
+        Rect::new(
+            self.x - origin_x,
+            self.y - origin_y,
+            self.width,
+            self.height,
+        )
     }
 
     /// The centre, for choosing between rectangles by distance.

@@ -86,7 +86,7 @@ impl Frame {
             match self.alpha {
                 Alpha::Straight => out.extend_from_slice(row),
                 Alpha::Ignored => {
-                    for pixel in row.chunks_exact(4) {
+                    for pixel in row.as_chunks::<4>().0 {
                         out.extend_from_slice(&[pixel[0], pixel[1], pixel[2], 255]);
                     }
                 }
@@ -98,7 +98,7 @@ impl Frame {
     /// Red-green-blue-alpha, packed: what a PNG holds.
     pub fn to_rgba(&self) -> Vec<u8> {
         let mut out = self.to_bgra();
-        for pixel in out.chunks_exact_mut(4) {
+        for pixel in out.as_chunks_mut::<4>().0 {
             pixel.swap(0, 2);
         }
         out
@@ -158,7 +158,10 @@ impl Transform {
     fn swaps_sides(self) -> bool {
         matches!(
             self,
-            Transform::Rotate90 | Transform::Rotate270 | Transform::Flipped90 | Transform::Flipped270
+            Transform::Rotate90
+                | Transform::Rotate270
+                | Transform::Flipped90
+                | Transform::Flipped270
         )
     }
 }
@@ -172,7 +175,11 @@ impl Frame {
             return self.clone();
         }
         let (w, h) = (self.width, self.height);
-        let (width, height) = if transform.swaps_sides() { (h, w) } else { (w, h) };
+        let (width, height) = if transform.swaps_sides() {
+            (h, w)
+        } else {
+            (w, h)
+        };
         let mut data = vec![0u8; (width * height * 4) as usize];
         for y in 0..height {
             for x in 0..width {
@@ -279,7 +286,10 @@ pub fn compose(area: Rect, outputs: &[Placed<'_>]) -> Option<Frame> {
                 out.data[to..to + (count * 4) as usize]
                     .copy_from_slice(&output.frame.data[from..from + (count * 4) as usize]);
                 if output.frame.alpha == Alpha::Ignored {
-                    for pixel in out.data[to..to + (count * 4) as usize].chunks_exact_mut(4) {
+                    for pixel in out.data[to..to + (count * 4) as usize]
+                        .as_chunks_mut::<4>()
+                        .0
+                    {
                         pixel[3] = 255;
                     }
                 }
@@ -346,7 +356,7 @@ mod tests {
         (
             frame.width,
             frame.height,
-            frame.data.chunks_exact(4).map(|p| p[0]).collect(),
+            frame.data.as_chunks::<4>().0.iter().map(|p| p[0]).collect(),
         )
     }
 

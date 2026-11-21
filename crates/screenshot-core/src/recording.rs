@@ -85,7 +85,9 @@ mod tests {
         assert_eq!(Ending::OutOfSpace.notice(), NoticeKind::RecordingOutOfSpace);
         assert!(!Ending::FailedToStart("x".into()).keeps_file());
         assert!(Ending::Failed("x".into()).keeps_file());
-        assert!(is_out_of_space("Error while writing to file: No space left on device"));
+        assert!(is_out_of_space(
+            "Error while writing to file: No space left on device"
+        ));
         assert!(!is_out_of_space("Internal data stream error"));
     }
 }

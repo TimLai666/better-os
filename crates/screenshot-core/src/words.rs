@@ -155,7 +155,11 @@ impl Notice {
                 english.to_string()
             }
         };
-        let show = Some(if zh { "在檔案中顯示" } else { "Show in Files" });
+        let show = Some(if zh {
+            "在檔案中顯示"
+        } else {
+            "Show in Files"
+        });
         let picture_icon = "screenshot-recorded-symbolic";
         let recording_icon = "screencast-recorded-symbolic";
         match kind {
@@ -185,7 +189,9 @@ impl Notice {
                 body: if zh {
                     format!("可以從剪貼簿貼上這張圖片。無法儲存：{reason}")
                 } else {
-                    format!("You can paste the image from the clipboard. It could not be saved: {reason}")
+                    format!(
+                        "You can paste the image from the clipboard. It could not be saved: {reason}"
+                    )
                 },
                 show_in_files: None,
                 icon: picture_icon,

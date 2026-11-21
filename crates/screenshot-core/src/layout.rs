@@ -40,8 +40,8 @@ pub fn arrange(sizes: &[(i32, i32)], area: Rect) -> Vec<Rect> {
     for rows in 1..=count {
         let per_row = count.div_ceil(rows);
         let chunks: Vec<&[(i32, i32)]> = sizes.chunks(per_row).collect();
-        let row_height = (f64::from(area.height) - SPACING * (chunks.len() as f64 - 1.0))
-            / chunks.len() as f64;
+        let row_height =
+            (f64::from(area.height) - SPACING * (chunks.len() as f64 - 1.0)) / chunks.len() as f64;
         if row_height <= 0.0 {
             break;
         }
@@ -61,14 +61,19 @@ pub fn arrange(sizes: &[(i32, i32)], area: Rect) -> Vec<Rect> {
             smallest = smallest.min(scale);
             let items: Vec<(f64, f64)> = chunk
                 .iter()
-                .map(|(w, h)| (f64::from((*w).max(1)) * scale, f64::from((*h).max(1)) * scale))
+                .map(|(w, h)| {
+                    (
+                        f64::from((*w).max(1)) * scale,
+                        f64::from((*h).max(1)) * scale,
+                    )
+                })
                 .collect();
             let height = items.iter().map(|(_, h)| *h).fold(0.0, f64::max);
             rows_out.push((height, items));
         }
         // Centre the rows vertically and each row horizontally.
-        let used: f64 = rows_out.iter().map(|(h, _)| *h).sum::<f64>()
-            + SPACING * (rows_out.len() as f64 - 1.0);
+        let used: f64 =
+            rows_out.iter().map(|(h, _)| *h).sum::<f64>() + SPACING * (rows_out.len() as f64 - 1.0);
         let mut y = f64::from(area.y) + (f64::from(area.height) - used) / 2.0;
         for (height, items) in &rows_out {
             let width: f64 =

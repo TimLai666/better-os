@@ -81,6 +81,8 @@ struct ToplevelState {
     activated: bool,
     minimized: bool,
     sticky: bool,
+    /// The window's width in logical pixels (`geometry`).
+    width: Option<i32>,
     cosmic_done: bool,
 }
 
@@ -135,7 +137,8 @@ pub(crate) struct Globals {
     window_sources: Option<
         ext_foreign_toplevel_image_capture_source_manager_v1::ExtForeignToplevelImageCaptureSourceManagerV1,
     >,
-    toplevel_list: Option<ext_foreign_toplevel_list_v1::ExtForeignToplevelListV1>,
+    /// Held so the list keeps sending its windows.
+    _toplevel_list: Option<ext_foreign_toplevel_list_v1::ExtForeignToplevelListV1>,
     toplevel_info: Option<zcosmic_toplevel_info_v1::ZcosmicToplevelInfoV1>,
     seat: Option<wl_seat::WlSeat>,
 }
@@ -153,8 +156,8 @@ pub(crate) struct Client {
 impl Client {
     /// Connects to `WAYLAND_DISPLAY` and reads the outputs.
     pub(crate) fn connect(want_windows: bool) -> Result<Client, CaptureError> {
-        let connection =
-            Connection::connect_to_env().map_err(|error| CaptureError::Connect(error.to_string()))?;
+        let connection = Connection::connect_to_env()
+            .map_err(|error| CaptureError::Connect(error.to_string()))?;
         let (list, queue) = registry_queue_init::<State>(&connection)
             .map_err(|error| CaptureError::Protocol(error.to_string()))?;
         let handle = queue.handle();
@@ -230,7 +233,7 @@ impl Client {
                 copy,
                 output_sources,
                 window_sources,
-                toplevel_list,
+                _toplevel_list: toplevel_list,
                 toplevel_info,
                 seat,
             },
@@ -334,10 +337,8 @@ impl Client {
                 continue;
             };
             let Some(format) = choose_format(&job.formats) else {
-                self.state.jobs[index].failed = Some(format!(
-                    "no shm format this reads among {:?}",
-                    job.formats
-                ));
+                self.state.jobs[index].failed =
+                    Some(format!("no shm format this reads among {:?}", job.formats));
                 continue;
             };
             let stride = width * 4;
@@ -391,7 +392,7 @@ impl Client {
             .map_err(|error| CaptureError::Failed(error.to_string()))?;
         if matches!(format, wl_shm::Format::Abgr8888 | wl_shm::Format::Xbgr8888) {
             // Red first in memory: swap to blue first.
-            for pixel in data.chunks_exact_mut(4) {
+            for pixel in data.as_chunks_mut::<4>().0 {
                 pixel.swap(0, 2);
             }
         }
@@ -415,7 +416,9 @@ impl Client {
         let result = if let Some(reason) = job.failed.take() {
             Err(CaptureError::Failed(reason))
         } else if job.stopped && !job.ready {
-            Err(CaptureError::Failed("the compositor stopped the copy".into()))
+            Err(CaptureError::Failed(
+                "the compositor stopped the copy".into(),
+            ))
         } else if !job.ready {
             Err(CaptureError::Timeout)
         } else {
@@ -474,8 +477,8 @@ fn choose_format(formats: &[wl_shm::Format]) -> Option<wl_shm::Format> {
         wl_shm::Format::Xbgr8888,
         wl_shm::Format::Abgr8888,
     ]
-        .into_iter()
-        .find(|format| formats.contains(format))
+    .into_iter()
+    .find(|format| formats.contains(format))
 }
 
 fn memfd(size: usize) -> std::io::Result<File> {
@@ -506,7 +509,11 @@ impl Capture for WaylandCapture {
 
         // Which output the pointer is on: a cursor session per output says
         // `enter` on the one it is over.
-        let pointer = client.globals.seat.as_ref().map(|seat| seat.get_pointer(&client.handle, ()));
+        let pointer = client
+            .globals
+            .seat
+            .as_ref()
+            .map(|seat| seat.get_pointer(&client.handle, ()));
         let mut cursor_sessions = Vec::new();
 
         let mut output_jobs = Vec::new();
@@ -518,10 +525,11 @@ impl Capture for WaylandCapture {
                 if infos[index].is_none() {
                     continue;
                 }
-                let source = client
-                    .globals
-                    .output_sources
-                    .create_source(&output, &client.handle, ());
+                let source =
+                    client
+                        .globals
+                        .output_sources
+                        .create_source(&output, &client.handle, ());
                 let plain = client.start_job(&source, false);
                 let with_pointer = client.start_job(&source, true);
                 if let Some(pointer) = &pointer {
@@ -583,10 +591,12 @@ impl Capture for WaylandCapture {
                     app_id: toplevel.app_id.clone(),
                     output,
                     activated: toplevel.activated,
+                    logical_width: toplevel.width,
                 };
-                let (Some(handle), Some(sources)) =
-                    (toplevel.handle.clone(), client.globals.window_sources.clone())
-                else {
+                let (Some(handle), Some(sources)) = (
+                    toplevel.handle.clone(),
+                    client.globals.window_sources.clone(),
+                ) else {
                     continue;
                 };
                 let source = sources.create_source(&handle, &client.handle, ());
@@ -602,7 +612,11 @@ impl Capture for WaylandCapture {
         let all: Vec<usize> = output_jobs
             .iter()
             .flat_map(|(_, plain, with, _)| [*plain, *with])
-            .chain(window_jobs.iter().flat_map(|(_, plain, with, _)| [*plain, *with]))
+            .chain(
+                window_jobs
+                    .iter()
+                    .flat_map(|(_, plain, with, _)| [*plain, *with]),
+            )
             .collect();
         client.run_jobs(&all)?;
         // The cursor sessions' `enter` arrives with the first frames.
@@ -617,7 +631,13 @@ impl Capture for WaylandCapture {
             if client.state.pointer_on == Some(index) {
                 snapshot.pointer_output = Some(snapshot.outputs.len());
             }
-            snapshot.outputs.push((info, Shot { plain, with_pointer }));
+            snapshot.outputs.push((
+                info,
+                Shot {
+                    plain,
+                    with_pointer,
+                },
+            ));
         }
         for (info, plain, with_pointer, source) in window_jobs {
             let plain = client.take_frame(plain);
@@ -625,7 +645,13 @@ impl Capture for WaylandCapture {
             source.destroy();
             // A window that would not copy is left out, not drawn empty.
             if let Ok(plain) = plain {
-                snapshot.windows.push((info, Shot { plain, with_pointer }));
+                snapshot.windows.push((
+                    info,
+                    Shot {
+                        plain,
+                        with_pointer,
+                    },
+                ));
             }
         }
         for session in cursor_sessions {
@@ -832,7 +858,11 @@ impl Dispatch<ext_foreign_toplevel_handle_v1::ExtForeignToplevelHandleV1, ()> fo
 
 /// Asks COSMIC for the extra state of every listed window that has none yet.
 /// Called from the list's `done`, so new handles get it in the same pass.
-fn ask_cosmic(state: &State, info: &zcosmic_toplevel_info_v1::ZcosmicToplevelInfoV1, queue: &QueueHandle<State>) {
+fn ask_cosmic(
+    state: &State,
+    info: &zcosmic_toplevel_info_v1::ZcosmicToplevelInfoV1,
+    queue: &QueueHandle<State>,
+) {
     for (index, toplevel) in state.toplevels.iter().enumerate() {
         if let Some(handle) = &toplevel.handle {
             info.get_cosmic_toplevel(handle, queue, index);
@@ -889,8 +919,10 @@ impl Dispatch<zcosmic_toplevel_handle_v1::ZcosmicToplevelHandleV1, usize> for St
             }
             Event::State { state: states } => {
                 let values: Vec<u32> = states
-                    .chunks_exact(4)
-                    .map(|bytes| u32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|bytes| u32::from_ne_bytes(*bytes))
                     .collect();
                 toplevel.activated =
                     values.contains(&(zcosmic_toplevel_handle_v1::State::Activated as u32));
@@ -899,6 +931,7 @@ impl Dispatch<zcosmic_toplevel_handle_v1::ZcosmicToplevelHandleV1, usize> for St
                 toplevel.sticky =
                     values.contains(&(zcosmic_toplevel_handle_v1::State::Sticky as u32));
             }
+            Event::Geometry { width, .. } => toplevel.width = Some(width),
             Event::Done => toplevel.cosmic_done = true,
             Event::Closed => toplevel.closed = true,
             _ => {}

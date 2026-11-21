@@ -158,10 +158,22 @@ mod tests {
     fn flags_become_requests_and_back() {
         let args = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         assert_eq!(Request::from_arguments(&args(&[])), Request::Interface);
-        assert_eq!(Request::from_arguments(&args(&["--screen"])), Request::Screen);
-        assert_eq!(Request::from_arguments(&args(&["--window"])), Request::Window);
-        assert_eq!(Request::from_arguments(&args(&["--record"])), Request::Recording);
-        assert_eq!(Request::from_arguments(&args(&["--portal"])), Request::Portal);
+        assert_eq!(
+            Request::from_arguments(&args(&["--screen"])),
+            Request::Screen
+        );
+        assert_eq!(
+            Request::from_arguments(&args(&["--window"])),
+            Request::Window
+        );
+        assert_eq!(
+            Request::from_arguments(&args(&["--record"])),
+            Request::Recording
+        );
+        assert_eq!(
+            Request::from_arguments(&args(&["--portal"])),
+            Request::Portal
+        );
         for request in [
             Request::Interface,
             Request::Recording,
@@ -179,16 +191,31 @@ mod tests {
 
     #[test]
     fn the_keys_stop_a_recording_and_nothing_opens_twice() {
-        assert_eq!(action_for(Request::Interface, false, false), Action::OpenInterface);
+        assert_eq!(
+            action_for(Request::Interface, false, false),
+            Action::OpenInterface
+        );
         assert_eq!(
             action_for(Request::Recording, false, false),
             Action::OpenRecordingInterface
         );
-        assert_eq!(action_for(Request::Recording, true, false), Action::StopRecording);
-        assert_eq!(action_for(Request::Interface, true, false), Action::StopRecording);
+        assert_eq!(
+            action_for(Request::Recording, true, false),
+            Action::StopRecording
+        );
+        assert_eq!(
+            action_for(Request::Interface, true, false),
+            Action::StopRecording
+        );
         assert_eq!(action_for(Request::Interface, false, true), Action::Nothing);
-        assert_eq!(action_for(Request::Screen, true, false), Action::TakeScreens);
-        assert_eq!(action_for(Request::Window, false, true), Action::TakeFocusedWindow);
+        assert_eq!(
+            action_for(Request::Screen, true, false),
+            Action::TakeScreens
+        );
+        assert_eq!(
+            action_for(Request::Window, false, true),
+            Action::TakeFocusedWindow
+        );
         assert_eq!(action_for(Request::Portal, false, false), Action::Nothing);
     }
 
@@ -196,12 +223,30 @@ mod tests {
     fn the_process_stays_while_anything_holds_it() {
         assert!(Holds::default().may_exit());
         for holds in [
-            Holds { interface_open: true, ..Holds::default() },
-            Holds { recording: true, ..Holds::default() },
-            Holds { clipboard: true, ..Holds::default() },
-            Holds { notifications: true, ..Holds::default() },
-            Holds { portal_pending: true, ..Holds::default() },
-            Holds { saving: true, ..Holds::default() },
+            Holds {
+                interface_open: true,
+                ..Holds::default()
+            },
+            Holds {
+                recording: true,
+                ..Holds::default()
+            },
+            Holds {
+                clipboard: true,
+                ..Holds::default()
+            },
+            Holds {
+                notifications: true,
+                ..Holds::default()
+            },
+            Holds {
+                portal_pending: true,
+                ..Holds::default()
+            },
+            Holds {
+                saving: true,
+                ..Holds::default()
+            },
         ] {
             assert!(!holds.may_exit(), "{holds:?}");
         }

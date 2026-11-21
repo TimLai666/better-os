@@ -1,0 +1,6 @@
+[D-BUS Service]
+Name=org.freedesktop.impl.portal.desktop.betteros.Screenshot
+# xdg-desktop-portal starts the backend when an application first asks for a
+# screenshot; Print Screen starts the same program, and one process owns both
+# names (engineering/specs/screenshot.md).
+Exec=/usr/bin/better-screenshot --portal

@@ -59,7 +59,10 @@ mod tests {
             ("--record", Request::Recording),
             ("--portal", Request::Portal),
         ] {
-            assert_eq!(COMMAND_LINE.invocation(&args(&[flag])), Invocation::OpenWindow);
+            assert_eq!(
+                COMMAND_LINE.invocation(&args(&[flag])),
+                Invocation::OpenWindow
+            );
             assert_eq!(Request::from_arguments(&args(&[flag])), request);
         }
         assert_eq!(COMMAND_LINE.invocation(&args(&[])), Invocation::OpenWindow);
