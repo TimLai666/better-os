@@ -61,3 +61,31 @@ user target, and the session's configuration of COSMIC's daemons.
       and GNOME's `~/.config/dconf/user` is byte-for-byte unchanged.
 - [ ] fmt, clippy on stable, the crates' tests, `verify-deb.sh`, and the
       license inventory check pass.
+
+## What ticket 201 found that this ticket builds on
+
+Ticket 201 ran a hand-made stand-in of this package in VMs on Ubuntu 24.04
+and Zorin OS 18.1 (`packaging/tests/session-vm/guest/session-files.sh`,
+evidence in `/home/tim/Developer/better-os-evidence/201/`). The spec's
+process table now carries the facts; these change what is built here:
+
+- **The locker is not a user unit.** `cosmic-greeter` in a user session is the
+  locker and finds its logind session by its own PID; started as a systemd
+  user unit it exits with `org.freedesktop.login1.NoSessionForPID`. The
+  launcher starts it as its own child inside the session's scope. Check the
+  same for `cosmic-osd`'s polkit agent before making it a unit (ticket 201 ran
+  it as a child of the session, where it worked; as a unit is untested).
+- **Do not set `GTK_IM_MODULE`** (the spec's environment table): with it,
+  snap GTK applications lose Chinese input.
+- **`betteros-portals.conf` needs `org.freedesktop.impl.portal.Secret=gnome-keyring;`**
+  or no Secret portal is offered.
+- **`tracker-miner-fs-3` is `WantedBy=gnome-session.target`**: the session
+  target `Wants=` it.
+- **`system_actions`**: COSMIC's defaults name `cosmic-app-library`,
+  `cosmic-launcher`, `cosmic-screenshot`, `cosmic-term`, and
+  `cosmic-workspaces`, none installed; the session's defaults name shipped
+  programs (screenshot: ticket 253).
+- **The launcher ends its children**: a logout left the session scope in
+  `stop-sigterm` with `cosmic-settings-daemon` alive after 34 s once.
+- **A greeter already running did not list a new session file** until GDM
+  restarted (Ubuntu); ticket 205 checks the real install-then-log-out path.
