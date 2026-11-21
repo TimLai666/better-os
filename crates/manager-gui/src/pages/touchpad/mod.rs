@@ -820,7 +820,7 @@ mod shell {
 /// there is one, or drops it when Better Touchpad is installed again. Not run
 /// under the test guard, which keeps tests away from the person's session.
 pub(crate) fn finish_pending_restore(installed_again: bool) {
-    if std::env::var_os(manager_platform::user_units::SYSTEMCTL_GUARD_VARIABLE).is_some() {
+    if better_core::test_guard::is_on() {
         return;
     }
     let _ = touchpad_platform::removal::finish_pending_in_session(installed_again);

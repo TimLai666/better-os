@@ -36,9 +36,10 @@ struct Run {
     stderr: String,
     stdout: String,
     timed_out: bool,
-    /// Every `systemctl` invocation the command attempted. The guard variable
-    /// makes the binary record them here instead of running them, so a real
-    /// mode run can never reach the user manager of whoever runs the tests.
+    /// Every `systemctl` invocation the command attempted. The guard flag
+    /// stops the binary from running them, and the guard's log variable
+    /// makes it record them here, so a real mode run can never reach the
+    /// user manager of whoever runs the tests.
     systemctl: Option<String>,
 }
 
@@ -59,8 +60,9 @@ fn run(directory: &Path, arguments: &[&str]) -> Run {
             &directory.join("catalog.json").display().to_string(),
         ])
         .args(arguments)
+        .env(better_core::test_guard::GUARD_VARIABLE, "1")
         .env(
-            manager_platform::user_units::SYSTEMCTL_GUARD_VARIABLE,
+            better_core::test_guard::LOG_VARIABLE,
             systemctl_guard(directory),
         )
         .stdout(Stdio::piped())
@@ -184,4 +186,38 @@ fn adopting_an_unknown_component_is_refused_without_writing_state() {
     assert!(!run.stderr.contains("panicked"), "{}", run.stderr);
     assert_ne!(run.status, Some(0));
     assert_eq!(run.systemctl, None);
+}
+
+/// The guard is a flag (ticket 178). Started with only the flag, from an empty
+/// folder, the command writes nothing there: `=1` used to leave a file named
+/// `1` in whatever folder Better Manager was started from.
+#[test]
+fn the_guard_flag_alone_writes_nothing_where_the_command_was_started() {
+    let directory = temporary("flag-alone");
+    let started_in = directory.path().join("started-here");
+    std::fs::create_dir(&started_in).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_manager-cli"))
+        .args([
+            "--state-path",
+            &directory.path().join("state.json").display().to_string(),
+        ])
+        .args([
+            "--catalog-path",
+            &directory.path().join("catalog.json").display().to_string(),
+        ])
+        .arg("status")
+        .current_dir(&started_in)
+        .env(better_core::test_guard::GUARD_VARIABLE, "1")
+        .env_remove(better_core::test_guard::LOG_VARIABLE)
+        .output()
+        .expect("the manager binary runs");
+    assert!(
+        !String::from_utf8_lossy(&output.stderr).contains("panicked"),
+        "{output:?}"
+    );
+    let left: Vec<_> = std::fs::read_dir(&started_in)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert!(left.is_empty(), "the guard wrote {left:?}");
 }

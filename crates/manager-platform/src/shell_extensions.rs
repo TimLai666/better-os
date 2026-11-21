@@ -17,15 +17,15 @@
 //! a plain extension UUID is refused before a process is spawned, and a list
 //! this module cannot read back exactly is never rewritten.
 
-use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 use std::sync::Mutex;
 use std::time::Duration;
 
 use better_core::package_health::InstalledFiles;
+use better_core::test_guard::TestGuard;
 
-use crate::user_units::{SYSTEMCTL_GUARD_VARIABLE, run_with_timeout};
+use crate::user_units::run_with_timeout;
 
 /// Where a package puts a GNOME Shell extension: one directory per UUID.
 pub const EXTENSION_DIRECTORY: &str = "/usr/share/gnome-shell/extensions";
@@ -236,7 +236,7 @@ impl<S: ShellSettings> ShellExtensionController for ShellExtensions<S> {
 pub type GsettingsShellExtensions = ShellExtensions<GsettingsShellSettings>;
 
 impl GsettingsShellExtensions {
-    /// Refuses to run anything when [`SYSTEMCTL_GUARD_VARIABLE`] is set, the
+    /// Refuses to run anything when [`better_core::test_guard::GUARD_VARIABLE`] is set, the
     /// same switch that keeps tests away from the person's user manager.
     pub fn from_environment() -> Self {
         ShellExtensions::new(GsettingsShellSettings::from_environment())
@@ -247,33 +247,27 @@ impl GsettingsShellExtensions {
 #[derive(Clone, Debug)]
 pub struct GsettingsShellSettings {
     timeout: Duration,
-    guard: Option<PathBuf>,
+    guard: Option<TestGuard>,
 }
 
 impl GsettingsShellSettings {
     pub fn from_environment() -> Self {
         Self {
             timeout: GSETTINGS_TIMEOUT,
-            guard: std::env::var_os(SYSTEMCTL_GUARD_VARIABLE)
-                .filter(|value| !value.is_empty())
-                .map(PathBuf::from),
+            guard: TestGuard::from_environment(),
         }
     }
 
     fn run(&self, arguments: &[&str]) -> Result<String, ExtensionFailure> {
-        if let Some(log) = &self.guard {
+        if let Some(guard) = &self.guard {
             let line = std::iter::once("gsettings")
                 .chain(arguments.iter().copied())
                 .collect::<Vec<_>>()
                 .join(" ");
-            let _ = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(log)
-                .and_then(|mut file| writeln!(file, "{line}"));
+            guard.record(&line);
             return Err(ExtensionFailure::new(
                 ExtensionFailureKind::NoSession,
-                format!("gsettings is not run while {SYSTEMCTL_GUARD_VARIABLE} is set"),
+                guard.reason("gsettings"),
             ));
         }
         let mut command = Command::new("gsettings");
@@ -556,6 +550,7 @@ pub type FakeShellExtensions = ShellExtensions<MemoryShellSettings>;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     const OURS: &str = "touchpad-adapter@betteros.org";
 
@@ -706,7 +701,7 @@ mod tests {
         let log = directory.path().join("log");
         let settings = GsettingsShellSettings {
             timeout: GSETTINGS_TIMEOUT,
-            guard: Some(log.clone()),
+            guard: Some(TestGuard::recording_to(&log)),
         };
         let failure = settings.get(ENABLED_KEY).unwrap_err();
         assert!(failure.is_no_session());

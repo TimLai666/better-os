@@ -8,16 +8,16 @@
 //! in dpkg's own file list: exactly
 //! `/usr/lib/better-os/before-removal/<package>`, never a path a manifest
 //! supplied. It is run with no arguments and a timeout, and a test environment
-//! that sets [`SYSTEMCTL_GUARD_VARIABLE`] runs nothing.
+//! that sets [`better_core::test_guard::GUARD_VARIABLE`] runs nothing.
 
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
 use better_core::package_health::InstalledFiles;
+use better_core::test_guard::TestGuard;
 
-use crate::user_units::{SYSTEMCTL_GUARD_VARIABLE, run_with_timeout};
+use crate::user_units::run_with_timeout;
 
 pub const BEFORE_REMOVAL_DIRECTORY: &str = "/usr/lib/better-os/before-removal";
 
@@ -84,7 +84,7 @@ pub fn refuse_program(program: &Path, owner: u32) -> Option<String> {
 #[derive(Clone, Debug)]
 pub struct ProcessHookRunner {
     timeout: Duration,
-    guard: Option<PathBuf>,
+    guard: Option<TestGuard>,
     owner: u32,
 }
 
@@ -92,9 +92,7 @@ impl ProcessHookRunner {
     pub fn from_environment() -> Self {
         Self {
             timeout: BEFORE_REMOVAL_TIMEOUT,
-            guard: std::env::var_os(SYSTEMCTL_GUARD_VARIABLE)
-                .filter(|value| !value.is_empty())
-                .map(PathBuf::from),
+            guard: TestGuard::from_environment(),
             owner: 0,
         }
     }
@@ -112,16 +110,9 @@ impl ProcessHookRunner {
 
 impl RemovalHookRunner for ProcessHookRunner {
     fn run(&self, program: &Path, undo: bool) -> HookOutcome {
-        if let Some(log) = &self.guard {
-            let _ = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(log)
-                .and_then(|mut file| writeln!(file, "{}", program.display()));
-            return HookOutcome::NotRestored(format!(
-                "{} is not run while {SYSTEMCTL_GUARD_VARIABLE} is set",
-                program.display()
-            ));
+        if let Some(guard) = &self.guard {
+            guard.record(&program.display().to_string());
+            return HookOutcome::NotRestored(guard.reason(&program.display().to_string()));
         }
         if let Some(reason) = refuse_program(program, self.owner) {
             return HookOutcome::NotRestored(format!("not run: {reason}"));
@@ -263,7 +254,7 @@ mod tests {
         let log = directory.path().join("log");
         let runner = ProcessHookRunner {
             timeout: BEFORE_REMOVAL_TIMEOUT,
-            guard: Some(log.clone()),
+            guard: Some(TestGuard::recording_to(&log)),
             owner: 0,
         };
         assert!(matches!(

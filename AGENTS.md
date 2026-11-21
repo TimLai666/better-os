@@ -93,9 +93,12 @@ contract.
   touchpad gesture service, which used to exit 0 with nothing configured,
   stays resident and idle. Update and
   Restore restart a unit that is already running so the new binary runs; Verify
-  starts a stopped unit before checking. Tests set
-  `BETTER_OS_TEST_SYSTEMCTL_GUARD` so the real runner can never reach the
-  person's own user manager. User units need no privilege, so this never crosses
+  starts a stopped unit before checking. Tests set the flag
+  `BETTER_OS_TEST_SYSTEMCTL_GUARD` (any non-empty value; it writes nothing) so
+  the real runner can never reach the person's own user manager, and a test
+  that wants the commands it held back names an absolute file in
+  `BETTER_OS_TEST_GUARD_LOG`. Both are read only through
+  `better_core::test_guard`. User units need no privilege, so this never crosses
   `manager-daemon`; system units are out of scope.
 - After any update of a Better OS package, however it was installed (Better
   Manager, `apt upgrade`, Software Updater, unattended upgrades), every Better

@@ -543,9 +543,9 @@ pub(crate) fn merge_services(units: &str, files: &str) -> Vec<ServiceUnit> {
     list
 }
 
-/// Set in a test environment, it keeps this window from ever running
-/// `systemctl`: the same variable the manager's unit controller honours.
-pub(crate) const SYSTEMCTL_GUARD_VARIABLE: &str = "BETTER_OS_TEST_SYSTEMCTL_GUARD";
+/// The test guard's flag (`better_core::test_guard`): set, this window never
+/// runs `systemctl`, the same switch the manager's unit controller honours.
+pub(crate) const SYSTEMCTL_GUARD_VARIABLE: &str = better_core::test_guard::GUARD_VARIABLE;
 
 /// How long one `systemctl` call may take. A wedged user manager must not
 /// leave a page waiting forever.
@@ -582,7 +582,7 @@ impl RealSystemctl {
     pub(crate) fn from_environment() -> Self {
         Self {
             program: "systemctl".into(),
-            guarded: std::env::var_os(SYSTEMCTL_GUARD_VARIABLE).is_some(),
+            guarded: better_core::test_guard::is_on(),
         }
     }
 

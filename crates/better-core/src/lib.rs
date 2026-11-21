@@ -9,6 +9,7 @@ pub mod manifest;
 pub mod package_health;
 pub mod private_dir;
 pub mod self_update;
+pub mod test_guard;
 
 pub use defaults::{
     AdapterId, DconfDatabase, DefaultIntegration, DefaultsValue, HealthPrerequisite,

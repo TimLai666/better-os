@@ -4854,6 +4854,7 @@ dependencies = [
 name = "monitor-gui"
 version = "0.2.16"
 dependencies = [
+ "better-core",
  "better-ui",
  "gpui",
  "gpui-component",
