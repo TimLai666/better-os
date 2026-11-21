@@ -1,4 +1,4 @@
-# Ticket 253 — Evaluate moving to GPUI Kit 0.10 and GPUI Fast
+# Ticket 257 — Evaluate moving to GPUI Kit 0.10 and GPUI Fast
 
 **Blocked by:** none
 
