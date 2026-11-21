@@ -972,6 +972,42 @@ fn a_dropped_connection_keeps_trying_until_the_server_is_back() {
     assert_eq!(world.calls(), 3);
 }
 
+/// Seen in CI on ticket 310's second round: right after a server's mount
+/// is made again, GVfs's FUSE folder can say "not found" for a moment about
+/// a folder that is there. The folder is looked at again before the one
+/// above it is opened, so the tab stays where it was, with no notice.
+#[test]
+fn a_folder_that_is_not_found_for_a_moment_is_not_left() {
+    let world = world();
+    let shown = world.server(NAS, &["srv/2026"]);
+    let mut session = session(&world);
+    session.mount_server("sftp://nas/srv/2026".into());
+    assert!(pump_until(&mut session, |s| shows(
+        s,
+        &shown.join("srv/2026")
+    )));
+    // The folder is away for a moment while the mount stays.
+    let away = world.home.join("away-for-a-moment");
+    fs::rename(shown.join("srv/2026"), &away).unwrap();
+    session.reload();
+    assert!(pump_until(&mut session, |s| matches!(
+        s.pane().model().status(),
+        files_core::ListingStatus::Failed(files_core::ListingError::NotFound { .. })
+    )));
+    fs::rename(&away, shown.join("srv/2026")).unwrap();
+    pump_for(&mut session, Duration::from_secs(3), |_| false);
+    assert!(
+        shows(&session, &shown.join("srv/2026")),
+        "it stayed: at {:?}",
+        session.location()
+    );
+    assert!(
+        !matches!(session.notice, Some(Notice::RemoteFolderGone { .. })),
+        "{:?}",
+        session.notice
+    );
+}
+
 /// Ticket 310's second review: GVfs says nothing that tells a mount let go
 /// elsewhere from a server that went away, and Better Files unmounts no
 /// server itself, so an open folder whose mount left comes back by itself,
@@ -1021,6 +1057,57 @@ fn a_network_that_goes_and_comes_back_reconnects_by_itself() {
         session.link()
     );
     assert_eq!(world.calls(), 2);
+}
+
+/// Decided after CI (2026-11-22): a computer whose network cannot be read
+/// beyond its route (no NetworkManager, no router in the neighbour table,
+/// as on a CI runner) has seen no change, so a restarted server comes back
+/// by itself.
+#[test]
+fn a_restarted_server_comes_back_when_the_network_cannot_be_read_more_closely() {
+    let world = world();
+    world.join(crate::remote::Network {
+        routes: "eth0>0100000A".into(),
+        connection: None,
+        gateway_hardware: None,
+    });
+    let shown = world.server(NAS, &["srv"]);
+    let mut session = session(&world);
+    session.mount_server("sftp://nas/srv".into());
+    assert!(pump_until(&mut session, |s| shows(s, &shown.join("srv"))));
+    world.go_down(NAS);
+    assert!(pump_until(&mut session, |s| s.link().is_some()));
+    pump_for(&mut session, Duration::from_secs(1), |_| false);
+    world.come_back();
+    assert!(
+        pump_for(&mut session, RETRY_WAIT, |s| s.link().is_none()
+            && shows(s, &shown.join("srv"))),
+        "{:?}",
+        session.link().map(|link| &link.state)
+    );
+}
+
+/// A server on this computer is on no network: with no default route at
+/// all, it still comes back by itself.
+#[test]
+fn a_server_on_this_computer_comes_back_with_no_network() {
+    const LOCAL: &str = "sftp://127.0.0.1/srv";
+    let world = world();
+    world.join(crate::remote::Network::default());
+    let shown = world.server(LOCAL, &["srv"]);
+    let mut session = session(&world);
+    session.mount_server(LOCAL.into());
+    assert!(pump_until(&mut session, |s| shows(s, &shown.join("srv"))));
+    world.go_down(LOCAL);
+    assert!(pump_until(&mut session, |s| s.link().is_some()));
+    pump_for(&mut session, Duration::from_secs(1), |_| false);
+    world.come_back();
+    assert!(
+        pump_for(&mut session, RETRY_WAIT, |s| s.link().is_none()
+            && shows(s, &shown.join("srv"))),
+        "{:?}",
+        session.link().map(|link| &link.state)
+    );
 }
 
 /// Ticket 310's second review: a computer that slept. The network went

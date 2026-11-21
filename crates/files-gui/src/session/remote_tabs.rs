@@ -203,6 +203,11 @@ pub const RETRY_LIMIT: Duration = Duration::from_secs(600);
 /// jump host, a NetBIOS name).
 const GVFS_RETRY_EVERY: Duration = Duration::from_secs(30);
 
+/// How many times, and how often, a folder a server says is not there is
+/// looked at again before the nearest folder above it is opened.
+const CLIMB_RECHECKS: u32 = 3;
+const CLIMB_RECHECK_EVERY: Duration = Duration::from_millis(500);
+
 /// How soon a folder that was slow to answer is listed again the first time.
 const FIRST_RELIST: Duration = Duration::from_secs(1);
 
@@ -675,11 +680,20 @@ impl FilesSession {
         let Some(link) = self.remote.links.iter_mut().find(|link| link.tab == tab) else {
             return;
         };
-        if !known {
+        // A server on this computer is on no network: it always comes back
+        // by itself.
+        let on_this_computer = link
+            .remote
+            .as_ref()
+            .is_some_and(Remote::is_on_this_computer);
+        if !known && !on_this_computer {
             link.retry_at = Some(Instant::now() + FIRST_RELIST);
             return;
         }
-        if network.is_none() {
+        // The network went (it had a default route and has none now): wait,
+        // and that time does not count. A folder opened with no default
+        // route (a LAN with no gateway) carries on as before.
+        if network.is_none() && !link.network.is_none() && !on_this_computer {
             let paused = *link.paused_at.get_or_insert_with(Instant::now);
             link.retry_at = Some(Instant::now() + RETRY_EVERY);
             // Past its first 30 s the page says why, while it waits on.
@@ -696,7 +710,7 @@ impl FilesSession {
         if let Some(paused) = link.paused_at.take() {
             link.since += paused.elapsed();
         }
-        if !link.network.same_as(&network) {
+        if !on_this_computer && !link.network.same_as(&network) {
             self.leave_tab(tab, LinkState::OtherNetwork);
             return;
         }
@@ -1467,6 +1481,20 @@ impl FilesSession {
                     return;
                 };
                 let mount = root.join(name);
+                // GVfs's FUSE folder can say "not found" for a moment about
+                // a folder that is there, right after a mount is made again
+                // or as a connection drops (seen in CI, ticket 310's second
+                // round): the folder itself is looked at again before
+                // anything above it is opened.
+                for _ in 0..CLIMB_RECHECKS {
+                    std::thread::sleep(CLIMB_RECHECK_EVERY);
+                    if crate::remote::probe(&from, &mount, deadline, &probing)
+                        == crate::remote::Probed::Folder
+                    {
+                        let _ = sender.send(Some(from));
+                        return;
+                    }
+                }
                 let mut at = from.parent().map(Path::to_path_buf);
                 while let Some(folder) = at {
                     if !folder.starts_with(&mount) {
@@ -1510,6 +1538,11 @@ impl FilesSession {
                 continue;
             };
             let reader = self.reader.clone();
+            // The folder was there after all: listed again, in place.
+            if folder == gone {
+                pane.reload(reader.as_ref());
+                continue;
+            }
             pane.replace_current(folder, reader.as_ref());
             self.remote.links.retain(|link| link.tab != tab);
             self.sync_history(tab);

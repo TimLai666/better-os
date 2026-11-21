@@ -217,8 +217,9 @@ gone, or the folder no longer answering; the tab shows "Connecting to
   itself travels over GVfs's private peer connection, which no other
   program sees. Better Files unmounts no server itself. So every drop is
   treated as one, and the folder comes back, as the owner asked.
-- *No network at the moment* (no default route: a Wi-Fi drop, or a computer
-  waking) is waited out with no time limit, and nothing is sent. After 30 s
+- *No network at the moment* (the folder was open with a default route and
+  there is none now: a Wi-Fi drop, or a computer waking) is waited out with
+  no time limit, and nothing is sent. After 30 s
   of it the page says the computer is not connected to a network, while it
   goes on waiting.
 - *The same network back* (the one the folder was last listed on): the host
@@ -239,10 +240,14 @@ gone, or the folder no longer answering; the tab shows "Connecting to
   network is a profile of its own, so two networks with the same gateway
   address differ), and the gateway's hardware address from the kernel's
   neighbour table (two routers with the same address differ; a wired profile
-  shared between networks is told apart by it). They are the same network
-  only when that is known: the same routes and profile, and the same router
-  where both readings have it; with no NetworkManager the router must be
-  known on both sides. What cannot be told is another network.
+  shared between networks is told apart by it). Only an observed change is
+  another network (decided 2026-11-22, after a CI runner with no
+  NetworkManager and no router entry): other routes, or a profile or router
+  that both readings have and that differ. What a reading could not read
+  (no NetworkManager, the router not yet in the neighbour table after a
+  resume) is no change, and no default route before and after (a LAN with
+  no gateway) is the same facts. A server on this computer (`localhost`, a
+  loopback address) is on no network and always comes back by itself.
 - A refused sign-in and a changed host key are never tried again by
   themselves, and their page is shown at once.
 

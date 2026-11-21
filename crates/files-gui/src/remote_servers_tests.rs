@@ -720,6 +720,12 @@ fn real_sftp_and_smb_servers_connect_again_when_their_folder_is_opened() {
     // same folder and selection.
     session.select_by_name("plan.txt");
     session.pump();
+    // What this machine's network reads as, before and after the drop: a
+    // restarted server comes back by itself unless a change is seen.
+    eprintln!(
+        "ticket-310: network before the drop: {:?}",
+        crate::remote::read_network()
+    );
     sandbox.sshd.stop();
     assert!(
         pump_until(&mut session, OPEN, |s| matches!(
@@ -735,8 +741,15 @@ fn real_sftp_and_smb_servers_connect_again_when_their_folder_is_opened() {
             s,
             &sandbox.sftp_folder(&projects)
         )),
-        "it came back by itself: {:?}",
-        state(&session)
+        "it came back by itself: {:?} at {:?}, {:?}; network now {:?}",
+        state(&session),
+        session.location(),
+        session.notice,
+        crate::remote::read_network()
+    );
+    eprintln!(
+        "ticket-310: network after it came back: {:?}",
+        crate::remote::read_network()
     );
     assert_eq!(
         session.pane().model().selection().cursor(),

@@ -175,16 +175,20 @@ open comes back by itself".
   (after `GetConnection`). Better Files unmounts no server, so every drop
   reconnects: `a_mount_let_go_elsewhere_comes_back_by_itself`.
 - No network (empty routes) is waited out with no limit and nothing sent;
-  the same network back reconnects by itself; another network, or one that
-  cannot be told apart, shows the new "another network" page with Connect.
-  Networks: default routes, NetworkManager's primary profile UUID (system
-  bus), gateway hardware address (`/proc/net/arp`). Tests:
+  the same network back reconnects by itself; another network shows the
+  new "another network" page with Connect. Networks: default routes,
+  NetworkManager's primary profile UUID (system bus), gateway hardware
+  address (`/proc/net/arp`); only an observed change is another network
+  (the coordinator's decision after CI, below), and a server on this
+  computer always comes back. Tests:
   `a_network_that_goes_and_comes_back_reconnects_by_itself`,
   `a_folder_comes_back_after_sleep_on_the_same_network`,
   `a_drop_onto_another_network_waits_for_a_click`,
   `a_dropped_connection_keeps_trying_until_the_server_is_back` (server
   restart), `retries_stop_at_their_limit`,
-  `networks_are_the_same_only_when_that_is_known`,
+  `a_restarted_server_comes_back_when_the_network_cannot_be_read_more_closely`,
+  `a_server_on_this_computer_comes_back_with_no_network`,
+  `only_an_observed_change_is_another_network`,
   `a_gateway_s_hardware_address_is_read_from_the_neighbour_table`. The limit
   is now 10 minutes of time with a network (a NAS restart takes minutes).
 - The host look no longer rewrites GVfs's failure; when it cannot resolve
@@ -211,5 +215,14 @@ open comes back by itself".
   the same way (`an_address_matches_the_mount_name_gvfs_folds_it_to`), and
   the real-server test opens a mounted share written in capitals and an
   `[::1]` address with no second mount.
+- CI on `7967a7ba`: one of the two `rust` runs failed at "it came back by
+  itself: None" (no wait left, so the tab had climbed above its folder; a
+  network refusal would have shown `OtherNetwork`). Cause: right after the
+  remount GVfs's FUSE folder can answer "not found" for a moment, and the
+  tab opened the folder above at once. The climb now looks at the folder
+  again three times, 0.5 s apart, first
+  (`a_folder_that_is_not_found_for_a_moment_is_not_left`). The network rule
+  was changed too, as decided: unreadable facts are no change. The
+  real-server test prints the network reading before and after the drop.
 - Not seen: the "another network" page on screen (the sandbox cannot change
   the network), NetworkManager's UUID on a real Wi-Fi change.

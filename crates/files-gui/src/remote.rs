@@ -181,6 +181,12 @@ impl Remote {
         self.get(self.host_key()).unwrap_or_default().to_string()
     }
 
+    /// Whether the server is this computer (a loopback name or address):
+    /// no network is between them.
+    pub fn is_on_this_computer(&self) -> bool {
+        is_this_computer(&self.server())
+    }
+
     /// The SMB share or AFP volume, when the mount is one.
     pub fn share(&self) -> Option<&str> {
         self.get("share").or_else(|| self.get("volume"))
@@ -878,7 +884,7 @@ impl Reason {
         network_up: bool,
         locale: &std::ffi::CStr,
     ) -> Self {
-        let local = matches!(server, "localhost" | "127.0.0.1" | "::1");
+        let local = is_this_computer(server);
         let reason = match error.failure {
             MountFailure::TimedOut => Reason::NoAnswer,
             MountFailure::HostNotFound => Reason::NameNotFound,
@@ -933,6 +939,16 @@ impl Reason {
             Reason::NoAnswer | Reason::NameNotFound | Reason::NoNetwork
         )
     }
+}
+
+/// Whether a server name is this computer: `localhost` or a loopback
+/// address (`127.0.0.0/8`, `::1`, with or without brackets).
+pub fn is_this_computer(server: &str) -> bool {
+    let bare = server.trim_start_matches('[').trim_end_matches(']');
+    bare.eq_ignore_ascii_case("localhost")
+        || bare
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|address| address.is_loopback())
 }
 
 /// Set in a debug build's sandbox to say this computer has no network.
@@ -1046,23 +1062,17 @@ impl Network {
         self.routes.is_empty()
     }
 
-    /// Whether `other` is known to be this network. What cannot be told is
-    /// another network: the same routes and NetworkManager profile, and the
-    /// same gateway hardware where both readings have it; without a profile
-    /// on either side, the gateway hardware must be known and the same.
+    /// Whether `other` is this network as far as can be seen: only an
+    /// observed change makes it another one (decided 2026-11-22, after a CI
+    /// runner with no NetworkManager and no router entry). The default
+    /// routes must be the same (both none included); a NetworkManager
+    /// profile or a gateway's hardware address that both readings have must
+    /// be the same; one that a reading could not read is no change.
     pub fn same_as(&self, other: &Network) -> bool {
-        if self.is_none() || other.is_none() || self.routes != other.routes {
-            return false;
-        }
-        if let (Some(mine), Some(theirs)) = (&self.connection, &other.connection)
-            && mine != theirs
-        {
-            return false;
-        }
-        match (&self.gateway_hardware, &other.gateway_hardware) {
-            (Some(mine), Some(theirs)) => mine == theirs,
-            _ => self.connection.is_some() && self.connection == other.connection,
-        }
+        let differs = |mine: &Option<String>, theirs: &Option<String>| matches!((mine, theirs), (Some(mine), Some(theirs)) if mine != theirs);
+        self.routes == other.routes
+            && !differs(&self.connection, &other.connection)
+            && !differs(&self.gateway_hardware, &other.gateway_hardware)
     }
 }
 
@@ -1728,7 +1738,7 @@ mod tests {
     /// Ticket 310's second review: two networks are the same only when that
     /// is known; what cannot be told is another network.
     #[test]
-    fn networks_are_the_same_only_when_that_is_known() {
+    fn only_an_observed_change_is_another_network() {
         let network = |connection: Option<&str>, hardware: Option<&str>| Network {
             routes: "wlp2s0>0101A8C0".into(),
             connection: connection.map(str::to_string),
@@ -1736,22 +1746,23 @@ mod tests {
         };
         let home = network(Some("home"), Some("wlp2s0>aa:00:00:00:00:01"));
         assert!(home.same_as(&home.clone()));
-        // The same gateway address on another Wi-Fi (another profile), or
-        // behind another router.
+        // An observed change: the same gateway address on another Wi-Fi
+        // (another profile), or behind another router; other routes.
         assert!(!home.same_as(&network(Some("cafe"), Some("wlp2s0>aa:00:00:00:00:01"))));
         assert!(!home.same_as(&network(Some("home"), Some("wlp2s0>aa:00:00:00:00:99"))));
-        // Right after a resume the neighbour table may not have the router
-        // yet: the profile tells.
+        let mut wired = home.clone();
+        wired.routes = "eth0>0100000A".into();
+        assert!(!home.same_as(&wired));
+        // What a reading could not read is no change: right after a resume
+        // the router may not be in the neighbour table yet; a machine with
+        // no NetworkManager, or a CI runner, has no profile.
         assert!(home.same_as(&network(Some("home"), None)));
-        // With no NetworkManager the router must be known on both sides.
-        assert!(
-            network(None, Some("wlp2s0>aa:00:00:00:00:01"))
-                .same_as(&network(None, Some("wlp2s0>aa:00:00:00:00:01")))
-        );
-        assert!(!network(None, None).same_as(&network(None, None)));
-        assert!(!network(None, Some("wlp2s0>aa:00:00:00:00:01")).same_as(&network(None, None)));
-        // No network is never "the same network".
-        assert!(!Network::default().same_as(&Network::default()));
+        assert!(home.same_as(&network(None, Some("wlp2s0>aa:00:00:00:00:01"))));
+        assert!(network(None, None).same_as(&network(None, None)));
+        assert!(network(None, Some("wlp2s0>aa:00:00:00:00:01")).same_as(&network(None, None)));
+        // No default route before and after (loopback only, a LAN with no
+        // gateway) is the same facts; no route against a route is not.
+        assert!(Network::default().same_as(&Network::default()));
         assert!(!home.same_as(&Network::default()));
     }
 
