@@ -14,6 +14,7 @@ pub mod paths {
     pub const DRM: &str = "/sys/class/drm";
     pub const SESSIONS: &str = "/run/systemd/sessions";
     /// The greeter's unit has no `Slice=`, so systemd puts it here.
+    pub const CGROUPS: &str = "/sys/fs/cgroup";
     pub const GREETER_CGROUP: &str = "/sys/fs/cgroup/system.slice/better-os-greeter.service";
     pub const PROC: &str = "/proc";
     pub const HEARTBEAT: &str = "/run/better-os-greeter/alive";
@@ -160,6 +161,7 @@ pub fn sessions(dir: &Path) -> Option<Vec<LogindSession>> {
             service: field("SERVICE"),
             seat: field("SEAT"),
             kind: field("TYPE"),
+            scope: field("SCOPE"),
         });
     }
     sessions.sort_by(|a, b| a.id.cmp(&b.id));
@@ -227,6 +229,89 @@ pub fn greetd(cgroup: &Path, proc: &Path) -> Option<Greetd> {
     }
     processes.sort_by_key(|p| p.pid);
     Some(Greetd { processes })
+}
+
+/// The cgroup a process is in, from `/proc/<pid>/cgroup` (the unified
+/// hierarchy's `0::` line).
+pub fn cgroup_of(proc: &Path, pid: u32) -> Option<String> {
+    let bytes = read_bounded(&proc.join(pid.to_string()).join("cgroup"), 64 * 1024)?;
+    String::from_utf8_lossy(&bytes)
+        .lines()
+        .find_map(|line| line.strip_prefix("0::"))
+        .map(str::to_string)
+}
+
+/// The processes of a session scope's cgroup under `cgroup_root`, each with
+/// its uid. Only a path of a session scope's shape is read; a scope that is
+/// gone has no process; one that is there and cannot be read is unknown.
+pub fn scope_processes(cgroup_root: &Path, path: &str, proc: &Path) -> Option<Vec<Process>> {
+    if !crate::rules::is_session_scope(path) {
+        return None;
+    }
+    let file = cgroup_root
+        .join(path.trim_start_matches('/'))
+        .join("cgroup.procs");
+    let text = match std::fs::read_to_string(&file) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Some(Vec::new()),
+        Err(_) => return None,
+    };
+    let mut processes = Vec::new();
+    for pid in pids(&text).take(4096) {
+        // A process that left between the listing and the read is gone.
+        if let Some(uid) = uid_of(proc, pid) {
+            processes.push(Process {
+                pid,
+                uid,
+                in_cgroup: false,
+            });
+        }
+    }
+    Some(processes)
+}
+
+/// Every process with a `/dev/dri/card*` open, `plymouthd` left out (its
+/// own path quits or kills it). Only the links' targets are compared.
+pub fn drm_holders(proc: &Path) -> Option<Vec<u32>> {
+    let mut holders = Vec::new();
+    for entry in std::fs::read_dir(proc).ok()?.flatten().take(65_536) {
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|n| n.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        let comm = read_bounded(&entry.path().join("comm"), 64)
+            .map(|c| String::from_utf8_lossy(&c).trim().to_string());
+        if comm.as_deref() == Some("plymouthd") {
+            continue;
+        }
+        let fds = match std::fs::read_dir(entry.path().join("fd")) {
+            Ok(fds) => fds,
+            // Not knowing what a process holds is not knowing the card is
+            // free.
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+                holders.push(pid);
+                continue;
+            }
+            // Gone, or a kernel thread.
+            Err(_) => continue,
+        };
+        let holds = fds.flatten().take(65_536).any(|fd| {
+            std::fs::read_link(fd.path()).is_ok_and(|target| {
+                target
+                    .to_str()
+                    .and_then(|t| t.strip_prefix("/dev/dri/card"))
+                    .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+            })
+        });
+        if holds {
+            holders.push(pid);
+        }
+    }
+    holders.sort_unstable();
+    Some(holders)
 }
 
 /// The greeter's heartbeat: a regular file of at most 64 bytes, its
@@ -360,7 +445,7 @@ mod tests {
         );
         write(
             &dir.path().join("c1"),
-            "UID=118\nSTATE=online\nTYPE=wayland\nCLASS=greeter\nSEAT=seat0\nSERVICE=greetd-greeter\n",
+            "UID=118\nSTATE=online\nTYPE=wayland\nCLASS=greeter\nSEAT=seat0\nSERVICE=greetd-greeter\nSCOPE=session-c1.scope\n",
         );
         write(
             &dir.path().join("5"),
@@ -374,6 +459,7 @@ mod tests {
         assert_eq!(sessions[0].uid, 1000);
         assert!(sessions[1].is_greeter());
         assert_eq!(sessions[1].uid, 118);
+        assert_eq!(sessions[1].scope, "session-c1.scope");
         assert_eq!(
             super::sessions(&dir.path().join("absent")),
             Some(Vec::new())
@@ -419,12 +505,72 @@ mod tests {
                 },
             ]
         );
-        assert!(!tree.stopped());
+        assert!(!tree.unit_empty());
         // No cgroup at all: the unit has no process.
         assert_eq!(
             greetd(&dir.path().join("none"), &proc),
             Some(Greetd::default())
         );
+    }
+
+    #[test]
+    fn a_session_scopes_processes_are_read_only_for_a_scope_shaped_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let cgroups = dir.path().join("cgroup");
+        let proc = dir.path().join("proc");
+        let scope = "/user.slice/user-118.slice/session-c1.scope";
+        write(
+            &cgroups.join(&scope[1..]).join("cgroup.procs"),
+            "200\n201\n",
+        );
+        write(&proc.join("200/status"), "Uid:\t118\t118\t118\t118\n");
+        write(&proc.join("201/status"), "Uid:\t0\t0\t0\t0\n");
+        write(&proc.join("200/cgroup"), &format!("0::{scope}\n"));
+        let found = scope_processes(&cgroups, scope, &proc).unwrap();
+        assert_eq!(
+            found.iter().map(|p| (p.pid, p.uid)).collect::<Vec<_>>(),
+            [(200, 118), (201, 0)]
+        );
+        assert_eq!(cgroup_of(&proc, 200).as_deref(), Some(scope));
+        // Gone: no process. Another shape: never read.
+        assert_eq!(
+            scope_processes(
+                &cgroups,
+                "/user.slice/user-118.slice/session-c2.scope",
+                &proc
+            ),
+            Some(Vec::new())
+        );
+        write(&cgroups.join("system.slice/x.service/cgroup.procs"), "1\n");
+        assert_eq!(
+            scope_processes(&cgroups, "/system.slice/x.service", &proc),
+            None
+        );
+        assert_eq!(
+            scope_processes(
+                &cgroups,
+                "/user.slice/user-118.slice/session-c1.scope/../../..",
+                &proc
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn a_card_holder_is_found_by_its_open_descriptor_and_plymouthd_is_left_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let proc = dir.path();
+        for (pid, name, target) in [
+            (10, "cosmic-comp", "/dev/dri/card1"),
+            (11, "plymouthd", "/dev/dri/card0"),
+            (12, "app", "/dev/dri/renderD128"),
+            (13, "bash", "/dev/pts/0"),
+        ] {
+            std::fs::create_dir_all(proc.join(format!("{pid}/fd"))).unwrap();
+            std::fs::write(proc.join(format!("{pid}/comm")), format!("{name}\n")).unwrap();
+            symlink(target, proc.join(format!("{pid}/fd/3"))).unwrap();
+        }
+        assert_eq!(drm_holders(proc), Some(vec![10]));
     }
 
     #[test]

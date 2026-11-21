@@ -58,6 +58,8 @@ fn step_words(language: Language, step: Step) -> &'static str {
         (Language::English, Step::Plymouth) => "the boot splash didn't respond",
         (Language::ZhTw, Step::SessionEnd) => "登入的工作階段結束",
         (Language::English, Step::SessionEnd) => "a signed-in session ended",
+        (Language::ZhTw, Step::TextLogin) => "文字模式登入",
+        (Language::English, Step::TextLogin) => "the text sign-in",
         (language, step) => stage_words(language, step.stage()),
     }
 }
@@ -89,9 +91,18 @@ fn reason_words(language: Language, reason: Reason) -> &'static str {
         Reason::NotReady => ("登入畫面沒有準備好", "the login screen wasn't ready"),
         Reason::HeartbeatStale => ("登入畫面停止回應", "the login screen stopped responding"),
         Reason::StopDidNotComplete => ("登入畫面無法停止", "the login screen couldn't be stopped"),
-        Reason::FallbackStartRefused => (
-            "文字模式無法在 tty1 啟動",
-            "the text sign-in couldn't start on tty1",
+        Reason::SessionKilled => (
+            "登入畫面的工作階段已強制結束",
+            "the login screen's session was ended",
+        ),
+        Reason::OutOfTime => ("時間用完", "out of time"),
+        Reason::SessionsUnknown => (
+            "看不出有沒有人登入，所以沒有停止任何東西",
+            "who is signed in couldn't be told, so nothing was stopped",
+        ),
+        Reason::TextLoginNotActive => (
+            "文字模式沒有啟動，改用另一個終端機",
+            "the text sign-in didn't start, so the other terminal was used",
         ),
         Reason::StateUnreadable => (
             "讀不到登入流程的狀態",
@@ -100,6 +111,10 @@ fn reason_words(language: Language, reason: Reason) -> &'static str {
         Reason::Restarted => (
             "登入監督程式重新啟動過",
             "the login supervisor was restarted",
+        ),
+        Reason::StartedAgain => (
+            "登入管理員重新啟動，重新開始",
+            "the display manager was started again, so it began anew",
         ),
     };
     match language {
@@ -171,18 +186,12 @@ fn phase_words(language: Language, phase: &Phase) -> String {
             "stopping the login screen"
         }
         .to_string(),
-        Phase::FellBack { tty, .. } => if zh {
+        Phase::TextLogin { tty, .. } => if zh {
             "已改用文字模式登入（{tty}）"
         } else {
             "using the text sign-in ({tty})"
         }
         .replace("{tty}", tty.name()),
-        Phase::NoScreen { .. } => if zh {
-            "已啟動登入畫面，等待接上螢幕"
-        } else {
-            "the login screen is started and waiting for a screen"
-        }
-        .to_string(),
         Phase::Unreadable => reason_words(language, Reason::StateUnreadable).to_string(),
     }
 }
@@ -311,7 +320,7 @@ pub fn status(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rules::{STATE_VERSION, Tty};
+    use crate::rules::{STATE_VERSION, TextTty, UnitStart};
     use manager_ipc::boot_watch::{Evidence, LOGIN_SUPERVISOR_UNIT, RECORD_VERSION};
 
     #[test]
@@ -347,17 +356,19 @@ mod tests {
 
     #[test]
     fn the_status_lists_the_stages_that_did_not_pass_and_the_last_record() {
-        let mut state = State::fresh(None, None, 0);
+        let mut state = State::fresh(None, UnitStart::default(), 0);
         assert_eq!(state.version, STATE_VERSION);
         state.notes.push(Note {
             step: Step::Compositor,
             outcome: Outcome::Retried,
             reason: Reason::NoHeartbeat,
         });
-        state.phase = Phase::FellBack {
+        state.phase = Phase::TextLogin {
             step: Step::Compositor,
-            tty: Tty::Tty1,
-            at: 70,
+            tty: TextTty::Tty8,
+            started: 70,
+            starts: 1,
+            confirmed: true,
         };
         let event = Event {
             version: RECORD_VERSION,
@@ -368,7 +379,7 @@ mod tests {
             evidence: Evidence::default(),
             restart: RestartOutcome::TextLoginUsed {
                 stage: LoginStage::DisplayServer,
-                tty: "tty1".to_string(),
+                tty: "tty8".to_string(),
                 after_seconds: 70,
             },
         };
@@ -378,7 +389,7 @@ mod tests {
             zh,
             [
                 "Better OS 登入流程，這次開機：",
-                "現在：已改用文字模式登入（tty1）",
+                "現在：已改用文字模式登入（tty8）",
                 "沒有通過的階段：",
                 "  6. 顯示伺服器無法啟動：重試（顯示伺服器沒有啟動）",
                 "最近的紀錄：2026-11-22 08:42，上次開機時登入畫面無法顯示（顯示伺服器無法啟動），已改用文字模式登入。",

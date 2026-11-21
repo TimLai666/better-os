@@ -14,7 +14,8 @@ use manager_ipc::boot_watch::{
 
 use crate::read::{self, paths};
 use crate::rules::{
-    Action, GreeterMode, Job, Logind, Micros, RecordDraft, SECOND, Seen, State, Tty, limits,
+    Action, GreeterMode, Job, Logind, Micros, Needs, RecordDraft, SECOND, ScopeSeen, Seen, State,
+    UnitStart, Vt, is_session_scope, limits,
 };
 use crate::world::World;
 
@@ -84,6 +85,21 @@ pub fn run_bounded(program: &str, arguments: &[&str], limit: Duration) -> Result
             output.status,
             String::from_utf8_lossy(&output.stderr).trim()
         ))
+    }
+}
+
+/// `systemctl show`'s `InactiveExitTimestampMonotonic=` and `NRestarts=`.
+pub fn parse_unit_start(text: &str) -> UnitStart {
+    let field = |key: &str| {
+        text.lines()
+            .find_map(|line| line.strip_prefix(key)?.strip_prefix('='))
+            .map(str::trim)
+    };
+    UnitStart {
+        began: field("InactiveExitTimestampMonotonic")
+            .and_then(|v| v.parse().ok())
+            .filter(|v| *v > 0),
+        restarts: field("NRestarts").and_then(|v| v.parse().ok()),
     }
 }
 
@@ -203,23 +219,21 @@ impl SystemWorld {
         self.boot_id.clone()
     }
 
-    /// When this unit began to start this boot: systemd's
-    /// `InactiveExitTimestampMonotonic` for it.
-    pub fn first_start(&self) -> Option<Micros> {
-        run_bounded(
+    /// This start of the unit: systemd's `InactiveExitTimestampMonotonic`
+    /// (when it began) and `NRestarts` (how many of its starts were its own
+    /// automatic restarts).
+    pub fn unit_start(&self) -> UnitStart {
+        let text = run_bounded(
             SYSTEMCTL,
             &[
                 "show",
-                "--property=InactiveExitTimestampMonotonic",
-                "--value",
+                "--property=InactiveExitTimestampMonotonic,NRestarts",
                 LOGIN_SUPERVISOR_UNIT,
             ],
             Duration::from_micros(limits::CALL),
         )
-        .ok()?
-        .trim()
-        .parse()
-        .ok()
+        .unwrap_or_default();
+        parse_unit_start(&text)
     }
 
     fn plymouth_state(&mut self) -> Option<Job> {
@@ -305,7 +319,7 @@ struct VtMode {
     frsig: libc::c_short,
 }
 
-fn open_tty(tty: Tty) -> Result<std::fs::File, String> {
+fn open_tty(tty: Vt) -> Result<std::fs::File, String> {
     std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -325,7 +339,7 @@ fn ioctl_result(result: libc::c_int, what: &str) -> Result<(), String> {
 /// Gives the terminal back to text: a compositor or `plymouthd` killed
 /// while holding it may have left it in graphics mode, or in `VT_PROCESS`
 /// mode, where no switch away from it completes.
-fn reset_tty(tty: Tty) -> Result<(), String> {
+fn reset_tty(tty: Vt) -> Result<(), String> {
     let file = open_tty(tty)?;
     let fd = file.as_raw_fd();
     // SAFETY: a valid descriptor; KDSETMODE takes an integer argument.
@@ -349,7 +363,7 @@ fn reset_tty(tty: Tty) -> Result<(), String> {
 }
 
 /// What `chvt` does, on the terminal's own device.
-fn activate(tty: Tty) -> Result<(), String> {
+fn activate(tty: Vt) -> Result<(), String> {
     let file = open_tty(tty)?;
     // SAFETY: a valid descriptor; VT_ACTIVATE takes the terminal's number.
     ioctl_result(
@@ -373,19 +387,73 @@ impl World for SystemWorld {
         monotonic()
     }
 
-    fn observe(&mut self) -> Seen {
+    fn observe(&mut self, needs: &Needs) -> Seen {
         let now = monotonic();
         self.probe.poll(now);
+        let proc = Path::new(paths::PROC);
+        let sessions = read::sessions(Path::new(paths::SESSIONS));
         let logind = self.probe.answer(now).and_then(|can_graphical| {
             Some(Logind {
                 can_graphical,
-                sessions: read::sessions(Path::new(paths::SESSIONS))?,
+                sessions: sessions.clone()?,
             })
+        });
+        let greetd = read::greetd(Path::new(paths::GREETER_CGROUP), proc);
+        // The greeter's session scopes: the ones logind lists for a greeter
+        // session, the ones greetd's processes are in, the remembered ones.
+        let mut candidates: Vec<(String, bool)> = Vec::new();
+        for session in sessions.iter().flatten().filter(|s| s.is_greeter()) {
+            let path = format!("/user.slice/user-{}.slice/{}", session.uid, session.scope);
+            if is_session_scope(&path) {
+                candidates.push((path, true));
+            }
+        }
+        for process in greetd
+            .iter()
+            .flat_map(|t| &t.processes)
+            .filter(|p| !p.in_cgroup)
+        {
+            if let Some(path) = read::cgroup_of(proc, process.pid).filter(|p| is_session_scope(p)) {
+                candidates.push((path, false));
+            }
+        }
+        candidates.extend(needs.scopes.iter().map(|p| (p.clone(), false)));
+        let mut scopes: Vec<ScopeSeen> = Vec::new();
+        for (path, greeter_session) in candidates {
+            if let Some(known) = scopes.iter_mut().find(|s| s.path == path) {
+                known.greeter_session |= greeter_session;
+                continue;
+            }
+            let processes = read::scope_processes(Path::new(paths::CGROUPS), &path, proc);
+            scopes.push(ScopeSeen {
+                path,
+                greeter_session,
+                processes,
+            });
+        }
+        let text_login_active = needs.text_login.map(|tty| {
+            run_bounded(
+                SYSTEMCTL,
+                &[
+                    "is-active",
+                    "--quiet",
+                    crate::rules::Unit::Fallback(tty).name(),
+                ],
+                Duration::from_micros(limits::CALL),
+            )
+            .is_ok()
         });
         Seen {
             drm: read::drm(Path::new(paths::DRM)),
             logind,
-            greetd: read::greetd(Path::new(paths::GREETER_CGROUP), Path::new(paths::PROC)),
+            greetd,
+            scopes,
+            drm_holders: if needs.drm_holders {
+                read::drm_holders(proc)
+            } else {
+                None
+            },
+            text_login_active,
             heartbeat: read::heartbeat(Path::new(paths::HEARTBEAT)),
             plymouth: self.plymouth_state(),
             greeter_uid: read::greeter_uid(Path::new(paths::PASSWD)),
@@ -438,8 +506,27 @@ impl World for SystemWorld {
                     _ => Ok(()),
                 }
             }
-            Action::ResetTty(tty) => reset_tty(*tty),
-            Action::ActivateVt(tty) => activate(*tty),
+            Action::KillScope { path, greeter } => {
+                if !is_session_scope(path) {
+                    return Err(format!("{path} is not a session scope"));
+                }
+                let proc = Path::new(paths::PROC);
+                let processes = read::scope_processes(Path::new(paths::CGROUPS), path, proc)
+                    .ok_or_else(|| format!("{path}: cannot be read"))?;
+                for process in processes.iter().filter(|p| p.uid == 0 || p.uid == *greeter) {
+                    // SAFETY: kill has no memory preconditions.
+                    unsafe { libc::kill(process.pid as libc::pid_t, libc::SIGKILL) };
+                }
+                Ok(())
+            }
+            Action::ResetVt(vt) => reset_tty(*vt),
+            Action::ActivateVt(tty) => activate(tty.vt()),
+            Action::ClearFallbackActive => match std::fs::remove_file(paths::FALLBACK_ACTIVE) {
+                Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                    Err(format!("{}: {error}", paths::FALLBACK_ACTIVE))
+                }
+                _ => Ok(()),
+            },
             Action::WriteIssue(stage) => {
                 let time = better_core::local_time::clock_time(
                     unix_seconds(),
@@ -486,6 +573,22 @@ impl World for SystemWorld {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn this_start_is_read_from_systemctl_show() {
+        assert_eq!(
+            parse_unit_start("InactiveExitTimestampMonotonic=5000000\nNRestarts=2\n"),
+            UnitStart {
+                began: Some(5_000_000),
+                restarts: Some(2)
+            }
+        );
+        assert_eq!(parse_unit_start(""), UnitStart::default());
+        assert_eq!(
+            parse_unit_start("InactiveExitTimestampMonotonic=0\nNRestarts=x\n"),
+            UnitStart::default()
+        );
+    }
 
     #[test]
     fn busctls_answer_is_read_and_anything_else_is_no_answer() {

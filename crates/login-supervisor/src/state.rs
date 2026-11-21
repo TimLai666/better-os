@@ -66,7 +66,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("login-path.json");
         assert_eq!(load(&path), Loaded::Absent);
-        let mut state = State::fresh(Some("b".repeat(32)), Some(5_000_000), 6_000_000);
+        let mut state = State::fresh(
+            Some("b".repeat(32)),
+            crate::rules::UnitStart {
+                began: Some(5_000_000),
+                restarts: Some(0),
+            },
+            6_000_000,
+        );
         state.phase = Phase::Attempt {
             number: 2,
             started: 30_000_000,
@@ -84,7 +91,7 @@ mod tests {
         std::fs::write(&path, "{\"version\":1").unwrap();
         assert_eq!(load(&path), Loaded::Unreadable);
         let mut other = serde_json::to_value(&state).unwrap();
-        other["version"] = 2.into();
+        other["version"] = 99.into();
         std::fs::write(&path, other.to_string()).unwrap();
         assert_eq!(load(&path), Loaded::Unreadable);
         std::fs::remove_file(&path).unwrap();

@@ -22,12 +22,12 @@ fn main() {
     let mut world = SystemWorld::new();
     let loaded = login_supervisor::state::load(Path::new(paths::STATE));
     let boot_id = world.boot_id();
-    let first_start = world.first_start();
+    let unit = world.unit_start();
     login_supervisor::bus::serve_in_background(
         PathBuf::from(paths::STATE),
         manager_ipc::boot_watch::Records::system(),
     );
-    let mut supervisor = Supervisor::start(&mut world, loaded, boot_id, first_start);
+    let mut supervisor = Supervisor::start(&mut world, loaded, boot_id, unit);
     loop {
         supervisor.tick(&mut world);
         if let Some(code) = &abort_at

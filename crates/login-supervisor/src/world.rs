@@ -2,16 +2,16 @@
 //! supervisor touches is behind [`World`], so the same loop runs against the
 //! machine (`system::SystemWorld`) and against a fake with a fake clock.
 
-use crate::rules::{self, Action, Loaded, Machine, Micros, Phase, Seen, State};
+use crate::rules::{self, Action, Loaded, Machine, Micros, Needs, Phase, Seen, State, UnitStart};
 
 /// The process edges.
 pub trait World {
     /// `CLOCK_MONOTONIC`.
     fn now(&mut self) -> Micros;
-    /// One look at everything the rules read.
-    fn observe(&mut self) -> Seen;
-    /// Carries out one action. An error is logged; only the ones the rules
-    /// act on change what happens next.
+    /// One look at everything the rules read, and at what they asked for.
+    fn observe(&mut self, needs: &Needs) -> Seen;
+    /// Carries out one action. An error is logged; the rules see its
+    /// effect, or its absence, at the next look.
     fn perform(&mut self, action: &Action) -> Result<(), String>;
     /// Writes the state file, whole and atomically.
     fn save(&mut self, state: &State) -> Result<(), String>;
@@ -29,25 +29,25 @@ pub struct Supervisor {
 }
 
 impl Supervisor {
-    /// Starts from what the state file held: a new boot, a restart in the
-    /// middle of an appearance, or a file that could not be read. Says
-    /// `READY=1` once the state is decided, so systemd's watchdog covers
-    /// everything after.
+    /// Starts from what the state file held: a new boot, the supervisor's
+    /// own restart in the middle of an appearance, a display manager
+    /// started again, or a file that could not be read. Says `READY=1`
+    /// once the state is decided, so systemd's watchdog covers everything
+    /// after.
     pub fn start(
         world: &mut dyn World,
         loaded: Loaded,
         boot_id: Option<String>,
-        first_start: Option<Micros>,
+        unit: UnitStart,
     ) -> Supervisor {
         let now = world.now();
-        let (machine, actions) = rules::start(loaded, boot_id, first_start, now);
+        let (machine, actions) = rules::start(loaded, boot_id, unit, now);
         let mut supervisor = Supervisor {
             machine,
             saved: None,
             status: None,
         };
-        let seen = Seen::default();
-        supervisor.perform(world, actions, &seen);
+        supervisor.perform(world, actions);
         supervisor.save(world);
         world.notify("READY=1");
         supervisor
@@ -60,10 +60,10 @@ impl Supervisor {
     /// One look and what follows from it.
     pub fn tick(&mut self, world: &mut dyn World) {
         world.notify("WATCHDOG=1");
-        let seen = world.observe();
+        let seen = world.observe(&self.machine.needs());
         let now = world.now();
         let actions = self.machine.step(now, &seen);
-        self.perform(world, actions, &seen);
+        self.perform(world, actions);
         self.save(world);
         let status = status_line(&self.machine.state);
         if self.status.as_deref() != Some(status.as_str()) {
@@ -72,23 +72,14 @@ impl Supervisor {
         }
     }
 
-    fn perform(&mut self, world: &mut dyn World, actions: Vec<Action>, seen: &Seen) {
-        let mut queue = actions;
-        let mut index = 0;
-        while index < queue.len() {
-            let action = queue[index].clone();
-            index += 1;
+    fn perform(&mut self, world: &mut dyn World, actions: Vec<Action>) {
+        for action in actions {
             if let Action::Journal(line) = &action {
                 world.log(line);
                 continue;
             }
             if let Err(error) = world.perform(&action) {
                 world.log(&format!("{action:?} failed: {error}"));
-                let now = world.now();
-                if let Some(replacement) = self.machine.failed(now, seen, &action) {
-                    queue = replacement;
-                    index = 0;
-                }
             }
         }
     }
@@ -113,10 +104,14 @@ pub fn status_line(state: &State) -> String {
         Phase::Attempt { number, .. } => format!("starting the login screen, attempt {number}"),
         Phase::Stopping { .. } => "stopping the login screen".to_string(),
         Phase::Ready { .. } => "the login screen is showing".to_string(),
-        Phase::NoScreen { .. } => "the login screen is waiting for a screen".to_string(),
         Phase::Session { .. } => "someone is signed in".to_string(),
         Phase::FallingBack { .. } => "starting the text login".to_string(),
-        Phase::FellBack { tty, .. } => format!("the text login runs on {}", tty.name()),
+        Phase::TextLogin {
+            tty,
+            confirmed: true,
+            ..
+        } => format!("the text login runs on {}", tty.name()),
+        Phase::TextLogin { tty, .. } => format!("starting the text login on {}", tty.name()),
         Phase::Unreadable => "the state file could not be read".to_string(),
     }
 }

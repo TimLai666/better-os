@@ -108,3 +108,22 @@ From ticket 267 (2026-11-22): what it built for this package, and left to it.
 - The fall back's agetty has never run on a real terminal: the container
   check replaces it with a stand-in (no terminal there). Its `ExecStart=`
   and `TTY*=` settings are getty@.service's, with `Type=simple`.
+
+After the second review of ticket 267 (2026-11-22), `packaging/greeter/`
+also holds, and the package must ship:
+
+- `better-os-login-backstop-failed.service` (the supervisor's `OnFailure=`
+  now, with conditions on the present) beside `better-os-login-backstop.service`
+  (the timer's, with conditions on the boot's history);
+- the timer ordered right before the supervisor (`DefaultDependencies=no`,
+  the supervisor's `After=`, `Before=better-os-login-supervisor.service`,
+  `OnActiveSec=82`): `verify-deb.sh` should keep it from gaining the default
+  dependencies, as `tests/units.rs` does;
+- two drop-ins, `/usr/lib/systemd/system/getty@tty1.service.d/better-os-login.conf`
+  and `plymouth-quit.service.d/better-os-login.conf`, whose `ExecCondition=`
+  skips the unit while `display-manager.service` links to the supervisor;
+  they change nothing with another display manager chosen, and must go with
+  the package;
+- the text logins on tty8 and tty9 (ADR 0047, proposed), and the
+  supervisor's `DeviceAllow=` for `/dev/tty1`, `/dev/tty8`, `/dev/tty9`;
+- `StartLimitIntervalSec=120` on the supervisor's unit.

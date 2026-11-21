@@ -68,3 +68,34 @@ From ticket 267 (2026-11-22): what the VM runs against.
   session's processes stay greetd's descendants when `pam_systemd` moves
   them into the session's scope is what this ticket checks with logind
   killed at logout.
+
+After the second review of ticket 267 (2026-11-22), what the VM settles that
+the container cannot:
+
+- **logind's autovt and the text login.** The text logins moved to tty8 and
+  tty9, past `NAutoVTs=6`, so logind never starts a getty there (ADR 0047,
+  proposed). Check: with the text login on tty8, switch VTs 1, 8, 9 in a
+  loop for a minute; `journalctl -u getty@tty8 -u autovt@tty8` stays empty
+  and the message stays on screen.
+- **`chvt 9` while tty1 is in process mode with logind hung.** Check:
+  `SIGSTOP` systemd-logind with the greeter up, then replace the
+  supervisor's binary with `false` and reboot into it (or stop the
+  supervisor): the failed supervisor's backstop must end within its 8 s of
+  bounded steps, and whether the screen shows tty9 is recorded (the spec
+  states it as a limit).
+- **The greeter session's scope.** With the real greeter: a `cosmic-comp`
+  wrapper that traps `TERM`, and greetd `SIGKILL`ed; the scope must be gone
+  4 to 6 s into the stop and no process may hold `/dev/dri/card*` before the
+  next start (`fuser /dev/dri/card*`).
+- **A slow boot.** With `/etc/rc.local` present (Ubuntu orders it after
+  `network-online.target`): the timer's `ActiveEnterTimestampMonotonic` is
+  within a second before the supervisor's `InactiveExitTimestampMonotonic`.
+- **Every injected row with the supervisor restarted in the middle**, once
+  by a crash and once by `SIGSTOP` (a watchdog restart): the bounds are 81 s
+  and 96 s (90 s at boot), the spec's honest numbers.
+- The container check proves on a real systemd, with stand-ins: a session
+  scope that ignores `SIGTERM` killed before every next start, the text
+  login on tty8 within 80 s, a restart mid-attempt continuing, a display
+  manager stopped and started again beginning anew, tty8 refused moving to
+  tty9, the timer active right before the supervisor, getty on tty1 and
+  plymouth-quit standing aside, and both backstops' conditions.

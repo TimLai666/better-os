@@ -14,10 +14,13 @@ Documentation=https://github.com/TimLai666/better-os/blob/main/design/login-scre
 # a logind that hangs is a stage it watches, not a start it waits for.
 After=rc-local.service plymouth-start.service systemd-user-sessions.service
 Wants=better-os-login-backstop.timer better-os-gnome-unlock.service
-# After five starts in a minute systemd gives up on it, and the backstop,
-# which runs no Better OS code, gives the text login on tty2.
-OnFailure=better-os-login-backstop.service
-StartLimitIntervalSec=60
+# When systemd gives up on it (five starts in two minutes: a hang loop of
+# watchdog 10 s, abort 5 s and restart 1 s makes five in 80 s, a crash loop
+# in 5 s), the backstop for a failed supervisor, which runs no Better OS
+# code, gives the text login on tty9 if nobody is signed in and no greeter
+# lives now.
+OnFailure=better-os-login-backstop-failed.service
+StartLimitIntervalSec=120
 StartLimitBurst=5
 
 [Service]
@@ -65,7 +68,8 @@ LockPersonality=yes
 RestrictRealtime=yes
 RestrictNamespaces=yes
 DeviceAllow=/dev/tty1 rw
-DeviceAllow=/dev/tty2 rw
+DeviceAllow=/dev/tty8 rw
+DeviceAllow=/dev/tty9 rw
 # No [Install]: display-manager.service is linked to this unit by the
 # package's debconf registration (spec section 5.5), never by enabling it,
 # so installing the package leaves GDM chosen.

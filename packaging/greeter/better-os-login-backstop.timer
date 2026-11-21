@@ -1,11 +1,23 @@
 [Unit]
-Description=Better OS login backstop, 90 s after the login supervisor's first start
+Description=Better OS login backstop, 82 s after the login supervisor's first start
 Documentation=https://github.com/TimLai666/better-os/blob/main/design/login-screen-spec.md
-# Wanted by better-os-login-supervisor.service: it becomes active with the
-# supervisor's first start, and a restart of the supervisor does not move it.
+# Wanted by better-os-login-supervisor.service and ordered right before it:
+# with the default dependencies a timer is ordered only after
+# sysinit.target, so it would start, and count, long before a display
+# manager that waits for rc-local, the network or a remote mount. Its own
+# After= is the supervisor's, so it becomes active the moment before the
+# supervisor's first start; a restart of the supervisor does not move it.
+DefaultDependencies=no
+Requires=sysinit.target
+After=sysinit.target basic.target rc-local.service plymouth-start.service systemd-user-sessions.service
+Before=better-os-login-supervisor.service
+Conflicts=shutdown.target
+Before=shutdown.target
 
 [Timer]
-OnActiveSec=90
-# The default accuracy is a minute; the backstop's promise is 90 s.
+# 82 s, so the backstop's own steps (at most 8 s: two bounded chvt and a
+# bounded plymouth quit) end in a text login by 90 s.
+OnActiveSec=82
+# The default accuracy is a minute.
 AccuracySec=1s
 Unit=better-os-login-backstop.service

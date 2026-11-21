@@ -41,9 +41,10 @@ one.
   abstract socket).
 - The fall back: stop the greeter's unit (at most 6 s), `plymouth quit`,
   `KDSETMODE KD_TEXT` and `VT_SETMODE VT_AUTO` on `/dev/tty1`,
-  `better-os-login-fallback@tty1.service` and `chvt 1`; when the stop does
-  not complete in 6 s, `@tty2` and `chvt 2` at once;
-  `/run/better-os/login-fallback.active`; the English issue text (the
+  `better-os-login-fallback@tty8.service` and `chvt 8` (tty8 and tty9 since
+  the second review, ADR 0047); when the stop does not complete in 6 s, the
+  text login at once; `/run/better-os/login-fallback.active` once the text
+  login is seen active; the English issue text (the
   console cannot draw Chinese); the `BETTER_OS_LOGIN_STAGE` journal lines;
   `better-os-login-status` printing the last record (zh-TW where the
   terminal can draw it).
@@ -52,8 +53,9 @@ one.
 - Automatic login (greetd's `initial_session`): at boot, a session of that
   account within 80 s satisfies the property.
 - The unit: `Type=notify`, `WatchdogSec=10`, `Restart=always`, start limit
-  5 in 60 s, `OnFailure=better-os-login-backstop.service`; the backstop's
-  service and 90 s timer with standard programs only; the fixed list of
+  5 in 120 s, `OnFailure=better-os-login-backstop-failed.service`; the
+  backstops' services and the timer (82 s from the supervisor's first
+  start) with standard programs only; the fixed list of
   units it may act on; `org.betteros.LoginSupervisor1` read-only.
 - Records in `/var/lib/better-os/boot-watch/` in ADR 0033's format, so
   Better Manager's Home and Health and `better-manager-cli doctor` show
@@ -63,8 +65,22 @@ one.
   a supervisor restarted in the middle of an attempt continues from its
   state file; stopping or restarting the greeter's unit never stops the
   supervisor (the unit files are checked for `PartOf=`, `BindsTo=`,
-  `Requires=`); a stop that never completes moves the fall back to tty2;
+  `Requires=`); a stop that never completes starts the text login at once;
   the budget never exceeds 80 s on the fake clock.
+- From the second review (2026-11-22, `/home/tim/Developer/better-os-evidence/267/review-2026-11-22.md`):
+  the greeter's session scope stopped and killed, and the card free, before
+  anything starts; "no screen" only when no card shows one, with the
+  attempts still run and no marker that silences the backstop; the timer
+  counted from the supervisor's first start; `getty@tty1` and
+  `plymouth-quit` out of the boot while this display manager is chosen;
+  the text login's markers only once it is active, with retries and the
+  other terminal; the failed supervisor's backstop on the present; a
+  bound on the budget's margin with slow calls and restarts, a randomized
+  run, and the restart case's true bound in the spec; a display manager
+  started again as a new appearance; nothing stopped when greetd's tree and
+  logind are both unreadable; no endless phase with the greeter's account
+  unknown; records of a newer version read as unknown; and the autovt
+  getty and `chvt` with a hung logind investigated.
 
 ## Done when
 

@@ -99,6 +99,8 @@ pub(crate) struct Copy {
     pub(crate) text_login_used: &'static str,
     pub(crate) restarted_once: &'static str,
     pub(crate) restarted_twice: &'static str,
+    /// An outcome a newer Better OS recorded.
+    pub(crate) unknown_outcome: &'static str,
 }
 
 pub(crate) fn copy(locale: Locale) -> &'static Copy {
@@ -151,6 +153,7 @@ const ZH_TW: Copy = Copy {
     text_login_used: "上次開機時登入畫面無法顯示（{stage}），已改用文字模式登入。",
     restarted_once: "上次開機時登入畫面重新啟動了一次（{stage}）。",
     restarted_twice: "上次開機時登入畫面重新啟動了兩次（{stage}）。",
+    unknown_outcome: "Better OS 記錄了這個版本不認得的結果。更新 Better Manager 後就能看到。",
 };
 
 const EN_US: Copy = Copy {
@@ -196,6 +199,7 @@ const EN_US: Copy = Copy {
     text_login_used: "The login screen couldn't be shown last time you started up ({stage}), so a text sign-in was used.",
     restarted_once: "The login screen had to be restarted once last time you started up ({stage}).",
     restarted_twice: "The login screen had to be restarted twice last time you started up ({stage}).",
+    unknown_outcome: "Better OS recorded an outcome this version doesn't know. Update Better Manager to see it.",
 };
 
 /// "The login screen didn't appear at startup on {date}".
@@ -250,6 +254,7 @@ pub(crate) fn outcome(locale: Locale, restart: &RestartOutcome, interrupted: boo
             };
             words.replace("{stage}", stage_name(locale, *stage))
         }
+        RestartOutcome::Unknown => c.unknown_outcome.to_string(),
     }
 }
 
@@ -313,6 +318,7 @@ pub(crate) fn last_boot_line(locale: Locale, report: &Report) -> String {
         LastBootOutcome::CouldNotWatch { details } => {
             c.could_not_watch.replace("{details}", details)
         }
+        LastBootOutcome::Unknown => c.unknown_outcome.to_string(),
     }
 }
 
@@ -432,6 +438,12 @@ mod tests {
                 stage: LoginStage::Supervisor,
                 tty: "tty2".to_string(),
                 after_seconds: 90,
+            },
+            RestartOutcome::Unknown,
+            RestartOutcome::TextLoginUsed {
+                stage: LoginStage::Unknown,
+                tty: "tty8".to_string(),
+                after_seconds: 3,
             },
         ] {
             for locale in [Locale::ZhTw, Locale::EnUs] {

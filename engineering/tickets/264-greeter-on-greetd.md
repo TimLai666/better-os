@@ -119,3 +119,13 @@ do for the supervisor, which already reads it this way
   process under greetd of an account other than root and
   `_better-greeter`: the greeter's processes must all run as
   `_better-greeter`.
+
+After the second review of ticket 267 (2026-11-22):
+
+- 4 s into every stop the supervisor sends `SIGKILL` to the greeter
+  session's scope (ADR 0047, proposed): the greeter gets greetd's `SIGTERM`
+  first and should save what it must within those 4 s.
+- With no screen connected the supervisor runs the attempts as on any
+  machine: a greeter with no output should write `ready` once it would be
+  presented (its surfaces made, the field focused), so that a machine whose
+  screen is off is not taken for a greeter that failed.

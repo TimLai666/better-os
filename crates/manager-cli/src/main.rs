@@ -369,6 +369,9 @@ fn login_watch_lines(
             LastBootOutcome::CouldNotWatch { details } => {
                 format!("could not watch: {details}")
             }
+            LastBootOutcome::Unknown => {
+                "an outcome this version does not know (update Better Manager)".to_string()
+            }
         };
         lines.push(format!(
             "  last startup checked {}: {what}",
@@ -416,6 +419,9 @@ fn login_watch_lines(
                 if *restarts >= 2 { "twice" } else { "once" },
                 stage.english()
             ),
+            RestartOutcome::Unknown => {
+                "an outcome this version does not know (update Better Manager)".to_string()
+            }
         };
         lines.push(
             if event.display_manager == manager_core::login_watch::LOGIN_SUPERVISOR_UNIT {

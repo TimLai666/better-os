@@ -62,7 +62,9 @@ impl Report {
             | RestartOutcome::AppearedBeforeRestart
             | RestartOutcome::PersonAppeared
             | RestartOutcome::LoginInProgress
-            | RestartOutcome::LoginScreenRestarted { .. } => Severity::Warning,
+            | RestartOutcome::LoginScreenRestarted { .. }
+            // A newer version's outcome: something happened, its weight unknown.
+            | RestartOutcome::Unknown => Severity::Warning,
             RestartOutcome::Pending
             | RestartOutcome::StillMissing { .. }
             | RestartOutcome::RestartFailed { .. }
