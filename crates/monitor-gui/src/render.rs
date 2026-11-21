@@ -13,7 +13,7 @@ use gpui::*;
 use gpui_component::IconName;
 use monitor_core::ProcessAction;
 
-use crate::app::{Dialog, EndTarget, MenuTarget, MonitorApp, Page};
+use crate::app::{Dialog, EndHow, EndTarget, MenuTarget, MonitorApp, Page};
 use crate::i18n::{Copy, copy};
 use crate::layout::{PAGE_MARGIN, commands_that_fit, content_width, navigation_compact};
 use crate::shell::property_row;
@@ -110,15 +110,9 @@ impl MonitorApp {
         match self.page {
             Page::Processes => {
                 let target = self.selected_app_target();
-                commands.push(
-                    Command::new(c.end_task, Picture::EndTask)
-                        .disabled(!end_offered(self.paused, target.is_some()))
-                        .on_click(Self::act(cx, move |this, _, cx| {
-                            if let Some(target) = this.selected_app_target() {
-                                this.request_end(target, cx);
-                            }
-                        })),
-                );
+                for (word, how) in [(c.end_task, EndHow::Close), (c.force_stop, EndHow::Force)] {
+                    commands.push(self.end_command(word, target.clone(), how, cx));
+                }
                 let pid = match &self.app_selection {
                     Some(AppSelection::Process(pid)) => Some(*pid),
                     _ => None,
@@ -136,26 +130,16 @@ impl MonitorApp {
             Page::Details => {
                 let selected = self.selected_pid.and_then(|pid| self.process(pid));
                 let target = selected.map(|process| (process.pid, process.display_name()));
-                let end = target.clone();
-                commands.push(
-                    Command::new(c.end_task, Picture::EndTask)
-                        .disabled(!end_offered(self.paused, target.is_some()))
-                        .on_click(Self::act(cx, move |this, _, cx| {
-                            if let Some((pid, name)) = end.clone() {
-                                this.request_end(EndTarget::Process { pid, name }, cx);
-                            }
-                        })),
-                );
-                let tree = target.clone();
-                commands.push(
-                    Command::new(c.end_process_tree, Picture::EndTask)
-                        .disabled(!end_offered(self.paused, target.is_some()))
-                        .on_click(Self::act(cx, move |this, _, cx| {
-                            if let Some((pid, name)) = tree.clone() {
-                                this.request_end(EndTarget::Tree { pid, name }, cx);
-                            }
-                        })),
-                );
+                let process = target
+                    .clone()
+                    .map(|(pid, name)| EndTarget::Process { pid, name });
+                for (word, how) in [(c.end_task, EndHow::Close), (c.force_stop, EndHow::Force)] {
+                    commands.push(self.end_command(word, process.clone(), how, cx));
+                }
+                let tree = target
+                    .clone()
+                    .map(|(pid, name)| EndTarget::Tree { pid, name });
+                commands.push(self.end_command(c.end_process_tree, tree, EndHow::Close, cx));
                 commands.push(
                     Command::new(c.properties, Picture::Properties)
                         .disabled(target.is_none())
@@ -375,20 +359,74 @@ impl MonitorApp {
         }
     }
 
+    /// Why ending `target` is not offered now, in words: the list is
+    /// paused, or the one rule every end command asks refused it. `None`
+    /// when it is offered.
+    fn end_blocked(&self, target: &EndTarget, how: EndHow) -> Option<&'static str> {
+        let c = copy(self.locale);
+        if !end_offered(self.paused, true) {
+            return Some(c.list_paused);
+        }
+        self.end_refusal(target, how)
+            .map(|refusal| crate::shell::refusal_label(&refusal, c))
+    }
+
+    /// A page command that ends `target`: disabled, with the reason as its
+    /// tooltip, when it is not offered.
+    fn end_command(
+        &self,
+        word: &'static str,
+        target: Option<EndTarget>,
+        how: EndHow,
+        cx: &mut Context<Self>,
+    ) -> Command {
+        let blocked = target.as_ref().map(|target| self.end_blocked(target, how));
+        let command = Command::new(word, Picture::EndTask)
+            .disabled(!matches!(blocked, Some(None)))
+            .reason(blocked.flatten());
+        match target {
+            Some(target) => command.on_click(Self::act(cx, move |this, _, cx| {
+                this.request_end(target.clone(), how, cx)
+            })),
+            None => command,
+        }
+    }
+
+    /// A row menu item that ends `target`, by the same rule.
+    fn end_item(
+        &self,
+        word: &'static str,
+        target: EndTarget,
+        how: EndHow,
+        cx: &mut Context<Self>,
+    ) -> MenuEntry {
+        let blocked = self.end_blocked(&target, how);
+        MenuItem::new(word)
+            .icon(Picture::EndTask)
+            .disabled(blocked.is_some())
+            .reason(blocked)
+            .on_select(Self::act(cx, move |this, _, cx| {
+                this.request_end(target.clone(), how, cx)
+            }))
+            .entry()
+    }
+
     fn dialog_element(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let c = copy(self.locale);
         let p = palette(cx);
         match self.dialog.clone()? {
-            Dialog::End(target) => {
-                let count = self.end_pids(&target).len();
-                let (title, body) = crate::i18n::end_question(&target, count, self.locale);
+            Dialog::End(target, how) => {
+                let (reach, total) = self.end_reach(&target, how);
+                let (title, body) =
+                    crate::i18n::end_question(&target, how, reach, total, self.locale);
                 Some(
                     ContentDialog::new("end-dialog", title)
                         .buttons(DialogButtons {
                             primary: Some(
-                                match target {
-                                    EndTarget::Tree { .. } => c.end_process_tree,
-                                    _ => c.end_task,
+                                match (how, target) {
+                                    (EndHow::Force, _) => c.force_stop,
+                                    (EndHow::Close, EndTarget::Tree { .. }) => c.end_process_tree,
+                                    (EndHow::Close, _) => c.end_task,
                                 }
                                 .into(),
                             ),
@@ -467,13 +505,8 @@ impl MonitorApp {
                 };
                 let first = row.group.pids().next();
                 let mut entries = vec![
-                    MenuItem::new(c.end_task)
-                        .icon(Picture::EndTask)
-                        .disabled(!end_offered(self.paused, true))
-                        .on_select(Self::act(cx, move |this, _, cx| {
-                            this.request_end(target.clone(), cx)
-                        }))
-                        .entry(),
+                    self.end_item(c.end_task, target.clone(), EndHow::Close, cx),
+                    self.end_item(c.force_stop, target, EndHow::Force, cx),
                 ];
                 if let Some(pid) = first {
                     entries.push(
@@ -560,42 +593,26 @@ impl MonitorApp {
             .and_then(|nice| i32::try_from(nice).ok())
             .map(|nice| (nice + 5).min(monitor_core::NICE_MAXIMUM))
             .unwrap_or(monitor_core::NICE_MAXIMUM);
-        let list_paused = self.paused;
         let blocked =
             |action: ProcessAction| self.availability(&process, action).refusal().is_some();
-        let (end, tree) = (name.clone(), name);
         let pause_action = if paused {
             ProcessAction::Resume
         } else {
             ProcessAction::Pause
         };
+        let one = EndTarget::Process {
+            pid,
+            name: name.clone(),
+        };
         Some(vec![
-            MenuItem::new(c.end_task)
-                .icon(Picture::EndTask)
-                .disabled(blocked(ProcessAction::Terminate) || !end_offered(list_paused, true))
-                .on_select(Self::act(cx, move |this, _, cx| {
-                    this.request_end(
-                        EndTarget::Process {
-                            pid,
-                            name: end.clone(),
-                        },
-                        cx,
-                    )
-                }))
-                .entry(),
-            MenuItem::new(c.end_process_tree)
-                .icon(Picture::EndTask)
-                .disabled(blocked(ProcessAction::Terminate) || !end_offered(list_paused, true))
-                .on_select(Self::act(cx, move |this, _, cx| {
-                    this.request_end(
-                        EndTarget::Tree {
-                            pid,
-                            name: tree.clone(),
-                        },
-                        cx,
-                    )
-                }))
-                .entry(),
+            self.end_item(c.end_task, one.clone(), EndHow::Close, cx),
+            self.end_item(c.force_stop, one, EndHow::Force, cx),
+            self.end_item(
+                c.end_process_tree,
+                EndTarget::Tree { pid, name },
+                EndHow::Close,
+                cx,
+            ),
             MenuEntry::Separator,
             MenuItem::new(if paused {
                 c.resume_process

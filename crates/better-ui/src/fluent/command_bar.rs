@@ -18,7 +18,8 @@ use std::rc::Rc;
 use crate::icon_set::{Glyph, Placement};
 use gpui::{
     App, ElementId, InteractiveElement, IntoElement, ParentElement, Pixels, RenderOnce,
-    SharedString, Styled, Window, div, prelude::FluentBuilder as _, px,
+    SharedString, StatefulInteractiveElement as _, Styled, Window, div,
+    prelude::FluentBuilder as _, px, relative,
 };
 use gpui_component::{Icon, IconName};
 
@@ -68,6 +69,9 @@ pub struct Command {
     /// A short count on the icon's corner (WinUI's `InfoBadge`), such as how
     /// many jobs are running.
     pub badge: Option<SharedString>,
+    /// Why a disabled command cannot be used now, shown as its tooltip (and
+    /// carried to its item when it moves into the `…` menu).
+    pub reason: Option<SharedString>,
 }
 
 impl Command {
@@ -83,7 +87,14 @@ impl Command {
             on_click: None,
             chevron: false,
             badge: None,
+            reason: None,
         }
+    }
+
+    /// Why the command is disabled; shown as its tooltip only while it is.
+    pub fn reason(mut self, reason: Option<impl Into<SharedString>>) -> Self {
+        self.reason = reason.map(Into::into);
+        self
     }
 
     /// Draws the window's own SVG at `path` in the bar instead of the kit
@@ -129,10 +140,11 @@ impl Command {
         self
     }
 
-    fn menu_entry(&self) -> MenuEntry {
+    pub(super) fn menu_entry(&self) -> MenuEntry {
         let mut item = MenuItem::new(self.label.clone())
             .icon(self.icon.clone())
-            .disabled(self.disabled);
+            .disabled(self.disabled)
+            .reason(self.reason.clone());
         if let Some(shortcut) = self.shortcut.clone() {
             item = item.shortcut(shortcut);
         }
@@ -314,8 +326,37 @@ impl RenderOnce for AppBarButton {
             })
             .when(command.chevron, |b| {
                 b.child(Icon::new(IconName::ChevronDown).size(px(12.0)))
+            })
+            .role(gpui::Role::Button)
+            .aria_label(command.label.clone());
+        if disabled && let Some(reason) = command.reason.clone() {
+            // Read as the button's description by assistive technology, and
+            // shown under the button (not at the pointer, where it would
+            // cover the commands beside it) while the pointer is on it.
+            element = element.aria_description(reason.clone());
+            let shown = window.use_keyed_state(child_id(&self.id, "reason"), cx, |_, _| false);
+            let hover = shown.clone();
+            element = element.relative().on_hover(move |hovered, _, cx| {
+                hover.update(cx, |on, cx| {
+                    *on = *hovered;
+                    cx.notify();
+                });
             });
-        if command.icon_only {
+            if *shown.read(cx) {
+                element = element.child(
+                    div().absolute().top(relative(1.0)).left_0().child(
+                        gpui::deferred(
+                            gpui::anchored().child(super::window_frame::inside_window(
+                                div()
+                                    .pt(px(4.0))
+                                    .child(super::dialog::tooltip_inline(reason, cx)),
+                            )),
+                        )
+                        .with_priority(2),
+                    ),
+                );
+            }
+        } else if command.icon_only {
             element = gpui::StatefulInteractiveElement::tooltip(
                 element,
                 super::dialog::tooltip_builder(command.label.clone()),

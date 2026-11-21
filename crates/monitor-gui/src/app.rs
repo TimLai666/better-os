@@ -110,6 +110,15 @@ pub(crate) enum EndTarget {
     App { name: String, pids: Vec<u32> },
 }
 
+/// How an end is carried out.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum EndHow {
+    /// End task: the process is asked to close and may save first.
+    Close,
+    /// Force stop: the process is stopped at once and saves nothing.
+    Force,
+}
+
 impl EndTarget {
     pub(crate) fn name(&self) -> &str {
         match self {
@@ -123,8 +132,8 @@ impl EndTarget {
 /// A question or a sheet over the page.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Dialog {
-    /// "End this?" before anything is sent.
-    End(EndTarget),
+    /// "End this?" or "Force stop this?" before anything is sent.
+    End(EndTarget, EndHow),
     /// Everything known about one process.
     Properties(u32),
 }
@@ -164,6 +173,23 @@ pub(crate) enum ActionReport {
     ListPaused {
         name: String,
     },
+    /// An end reached some of its processes and not others.
+    Partly {
+        name: String,
+        signal: monitor_core::SignalKind,
+        sent: usize,
+        missed: usize,
+        why: Shortfall,
+    },
+}
+
+/// Why a process an end covered was not sent the signal.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Shortfall {
+    /// It may not be ended from here (decided again when confirmed).
+    Refused(ActionRefusal),
+    /// The kernel refused the signal.
+    Failed(ActionError),
 }
 
 /// The startup apps list.
@@ -267,6 +293,10 @@ pub(crate) struct MonitorApp {
     pub(crate) last_action: Option<ActionReport>,
 
     controller: LinuxProcessController,
+    /// A session read is running off the interface thread.
+    session_reading: bool,
+    /// When the last session read started.
+    session_read_at: Option<std::time::Instant>,
     link: Option<smol::channel::Sender<LinkRequest>>,
     _pump: Option<Task<()>>,
     /// Watches for an update and restarts into it (ticket 105).
@@ -405,6 +435,8 @@ impl MonitorApp {
             menu_state,
             last_action: None,
             controller: LinuxProcessController::for_current_process(),
+            session_reading: false,
+            session_read_at: None,
             link: None,
             _pump: None,
             update_restart: better_ui::restart::UpdateRestart::new(
@@ -532,6 +564,58 @@ impl MonitorApp {
                 .await;
             let _ = this.update(cx, |app, cx| {
                 app.apply_round(generation, built);
+                app.read_session_if_needed(cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Read what the session stands on again, off the interface thread,
+    /// when the controller asks for it (none yet, a holder gone, a process
+    /// the snapshot does not cover): logind over D-Bus, then one scan of this
+    /// person's processes in the round. At most one read runs, and not more
+    /// often than every two seconds.
+    pub(crate) fn read_session_if_needed(&mut self, cx: &mut Context<Self>) {
+        let live: std::collections::BTreeSet<u32> = self
+            .processes
+            .processes()
+            .iter()
+            .map(|process| process.pid)
+            .collect();
+        let recent = self
+            .session_read_at
+            .is_some_and(|at| at.elapsed() < std::time::Duration::from_secs(2));
+        if self.session_reading || recent || !self.controller.needs_session_read(&live) {
+            return;
+        }
+        let uid = self.controller.current_uid();
+        let own_pid = self.controller.own_pid();
+        let pids: Vec<u32> = self
+            .processes
+            .processes()
+            .iter()
+            .filter(|process| {
+                uid.is_some() && process.uid.copied().and_then(|u| u32::try_from(u).ok()) == uid
+            })
+            .map(|process| process.pid)
+            .collect();
+        let reader = self.controller.reader();
+        self.session_reading = true;
+        self.session_read_at = Some(std::time::Instant::now());
+        cx.spawn(async move |this, cx| {
+            let facts = cx
+                .background_spawn(async move {
+                    let sessions = uid.and_then(|uid| crate::logind::read_sessions(uid, own_pid));
+                    reader.read(&monitor_actions_linux::ScanRequest {
+                        pids: Some(pids),
+                        sessions,
+                    })
+                })
+                .await;
+            let _ = this.update(cx, |app, cx| {
+                app.session_reading = false;
+                app.controller.set_session(facts);
                 cx.notify();
             });
         })
@@ -775,25 +859,49 @@ impl MonitorApp {
         action: ProcessAction,
     ) -> monitor_core::ActionAvailability {
         self.controller
+            .snapshot_view()
             .availability(&process.action_target(), action)
     }
 
-    /// The first reason none of `pids` can be ended, when not one of them
-    /// can; `None` when at least one can.
-    pub(crate) fn end_refusal(&self, pids: &[u32]) -> Option<ActionRefusal> {
-        let mut first = None;
-        for pid in pids {
-            let Some(process) = self.process(*pid) else {
-                continue;
-            };
-            // One process that may be ended is enough to offer the action.
-            let refusal = self
-                .availability(process, ProcessAction::Terminate)
-                .refusal()?
-                .clone();
-            first.get_or_insert(refusal);
+    /// The processes of `pids` the list still holds, as the targets an
+    /// action is aimed at.
+    fn end_targets(&self, pids: &[u32]) -> Vec<monitor_core::ProcessTarget> {
+        pids.iter()
+            .filter_map(|pid| self.process(*pid))
+            .map(ProcessFacts::action_target)
+            .collect()
+    }
+
+    /// Why `target` may not be ended `how`, or `None` when it may be
+    /// asked. The one rule every command and menu item that ends something
+    /// asks, before it is drawn and again when it is chosen.
+    pub(crate) fn end_refusal(&self, target: &EndTarget, how: EndHow) -> Option<ActionRefusal> {
+        // Asked while drawing: from the session snapshot only, never `/proc`.
+        let pids = self.end_pids(target);
+        if let EndTarget::Tree { pid, .. } = target
+            && let Some(refusal) = self.controller.tree_refusal_snapshot(*pid, &pids, |pid| {
+                self.process(pid)
+                    .map(ProcessFacts::display_name)
+                    .unwrap_or_default()
+            })
+        {
+            return Some(refusal);
         }
-        first.or(Some(ActionRefusal::OwnershipUnknown))
+        crate::ending::refusal(
+            &self.controller.snapshot_view(),
+            &self.end_targets(&pids),
+            how,
+        )
+    }
+
+    /// How many processes ending `target` will really reach, and how many it
+    /// covers, for the confirmation.
+    pub(crate) fn end_reach(&self, target: &EndTarget, how: EndHow) -> (usize, usize) {
+        let targets = self.end_targets(&self.end_pids(target));
+        (
+            crate::ending::reachable(&self.controller.snapshot_view(), &targets, how),
+            targets.len(),
+        )
     }
 
     /// The processes an end action would reach, children before parents.
@@ -805,31 +913,24 @@ impl MonitorApp {
         }
     }
 
-    /// Ask to end something: refused at once when nothing it covers may be
-    /// ended, otherwise a confirmation.
-    pub(crate) fn request_end(&mut self, target: EndTarget, cx: &mut Context<Self>) {
+    /// Ask to end something, by End task or by Force stop: refused at once
+    /// when nothing it covers may be ended that way, otherwise a
+    /// confirmation.
+    pub(crate) fn request_end(&mut self, target: EndTarget, how: EndHow, cx: &mut Context<Self>) {
         self.menu = None;
-        let pids = self.end_pids(&target);
         if self.paused {
             // A frozen list may name a process that has closed, and its PID
             // may since belong to something else.
             self.last_action = Some(ActionReport::ListPaused {
                 name: target.name().to_string(),
             });
-        } else if let EndTarget::Tree { .. } = target
-            && let Some(refusal) = self.controller.tree_refusal(&pids)
-        {
-            self.last_action = Some(ActionReport::Refused {
-                name: target.name().to_string(),
-                refusal,
-            });
-        } else if let Some(refusal) = self.end_refusal(&pids) {
+        } else if let Some(refusal) = self.end_refusal(&target, how) {
             self.last_action = Some(ActionReport::Refused {
                 name: target.name().to_string(),
                 refusal,
             });
         } else {
-            self.dialog = Some(Dialog::End(target));
+            self.dialog = Some(Dialog::End(target, how));
         }
         cx.notify();
     }
@@ -839,63 +940,27 @@ impl MonitorApp {
         cx.notify();
     }
 
-    /// Carry out a confirmed end. Each process is asked to exit; processes
-    /// that may not be ended (another user's, a protected one) are skipped,
-    /// and a process that is already gone is not reported as a failure of
-    /// the whole.
+    /// Carry out a confirmed end. Each process is asked to exit, or for a
+    /// force stop is stopped; processes that may not be ended (another
+    /// user's, a protected one) are skipped, and a process that is already
+    /// gone is not reported as a failure of the whole.
     pub(crate) fn confirm_end(&mut self, cx: &mut Context<Self>) {
-        let Some(Dialog::End(target)) = self.dialog.take() else {
+        let Some(Dialog::End(target, how)) = self.dialog.take() else {
             return;
         };
+        let name = target.name().to_string();
         if self.paused {
-            self.last_action = Some(ActionReport::ListPaused {
-                name: target.name().to_string(),
-            });
+            self.last_action = Some(ActionReport::ListPaused { name });
             cx.notify();
             return;
         }
-        let pids = self.end_pids(&target);
-        let mut sent = 0;
-        let mut failure = None;
-        for pid in &pids {
-            let Some(process) = self.process(*pid).cloned() else {
-                continue;
-            };
-            if self
-                .availability(&process, ProcessAction::Terminate)
-                .refusal()
-                .is_some()
-            {
-                continue;
-            }
-            match self
-                .controller
-                .perform(&process.action_target(), ProcessAction::Terminate)
-            {
-                Ok(_) => sent += 1,
-                Err(ActionError::ProcessDisappeared { .. }) => {}
-                Err(error) => {
-                    failure.get_or_insert(error);
-                }
-            }
-        }
-        let name = target.name().to_string();
-        self.last_action = Some(match (sent, failure) {
-            (0, Some(error)) => ActionReport::Failed { name, error },
-            (0, None) => ActionReport::Failed {
-                name,
-                error: ActionError::ProcessDisappeared {
-                    pid: pids.first().copied().unwrap_or_default(),
-                },
-            },
-            (count, _) => ActionReport::Succeeded {
-                name,
-                outcome: ActionOutcome::SignalAccepted {
-                    signal: monitor_core::SignalKind::Terminate,
-                },
-                count,
-            },
-        });
+        let targets = self.end_targets(&self.end_pids(&target));
+        self.last_action = Some(crate::ending::carry_out(
+            &mut self.controller,
+            name,
+            &targets,
+            how,
+        ));
         cx.notify();
     }
 
