@@ -168,7 +168,11 @@ A sign-in or host-key question is shown in the tab that is waiting for it.
 settings where the network is the likely cause (the server did not answer,
 its name was not found, no network). Each reason is its own sentence; none
 is only "cannot connect". GVfs's codes decide first; a message without one
-is read in English and through GVfs's own catalog in the desktop's language.
+is read in English, through GVfs's own catalog in the desktop's language,
+and for the C library's sentence a backend puts after its own ("Failed to
+mount Windows share: No such file or directory", in zh-TW "無法掛載 Windows
+檔案共用：沒有此一檔案或目錄") through the C library's own text for that error
+in the desktop's language.
 After a failure the host is looked at (its name resolved, one TCP connection
 to its port, closed at once, nothing sent): a name that does not resolve is
 "not found" whatever GVfs said (`gvfsd-smb` says "Invalid argument" for it),
@@ -232,7 +236,11 @@ stopped and started, a drop while open comes back with its selection, a
 server that is away, a wrong password and a deleted folder each show their
 page, and with the server's processes stopped (holding the connection) the
 slowest frame of the window's own work (pump, sidebar rows, a click on the
-favourite) measured 1.5 ms over 15 s. A debug build in a sandbox whose private
+favourite) measured 1.5 ms over 15 s; it also reads `gvfsd-smb`'s answers for
+an unknown host, a stopped server and a missing share. CI runs both
+real-server tests on its Ubuntu 24.04 runner (FUSE and an unprivileged
+`smbd` work there), with `CI` set so a missing program fails rather than
+skips. A debug build in a sandbox whose private
 bus starts `gvfsd` itself sets `BETTER_FILES_TEST_SANDBOX_GVFS`, which only
 drops the check that `gvfsd` runs in `gvfs-daemon.service`; a release build
 never reads it.
@@ -249,7 +257,12 @@ never reads it.
 | Refused | {server} is on the network but didn't accept the connection. Check that its file sharing is turned on. | {server} 在網路上，但沒有接受連線。請確認它的檔案分享已開啟。 |
 | Name not found | No computer called {server} was found. Check the name, or connect to the network it's on. | 找不到名為 {server} 的電腦。請檢查名稱，或連上它所在的網路。 |
 | Sign-in refused | {server} didn't accept the sign-in. Choose Try again to enter the user name and password again. | {server} 不接受這組登入資料，請按「再試一次」重新輸入。 |
-| Share or folder gone | {server} is connected, but {share} isn't shared there any more. It may have been renamed or stopped being shared. | 已連上 {server}，但那裡已經沒有分享 {share}，可能被改名或停止分享了。 |
+| Share gone | {server} is connected, but {share} isn't shared there any more. It may have been renamed or stopped being shared. | 已連上 {server}，但那裡已經沒有分享 {share}，可能被改名或停止分享了。 |
+| Folder gone, no share (SFTP) | {server} answered, but the folder this opens isn't there. | {server} 有回應，但要打開的資料夾不在那裡。 |
+| Held paste, tab left | Nothing was pasted into {folder}: you left it before it was connected. | 沒有貼上任何東西到「{folder}」：連上之前你已經離開了這個資料夾。 |
+| Held paste, folder deleted | Nothing was pasted: {folder} isn't on {server} any more. | 沒有貼上任何東西：{server} 上已經沒有「{folder}」了。 |
+| Held paste, folder not listed | Nothing was pasted into {folder}: it couldn't be opened. | 沒有貼上任何東西到「{folder}」：無法打開這個資料夾。 |
+| Held paste, not connected | Nothing was pasted into {folder}: {server} isn't connected. | 沒有貼上任何東西到「{folder}」：沒有連上 {server}。 |
 | No network | This computer isn't connected to a network. Connect to one, then try again. | 這台電腦目前沒有連上網路。連上網路後再試一次。 |
 | Folder gone, parent opened | {folder} isn't on {server} any more, so the nearest folder above it was opened. | {server} 上已經沒有「{folder}」了，所以打開了上層最接近的資料夾。 |
 | Address needed | This folder was on a server whose address wasn't saved. Type its address in the address bar (for example sftp://server/folder) once; the favourite keeps it from then on. | 這個資料夾在一台伺服器上，但當時沒有存下它的位址。請在網址列輸入一次位址（例如 sftp://server/folder），之後這個常用資料夾就會記住它。 |

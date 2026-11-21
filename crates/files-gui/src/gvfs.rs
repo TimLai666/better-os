@@ -277,6 +277,38 @@ unsafe extern "C" {
         domain: *const libc::c_char,
         codeset: *const libc::c_char,
     ) -> *const libc::c_char;
+    // glibc's, not in the libc crate for Linux.
+    fn strerror_l(errnum: libc::c_int, locale: libc::locale_t) -> *const libc::c_char;
+}
+
+/// What the C library calls `errno` in `locale` (`""`: the environment's),
+/// the words a GVfs backend puts after its own ("Failed to mount Windows
+/// share: …") in the desktop's language. `None` when the locale is not
+/// installed.
+pub fn system_message_in(errno: i32, locale: &std::ffi::CStr) -> Option<String> {
+    // SAFETY: `newlocale` builds a new locale object (null on failure,
+    // checked) that is freed after the call; `strerror_l` gets a valid
+    // locale and returns a NUL-terminated string that stays valid until the
+    // next call on this thread or the locale is freed, and it is copied
+    // before either happens.
+    unsafe {
+        let wanted = libc::newlocale(
+            libc::LC_MESSAGES_MASK | libc::LC_CTYPE_MASK,
+            locale.as_ptr(),
+            std::ptr::null_mut(),
+        );
+        if wanted.is_null() {
+            return None;
+        }
+        let found = strerror_l(errno, wanted);
+        let words = (!found.is_null()).then(|| {
+            std::ffi::CStr::from_ptr(found)
+                .to_string_lossy()
+                .into_owned()
+        });
+        libc::freelocale(wanted);
+        words.filter(|words| !words.is_empty())
+    }
 }
 
 /// `message` in GVfs's own catalog for this session's language (the one

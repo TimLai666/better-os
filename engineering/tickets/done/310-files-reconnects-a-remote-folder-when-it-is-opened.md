@@ -107,8 +107,56 @@ Spec: `files-gui-policy.md`, "Remote folders connect when they are opened".
 **Checks.** `remote_tests.rs` (fake connector) and `remote_servers_tests.rs`
 (real `sshd` and `smbd` on loopback, GVfs on a private bus; with the server's
 processes stopped, the slowest frame of the window's own work measured
-1.5 ms over 15 s). Screenshots in `better-os-evidence/310/`, light and dark,
-en and zh-TW, against the same servers in a headless sway. Not done here: the
-owner's own servers and tailnet, a GNOME desktop, and CI's first run of the
-real-server tests (its install step now names `openssh-server`, `samba`,
-`gvfs-fuse`). A tailnet machine's SMB shares remain ticket 133.
+1.5 ms over 15 s). A tailnet machine's SMB shares remain ticket 133.
+
+**Review round (2026-11-22, `better-os-evidence/310/review-2026-11-22.md`).**
+Each item has its test in `remote.rs` or `remote_tests.rs` unless named.
+- A mount is a favourite's only with the same identity both ways (scheme,
+  host, port with the scheme's default filled in, user, share or domain):
+  `a_mount_on_the_same_host_with_another_port_user_or_share_is_another_mount`.
+- Only server kinds under GVfs's folder enter the rule; a phone, camera, Apple
+  device, online account or unknown kind keeps the old availability, and only
+  an address typed on the Address-needed page rewrites that favourite:
+  `a_device_favourite_is_never_taken_for_a_server_s` (bookmarks file
+  byte-identical),
+  `only_an_address_typed_on_the_address_needed_page_rewrites_its_favourite`.
+- A password in a typed address is dropped where it becomes a location:
+  `a_password_in_an_address_never_reaches_the_location_or_the_spec`,
+  `a_typed_password_reaches_none_of_the_four_places` (bookmark, history,
+  restart hand-off, page; nor the mount request).
+- A held paste goes in whichever way the wait ends, and says so when it
+  cannot: `a_paste_held_while_a_folder_stopped_answering_goes_in_when_it_answers`,
+  `a_held_paste_into_a_folder_deleted_meanwhile_is_not_done_and_says_so`
+  (no folder made again), `a_held_cut_leaves_a_newer_clipboard_alone`.
+- A requested unmount is told from a drop by looking at the host (GVfs's
+  signals are identical, seen with `dbus-monitor` on the sandbox's bus);
+  retries every 5 s, stop at 2 minutes and on another network:
+  `a_mount_let_go_while_its_server_answers_is_not_mounted_again`,
+  `retries_stop_at_their_limit_and_on_another_network`; a changed host key is
+  never retried: `a_changed_host_key_after_a_drop_is_said_at_once_and_not_retried`.
+- `sftp://nas/` stays the root: `a_mount_root_favourite_stays_the_root`,
+  `a_mount_root_favourite_opens_the_root_not_the_home`; the
+  bookmarks file is migrated once, only as read, keeping its mode:
+  `the_bookmarks_file_is_migrated_once_and_only_as_it_was_read`.
+- Recents GIO applications recorded as `sftp://` or `smb://` hrefs are not
+  listed in Recent (only `file://` entries are, as before); the spec states
+  the limit. Recents under GVfs's folder are listed without a `stat`.
+- `gvfsd-smb` investigated against `smbd` (`remote_servers_tests.rs`, locally
+  and in CI): unknown host "Invalid argument" (read as not found by the host
+  look), stopped server "Connection refused", missing share "No such file or
+  directory". The zh-TW screenshots then showed the share-gone sentence
+  missing in Chinese, because the part after GVfs's own words is the C
+  library's error text in the desktop's language; it is now read through
+  `strerror_l` (`the_system_s_words_after_gvfs_s_are_read_in_chinese_too`).
+- CI: both real-server tests ran and passed on the `rust` job of
+  `eb66817f` (run 44940322126; FUSE and unprivileged `smbd` work on the
+  runner), with the same SMB answers as here and a slowest frame of 0.9 ms.
+
+**Evidence.** 60 screenshots in `better-os-evidence/310/`: 15 states (not
+connected, connecting, cancelled, did not answer, opened, dropped and
+reconnecting, back on the same selection, folder gone and the nearest above,
+name not found, refused, share gone, wrong password asked again, sign-in
+refused, address needed, no network) in light and dark, English and zh-TW,
+from a sandbox with a fixture disk only, against loopback `sshd` and `smbd`
+in a headless sway. Not done here: the owner's own servers and tailnet, and a
+GNOME desktop.

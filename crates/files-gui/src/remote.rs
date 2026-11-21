@@ -801,6 +801,20 @@ const GVFS_WORDS: &[(&str, Reason)] = &[
     ("Permission denied", Reason::SignInRefused),
 ];
 
+/// The C library's error texts a backend puts after its own words, as
+/// `errno` values: `gvfsd-smb` says "Failed to mount Windows share: " and
+/// then the system's sentence, both in the desktop's language (seen in the
+/// sandbox against smbd in zh_TW, "沒有此一檔案或目錄").
+const SYSTEM_ERRORS: &[(i32, Reason)] = &[
+    (libc::ENOENT, Reason::ShareGone),
+    (libc::ECONNREFUSED, Reason::Refused),
+    (libc::ETIMEDOUT, Reason::NoAnswer),
+    (libc::EHOSTUNREACH, Reason::NoAnswer),
+    (libc::ENETUNREACH, Reason::NoAnswer),
+    (libc::ECONNRESET, Reason::NoAnswer),
+    (libc::EACCES, Reason::SignInRefused),
+];
+
 /// What ssh, libsmbclient and the kernel say, in the C locale they write it.
 const SYSTEM_WORDS: &[(&str, Reason)] = &[
     ("connection refused", Reason::Refused),
@@ -844,18 +858,17 @@ impl Reason {
     /// server that did not answer on a computer with no network is the
     /// network's fault. A server on this computer is never.
     pub fn of(error: &MountError, server: &str, network_up: bool) -> Self {
-        Self::of_in(error, server, network_up, &|message| {
-            crate::gvfs::gvfs_translation(message)
-        })
+        Self::of_in(error, server, network_up, c"")
     }
 
-    /// [`Self::of`], with GVfs's words looked up by `translated` (GVfs sends
-    /// a message with no code of its own in the desktop's language).
+    /// [`Self::of`], with the words GVfs and the C library use in `locale`
+    /// (`""`: this session's): GVfs sends a message with no code of its own
+    /// in the desktop's language.
     pub fn of_in(
         error: &MountError,
         server: &str,
         network_up: bool,
-        translated: &dyn Fn(&str) -> Option<String>,
+        locale: &std::ffi::CStr,
     ) -> Self {
         let local = matches!(server, "localhost" | "127.0.0.1" | "::1");
         let reason = match error.failure {
@@ -868,16 +881,25 @@ impl Reason {
             MountFailure::Failed => {
                 let detail = error.detail.to_lowercase();
                 // GVfs's own messages first, in English or as its catalog
-                // has them for this session; then what ssh and the kernel say.
+                // has them for this session; then the C library's in this
+                // session's language; then what ssh and the kernel say.
                 GVFS_WORDS
                     .iter()
                     .find(|(message, _)| {
                         detail.contains(&message.to_lowercase())
-                            || translated(message).is_some_and(|words| {
-                                !words.is_empty() && error.detail.contains(&words)
-                            })
+                            || crate::gvfs::gvfs_translation_in(message, locale)
+                                .is_some_and(|words| error.detail.contains(&words))
                     })
                     .map(|(_, reason)| *reason)
+                    .or_else(|| {
+                        SYSTEM_ERRORS
+                            .iter()
+                            .find(|(errno, _)| {
+                                crate::gvfs::system_message_in(*errno, locale)
+                                    .is_some_and(|words| error.detail.contains(&words))
+                            })
+                            .map(|(_, reason)| *reason)
+                    })
                     .or_else(|| {
                         SYSTEM_WORDS
                             .iter()
@@ -1701,17 +1723,56 @@ mod tests {
                 .ok_or("gettext found no zh_TW translation of GVfs's message")
         );
         assert_eq!(words, "連線失敗");
+        let zh = c"zh_TW.UTF-8";
         let error = MountError::new(MountFailure::Failed, words.clone());
-        let in_chinese = |message: &str| crate::gvfs::gvfs_translation_in(message, c"zh_TW.UTF-8");
-        assert_eq!(
-            Reason::of_in(&error, "nas", true, &in_chinese),
-            Reason::NoAnswer
-        );
+        assert_eq!(Reason::of_in(&error, "nas", true, zh), Reason::NoAnswer);
         // Words GVfs does not have stay unknown, never guessed.
         let other = MountError::new(MountFailure::Failed, "隨便什麼");
         assert_eq!(
-            Reason::of_in(&other, "nas", true, &in_chinese),
+            Reason::of_in(&other, "nas", true, zh),
             Reason::Mount(MountFailure::Failed)
+        );
+    }
+
+    /// gvfsd-smb puts the C library's sentence after its own, both in the
+    /// desktop's language: a share that is not there, said in zh_TW, is
+    /// still a share that is gone (seen against smbd in the sandbox).
+    #[test]
+    fn the_system_s_words_after_gvfs_s_are_read_in_chinese_too() {
+        let gone = test_prerequisites::require!(
+            "the zh_TW.UTF-8 locale and the C library's zh_TW messages",
+            crate::gvfs::system_message_in(libc::ENOENT, c"zh_TW.UTF-8")
+                .filter(|words| words != "No such file or directory")
+                .ok_or("the C library has no zh_TW text for ENOENT")
+        );
+        assert_eq!(gone, "沒有此一檔案或目錄");
+        let zh = c"zh_TW.UTF-8";
+        let said = |words: &str| {
+            Reason::of_in(
+                &MountError::new(
+                    MountFailure::Failed,
+                    format!("無法掛載 Windows 檔案共用：{words}"),
+                ),
+                "nas",
+                true,
+                zh,
+            )
+        };
+        assert_eq!(said(&gone), Reason::ShareGone);
+        let refused = crate::gvfs::system_message_in(libc::ECONNREFUSED, zh).unwrap();
+        assert_eq!(said(&refused), Reason::Refused);
+        // And in English, as before.
+        assert_eq!(
+            Reason::of_in(
+                &MountError::new(
+                    MountFailure::Failed,
+                    "Failed to mount Windows share: No such file or directory"
+                ),
+                "nas",
+                true,
+                c"C"
+            ),
+            Reason::ShareGone
         );
     }
 
