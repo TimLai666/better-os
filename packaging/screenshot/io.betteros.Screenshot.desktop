@@ -1,0 +1,16 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Screenshot
+Name[zh_TW]=螢幕快照
+Comment=Take a picture of the screen or record it
+Comment[zh_TW]=拍攝螢幕快照或錄製螢幕
+# Print Screen and its keys start the program (the session's system_actions);
+# the entry names the app_id its surfaces set and the notifications'
+# desktop-entry, and is not listed among applications.
+Exec=better-screenshot
+Icon=applets-screenshooter
+Terminal=false
+NoDisplay=true
+OnlyShowIn=BetterOS;
+Categories=Utility;

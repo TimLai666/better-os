@@ -7104,6 +7104,64 @@ dependencies = [
 ]
 
 [[package]]
+name = "screenshot-capture"
+version = "0.2.16"
+dependencies = [
+ "gstreamer",
+ "gstreamer-app",
+ "image",
+ "libc",
+ "screenshot-core",
+ "tempfile",
+ "test-prerequisites",
+ "thiserror 2.0.19",
+ "wayland-backend",
+ "wayland-client",
+ "wayland-protocols",
+ "wayland-protocols-wlr",
+ "wayland-scanner",
+]
+
+[[package]]
+name = "screenshot-core"
+version = "0.2.16"
+dependencies = [
+ "better-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "screenshot-gui"
+version = "0.2.16"
+dependencies = [
+ "app-catalog-core",
+ "app-catalog-platform",
+ "app-chooser-core",
+ "better-core",
+ "better-ui",
+ "defaults-platform",
+ "files-core",
+ "files-platform",
+ "gpui",
+ "gpui-component",
+ "gpui-component-assets",
+ "gpui_platform",
+ "gstreamer",
+ "image",
+ "screenshot-capture",
+ "screenshot-core",
+ "serde",
+ "serde_json",
+ "smol",
+ "tempfile",
+ "test-prerequisites",
+ "uuid",
+ "zbus",
+]
+
+[[package]]
 name = "seahash"
 version = "4.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
