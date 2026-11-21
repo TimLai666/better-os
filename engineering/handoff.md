@@ -17,3 +17,9 @@ Unfinished work that has no ticket. Delete a section when its work is done, and 
   - Better Git with a repository open (its rows, chips, and Push and Pull buttons) and Better Manager's pages other than Home, with the new icons (ticket 147).
 - **Sources:** tickets 43, 45, 47, 48, 61 and 147.
 
+
+## Release 0.2.17 before the desktop session
+- **Asked:** owner, 2026-11-22: ticket 310 goes ahead of the queue, and a release is published before the Better OS session is built.
+- **Done and checked:** nothing of the release itself yet.
+- **Next:** when pull requests 31 (ticket 101) and 34 (ticket 272) and ticket 310 are merged and main's CI is green, cut 0.2.17 by `engineering/specs/release-packaging.md`: bump the version (and `SELF_UPGRADING_SINCE`/`HANDOFF_SINCE` only as AGENTS.md says), build all packages for 22.04 and 24.04 on amd64 and arm64 in CI, publish, download the public assets again, write their checksums into the manifests, and correct the comment above each block. Not in this release: the screenshot program (no package until ticket 203), the tray's power-mode item (waits for the icon design), anything of the session or the login path. After it is installed on the owner's machine, the confirmations that waited for a release are theirs to give: tickets 131, 134, 136, 170, 129, and 101's measurement.
+- **Sources:** tickets 101, 272, 310; `engineering/specs/release-packaging.md`.
