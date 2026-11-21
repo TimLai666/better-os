@@ -22,9 +22,11 @@ field is offered to the input method like any other.
   compositor has no session lock.
 - A way for a text input to ask for the `password` content purpose and the
   `sensitive_data` hint, and for a window to keep text input disabled.
-- Under L6 (a): offered to GPUI Fast as a pull request, carried in Better
-  OS's fork until merged, under the amendment to ADR 0043 that L6 (a) needs
-  (a new record, written in this ticket).
+- Under L6 (a): offered to GPUI Fast as pull requests, and carried until
+  merged in the owner's patched `gpui-fast-linux` through `[patch.crates-io]`
+  (ADR 0045's Decision 3 mechanism), under a new record written in this
+  ticket, because ADR 0043's rule, which ADR 0045 keeps, allows only
+  fixes.
 - `better_ui::layer` gains a `lock` module that opens a view on every
   output's lock surface, as `LayerSurfaces` does for layer surfaces.
 
