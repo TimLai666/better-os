@@ -31,6 +31,10 @@ the login screen.
   review), which starts the lock program again, refuses without a Better OS
   session of the account, and never unlocks.
 - The sandbox of ticket 263 applied at start.
+- The spec's section 4.5 states what the lock does not protect against (a
+  program running as the person can unlock through logind, or take the
+  compositor's lock after killing `better-lock`); this ticket adds no
+  claim beyond it.
 - `better-os-session.md`'s process table: the lock row names `better-lock`
   with `cosmic-greeter` as its fallback.
 

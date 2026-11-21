@@ -1,7 +1,7 @@
 # Ticket 259 — A Better OS login screen laid out like Luma's lock screen
 
 **Blocked by:** 203 (the session package) for running it; none for the design
-**Blocked:** on the owner's answers to L1 to L8 at the top of `design/login-screen-spec.md` (L1, L2, L7 and L8 are ADR 0044's)
+**Blocked:** on tickets 260 to 281, which build it (the owner answered L1, L2 and L8 on 2026-11-21 and L3 to L7 on 2026-11-22, each as recommended)
 
 ## Why
 
@@ -75,7 +75,7 @@ answers.
   password's path, crashes and hangs, ADR 0033's watch (it does not cover
   greetd), and the way back to GDM and into a locked session as numbered
   steps.
-- **ADR 0044** (proposed): the lock screen now, the greeter as a choice in
+- **ADR 0044** (proposed then; accepted on 2026-11-21): the lock screen now, the greeter as a choice in
   Better Manager later, not by default while GNOME is offered; switching on
   and off as one action each with GDM put back exactly.
 - **Mockups**, `design/login-screen/`: nine views in light and dark, zh-TW,
@@ -131,3 +131,28 @@ mockups' wallpaper is a gradient stand-in for ticket 279's artwork. The
 Luma clone used for reading is in the session scratch directory, not under
 `~/.cache/better-os/orch/luma-ref/`: the worktree guard refused a clone
 there.
+
+Revised on 2026-11-22 after an independent review (one P0, nine P1, six P2,
+two P3, four items to investigate), with the owner's answers unchanged:
+
+- The supervisor is now the display manager and starts the greeter's unit
+  itself; it is no longer `PartOf=` that unit, which would have stopped it
+  on every retry (the P0). It has `Restart=always`, a state file in `/run`,
+  and a backstop of standard programs on a 90-second timer.
+- The guarantee is 80 seconds (90 if the supervisor itself fails), with
+  every unit stop counted; a process the kernel cannot kill is stated as a
+  limit. The greeter's unit drops Debian's `After=plymouth-quit-wait`
+  (a deadlock) and its `OnFailure=` text login (a race on tty1). The
+  supervisor's sandbox no longer hides Plymouth's abstract socket.
+- The lock is stated as no boundary against the person's own programs
+  (logind's `Unlock` needs no password for the session's owner).
+- The GNOME unlock service follows GDM's socket permissions, is
+  `Type=dbus`, ships its own bus policy, limits tries itself, keeps running
+  sessions served across `libgdm1` changes; the greeter checks it right
+  before starting GNOME.
+- Switching off and upgrading never stop a running display manager; the
+  greeter no longer writes AccountsService; GDM's automatic login is carried
+  over.
+- AGENTS.md records the two root services as a bounded exception; ADR 0044
+  has a dated amendment; tickets 262 and 264 to 268, 280 and 281 changed,
+  and the four investigations are explicit checks in 268, 280 and 281.

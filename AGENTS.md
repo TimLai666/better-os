@@ -45,6 +45,22 @@ contract.
   `manager-daemon`, reached over D-Bus and authorized by polkit. Read-only host
   queries such as `dpkg-query` are allowed unprivileged; changing the host is
   not.
+- **Two bounded exceptions for the login path** (ADR 0044, accepted by the
+  owner on 2026-11-21, amended 2026-11-22): the `better-os-greeter` package
+  may ship two root system services outside `manager-daemon`, and nothing
+  else. `better-os-login-supervisor` is the display manager while the Better
+  OS login screen is chosen; it may start and stop only the units its
+  compiled-in list names, run `plymouth`, reset `/dev/tty1` and `/dev/tty2`
+  to text, read logind, `/sys/class/drm` and greetd's cgroup, and write only
+  `/var/lib/better-os/boot-watch/` and `/run/better-os/`; it runs no PAM and
+  serves no method that changes anything. `better-os-gnome-unlock` owns
+  `org.gnome.DisplayManager` only while that login screen is chosen and
+  never beside GDM, and runs PAM only to check the calling local session's
+  own account's password, over GDM's reauthentication interface, opening no
+  PAM session and starting no process. Each runs under the sandbox and the
+  limits in `engineering/specs/login-screen-security.md`; a change to either
+  program's reach, unit or bus surface updates that review in the same
+  commit, and widening either needs a new ADR, not a commit.
 - When testing an unreleased Better OS build or first-party component, use
   [Chefer](https://github.com/TimLai666/chefer) to package it as a disposable
   AppCipe and run it in an isolated containerized environment. Keep test data,
