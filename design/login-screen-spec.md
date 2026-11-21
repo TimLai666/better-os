@@ -355,9 +355,9 @@ the screen draws at 2 and is scaled down.
 | Part | Where | Size and type |
 | --- | --- | --- |
 | Wallpaper | full bleed on every output | Better OS's login artwork (L5); a gradient scrim from 45% black at the bottom start corner to clear at the middle, so white text reads on any picture |
-| Clock group | start 64, bottom 56; right-to-left mirrors it | weekday 120/120 weight 600; under it, 16 below, a row: time 56/64 weight 300 with tabular figures, the period (only for a 12-hour clock) 18/24 weight 600 at 75% white, 8 from the time and on the side the locale puts it (「下午 3:42」, "3:42 PM"), a 1 × 32 divider at 35% white 16 either side, the date 20/28 weight 400 at 90% white. White in both appearances, with a 0 2 24 shadow at 25% black. Below 1100 wide: weekday 88, time 44 |
+| Clock group | start 64, bottom 56; right-to-left mirrors it | weekday 120/120 weight 600; under it, 16 below, a row: time 56/64 weight 300 with tabular figures, the period (only for a 12-hour clock) 18/24 weight 600 at 75% white, 8 from the time and on the side the locale puts it (「下午 3:42」, "3:42 PM"), a 1 × 32 divider at 35% white 16 either side, the date 20/28 weight 400 at 90% white. White in both appearances, with a 0 2 24 shadow at 25% black. Below 1100 wide: weekday 88/88, time 44/52 |
 | Card | top 20, end 20, bottom 20 | width 480 at 1100 and wider, 440 below; radius 8 (a surface that floats, `DESIGN.md`); padding 24; fill: the flyout fill at 88% (`#f9f9f9` light, `#2c2c2c` dark) over the wallpaper blurred once at 32 px; 1 px control stroke; shadow 0 8 32 at the flyout shadow colour |
-| Status row | the card's top, end-aligned, 32 tall | 32 × 32 subtle buttons, 4 apart: keyboard layout (its short name, Body Strong 12), accessibility, network, battery with its percentage (Caption), a 1 × 16 divider, power |
+| Status row | the card's top, end-aligned, 32 tall | 32 × 32 subtle buttons, 4 apart: keyboard layout (its short name, Body Strong 12), accessibility, network, battery with its percentage (Caption; its picture, from `battery_look` like every Better OS battery icon), a 1 × 16 divider, power |
 | Identity group | centred vertically in the space between the status row and the bottom row | avatar 96 round (initial in Title 28 when there is no picture, on a fill derived from the account's name); 16 below it the name in Title 28/36 weight 600, one line, ellipsized; 4 below a Caption line in secondary text (section 3.3) |
 | Entry | 24 below the identity group, 320 wide, centred | a Fluent text field 320 × 36: placeholder, the reveal button 28 × 28 and the submit button 28 × 28 in the accent inside its end, radius 4, a 2 px accent bottom line while focused |
 | Message line | 8 below the field | Caption 12/16, centred, at most two lines; the critical colour after an error glyph for errors, secondary text with an information glyph for notices |
@@ -402,7 +402,10 @@ view: the card fades in and moves 24 px in from the end over 250 ms (Fluent's
 woke it is the field's first character (Enter, Space and Escape are not
 typed). After 60 seconds without input the entry view clears the field and
 goes back to the quiet view over 200 ms. The login screen opens in the entry
-view and stays there.
+view and stays there. When the machine is about to sleep, however that was
+asked for (the lid, idle, the power menu: logind's `PrepareForSleep`), and
+again when it wakes, the field is wiped and the conversation cancelled; the
+lock screen wakes in the quiet view.
 
 Under L3 (a) the card never hides on a wide screen.
 
@@ -433,9 +436,20 @@ The session button at the end of the bottom row reads
 `session`) listing every `.desktop` file in `/usr/share/wayland-sessions/`
 with its `Name` (localized `Name[zh_TW]` when present), the last-used one
 (AccountsService's `Session` for the chosen account) checked, and Better OS
-first. A GNOME session (its `Exec` runs `gnome-session`, as Zorin's two
-entries do: `env GNOME_SHELL_SESSION_MODE=zorin /usr/bin/gnome-session
---session=zorin`) is listed like any other and locks through the GNOME
+first. An entry whose `TryExec` program is not installed is left out, by the
+application catalog's one `TryExec` rule (`app_catalog_core::group_try_exec_found`),
+as GDM leaves it out. A GNOME session is one with any of three signs: an
+`Exec` argument that is `gnome-session` (Zorin's: `env
+GNOME_SHELL_SESSION_MODE=zorin /usr/bin/gnome-session --session=zorin`), a
+`TryExec` that is `gnome-shell`, or `GNOME` among its `DesktopNames` (also
+when written `zorin:GNOME` or `ubuntu:GNOME` as one entry). Every GNOME
+session file Ubuntu 22.04 and 24.04, Zorin OS 18 and Debian ship carries all
+three (read on 2026-11-22: Ubuntu's `gnome-session` packaging, GNOME 42 and
+46's own files, which Debian ships unchanged, and this machine's Zorin
+files; Zorin OS 17's were not read); any one is enough, so a wrapped or
+unusual GNOME entry is hidden with GNOME's rather than started without a
+lock, at the cost of hiding Budgie's too (`DesktopNames=Budgie:GNOME`). It
+is listed like any other and locks through the GNOME
 unlock service (section 5.6, L2 (a)); under L2 (d) it is left out. The
 greeter shows a GNOME session only while the unlock service answers on the
 system bus, and checks again right before starting it (section 5.6), so a
@@ -457,6 +471,8 @@ the new session by an XDG autostart entry, writes them as the person
 | Menu title (screen reader) | 選擇工作階段 | Choose a session |
 | Better OS | Better OS | Better OS |
 | A session with no translation | its `Name` | its `Name` |
+| The account's last session (Caption in its row) | 上次使用 | Last used |
+| Nothing in the menu to start (a successful login with no session listed; greetd's session is cancelled) | 找不到可以啟動的工作階段。 | There's no session to start. |
 
 ### 3.7 Keyboard layout and input method at the prompt
 
@@ -495,7 +511,7 @@ returns when the error clears.
 | State | What shows | zh-TW | English |
 | --- | --- | --- | --- |
 | Wrong password | the field is cleared and keeps focus; the message line in the critical colour | 密碼不正確，請再試一次。 | That password isn't right. Try again. |
-| The wait after a failure | PAM's own delay (3 s from `pam_faildelay` in `/etc/pam.d/login`, which greetd's PAM file includes) runs while "Checking…" shows; after the second failure in a row the greeter adds Luma's doubling wait (1, 2, 4, 8, 16, then 30 s each time), the field disabled and the message counting down (mockup `wrong-password`) | 密碼不正確。請在 {n} 秒後再試一次。 | That password isn't right. Try again in {n} seconds. |
+| The wait after a failure | PAM's own delay (3 s from `pam_faildelay` in `/etc/pam.d/login`, which greetd's PAM file includes) runs while "Checking…" shows; after the second failure in a row the greeter adds Luma's doubling wait (1, 2, 4, 8, 16, then 30 s each time), the field disabled and the message counting down in whole seconds, rounded up (mockup `wrong-password`) | 密碼不正確。請在 {n} 秒後再試一次。 (the last second: 密碼不正確。請在 1 秒後再試一次。) | That password isn't right. Try again in {n} seconds. (the last second: That password isn't right. Try again in 1 second.) |
 | Locked account (`pam_faillock`, `pam_tally`, or an administrator's lock: PAM's `acct_mgmt` fails) | title in the message line, PAM's own text below it in secondary text | 這個帳號目前無法登入。 | This account can't sign in right now. |
 | Account expired | as above | 這個帳號已停用，請聯絡系統管理員。 | This account has been turned off. Ask your administrator. |
 | Password expired (PAM asks for the current and a new password) | the identity group stays; the field's label becomes the question PAM asks, one prompt at a time; known `pam_unix` prompts get Better OS's copy, any other prompt shows PAM's text as it is | 你的密碼已過期，請設定新密碼。 / 目前的密碼 / 新密碼 / 再輸入一次新密碼 | Your password has expired. Set a new one. / Current password / New password / Type the new password again |
@@ -507,7 +523,57 @@ The greeter never decides that a password is wrong; it shows what greetd
 says (`auth_error`). It answers as many `secret` and `visible` prompts as PAM
 asks, in order, each with its own field (greetd's manual: "a greeter should
 not make any assumptions about the messages"), unlike Luma's handheld
-greeter, which refuses a second secret.
+greeter, which refuses a second secret. When a question's answer is to be
+shown (`visible`), the field is wiped first, so nothing typed while it was
+hidden (or typed before the question came) ever appears in clear.
+
+Each conversation has its own id (`login_screen_core::view::ConversationId`,
+named in the request that begins it); a question, a message, a refusal or a
+success that names any other conversation, one cancelled while its reply was
+on the way, is dropped, never applied to the current one.
+
+**The wait belongs to the account, and survives a restart.** Failures in a
+row and the end of the wait are kept per account (`login_screen_core::
+attempts`). A name is counted under the account the system's name service
+resolves it to (`getpwnam_r`'s `pw_name`), so on a machine whose domain
+accounts ignore case `Tim` and `tim` share one count. Switching account and
+back, choosing "Other account…" and typing the same name, or the greeter or
+the lock program restarting, all keep it: while a wait runs, and while a
+password is being checked, Switch account is not offered; an account chosen
+while its own wait runs starts in that wait; and a password already sent
+that is cancelled before its answer comes back (two Escapes, a new name under
+"Other account…", the machine going to sleep) counts as a failure at once,
+because its answer arrives for a conversation that no longer runs and is
+dropped. A late success is dropped as well and never unlocks or signs in.
+
+What is written down, and where: the record is a file in the program's own
+runtime directory, written only by that program, mode 0600, created anew
+and renamed into place: `/run/better-os-greeter/attempts.json` (the
+greeter's account, directory 0700, which must survive a restart of the
+greeter's unit, ticket 264) and `$XDG_RUNTIME_DIR/better-os/
+lock-attempts.json` (the person, directory 0700, ticket 262). Only names that
+resolve to an account are written. A name that resolves to no account (it
+may be anything typed into the name field, a password by mistake among
+them) is counted in memory only, so the record never holds typed text; on
+screen it waits exactly as an account does, so the screen does not tell
+which names exist. A name longer than `LOGIN_NAME_MAX` (256 bytes) is
+counted under its first 256 bytes, in memory. The record holds at most 64
+accounts and never more than the 64 KiB it is read with. Its times are
+`CLOCK_BOOTTIME` milliseconds, which count through sleep; `/run` is emptied
+at boot, so a reboot ends every wait, as it ends PAM's own delay. A record
+read back is held to what the program could have written: no wait longer
+than 30 seconds from now, no count above 1000. A success removes the
+account's entry. A record that cannot be read is logged by the kind of
+error only (never its content) and replaced by an empty one: refusing every
+login over a damaged file would lock everyone out. The person's own
+programs can delete or rewrite the lock program's record, as they can
+unlock the session through logind anyway (section 4.5).
+
+**The cost.** Anyone at the keyboard can keep an account in its wait by
+typing wrong passwords for it: after the seventh failure in a row each
+further one holds the account for 30 seconds, never longer, and a correct
+password works as soon as the wait ends. This is accepted: the wait is what
+makes guessing slow, and 30 seconds is its ceiling.
 
 ### 3.10 Later additions: PIN, fingerprint, smart card
 
@@ -538,7 +604,7 @@ writes, and taken from the person's own settings on the lock screen):
 | --- | --- | --- | --- |
 | Screen reader | 螢幕閱讀器 | Screen reader | starts Orca (from Ubuntu's archive) as the greeter's account in the greeter's own D-Bus session, with an AT-SPI bus; every control has the name in section 3.15 through AccessKit. Super+Alt+S toggles it from anywhere on the screen, as on GNOME |
 | High contrast | 高對比 | High contrast | the wallpaper becomes a solid fill (black in dark, white in light), the card opaque, strokes 2 px, secondary text becomes primary |
-| Large text | 大字體 | Large text | every text size × 1.25 (GNOME's `text-scaling-factor` for large text); the card grows to 560 where the screen allows it, else the screen uses the narrow layout |
+| Large text | 大字體 | Large text | every text size × 1.25 (GNOME's `text-scaling-factor` for large text); the card grows to 560 where the screen allows it, which is 1010 wide and wider (560 for the card and 1.25 × 360 for the clock group, section 2), else the screen uses the narrow layout |
 | On-screen keyboard | 螢幕小鍵盤 | On-screen keyboard | a keyboard drawn by the program itself across the bottom 40% of the primary output, in the current layout, with Caps, Shift, Backspace and Enter; keys go straight into the field, no virtual keyboard protocol is involved. Ubuntu's archive has no `squeekboard` (`apt-cache policy`), and an external keyboard would need the compositor to accept a virtual keyboard from it before login |
 
 Menu title for the screen reader: 「協助工具」 / "Accessibility".
@@ -608,12 +674,16 @@ Enter submits. F10 or the menu key opens nothing (there is no menu bar).
 | Layout | 鍵盤配置：{layout} / Keyboard layout: {layout} |
 | Accessibility | 協助工具 / Accessibility |
 | Network | 網路：已連線到 {name} / Network: connected to {name}; 網路：未連線 / Network: not connected |
-| Battery | 電池 {n}% / Battery {n}%; 電池 {n}%，充電中 / Battery {n}%, charging |
+| Battery | the one battery rule's name (`hardware_core::charge_state::battery_look`, `engineering/specs/battery-charge-state.md`): 電池 {n}%，{state's words} / Battery {n}%: {state's words}, for example 電池 87%，充電中 / Battery 87%: Charging, 電池 80%，已接上電源，維持在 80% / Battery 80%: Plugged in, holding at 80% |
 | Power | 電源 / Power |
 | Clock group | the date and time spoken in full |
 
 Network and battery are read-only status, read from NetworkManager and
 UPower over the system bus; the login screen offers no network menu.
+Corrected on 2026-11-22 (ticket 260): the first version gave the battery
+words of its own (「電池 {n}%，充電中」 / "Battery {n}%, charging"), which
+could not say held at the limit, not charging or unknown and broke AGENTS.md's
+one battery rule; the battery's picture and name are now the shared ones.
 
 ### 3.16 Starting the session, and a session that does not start
 
@@ -656,6 +726,7 @@ the screen locked, newest first, at most three (mockup
 | Heading (Caption, secondary text) | 你離開時收到的通知 | While you were away |
 | A row, 56 tall: application icon 32, title in Body Strong, one line of body in Caption, the time in Caption tabular at the end | the notification's own | the notification's own |
 | More | 還有 {n} 則通知 | {n} more notifications |
+| One more | 還有 1 則通知 | 1 more notification |
 
 A notification marked private by its sender (the
 `x-better-os-private` hint, or a desktop-entry rule the Notifications page
@@ -664,7 +735,23 @@ Notifications page (ticket 238) gets the setting 「在鎖定畫面上顯示通�
 "Show notifications on the lock screen", on by default, and under it
 「顯示內容」 / "Show their content". Under L4 (b), or with the setting off,
 the bottom of the card is empty (mockup `lock-private`). The rows are not
-buttons: nothing is opened or answered from a locked screen.
+buttons: nothing is opened or answered from a locked screen. A row's time is
+written like the clock's, on the same hour cycle (「下午3:31」 / "3:31 PM");
+the mockups' 24-hour `15:31` on a 12-hour clock is not followed.
+
+Notification and media text comes from other programs, and a notification's
+from other people. Before it is shown, every application name, title, body
+line, artist and track goes through one function
+(`login_screen_core::lock_content::shown_text`): it is put on one line
+(control characters become a space), every character of Unicode
+General_Category `Cf` is removed except the joiners U+200C and U+200D and the
+tags of a valid emoji tag sequence (a subdivision flag), and so are the
+invisible U+034F and the Hangul fillers U+115F, U+1160, U+3164 and U+FFA0;
+the categories are Unicode 17.0's, from the `unicode-properties` crate the
+workspace already locks. It is cut with an ellipsis at 64 characters for the
+application name, 120 for a title, an artist or a track, and 200 for the body
+line. A sender cannot reverse text, fake a second line that reads like a
+message from the system, make a name look empty, or fill the card.
 
 ### 4.3 Media controls
 
@@ -1069,9 +1156,25 @@ What (a) costs and what could break:
 The greeter speaks the system's language (`locale1`'s `LANG`, zh_TW on the
 owner's machine) until an account is chosen, then the account's
 (AccountsService `Language`) when it is a language Better OS ships. Dates and
-times follow `LC_TIME` as GDM's do; the owner's machine has `LC_TIME=lzh_TW`,
-whose weekday and month names were not checked (ticket 260 tests the
-formatter against it).
+times follow `LC_TIME` as GDM's do: the time locale (`LC_ALL`, then
+`LC_TIME`, then `LANG`, from `locale1`'s `Locale` on the login screen) gives
+the weekday and month names, the morning and afternoon words and the default
+hour cycle, and the screen's language gives the order of the parts, as GNOME
+fills a translated format with the `LC_TIME` locale's names. The lock screen
+takes the hour cycle from the person's `clock-format`. Figures are always
+ASCII digits. The owner's machine has `LC_TIME=lzh_TW`; glibc's `lzh_TW`
+(`/usr/share/i18n/locales/lzh_TW`) names the weekdays 週日 to 週六 and the
+months 一月 to 十二月, says 朝 and 暮, and has a 24-hour `t_fmt`, so under
+`LANG=zh_TW.UTF-8` the clock group reads 「週六」, 「15:42」, 「十一月21日」
+(ticket 260's formatter, tested). A time locale with no names in Better OS
+follows the screen's language.
+
+| Part | zh_TW | en_US | lzh_TW |
+| --- | --- | --- | --- |
+| Weekday line | 星期六 | Saturday | 週六 |
+| Time (12-hour) | 下午 3:42 | 3:42 PM | 暮 3:42 |
+| Time (24-hour, `lzh_TW`'s default) | 15:42 | 15:42 | 15:42 |
+| Date (zh-TW screen / English screen) | 11月21日 / November 21 | November 21 | 十一月21日 / 十一月 21 |
 
 ### 5.8 What the greeter reads
 
@@ -1341,7 +1444,8 @@ and the session's own removal waits for the same boot.
   stopped (`server.rs` 261 to 273, `context.rs` 389 to 403 at 0.9.0).
 - What Luma's screens look like on a screen: no image of them is published,
   and the Try application was not run (section 1.5).
-- How the `lzh_TW` time locale renders the weekday line.
+- How the `lzh_TW` time locale's weekday line looks on a screen: the
+  formatter's words are tested (section 5.7), and no screen has drawn them.
 
 ## 8. The tickets
 

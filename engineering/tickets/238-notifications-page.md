@@ -17,6 +17,15 @@ offer their settings there.
   `org.gnome.desktop.notifications` keys through the dconf writer under GNOME,
   the notification service's own bus in the session (whatever names ticket 215
   fixed), the service as the only owner of its settings.
+- The lock screen's two settings (`design/login-screen-spec.md` section 4.2,
+  L4 (a), given exact copy by ticket 260): 「在鎖定畫面上顯示通知」 / "Show
+  notifications on the lock screen", on by default, and under it
+  「顯示內容」 / "Show their content", on by default and off while the first
+  is off (the Better OS session only; under GNOME the per-application "Show
+  content on the lock screen" rows are the control). Take the words from
+  `login_screen_core::copy` (`show_notifications_on_lock_screen`,
+  `show_their_content`) rather than a second copy; the lock screen reads the
+  same two values as `login_screen_core::lock_content::LockScreenNotifications`.
 - Window attention's cards (ticket 106) moved in as the last group;
   `--page window-attention` opens it.
 

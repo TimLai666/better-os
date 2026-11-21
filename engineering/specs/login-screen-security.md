@@ -246,14 +246,64 @@ removed. What limits it:
   memory with `mlock`, owned by `login-screen-core`'s `Secret` type, which
   implements no `Debug`, `Display`, `Clone` or `Serialize`, and wipes itself
   with `zeroize` on drop. The GNOME unlock service uses the same type for
-  the answers the shell sends.
+  the answers the shell sends. The buffer is its own page-aligned
+  allocation, so its `munlock` never unlocks a page another value shares,
+  and is marked `MADV_DONTDUMP`. Held by ticket 260's tests: the bytes are
+  zero after `wipe()` and after a Backspace (`secret.rs`), no freed block
+  ever holds a password, for a `Secret` and for the greetd message built
+  from it (`tests/secret_wiped_on_drop.rs`, a watching global allocator,
+  with a positive control and checked to fail when the wipe on drop is
+  removed), and none of `Debug`, `Display`, `Clone` or `Serialize` is
+  implemented by either type. The view model (`login_screen_core::view`)
+  never holds a password: it only says when the field's `Secret` is sent
+  and when it is wiped. The drop test's allocator hands out every block
+  zeroed (a growing reallocation is a new zeroed block, a copy and a free),
+  so it reads only bytes that were written, and checks every block freed:
+  it fails on a buffer freed unwiped and on a copy of the password in any
+  ordinary heap block (checked by adding a `to_string()` of the secret to
+  the message builder, which made it fail, and removing it).
+- **When the lock fails.** `mlock` can fail (an `RLIMIT_MEMLOCK` of 0, a
+  container's limit). The buffer is then not locked and may be written to
+  swap; it still wipes itself. This is not silent: `Secret::is_locked` and
+  `Secret::lock_warning` say so, and the greeter and the lock program write
+  `login_screen_core::NOT_LOCKED_LOG_LINE` (`BETTER_OS_SECRET_LOCKED=no`, the
+  cause, no content) to the journal once (tickets 264 and 262). The test
+  that the pages are locked needs an `RLIMIT_MEMLOCK` of at least 1 MiB,
+  through `test_prerequisites::require_that!` (a skip on a developer's
+  machine, a failure under CI). A page size the kernel does not report is
+  an error (`SecretError::PageSize`), never a guessed 4096, which on a
+  16 KiB or 64 KiB page arm64 kernel would break the page alignment. A
+  buffer is made only with `Secret::try_new()` (`new()` and `Default` exist
+  for the crate's tests alone); when it fails the field shows "The sign-in
+  service isn't responding." and the program logs the error (tickets 262,
+  264), rather than ending.
+- **Who may read it.** Two readers give the password out:
+  `Secret::expose_str` (the text) and `GreetdMessage::frame_bytes` (the
+  framed message that holds it). Only the greetd message builder calls the
+  first; nothing outside the crate's tests calls the second yet.
+  `tests/one_secret_reader.rs` reads every crate's source and fails on any
+  other caller of either, or any use of the buffer type outside its two
+  modules, and holds those modules to their known functions that return
+  `&str` or `&[u8]`, so a wrapper added there fails too. Ticket 262 adds its
+  PAM conversation (`expose_str`) and ticket 264 its socket writer
+  (`frame_bytes`) to the audited lists in the change that adds them.
 - **Where it goes.** In the greeter, into greetd's
   `post_auth_message_response` JSON, built directly into a second `Secret`
   buffer, written to the socket, then both are wiped. In the lock program
   and the unlock service, into PAM's conversation reply, which PAM frees
   itself; the program's copy is wiped when the reply is handed over.
 - **When it is wiped.** After it is sent; on Escape; when the view changes;
-  after 60 seconds without input; when the program exits normally.
+  after 60 seconds without input; when PAM's question turns out to be one
+  whose answer is shown (`visible`), so nothing typed hidden or queued for a
+  secret question appears in clear; when an answer queued for a question
+  that never came is abandoned; when the machine is about to sleep, however
+  that was asked for, and when it wakes; when the program exits normally.
+  Each is a test in `login_screen_core::view`.
+- **Late replies.** Every conversation has an id; a reply from one that was
+  cancelled (a switch of account, two Escapes, a sleep) is dropped in
+  `login_screen_core::view`, so it can neither count a failure against the
+  next account, show its question in the next one's field, nor unlock.
+  Tested with a cancel, a new begin, and every kind of stale reply.
 - **What is never done with it.** No log line, no error message, no panic
   message carries it; a test feeds a known secret through each path with
   logging at its most verbose and searches the log and every error value
@@ -361,7 +411,29 @@ screen back rather than the session unlocked.
 
 - **At the keyboard:** a password prompt backed by PAM's own rules and
   delay, with the greeter's doubling wait on top; the text fallback is the
-  standard `login`. Nothing to open, no launcher, no network menu. The power
+  standard `login`. The doubling wait is kept per account (the name
+  service's `pw_name`, so case variants of one domain account share it) and
+  is not reset by anything the person at the keyboard can do: Switch account
+  is not offered while it runs or while a password is being checked,
+  choosing the account again (or typing its name under "Other account…")
+  finds it still running, a password cancelled while it is with PAM (two
+  Escapes, a new name, sleep) counts as a failure at once, and a restart of
+  the greeter or the lock program reads it back from the program's own
+  record (`/run/better-os-greeter/attempts.json`, written only by
+  `_better-greeter`, mode 0600 in a 0700 directory that survives a restart
+  of the greeter's unit; the lock program's in the person's
+  `$XDG_RUNTIME_DIR/better-os/`). Only resolved account names are written;
+  a name no account has, which may be a password typed into the name field,
+  is counted in memory only and waits on screen exactly as an account does,
+  so the screen does not tell which names exist (a restart of the greeter
+  forgets only those in-memory counts). A record read back is clamped to a
+  wait of at most 30 seconds from now, and its read errors name only their
+  kind. Only a reboot, which empties `/run`, ends a wait early; spec section
+  3.9. The cost, accepted: anyone at the keyboard can keep an account in a
+  wait, of at most 30 seconds at a time, by typing wrong passwords for it. Text another program puts on the
+  lock screen (notifications, media) is put on one line, stripped of control
+  and direction characters and capped (spec section 4.2), so it cannot
+  imitate a system message there. Nothing to open, no launcher, no network menu. The power
   menu can restart the machine, as the power button can. Switching virtual
   terminals shows another login prompt or the locked session's lock, never
   its content (the lock is in the session's compositor in both sessions).
@@ -382,8 +454,8 @@ screen back rather than the session unlocked.
 
 ## Not proven
 
-- None of the tests named above exists yet; tickets 260 to 268, 280 and
-  281 write them.
+- Only the password buffer's tests exist (ticket 260); the others named
+  above are for tickets 261 to 268, 280 and 281.
 - That GNOME Shell 46 locks and unlocks through the unlock service as it
   does through GDM, that GDM's session worker does nothing more on
   reauthentication that the shell relies on, how `pam_gnome_keyring`

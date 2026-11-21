@@ -539,24 +539,46 @@ fn pick(zh: bool, english: &str, chinese: &str) -> String {
     if zh { chinese } else { english }.to_string()
 }
 
-/// What a battery icon shows: its state, its picture, and its words in full
-/// and in short.
+/// A battery icon's accessible name, for a status button that draws only
+/// the picture and the charge figure (the login and lock screens' status
+/// row): the charge, then the state's full words, 「電池 87%，充電中」 /
+/// "Battery 87%: Charging". With no charge read, the words alone after the
+/// noun; an unknown state's words already name the battery.
+fn spoken(state: ChargeState, percent: Option<u8>, language: Language) -> String {
+    let words = state.words(language);
+    if state == ChargeState::Unknown {
+        return words;
+    }
+    let zh = language == Language::TraditionalChinese;
+    match percent {
+        Some(p) if zh => format!("電池 {p}%，{words}"),
+        Some(p) => format!("Battery {p}%: {words}"),
+        None if zh => format!("電池：{words}"),
+        None => format!("Battery: {words}"),
+    }
+}
+
+/// What a battery icon shows: its state, its picture, and its words in full,
+/// in short, and as an accessible name with the charge.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BatteryLook {
     pub state: ChargeState,
     pub icon: BatteryIcon,
     pub words: String,
     pub short: String,
+    pub spoken: String,
 }
 
 /// The one function every battery icon and battery line in Better OS asks.
 pub fn battery_look(readings: &ChargeReadings, language: Language) -> BatteryLook {
     let state = charge_state(readings);
+    let percent = readings.percent();
     BatteryLook {
         state,
-        icon: state.icon(readings.percent()),
+        icon: state.icon(percent),
         words: state.words(language),
         short: state.short_words(language),
+        spoken: spoken(state, percent, language),
     }
 }
 
@@ -1068,6 +1090,38 @@ mod tests {
                 start: Some(70)
             }
         );
+    }
+
+    #[test]
+    fn the_spoken_name_gives_the_charge_and_the_state() {
+        let held = battery_look(&owner(), Language::TraditionalChinese);
+        assert_eq!(held.spoken, "電池 80%，已接上電源，維持在 80%");
+        assert_eq!(
+            battery_look(&owner(), Language::English).spoken,
+            "Battery 80%: Plugged in, holding at 80%"
+        );
+        let charging = battery_look(
+            &ChargeReadings::single(Some(true), Some(Charging), Some(87), limit(100)),
+            Language::TraditionalChinese,
+        );
+        assert_eq!(charging.spoken, "電池 87%，充電中");
+        let no_figure = battery_look(
+            &ChargeReadings::single(Some(true), Some(Charging), None, limit(100)),
+            Language::English,
+        );
+        assert_eq!(no_figure.spoken, "Battery: Charging");
+        let unknown = battery_look(
+            &ChargeReadings::single(None, None, Some(50), limit(80)),
+            Language::English,
+        );
+        assert_eq!(unknown.state, ChargeState::Unknown);
+        assert_eq!(unknown.spoken, "Battery state unknown");
+        // Every state's name carries its full words, in both languages.
+        for state in ChargeState::KINDS {
+            for language in [Language::English, Language::TraditionalChinese] {
+                assert!(spoken(state, Some(42), language).contains(&state.words(language)));
+            }
+        }
     }
 
     #[test]
