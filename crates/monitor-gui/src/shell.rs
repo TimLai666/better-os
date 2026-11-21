@@ -150,14 +150,10 @@ impl MonitorApp {
                 outcome,
                 count,
             } => match outcome {
-                ActionOutcome::SignalAccepted { .. } => (
+                ActionOutcome::SignalAccepted { signal } => (
                     Severity::Success,
                     name.clone(),
-                    if *count > 1 {
-                        crate::i18n::asked_to_close_many(*count, self.locale)
-                    } else {
-                        c.outcome_signal_sent.to_string()
-                    },
+                    crate::i18n::signal_sentence(*signal, *count, self.locale),
                 ),
                 ActionOutcome::PriorityChanged { to, .. } => (
                     Severity::Success,
@@ -214,6 +210,7 @@ pub(crate) fn refusal_label(refusal: &ActionRefusal, c: &'static Copy) -> &'stat
         ActionRefusal::NiceOutOfRange { .. } => c.refusal_nice_range,
         ActionRefusal::CurrentPriorityUnknown => c.refusal_priority_unknown,
         ActionRefusal::ProtectedTree { .. } => c.refusal_protected_tree,
+        ActionRefusal::SessionProcess { .. } => c.refusal_session_process,
     }
 }
 

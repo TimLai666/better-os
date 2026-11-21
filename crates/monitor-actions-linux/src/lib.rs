@@ -251,6 +251,19 @@ impl LinuxProcessController {
         monitor_core::tree_refusal(&members, &self.own_ancestors())
     }
 
+    /// Whether one process may be force stopped as far as the session is
+    /// concerned: `None`, or the refusal naming it. A process that is
+    /// already gone is not refused here; the identity check reports it.
+    pub fn force_stop_refusal(&self, pid: u32) -> Option<monitor_core::ActionRefusal> {
+        let live = self.live(pid)?;
+        let member = monitor_core::TreeMember {
+            pid: live.pid,
+            session_leader: live.session == Some(live.pid),
+            name: live.name,
+        };
+        monitor_core::force_stop_refusal(&member, &self.own_ancestors())
+    }
+
     /// The folder holding a process's program, for "Open file location". It
     /// reads one link, `/proc/<pid>/exe`, when asked; the kernel only lets a
     /// person read it for their own processes, so another user's process has
@@ -343,6 +356,30 @@ impl ProcessController for LinuxProcessController {
 
     fn own_pid(&self) -> u32 {
         self.own_pid
+    }
+
+    /// The shared policy, and for a force stop the session guard on top:
+    /// `SIGKILL` lets nothing clean up, so it never reaches a process the
+    /// session stands on. Because `perform` asks this again, the guard
+    /// cannot be stepped around by a view that skipped it.
+    fn availability(
+        &self,
+        target: &ProcessTarget,
+        action: ProcessAction,
+    ) -> monitor_core::ActionAvailability {
+        let policy = monitor_core::unprivileged_availability(
+            Some(self.current_uid),
+            self.own_pid,
+            target,
+            action,
+        );
+        if !policy.is_available() || action != ProcessAction::ForceStop {
+            return policy;
+        }
+        match self.force_stop_refusal(target.pid) {
+            Some(refusal) => monitor_core::ActionAvailability::Refused(refusal),
+            None => policy,
+        }
     }
 
     fn perform(
@@ -602,6 +639,74 @@ mod tests {
             None,
             "a gone process is skipped"
         );
+    }
+
+    #[test]
+    fn a_force_stop_never_reaches_a_process_the_session_stands_on() {
+        let fake = FakeProc::new("force");
+        let own = std::process::id();
+        let uid = LinuxProcessController::for_current_process()
+            .current_uid()
+            .unwrap();
+        // The monitor runs under a terminal (30), under the user's systemd
+        // (20), under init; a shell (40) leads its own session and runs a
+        // build (41).
+        fake.process(own, "monitor-gui", 30, 10, 5, uid);
+        fake.process(30, "gnome-terminal", 20, 10, 4, uid);
+        fake.process(20, "systemd", 1, 20, 3, uid);
+        fake.process(1, "systemd", 0, 1, 1, 0);
+        fake.process(40, "bash", 30, 40, 6, uid);
+        fake.process(41, "make", 40, 40, 7, uid);
+        let mut controller = LinuxProcessController::for_current_process().with_proc_root(&fake.0);
+        // The start token matches nothing in the fake `/proc`, so even a
+        // broken guard would stop at the identity check and never signal
+        // whatever really runs under these low PIDs.
+        let target = |pid: u32, name: &str| {
+            ProcessTarget::new(pid, name)
+                .owned_by(uid)
+                .started_at(1)
+                .with_nice(0)
+        };
+
+        assert!(
+            controller
+                .availability(&target(41, "make"), ProcessAction::ForceStop)
+                .is_available(),
+            "a build under a shell may be force stopped"
+        );
+        for (pid, name, why) in [
+            (30, "gnome-terminal", "the monitor's own terminal"),
+            (20, "systemd", "systemd --user"),
+            (40, "bash", "a session leader"),
+        ] {
+            assert_eq!(
+                controller.availability(&target(pid, name), ProcessAction::ForceStop),
+                ActionAvailability::Refused(ActionRefusal::SessionProcess {
+                    pid,
+                    name: name.into()
+                }),
+                "{why}"
+            );
+            // End task still lets it decide for itself.
+            assert!(
+                controller
+                    .availability(&target(pid, name), ProcessAction::Terminate)
+                    .is_available(),
+                "{why}"
+            );
+            // And `perform` asks again, so nothing reaches a syscall.
+            assert!(matches!(
+                controller.perform(&target(pid, name), ProcessAction::ForceStop),
+                Err(ActionError::PermissionDenied { .. })
+            ));
+        }
+        // The monitor itself stays protected by the shared policy.
+        assert!(matches!(
+            controller.availability(&target(own, "monitor-gui"), ProcessAction::ForceStop),
+            ActionAvailability::Refused(ActionRefusal::ProtectedProcess { .. })
+        ));
+        // A process that has gone is left to the identity check.
+        assert_eq!(controller.force_stop_refusal(9999), None);
     }
 
     #[test]

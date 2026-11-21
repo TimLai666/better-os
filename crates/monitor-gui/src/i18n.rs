@@ -12,6 +12,7 @@
 
 use better_ui::fluent::list::CellTone;
 use better_ui::fluent::words;
+use monitor_core::SignalKind;
 use monitor_store::{
     Detection, Inventory, InventoryDiff, Sensitivity, SlowdownCause, SlowdownKind,
     SlowdownResource, SlowdownRules,
@@ -20,7 +21,7 @@ use monitor_views::ProcessFacts;
 use monitor_views::grouping::EvidenceKind;
 use monitor_views::overview::{OverviewModel, ResourceVerdict};
 
-use crate::app::EndTarget;
+use crate::app::{EndHow, EndTarget};
 use crate::charts::{AdapterKind, Readings};
 use crate::startup::{Activity, Scope, ServiceLock, ServiceUnit, StartupState};
 
@@ -96,6 +97,7 @@ pub(crate) struct Copy {
     pub(crate) paused_message: &'static str,
     pub(crate) end_task: &'static str,
     pub(crate) end_process_tree: &'static str,
+    pub(crate) force_stop: &'static str,
     pub(crate) properties: &'static str,
     pub(crate) tree_view: &'static str,
     pub(crate) enable: &'static str,
@@ -182,6 +184,9 @@ pub(crate) struct Copy {
 
     // Actions.
     pub(crate) outcome_signal_sent: &'static str,
+    pub(crate) outcome_force_stopped: &'static str,
+    pub(crate) outcome_suspended: &'static str,
+    pub(crate) outcome_resumed: &'static str,
     pub(crate) outcome_priority_changed: &'static str,
     pub(crate) failure_disappeared: &'static str,
     pub(crate) failure_denied: &'static str,
@@ -195,6 +200,7 @@ pub(crate) struct Copy {
     pub(crate) refusal_nice_range: &'static str,
     pub(crate) refusal_priority_unknown: &'static str,
     pub(crate) refusal_protected_tree: &'static str,
+    pub(crate) refusal_session_process: &'static str,
     pub(crate) list_paused: &'static str,
     pub(crate) no_location: &'static str,
     pub(crate) switched_on: &'static str,
@@ -429,6 +435,7 @@ pub(crate) const EN: Copy = Copy {
     paused_message: "The numbers on screen are frozen. Better Monitor keeps recording in the background.",
     end_task: "End task",
     end_process_tree: "End process tree",
+    force_stop: "Force stop",
     properties: "Properties",
     tree_view: "Tree view",
     enable: "Enable",
@@ -509,6 +516,9 @@ pub(crate) const EN: Copy = Copy {
     confidence_low: "This is a best guess.",
 
     outcome_signal_sent: "Asked it to close.",
+    outcome_force_stopped: "Told the system to stop it at once.",
+    outcome_suspended: "Suspended it.",
+    outcome_resumed: "Let it run again.",
     outcome_priority_changed: "Priority lowered",
     failure_disappeared: "It had already closed.",
     failure_denied: "You don't have permission to do that.",
@@ -522,6 +532,7 @@ pub(crate) const EN: Copy = Copy {
     refusal_nice_range: "Its priority is already as low as it goes.",
     refusal_priority_unknown: "Its current priority couldn't be read.",
     refusal_protected_tree: "Its tree holds part of your session, such as the desktop, a login shell, or Better Monitor itself, so the whole tree can't be ended here.",
+    refusal_session_process: "It's part of your session, such as the desktop, a login shell, or what Better Monitor runs in, so it can't be force stopped here. End task can still ask it to close.",
     list_paused: "Updates are paused, so the list may show a process that has already closed. Resume updates, then end it.",
     no_location: "Its program's folder couldn't be opened. It may belong to another user or to the system.",
     switched_on: "Turned on. It starts the next time you sign in.",
@@ -749,6 +760,7 @@ pub(crate) const ZH: Copy = Copy {
     paused_message: "畫面上的數字停在暫停那一刻，系統監控仍在背景繼續記錄。",
     end_task: "結束工作",
     end_process_tree: "結束處理程序樹狀結構",
+    force_stop: "強制停止",
     properties: "內容",
     tree_view: "樹狀檢視",
     enable: "啟用",
@@ -829,6 +841,9 @@ pub(crate) const ZH: Copy = Copy {
     confidence_low: "這只是最合理的推測。",
 
     outcome_signal_sent: "已要求它關閉。",
+    outcome_force_stopped: "已要求系統立刻停止它。",
+    outcome_suspended: "已暫停它。",
+    outcome_resumed: "已讓它繼續執行。",
     outcome_priority_changed: "已降低優先順序",
     failure_disappeared: "它已經關閉了。",
     failure_denied: "你沒有權限這麼做。",
@@ -842,6 +857,7 @@ pub(crate) const ZH: Copy = Copy {
     refusal_nice_range: "它的優先順序已經是最低了。",
     refusal_priority_unknown: "讀不到它目前的優先順序。",
     refusal_protected_tree: "它的樹狀結構裡有你這次登入的一部分，例如桌面、登入的 shell 或系統監控本身，所以不能在這裡整個結束。",
+    refusal_session_process: "它是你這次登入的一部分，例如桌面、登入的 shell 或系統監控所在的程式，所以不能在這裡強制停止。仍然可以用「結束工作」要求它關閉。",
     list_paused: "畫面更新已暫停，清單可能還列著已經關閉的處理程序。請先繼續更新，再結束它。",
     no_location: "無法開啟它的程式所在的資料夾，它可能屬於其他使用者或系統。",
     switched_on: "已開啟，下次登入時會啟動。",
@@ -1438,8 +1454,77 @@ pub(crate) fn version_line(version: &str, locale: Locale) -> String {
     }
 }
 
-/// "End …?" and what it will do.
-pub(crate) fn end_question(target: &EndTarget, count: usize, locale: Locale) -> (String, String) {
+/// "End …?" or "Force stop …?" and what it will do.
+pub(crate) fn end_question(
+    target: &EndTarget,
+    how: EndHow,
+    count: usize,
+    locale: Locale,
+) -> (String, String) {
+    match how {
+        EndHow::Close => close_question(target, count, locale),
+        EndHow::Force => force_question(target, count, locale),
+    }
+}
+
+/// "Force stop …?": nothing is asked, so nothing gets to save.
+fn force_question(target: &EndTarget, count: usize, locale: Locale) -> (String, String) {
+    let z = zh(locale);
+    match target {
+        EndTarget::Process { name, .. } => (
+            if z {
+                format!("要強制停止「{name}」嗎？")
+            } else {
+                format!("Force stop {name}?")
+            },
+            if z {
+                "會立刻停止它，不給它儲存的機會，還沒儲存的內容都會遺失。".to_string()
+            } else {
+                "It's stopped at once, with no chance to save. Anything it hasn't saved is lost."
+                    .to_string()
+            },
+        ),
+        EndTarget::Tree { name, .. } => (
+            if z {
+                format!("要強制停止「{name}」和它啟動的所有處理程序嗎？")
+            } else {
+                format!("Force stop {name} and everything it started?")
+            },
+            if z {
+                format!(
+                    "會立刻停止 {count} 個處理程序，不給它們儲存的機會，還沒儲存的內容都會遺失。"
+                )
+            } else if count <= 1 {
+                "It started nothing else, so only it is stopped at once, with no chance to save. Anything it hasn't saved is lost.".to_string()
+            } else {
+                format!(
+                    "{count} processes are stopped at once, with no chance to save. Anything they haven't saved is lost."
+                )
+            },
+        ),
+        EndTarget::App { name, .. } => (
+            if z {
+                format!("要強制停止「{name}」嗎？")
+            } else {
+                format!("Force stop {name}?")
+            },
+            if z {
+                format!(
+                    "會立刻停止它的 {count} 個處理程序，不給它們儲存的機會，還沒儲存的內容都會遺失。"
+                )
+            } else if count == 1 {
+                "Its process is stopped at once, with no chance to save. Anything it hasn't saved is lost.".to_string()
+            } else {
+                format!(
+                    "All {count} of its processes are stopped at once, with no chance to save. Anything they haven't saved is lost."
+                )
+            },
+        ),
+    }
+}
+
+/// "End …?": the process is asked, and may save first.
+fn close_question(target: &EndTarget, count: usize, locale: Locale) -> (String, String) {
     let z = zh(locale);
     match target {
         EndTarget::Process { name, .. } => (
@@ -1542,6 +1627,29 @@ pub(crate) fn asked_to_close_many(count: usize, locale: Locale) -> String {
         format!("已要求 {count} 個處理程序關閉。")
     } else {
         format!("Asked {count} processes to close.")
+    }
+}
+
+/// What a delivered signal did, in words: asked to close, told to stop at
+/// once, suspended, or let run again. A delivered signal is not an exit, so
+/// none of them says the process has ended.
+pub(crate) fn signal_sentence(signal: SignalKind, count: usize, locale: Locale) -> String {
+    let c = copy(locale);
+    match signal {
+        SignalKind::Terminate if count > 1 => asked_to_close_many(count, locale),
+        SignalKind::Terminate => c.outcome_signal_sent.to_string(),
+        SignalKind::Kill if count > 1 => force_stopped_many(count, locale),
+        SignalKind::Kill => c.outcome_force_stopped.to_string(),
+        SignalKind::Stop => c.outcome_suspended.to_string(),
+        SignalKind::Continue => c.outcome_resumed.to_string(),
+    }
+}
+
+pub(crate) fn force_stopped_many(count: usize, locale: Locale) -> String {
+    if zh(locale) {
+        format!("已要求系統立刻停止 {count} 個處理程序。")
+    } else {
+        format!("Told the system to stop {count} processes at once.")
     }
 }
 

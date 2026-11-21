@@ -13,7 +13,7 @@ use gpui::*;
 use gpui_component::IconName;
 use monitor_core::ProcessAction;
 
-use crate::app::{Dialog, EndTarget, MenuTarget, MonitorApp, Page};
+use crate::app::{Dialog, EndHow, EndTarget, MenuTarget, MonitorApp, Page};
 use crate::i18n::{Copy, copy};
 use crate::layout::{PAGE_MARGIN, commands_that_fit, content_width, navigation_compact};
 use crate::shell::property_row;
@@ -110,15 +110,17 @@ impl MonitorApp {
         match self.page {
             Page::Processes => {
                 let target = self.selected_app_target();
-                commands.push(
-                    Command::new(c.end_task, Picture::EndTask)
-                        .disabled(!end_offered(self.paused, target.is_some()))
-                        .on_click(Self::act(cx, move |this, _, cx| {
-                            if let Some(target) = this.selected_app_target() {
-                                this.request_end(target, cx);
-                            }
-                        })),
-                );
+                for (word, how) in [(c.end_task, EndHow::Close), (c.force_stop, EndHow::Force)] {
+                    commands.push(
+                        Command::new(word, Picture::EndTask)
+                            .disabled(!end_offered(self.paused, target.is_some()))
+                            .on_click(Self::act(cx, move |this, _, cx| {
+                                if let Some(target) = this.selected_app_target() {
+                                    this.request_end(target, how, cx);
+                                }
+                            })),
+                    );
+                }
                 let pid = match &self.app_selection {
                     Some(AppSelection::Process(pid)) => Some(*pid),
                     _ => None,
@@ -136,23 +138,25 @@ impl MonitorApp {
             Page::Details => {
                 let selected = self.selected_pid.and_then(|pid| self.process(pid));
                 let target = selected.map(|process| (process.pid, process.display_name()));
-                let end = target.clone();
-                commands.push(
-                    Command::new(c.end_task, Picture::EndTask)
-                        .disabled(!end_offered(self.paused, target.is_some()))
-                        .on_click(Self::act(cx, move |this, _, cx| {
-                            if let Some((pid, name)) = end.clone() {
-                                this.request_end(EndTarget::Process { pid, name }, cx);
-                            }
-                        })),
-                );
+                for (word, how) in [(c.end_task, EndHow::Close), (c.force_stop, EndHow::Force)] {
+                    let end = target.clone();
+                    commands.push(
+                        Command::new(word, Picture::EndTask)
+                            .disabled(!end_offered(self.paused, target.is_some()))
+                            .on_click(Self::act(cx, move |this, _, cx| {
+                                if let Some((pid, name)) = end.clone() {
+                                    this.request_end(EndTarget::Process { pid, name }, how, cx);
+                                }
+                            })),
+                    );
+                }
                 let tree = target.clone();
                 commands.push(
                     Command::new(c.end_process_tree, Picture::EndTask)
                         .disabled(!end_offered(self.paused, target.is_some()))
                         .on_click(Self::act(cx, move |this, _, cx| {
                             if let Some((pid, name)) = tree.clone() {
-                                this.request_end(EndTarget::Tree { pid, name }, cx);
+                                this.request_end(EndTarget::Tree { pid, name }, EndHow::Close, cx);
                             }
                         })),
                 );
@@ -379,16 +383,17 @@ impl MonitorApp {
         let c = copy(self.locale);
         let p = palette(cx);
         match self.dialog.clone()? {
-            Dialog::End(target) => {
+            Dialog::End(target, how) => {
                 let count = self.end_pids(&target).len();
-                let (title, body) = crate::i18n::end_question(&target, count, self.locale);
+                let (title, body) = crate::i18n::end_question(&target, how, count, self.locale);
                 Some(
                     ContentDialog::new("end-dialog", title)
                         .buttons(DialogButtons {
                             primary: Some(
-                                match target {
-                                    EndTarget::Tree { .. } => c.end_process_tree,
-                                    _ => c.end_task,
+                                match (how, target) {
+                                    (EndHow::Force, _) => c.force_stop,
+                                    (EndHow::Close, EndTarget::Tree { .. }) => c.end_process_tree,
+                                    (EndHow::Close, _) => c.end_task,
                                 }
                                 .into(),
                             ),
@@ -466,12 +471,20 @@ impl MonitorApp {
                     pids: row.group.pids().collect(),
                 };
                 let first = row.group.pids().next();
+                let force = target.clone();
                 let mut entries = vec![
                     MenuItem::new(c.end_task)
                         .icon(Picture::EndTask)
                         .disabled(!end_offered(self.paused, true))
                         .on_select(Self::act(cx, move |this, _, cx| {
-                            this.request_end(target.clone(), cx)
+                            this.request_end(target.clone(), EndHow::Close, cx)
+                        }))
+                        .entry(),
+                    MenuItem::new(c.force_stop)
+                        .icon(Picture::EndTask)
+                        .disabled(!end_offered(self.paused, true))
+                        .on_select(Self::act(cx, move |this, _, cx| {
+                            this.request_end(force.clone(), EndHow::Force, cx)
                         }))
                         .entry(),
                 ];
@@ -563,7 +576,7 @@ impl MonitorApp {
         let list_paused = self.paused;
         let blocked =
             |action: ProcessAction| self.availability(&process, action).refusal().is_some();
-        let (end, tree) = (name.clone(), name);
+        let (end, force, tree) = (name.clone(), name.clone(), name);
         let pause_action = if paused {
             ProcessAction::Resume
         } else {
@@ -579,6 +592,21 @@ impl MonitorApp {
                             pid,
                             name: end.clone(),
                         },
+                        EndHow::Close,
+                        cx,
+                    )
+                }))
+                .entry(),
+            MenuItem::new(c.force_stop)
+                .icon(Picture::EndTask)
+                .disabled(blocked(ProcessAction::ForceStop) || !end_offered(list_paused, true))
+                .on_select(Self::act(cx, move |this, _, cx| {
+                    this.request_end(
+                        EndTarget::Process {
+                            pid,
+                            name: force.clone(),
+                        },
+                        EndHow::Force,
                         cx,
                     )
                 }))
@@ -592,6 +620,7 @@ impl MonitorApp {
                             pid,
                             name: tree.clone(),
                         },
+                        EndHow::Close,
                         cx,
                     )
                 }))

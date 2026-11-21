@@ -406,11 +406,28 @@ Semantic differences and decisions:
 - **`init` and Better Monitor's own process are never signalled.**
 - **The policy is checked again inside `perform`,** so a view that forgot to
   check cannot reach a syscall.
+- **Force stop is offered beside End task (owner, 2026-11-21, ticket 272).**
+  It is `ProcessAction::ForceStop`, delivered as `SIGKILL` by
+  `monitor-actions-linux` with the same pidfd identity check, so a reused PID
+  is never signalled. It is in the Processes and Details pages' commands and
+  in every process and application row menu, for one process or every
+  process of an application (never a tree), and it has its own confirmation
+  that says unsaved work is lost, with Cancel the default button. It is
+  refused while updates are paused, as End task is, and on top of the
+  ownership rules it is refused for anything the session stands on: an
+  ancestor of Better Monitor, the user's `systemd`, or a session leader
+  (`ActionRefusal::SessionProcess`, decided by the same predicate as
+  `tree_refusal`). `LinuxProcessController::availability` applies that guard,
+  so the menu shows the refusal before anyone clicks and `perform` refuses it
+  again. An application with one such process is refused whole, as a tree
+  is. A delivered `SIGKILL` is reported as "the system was told to stop it",
+  not as an exit.
 
-Tests: 14 policy tests in `monitor-core`, 6 in `monitor-actions-linux`, and 4
+Tests: 14 policy tests in `monitor-core`, 12 in `monitor-actions-linux`, and 5
 integration tests in `monitor-actions-linux/tests/real_process.rs` that spawn a
 real child and assert against `/proc` that `SIGSTOP` stopped it, `SIGCONT`
-resumed it, `SIGTERM` ended it, and a renice took effect.
+resumed it, `SIGTERM` ended it, `SIGKILL` ended one that ignores `SIGTERM`,
+and a renice took effect.
 
 ## Large-process benchmark
 

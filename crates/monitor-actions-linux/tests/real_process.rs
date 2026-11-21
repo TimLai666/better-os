@@ -192,6 +192,58 @@ fn terminating_a_process_that_already_exited_reports_the_race_honestly() {
 }
 
 #[test]
+fn force_stop_ends_a_child_that_ignores_being_asked_to_close() {
+    // `sleep` with SIGTERM ignored: the disposition survives the `exec`, so
+    // this is the program End task cannot end.
+    let child = Command::new("/bin/sh")
+        .args(["-c", "trap '' TERM; exec sleep 120"])
+        .spawn()
+        .expect("the test host must provide /bin/sh");
+    let sleeper = Sleeper(Some(child));
+    let pid = sleeper.pid();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let comm = || std::fs::read_to_string(format!("/proc/{pid}/comm")).unwrap_or_default();
+    while comm().trim() != "sleep" && Instant::now() < deadline {
+        sleep(Duration::from_millis(20));
+    }
+    assert_eq!(comm().trim(), "sleep", "the shell must have become `sleep`");
+    let mut controller = LinuxProcessController::for_current_process();
+    assert!(
+        controller
+            .availability(&target(&controller, pid), ProcessAction::ForceStop)
+            .is_available(),
+        "a child of the test is not something the session stands on"
+    );
+
+    controller
+        .perform(&target(&controller, pid), ProcessAction::Terminate)
+        .expect("asking it to close is allowed");
+    sleep(Duration::from_millis(300));
+    assert!(
+        matches!(state_of(pid), Some(state) if state != 'Z'),
+        "it ignores SIGTERM, so it is still running"
+    );
+
+    let outcome = controller
+        .perform(&target(&controller, pid), ProcessAction::ForceStop)
+        .expect("force stopping an own process is allowed");
+    assert_eq!(
+        outcome,
+        ActionOutcome::SignalAccepted {
+            signal: SignalKind::Kill
+        }
+    );
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !matches!(state_of(pid), None | Some('Z')) && Instant::now() < deadline {
+        sleep(Duration::from_millis(20));
+    }
+    assert!(
+        matches!(state_of(pid), None | Some('Z')),
+        "SIGKILL must end it"
+    );
+}
+
+#[test]
 fn another_users_process_is_refused_without_a_syscall_being_attempted() {
     let mut controller = LinuxProcessController::for_current_process();
     let sleeper = Sleeper::spawn();

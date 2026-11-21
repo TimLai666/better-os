@@ -29,3 +29,25 @@ Offer it.
 
 - Tests for the action, each refusal, and the confirmation's wording in both
   languages; seen in a sandbox against a process the test itself started.
+
+## Notes
+
+- Delivered: Force stop beside End task on the Processes and Details pages,
+  in the process row menu and the application row menu (one process, or
+  every process of an application; not a tree), with its own confirmation
+  (Cancel is the default). `crate::ending` in `monitor-gui` decides and
+  carries it out against any `ProcessController`.
+- The session guard: `monitor_core::force_stop_refusal` (the same rule as
+  `tree_refusal`) refuses an ancestor of Better Monitor, the user's
+  `systemd`, or a session leader as `ActionRefusal::SessionProcess`;
+  `LinuxProcessController::availability` applies it, so `perform` refuses it
+  again. An application holding such a process is refused whole.
+- Found on the way: a Suspend or Resume used to report "Asked it to close.";
+  the outcome sentence now follows the signal (`i18n::signal_sentence`).
+- Seen in a headless sway (wayhand sandbox) with the window on a private bus
+  that activates nothing and a scratch home, filtered to fixture processes
+  the run started (`bm272-*`, `sleep` under another name; one ignoring
+  SIGTERM, one a session leader by `setsid`): End task left the stubborn one
+  running, Force stop ended it, the session leader was refused with the
+  reason, and both are not offered while paused. Screenshots in
+  `better-os-evidence/272`, light and dark, en-US and zh-TW.

@@ -1,6 +1,7 @@
 mod app;
 mod card_notes;
 mod charts;
+mod ending;
 mod i18n;
 mod layout;
 mod link;
