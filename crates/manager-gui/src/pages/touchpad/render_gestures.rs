@@ -53,7 +53,10 @@ impl TouchpadPage {
                 div().pb(px(12.0)).child(
                     ErrorBar::new(
                         "touchpad-gesture-problem",
-                        ErrorReport::new(summary, problem.to_string()),
+                        ErrorReport::new(
+                            summary,
+                            touchpad_views::i18n::problem_detail(problem).unwrap_or_default(),
+                        ),
                     )
                     .locale(words),
                 ),

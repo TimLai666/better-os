@@ -765,6 +765,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "test-prerequisites",
  "thiserror 2.0.19",
  "tokio",
  "zbus",
@@ -793,6 +794,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "test-prerequisites",
  "thiserror 2.0.19",
  "tokio",
  "zbus",
@@ -845,6 +847,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "tempfile",
+ "test-prerequisites",
  "thiserror 2.0.19",
 ]
 
@@ -1744,6 +1747,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "test-prerequisites",
  "thiserror 2.0.19",
  "tokio",
  "zbus",
@@ -2223,6 +2227,7 @@ dependencies = [
  "storage-platform",
  "storage-service",
  "tempfile",
+ "test-prerequisites",
  "tokio",
  "zbus",
 ]
@@ -2241,6 +2246,7 @@ dependencies = [
  "serde_json",
  "tar",
  "tempfile",
+ "test-prerequisites",
  "thiserror 2.0.19",
  "zip",
 ]
@@ -2256,6 +2262,7 @@ dependencies = [
  "notify",
  "storage-core",
  "tempfile",
+ "test-prerequisites",
  "thiserror 2.0.19",
 ]
 
@@ -2275,6 +2282,7 @@ dependencies = [
  "ruzstd",
  "tar",
  "tempfile",
+ "test-prerequisites",
  "thiserror 2.0.19",
  "zip",
 ]
@@ -2741,6 +2749,7 @@ name = "git-platform"
 version = "0.2.16"
 dependencies = [
  "better-core",
+ "files-platform",
  "git-core",
  "libc",
  "tempfile",
@@ -3476,6 +3485,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "test-prerequisites",
  "zbus",
 ]
 
@@ -4245,6 +4255,7 @@ dependencies = [
  "better-core",
  "launcher-core",
  "tempfile",
+ "test-prerequisites",
  "thiserror 2.0.19",
  "tokio",
  "zbus",
@@ -4550,6 +4561,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
+ "test-prerequisites",
  "thiserror 2.0.19",
  "tokio",
  "zbus",
@@ -4589,6 +4601,7 @@ dependencies = [
  "smol",
  "storage-platform",
  "tempfile",
+ "test-prerequisites",
  "thiserror 2.0.19",
  "tokio",
  "touchpad-core",
@@ -4827,6 +4840,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "test-prerequisites",
 ]
 
 [[package]]
@@ -4854,6 +4868,8 @@ dependencies = [
 name = "monitor-gui"
 version = "0.2.16"
 dependencies = [
+ "app-catalog-core",
+ "app-catalog-platform",
  "better-ui",
  "gpui",
  "gpui-component",
@@ -4900,6 +4916,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "test-prerequisites",
  "thiserror 2.0.19",
  "tokio",
  "zbus",
@@ -4926,6 +4943,7 @@ dependencies = [
  "monitor-service",
  "serde",
  "tempfile",
+ "test-prerequisites",
  "tokio",
  "zbus",
 ]
@@ -7517,6 +7535,7 @@ dependencies = [
  "storage-core",
  "storage-platform",
  "tempfile",
+ "test-prerequisites",
  "thiserror 2.0.19",
  "tokio",
  "zbus",
@@ -7907,6 +7926,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "test-prerequisites"
+version = "0.2.16"
+
+[[package]]
 name = "thiserror"
 version = "1.0.69"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8232,6 +8255,7 @@ dependencies = [
  "launcher-platform",
  "libc",
  "tempfile",
+ "test-prerequisites",
  "tokio",
  "touchpad-core",
  "touchpad-gestures",
@@ -8284,6 +8308,7 @@ dependencies = [
  "defaults-platform",
  "serde_json",
  "tempfile",
+ "test-prerequisites",
  "thiserror 2.0.19",
  "touchpad-core",
  "touchpad-scroll",
@@ -8309,6 +8334,7 @@ dependencies = [
  "launcher-platform",
  "serde",
  "serde_json",
+ "test-prerequisites",
  "thiserror 2.0.19",
  "tokio",
  "zbus",
@@ -9287,6 +9313,7 @@ dependencies = [
  "libc",
  "serde",
  "tempfile",
+ "test-prerequisites",
  "window-attention-core",
  "zbus",
 ]

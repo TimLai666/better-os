@@ -133,6 +133,12 @@ processes trashing `notes.txt` at the same moment cannot both win the name.
 The move itself is a `rename(2)`; a failed move removes the record it just
 wrote, so a record never outlives the data it describes.
 
+`files_platform::trash` is the only trash writer in Better OS (ticket 173).
+Better Git's discards put their copy in through it (`trash_path` with
+`Put::Copy`, or `Put::Move` for a file HEAD does not have), so a discarded
+change is named, escaped, and placed on its device exactly as a deletion here
+is, and a test fails when another crate spells a trash record itself.
+
 - **Collisions in the trash**: the second `report.txt` becomes `report.1.txt`,
   and both keep their own original path, so both restore to the right place.
 - **Collisions on restore**: refused, not overwritten. The job raises a conflict

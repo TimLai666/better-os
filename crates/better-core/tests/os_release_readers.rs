@@ -129,3 +129,51 @@ fn the_scan_sees_a_reader_and_skips_comments_and_test_modules() {
     assert!(is_test_file(Path::new("src/drives_bus_tests.rs")));
     assert!(!is_test_file(Path::new("src/host.rs")));
 }
+
+/// Ticket 173: the packaging scripts read no os-release either. The
+/// container check (`packaging/test-daemon-e2e.sh`) once read `VERSION_ID`
+/// with `sed`; it takes the release the image was built for instead, so the
+/// daemon's own reading is what the check tests rather than what it copies.
+/// `install.sh`, at the repository root, keeps its copy of the rule by design.
+#[test]
+fn no_packaging_script_reads_os_release() {
+    fn scripts(directory: &Path, out: &mut Vec<PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(directory) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                scripts(&path, out);
+            } else if path.extension().is_some_and(|extension| extension == "sh") {
+                out.push(path);
+            }
+        }
+    }
+    let packaging = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packaging");
+    let mut files = Vec::new();
+    scripts(&packaging, &mut files);
+    assert!(files.len() > 10, "found only {} scripts", files.len());
+    let mut found = Vec::new();
+    for file in files {
+        let text = std::fs::read_to_string(&file).unwrap();
+        for (number, line) in text.lines().enumerate() {
+            if line.trim_start().starts_with('#') {
+                continue;
+            }
+            if line.contains("os-release") {
+                found.push(format!(
+                    "{}:{}: {}",
+                    file.display(),
+                    number + 1,
+                    line.trim()
+                ));
+            }
+        }
+    }
+    assert!(
+        found.is_empty(),
+        "a packaging script reads os-release:\n{}",
+        found.join("\n")
+    );
+}

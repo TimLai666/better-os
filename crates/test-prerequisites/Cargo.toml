@@ -1,0 +1,13 @@
+[package]
+name = "test-prerequisites"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+# The one place a test says it cannot run here (ticket 177). It has no
+# dependencies at all, so every crate's tests can take it as a
+# dev-dependency without a cycle and without pulling anything into a build:
+# better-core's own tests included. No shipped binary links it.
+[dependencies]

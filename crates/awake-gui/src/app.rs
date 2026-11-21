@@ -90,9 +90,10 @@ pub(crate) struct AwakeApp {
 
     /// Why the service could not be read. Set means every section shows the
     /// unreachable state rather than stale numbers.
-    pub(crate) connection_error: Option<String>,
+    /// Kept as the error, and said in words when drawn (ticket 172).
+    pub(crate) connection_error: Option<ClientError>,
     /// Why the last action was refused. Cleared by the next successful action.
-    pub(crate) action_error: Option<String>,
+    pub(crate) action_error: Option<ClientError>,
     pub(crate) test: Option<RuleTestView>,
     pub(crate) draft: Option<RuleDraft>,
     pub(crate) zone: TimeZone,
@@ -231,7 +232,7 @@ impl AwakeApp {
             Err(error) => {
                 self.status = None;
                 self.providers.clear();
-                self.connection_error = Some(error.to_string());
+                self.connection_error = Some(error);
             }
         }
 
@@ -294,7 +295,7 @@ impl AwakeApp {
         self._work = Some(cx.spawn(async move |this, cx| {
             let outcome = work.await;
             this.update(cx, |this, cx| {
-                this.action_error = outcome.err().map(|error| error.to_string());
+                this.action_error = outcome.err();
                 this.refresh(cx);
                 cx.notify();
             })
@@ -326,7 +327,7 @@ impl AwakeApp {
                     }
                     Err(error) => {
                         this.test = None;
-                        this.action_error = Some(error.to_string());
+                        this.action_error = Some(error);
                     }
                 }
                 cx.notify();
@@ -643,7 +644,7 @@ impl AwakeApp {
         let c = copy(self.locale);
         let draft = self.draft.as_ref().ok_or_else(|| c.unknown.to_string())?;
         let name = Reason::new(draft.name.read(cx).value().to_string())
-            .map_err(|error| format!("{}: {error}", c.rule_invalid_input))?;
+            .map_err(|error| format!("{}: {}", c.rule_invalid_input, c.said(&error.to_string())))?;
 
         let mut groups = Vec::new();
         for group in &draft.groups {
@@ -652,8 +653,9 @@ impl AwakeApp {
                 conditions.push(Self::resolved_condition(condition, cx, c)?);
             }
             groups.push(
-                ConditionGroup::new(group.combine, conditions)
-                    .map_err(|error| format!("{}: {error}", c.rule_invalid_input))?,
+                ConditionGroup::new(group.combine, conditions).map_err(|error| {
+                    format!("{}: {}", c.rule_invalid_input, c.said(&error.to_string()))
+                })?,
             );
         }
 
@@ -665,13 +667,13 @@ impl AwakeApp {
             draft.combine,
             groups,
         )
-        .map_err(|error| format!("{}: {error}", c.rule_invalid_input))?;
+        .map_err(|error| format!("{}: {}", c.rule_invalid_input, c.said(&error.to_string())))?;
         rule.enabled = draft.enabled;
         rule.priority = draft.priority;
         rule.policy = draft.policy;
         rule.battery_stop_percent = draft.battery_stop_percent;
         rule.validate()
-            .map_err(|error| format!("{}: {error}", c.rule_invalid_input))?;
+            .map_err(|error| format!("{}: {}", c.rule_invalid_input, c.said(&error.to_string())))?;
         Ok(rule)
     }
 
@@ -687,7 +689,9 @@ impl AwakeApp {
             .text
             .as_ref()
             .map(|input| input.read(cx).value().to_string());
-        let invalid = |error: awake_core::RuleError| format!("{}: {error}", c.rule_invalid_input);
+        let invalid = |error: awake_core::RuleError| {
+            format!("{}: {}", c.rule_invalid_input, c.said(&error.to_string()))
+        };
         Ok(match (&draft.condition, typed) {
             (Condition::ProcessRunning { matcher }, Some(value)) => Condition::ProcessRunning {
                 matcher: ProcessMatcher::new(matcher.kind, value).map_err(invalid)?,

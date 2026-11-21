@@ -884,11 +884,12 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let source = directory.path().join("tagged");
         fs::write(&source, b"x").unwrap();
-        if write_xattr(&source, "user.better-os.test", b"value").is_err() {
-            // tmpfs without user xattrs, or a kernel that refuses them. The
-            // policy says this is not fatal, and neither is skipping the test.
-            return;
-        }
+        // tmpfs without user xattrs, or a kernel that refuses them. The
+        // policy says this is not fatal; the test needs them all the same.
+        test_prerequisites::require!(
+            "a temporary directory that takes user extended attributes",
+            write_xattr(&source, "user.better-os.test", b"value")
+        );
         let destination = directory.path().join("tagged-copy");
         copy(&source, &destination, &policy());
         assert_eq!(

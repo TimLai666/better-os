@@ -192,7 +192,33 @@ impl Copy {
     /// A provider's reason key as a sentence in this language
     /// (`awake_ipc::reasons`); `None` when the provider gave no reason.
     pub(crate) fn reason(&self, key: Option<&str>) -> Option<String> {
-        key.map(|key| awake_ipc::reasons::provider_reason(key, self.reason_language))
+        key.map(|key| self.said(key))
+    }
+
+    /// Any key the service sends, as a sentence in this language.
+    pub(crate) fn said(&self, key: &str) -> String {
+        awake_ipc::reasons::reason(key, self.reason_language)
+    }
+
+    /// The details of a failed read or change: a key the service or this page
+    /// gave (`awake.…`) as its sentence, and the system's own message under a
+    /// label saying whose words they are, because an error report is where
+    /// someone diagnosing it reads them.
+    pub(crate) fn details(&self, details: &str) -> String {
+        if details.trim_start().starts_with("awake.") {
+            self.said(details)
+        } else if details.trim().is_empty() {
+            String::new()
+        } else {
+            match self.reason_language {
+                awake_ipc::reasons::Language::English => {
+                    format!("The system said: {}", details.trim())
+                }
+                awake_ipc::reasons::Language::TraditionalChinese => {
+                    format!("系統回報：{}", details.trim())
+                }
+            }
+        }
     }
 }
 

@@ -258,7 +258,10 @@ impl Headline {
                 w.rules_paused_description.to_string(),
             ),
             Headline::Overridden => (w.rules_overridden_header.to_string(), String::new()),
-            Headline::Attention { reason } => (w.attention_header.to_string(), reason.clone()),
+            Headline::Attention { reason } if reason.is_empty() => {
+                (w.attention_header.to_string(), String::new())
+            }
+            Headline::Attention { reason } => (w.attention_header.to_string(), c.said(reason)),
         }
     }
 }

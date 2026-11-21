@@ -35,6 +35,9 @@ serde_json.workspace = true
 zbus = { workspace = true, optional = true }
 
 [dev-dependencies]
+# A missing program is a skip on a developer's machine and a failure
+# under CI (ticket 177).
+test-prerequisites.workspace = true
 defaults-platform = { workspace = true, features = ["test-support"] }
 tempfile.workspace = true
 # The integration tests speak the core vocabulary, which a dependency of the

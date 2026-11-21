@@ -375,3 +375,56 @@ fn the_check_box_names_the_type_not_the_last_extension() {
         Some("Plain & simple")
     );
 }
+
+/// Ticket 172: a failed launch and a failed default are said in the
+/// window's language; neither the catalog's key nor the store's English
+/// sentence is the text.
+#[test]
+fn launch_and_association_failures_are_said_in_both_languages() {
+    use crate::i18n::{Locale, association_details, launch_details};
+    use app_chooser_core::AssociationError;
+    let path = std::path::PathBuf::from("/home/a/.config/mimeapps.list");
+    let errors = [
+        AssociationError::Read {
+            path: path.clone(),
+            source: std::io::Error::from_raw_os_error(13),
+        },
+        AssociationError::Write {
+            path: path.clone(),
+            source: std::io::Error::from_raw_os_error(28),
+        },
+        AssociationError::NotUtf8 { path: path.clone() },
+        AssociationError::RollbackSchema { found: 9 },
+        AssociationError::RollbackStale { path: path.clone() },
+        AssociationError::NoHomeDirectory,
+    ];
+    for error in &errors {
+        let english = error.to_string();
+        let zh = association_details(error, Locale::ZhTw);
+        let en = association_details(error, Locale::EnUs);
+        assert_ne!(zh, english, "{error:?}");
+        assert!(
+            !zh.contains("could not") && !zh.contains("is not valid"),
+            "{zh}"
+        );
+        assert!(en.ends_with('.') || en.contains("The system said:"), "{en}");
+    }
+    assert!(
+        association_details(&errors[0], Locale::ZhTw)
+            .starts_with("無法讀取 /home/a/.config/mimeapps.list。")
+    );
+    for key in [
+        "catalog.launch.error.relative_path",
+        "catalog.platform.error.spawn_failed:evince:No such file or directory",
+        "catalog.launch.error.no_launch_definition",
+    ] {
+        for locale in [Locale::EnUs, Locale::ZhTw] {
+            let said = launch_details(key, locale);
+            assert!(!said.contains("catalog."), "{said}");
+        }
+    }
+    assert_eq!(
+        launch_details("catalog.launch.error.relative_path", Locale::ZhTw),
+        "要開啟的檔案必須用完整路徑指定。"
+    );
+}

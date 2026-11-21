@@ -349,13 +349,10 @@ async fn call(bus: &PrivateBus, uuid: &'static str, on: bool) -> SetOutcome {
 
 macro_rules! bus_or_skip {
     () => {
-        match PrivateBus::start() {
-            Some(bus) => bus,
-            None => {
-                eprintln!("skipping: dbus-daemon is not available in this environment");
-                return;
-            }
-        }
+        test_prerequisites::require!(
+            "dbus-daemon",
+            PrivateBus::start().ok_or("a private dbus-daemon did not start")
+        )
     };
 }
 

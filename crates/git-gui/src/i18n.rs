@@ -611,7 +611,7 @@ impl Copy {
         let failed = |what: &str| fill(self.t("{what} failed", "{what}失敗"), &[("what", what)]);
         match problem {
             Problem::Git { kind, error } => {
-                let details = git_details(error);
+                let details = self.git_details(error);
                 let message = match error {
                     GitError::NotInstalled => self
                         .t(
@@ -661,8 +661,13 @@ impl Copy {
                         self.refusal(git_core::classify_refusal(message), push)
                             .to_string()
                     }
+                    // A failure Better Git has no sentence for says so; Git's
+                    // own text is the detail, never the headline.
                     GitError::Failed { .. } => self
-                        .t("Git's message says why.", "Git 的訊息說明了原因。")
+                        .t(
+                            "Git stopped with a message Better Git doesn't recognize. What Git said is in the details.",
+                            "Git 停下來並留下 Better Git 無法辨識的訊息，Git 的原文在詳細資料裡。",
+                        )
                         .to_string(),
                     GitError::UnreadableOutput(_) => self
                         .t(
@@ -670,7 +675,20 @@ impl Copy {
                             "Git 輸出了 Better Git 讀不懂的內容。",
                         )
                         .to_string(),
-                    GitError::Io(text) => text.clone(),
+                    GitError::Io(_) => self
+                        .t(
+                            "A file Better Git needed couldn't be read or written. What the system said is in the details.",
+                            "Better Git 需要的檔案無法讀取或寫入，系統的原文在詳細資料裡。",
+                        )
+                        .to_string(),
+                    GitError::Trash { reason, .. } => self.trash_sentence(*reason).to_string(),
+                    GitError::Submodule(path) => fill(
+                        self.t(
+                            "{path} is a submodule, so Discard doesn't change it. Open {path} as a repository of its own to discard its changes.",
+                            "{path} 是子模組，捨棄不會更動它。請把 {path} 當成獨立的儲存庫開啟，再捨棄它的變更。",
+                        ),
+                        &[("path", &path.to_string_lossy())],
+                    ),
                     GitError::Unsupported(_) => String::new(),
                 };
                 let title = if matches!(error, GitError::Conflicts(_)) {
@@ -883,13 +901,63 @@ impl Copy {
     }
 }
 
-fn git_details(error: &GitError) -> String {
-    match error {
-        GitError::Failed { message, .. } | GitError::Conflicts(message) => message.clone(),
-        GitError::UnreadableOutput(detail) => detail.clone(),
-        GitError::Io(text) => text.clone(),
-        GitError::NotARepository(path) => path.to_string_lossy().into_owned(),
-        other => other.to_string(),
+impl Copy {
+    /// What a discard's trash failure means, in this language.
+    fn trash_sentence(&self, reason: git_platform::TrashReason) -> &'static str {
+        use git_platform::TrashReason::*;
+        match reason {
+            NoHome => self.t(
+                "Nothing was discarded: there is no home folder to keep the trash in, so the changes could not be kept there first.",
+                "沒有捨棄任何東西：找不到存放垃圾桶的個人資料夾，所以無法先把變更保留在那裡。",
+            ),
+            NoFreeName => self.t(
+                "Nothing was discarded: the trash already holds too many items with this file's name. Empty the trash and try again.",
+                "沒有捨棄任何東西：垃圾桶裡同名的項目太多了。請清空垃圾桶後再試。",
+            ),
+            NotCopyable => self.t(
+                "Nothing was discarded: this is a special file (a pipe or a device) that the trash can't keep.",
+                "沒有捨棄任何東西：這是垃圾桶無法保存的特殊檔案（管道或裝置）。",
+            ),
+            Unusable => self.t(
+                "Nothing was discarded: the trash folder can't be used safely (it is a link, or belongs to someone else).",
+                "沒有捨棄任何東西：垃圾桶資料夾無法安全使用（它是連結，或屬於其他人）。",
+            ),
+            Io => self.t(
+                "Nothing was discarded: the changes could not be copied to the trash first. What the system said is in the details.",
+                "沒有捨棄任何東西：無法先把變更複製到垃圾桶，系統的原文在詳細資料裡。",
+            ),
+        }
+    }
+
+    /// The details under an error: the original text, under a label saying
+    /// whose words they are (Git's or the system's), in this language.
+    fn git_details(&self, error: &GitError) -> String {
+        let labelled = |label: &str, text: &str| {
+            if text.trim().is_empty() {
+                String::new()
+            } else {
+                format!("{label}\n{}", text.trim_end())
+            }
+        };
+        let git_said = self.t("What Git said:", "Git 的原文：");
+        let system_said = self.t("What the system said:", "系統的原文：");
+        match error {
+            GitError::Failed { message, .. } | GitError::Conflicts(message) => {
+                labelled(git_said, message)
+            }
+            GitError::UnreadableOutput(detail) => labelled(git_said, detail),
+            GitError::Io(text) => labelled(system_said, text),
+            GitError::Trash { detail, .. } => labelled(system_said, detail),
+            GitError::NotARepository(path) => path.to_string_lossy().into_owned(),
+            // The rest carry nothing beyond their sentence: no key in the
+            // details either (ticket 172).
+            GitError::Submodule(_)
+            | GitError::NotInstalled
+            | GitError::ChangedMeanwhile
+            | GitError::Cancelled
+            | GitError::Stalled
+            | GitError::Unsupported(_) => String::new(),
+        }
     }
 }
 
