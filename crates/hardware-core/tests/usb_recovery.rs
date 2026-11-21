@@ -184,6 +184,7 @@ fn the_overnight_guard_notifies_once_and_powers_off_only_when_chosen_and_safe() 
     let on = UsbRecoverySettings::default().with(UsbChoice::ControllerAutomatic, true);
     let closed = GuardWorld {
         lid_closed: Some(true),
+        docked: Some(false),
         ..GuardWorld::default()
     };
     // Off: nothing at all.
@@ -221,6 +222,21 @@ fn the_overnight_guard_notifies_once_and_powers_off_only_when_chosen_and_safe() 
         },
         GuardWorld {
             other_people: true,
+            ..closed
+        },
+        // Docked (an external screen): the laptop may be in use.
+        GuardWorld {
+            docked: Some(true),
+            ..closed
+        },
+        // logind could not say: never read as undocked.
+        GuardWorld {
+            docked: None,
+            ..closed
+        },
+        // Better Manager's privileged service is in a transaction.
+        GuardWorld {
+            daemon_busy: true,
             ..closed
         },
     ] {
@@ -347,4 +363,88 @@ fn findings_carry_no_log_text() {
     let back: UsbFindings = serde_json::from_str(&wire).unwrap();
     assert_eq!(back, findings);
     assert!(serde_json::from_str::<PciAddress>("\"../../x\"").is_err());
+}
+
+/// Review finding 2: only the kernel's own lines and the daemon's two exact
+/// markers are read. A line another process wrote into the daemon's stream
+/// (a forged `HC died`, a forged run of failed sleeps) is dropped.
+#[test]
+fn only_kernel_lines_and_exact_markers_are_read_from_the_journal() {
+    let entry = |message: &str, transport: &str| {
+        format!(
+            "{}\n",
+            serde_json::json!({ "MESSAGE": message, "_TRANSPORT": transport })
+        )
+    };
+    let mut json = String::new();
+    for line in fixture("ucsi-after-resume.log").lines() {
+        json.push_str(&entry(line, "kernel"));
+    }
+    // Forged through the daemon's stdout stream.
+    json.push_str(&entry(
+        "xhci_hcd 0000:63:00.4: HC died; cleaning up",
+        "stdout",
+    ));
+    for _ in 0..2 {
+        json.push_str(&entry("PM: suspend entry (s2idle)", "stdout"));
+        json.push_str(&entry(
+            "Freezing remaining freezable tasks failed after 20.000 seconds (0 tasks refusing to freeze, wq_busy=1):",
+            "stdout",
+        ));
+        json.push_str(&entry("workqueue usb_hub_wq: flags=0x104", "stdout"));
+        json.push_str(&entry("PM: suspend exit", "stdout"));
+    }
+    json.push_str(&entry("usb-recovery: ucsi_acpi reloaded extra", "stdout"));
+    // A message stored as bytes is not text.
+    json.push_str("{\"MESSAGE\":[104,105],\"_TRANSPORT\":\"kernel\"}\n");
+    json.push_str("not json\n");
+    let findings = classify_journal(&json);
+    assert!(findings.controllers.is_empty(), "{findings:?}");
+    assert_eq!(findings.sleep.attempts, 1);
+    assert_eq!(findings.sleep.streak, 0);
+    assert!(
+        findings.ucsi.active,
+        "a marker with more after it is no marker"
+    );
+
+    // The real marker from the daemon's stream is read.
+    json.push_str(&entry(UCSI_RELOADED_MARKER, "stdout"));
+    assert!(!classify_journal(&json).ucsi.active);
+    // as_journal gives the same classification as the plain text.
+    let text = fixture("xhci-died-sleep-blocked.log");
+    assert_eq!(classify_journal(&as_journal(&text)), classify(&text));
+}
+
+/// Review finding 8: a hub worker's stack in any other dump (a WARN during
+/// enumeration) does not say the hub work is stuck; only a hung-task
+/// report does.
+#[test]
+fn a_hub_worker_in_a_warning_is_not_hung_hub_work() {
+    let warn = "\
+------------[ cut here ]------------
+WARNING: CPU: 3 PID: 120 at drivers/usb/core/hub.c:1 hub_port_init+0x1/0x2
+Workqueue: usb_hub_wq hub_event
+";
+    assert!(!classify(warn).hub_work_hung);
+    let hung = "\
+INFO: task kworker/12:2:1115178 blocked for more than 122 seconds.
+      Not tainted 7.0.0-42-generic #42~24.04.1-Ubuntu
+Workqueue: usb_hub_wq hub_event
+";
+    assert!(classify(hung).hub_work_hung);
+    // A warning after a hung report ends it.
+    assert!(
+        !classify(&format!(
+            "INFO: task k:1 blocked for more than 122 seconds.\n{warn}"
+        ))
+        .hub_work_hung
+    );
+    // The grep keeps the hung-task line, so a grepped log says the same.
+    let pattern = regex::Regex::new(KERNEL_LOG_PATTERN).unwrap();
+    let grepped: String = hung
+        .lines()
+        .filter(|line| pattern.is_match(line))
+        .map(|line| format!("{line}\n"))
+        .collect();
+    assert!(classify(&grepped).hub_work_hung);
 }

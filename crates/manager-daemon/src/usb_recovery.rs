@@ -125,7 +125,8 @@ impl Timings {
 
 /// The machine, as the recovery reads and changes it.
 pub trait UsbMachine: Send + Sync {
-    /// This boot's kernel log, as `core::kernel_log_args` prints it.
+    /// This boot's kernel log, as `core::kernel_log_args` prints it (JSON,
+    /// one entry per line, with its transport).
     fn kernel_log(&self) -> Result<String, DaemonError>;
     fn present(&self) -> UsbPresent;
     fn workers(&self) -> Vec<Worker>;
@@ -357,9 +358,10 @@ pub fn after_sleep_properties() -> Vec<String> {
     properties
 }
 
-/// This boot's findings.
+/// This boot's findings: the query's JSON, of which only the kernel's own
+/// lines and the daemon's exact markers are read.
 pub fn findings(machine: &dyn UsbMachine) -> Result<UsbFindings, DaemonError> {
-    Ok(core::classify(&machine.kernel_log()?))
+    Ok(core::classify_journal(&machine.kernel_log()?))
 }
 
 /// Looks until `done` holds or `settle` has passed; the last look.
@@ -380,8 +382,9 @@ fn settle(
 }
 
 /// Reloads `ucsi_acpi` when this boot's log says the interface is failing
-/// now, and reports what came back. A reload that brought every port back
-/// is marked in the journal.
+/// now, and reports what came back. Only a reload that brought every port
+/// back and shows a plugged-in charger (`Restored::complete`) is marked in
+/// the journal: one that did not is still failing, and may be tried again.
 pub fn reload(machine: &dyn UsbMachine, timings: Timings) -> Result<Restored, DaemonError> {
     let findings = findings(machine)?;
     core::ucsi_reload(&findings, &machine.present()).map_err(DaemonError::UsbRefused)?;
@@ -390,13 +393,7 @@ pub fn reload(machine: &dyn UsbMachine, timings: Timings) -> Result<Restored, Da
         core::verify_ucsi(present).complete()
     });
     let restored = core::verify_ucsi(&after);
-    if let Restored::Ucsi {
-        ports,
-        expected_ports,
-        ..
-    } = &restored
-        && ports >= expected_ports
-    {
+    if restored.complete() {
         machine.mark(core::UCSI_RELOADED_MARKER);
     }
     eprintln!("usb-recovery: reload result {restored:?}");
@@ -505,10 +502,13 @@ pub fn release(settings: &Path, run_state: &Path) -> Vec<String> {
 }
 
 /// One recovery at a time per kind, and no second run inside the
-/// cooldown: a caller in a loop gets the last answer back.
+/// cooldown, whatever the last one's outcome: a caller in a loop gets the
+/// last answer back, a refusal or a failure included, so neither a failing
+/// helper nor a refused call runs again (or reads the journal again) more
+/// than once a cooldown.
 #[derive(Default)]
 pub struct Limiter {
-    last: tokio::sync::Mutex<Option<(Instant, Restored)>>,
+    last: tokio::sync::Mutex<Option<(Instant, Result<Restored, DaemonError>)>>,
 }
 
 impl Limiter {
@@ -524,20 +524,21 @@ impl Limiter {
         F: FnOnce() -> Result<Restored, DaemonError> + Send + 'static,
     {
         let mut last = self.last.lock().await;
-        if let Some((at, restored)) = last.as_ref()
+        if let Some((at, outcome)) = last.as_ref()
             && at.elapsed() < cooldown
         {
-            return Ok(RecoveryReply {
-                restored: restored.clone(),
+            return outcome.clone().map(|restored| RecoveryReply {
+                restored,
                 recent: true,
             });
         }
-        let restored = runtime
+        let outcome = runtime
             .spawn_blocking(work)
             .await
-            .map_err(|error| DaemonError::UsbRecoveryFailed(error.to_string()))??;
-        *last = Some((Instant::now(), restored.clone()));
-        Ok(RecoveryReply {
+            .map_err(|error| DaemonError::UsbRecoveryFailed(error.to_string()))
+            .and_then(|outcome| outcome);
+        *last = Some((Instant::now(), outcome.clone()));
+        outcome.map(|restored| RecoveryReply {
             restored,
             recent: false,
         })
@@ -763,73 +764,179 @@ fn kernel_release() -> Option<String> {
 /// (`MODULE_INIT_COMPRESSED_FILE`, Linux 5.17).
 const MODULE_INIT_COMPRESSED_FILE: libc::c_int = 4;
 
-/// The reload helper: `delete_module(2)` on `ucsi_acpi`, then
-/// `finit_module(2)` on the distribution's file. Takes nothing from
-/// outside: the name is fixed, the file is found under `/lib/modules` for
-/// the running kernel, and the kernel checks its signature.
-pub fn reload_ucsi_main() -> Result<String, String> {
-    use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
-    use std::os::unix::io::AsRawFd as _;
-    let name = std::ffi::CString::new(UCSI_MODULE).expect("no NUL in a fixed name");
-    // SAFETY: a NUL-terminated name and flags, as delete_module(2) takes.
-    let removed = unsafe {
-        libc::syscall(
-            libc::SYS_delete_module,
-            name.as_ptr(),
-            libc::O_NONBLOCK as libc::c_long,
-        )
-    };
-    if removed != 0 {
-        let error = std::io::Error::last_os_error();
-        // Not loaded: loading it is all there is to do.
-        if error.raw_os_error() != Some(libc::ENOENT) {
-            return Err(format!("{UCSI_MODULE} could not be unloaded: {error}"));
-        }
+/// The distribution's module file, opened and checked, ready to load.
+#[derive(Debug)]
+pub struct ModuleFile {
+    pub path: PathBuf,
+    pub file: std::fs::File,
+    pub compressed: bool,
+}
+
+/// The kernel config option that lets `finit_module` decompress a file of
+/// this suffix itself (`MODULE_INIT_COMPRESSED_FILE` needs
+/// `CONFIG_MODULE_DECOMPRESS` and the matching `CONFIG_MODULE_COMPRESS_*`).
+fn decompress_options(path: &Path) -> Option<&'static str> {
+    let name = path.file_name()?.to_str()?;
+    if name.ends_with(".zst") {
+        Some("CONFIG_MODULE_COMPRESS_ZSTD=y")
+    } else if name.ends_with(".xz") {
+        Some("CONFIG_MODULE_COMPRESS_XZ=y")
+    } else if name.ends_with(".gz") {
+        Some("CONFIG_MODULE_COMPRESS_GZIP=y")
+    } else {
+        None
     }
-    let release = kernel_release().ok_or("the kernel release is unknown")?;
-    let (path, compressed) = ucsi_module_file(Path::new("/lib/modules"), &release)
-        .ok_or_else(|| format!("{UCSI_MODULE} is not under /lib/modules/{release}"))?;
+}
+
+/// Finds, opens, and checks the file to load, before anything is unloaded:
+/// under `modules/<release>`, not a link, a regular file owned by `owner`
+/// (root in the helper) that nobody else can write, and, when compressed,
+/// a kernel whose config (`config`, `/boot/config-<release>`) lets it
+/// decompress that kind of file. Any failure here leaves the loaded
+/// module alone.
+pub fn prepare_module(
+    modules: &Path,
+    config: &Path,
+    release: &str,
+    owner: u32,
+) -> Result<ModuleFile, String> {
+    use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
+    let (path, compressed) = ucsi_module_file(modules, release)
+        .ok_or_else(|| format!("{UCSI_MODULE} is not under {}/{release}", modules.display()))?;
     let file = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
         .open(&path)
         .map_err(|e| format!("{}: {e}", path.display()))?;
     let meta = file.metadata().map_err(|e| e.to_string())?;
-    if !meta.file_type().is_file() || meta.uid() != 0 || meta.mode() & 0o022 != 0 {
+    if !meta.file_type().is_file() || meta.uid() != owner || meta.mode() & 0o022 != 0 {
         return Err(format!("{} is not root's own file", path.display()));
     }
-    let params = std::ffi::CString::new("").expect("empty");
-    let flags = if compressed {
-        MODULE_INIT_COMPRESSED_FILE
-    } else {
-        0
-    };
-    let mut last = None;
-    for _ in 0..2 {
+    if compressed {
+        let text =
+            std::fs::read_to_string(config).map_err(|e| format!("{}: {e}", config.display()))?;
+        let has = |option: &str| text.lines().any(|line| line.trim() == option);
+        let kind = decompress_options(&path).unwrap_or("CONFIG_MODULE_DECOMPRESS=y");
+        if !has("CONFIG_MODULE_DECOMPRESS=y") || !has(kind) {
+            return Err(format!(
+                "this kernel cannot load {} itself ({} says no CONFIG_MODULE_DECOMPRESS or {kind})",
+                path.display(),
+                config.display()
+            ));
+        }
+    }
+    Ok(ModuleFile {
+        path,
+        file,
+        compressed,
+    })
+}
+
+/// The two module system calls, so the order of the reload is tested
+/// without making them.
+pub trait ModuleCalls {
+    /// `delete_module(2)`: `Ok(false)` when it was not loaded.
+    fn unload(&self) -> std::io::Result<bool>;
+    /// `finit_module(2)`.
+    fn load(&self, module: &ModuleFile) -> std::io::Result<()>;
+    fn pause(&self, duration: Duration);
+}
+
+/// The real system calls.
+pub struct SystemModuleCalls;
+
+impl ModuleCalls for SystemModuleCalls {
+    fn unload(&self) -> std::io::Result<bool> {
+        let name = std::ffi::CString::new(UCSI_MODULE).expect("no NUL in a fixed name");
+        // SAFETY: a NUL-terminated name and flags, as delete_module(2) takes.
+        let removed = unsafe {
+            libc::syscall(
+                libc::SYS_delete_module,
+                name.as_ptr(),
+                libc::O_NONBLOCK as libc::c_long,
+            )
+        };
+        if removed == 0 {
+            return Ok(true);
+        }
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() == Some(libc::ENOENT) {
+            return Ok(false);
+        }
+        Err(error)
+    }
+
+    fn load(&self, module: &ModuleFile) -> std::io::Result<()> {
+        use std::os::unix::io::AsRawFd as _;
+        let params = std::ffi::CString::new("").expect("empty");
+        let flags = if module.compressed {
+            MODULE_INIT_COMPRESSED_FILE
+        } else {
+            0
+        };
         // SAFETY: an open descriptor, an empty NUL-terminated parameter
         // string, and flags, as finit_module(2) takes.
         let loaded = unsafe {
             libc::syscall(
                 libc::SYS_finit_module,
-                file.as_raw_fd(),
+                module.file.as_raw_fd(),
                 params.as_ptr(),
                 flags as libc::c_long,
             )
         };
         if loaded == 0 {
-            return Ok("reloaded".to_string());
+            return Ok(());
         }
-        let error = std::io::Error::last_os_error();
-        if error.raw_os_error() == Some(libc::EEXIST) {
-            return Ok("loaded".to_string());
+        Err(std::io::Error::last_os_error())
+    }
+
+    fn pause(&self, duration: Duration) {
+        std::thread::sleep(duration);
+    }
+}
+
+/// The reload: the file is prepared first, and only a prepared file is
+/// followed by the unload, then the load (tried twice).
+pub fn reload_module(
+    calls: &dyn ModuleCalls,
+    prepared: Result<ModuleFile, String>,
+) -> Result<String, String> {
+    let module = prepared?;
+    calls
+        .unload()
+        .map_err(|error| format!("{UCSI_MODULE} could not be unloaded: {error}"))?;
+    let mut last = None;
+    for _ in 0..2 {
+        match calls.load(&module) {
+            Ok(()) => return Ok("reloaded".to_string()),
+            Err(error) if error.raw_os_error() == Some(libc::EEXIST) => {
+                return Ok("loaded".to_string());
+            }
+            Err(error) => last = Some(error),
         }
-        last = Some(error);
-        std::thread::sleep(Duration::from_millis(500));
+        calls.pause(Duration::from_millis(500));
     }
     Err(format!(
-        "{UCSI_MODULE} was unloaded and could not be loaded again: {}",
+        "{UCSI_MODULE} was unloaded and could not be loaded again from {}: {}",
+        module.path.display(),
         last.map(|e| e.to_string()).unwrap_or_default()
     ))
+}
+
+/// The reload helper: the distribution's file for the running kernel is
+/// found, opened, and checked, and only then is `ucsi_acpi` unloaded
+/// (`delete_module(2)`) and loaded from it (`finit_module(2)`). Takes
+/// nothing from outside: the name is fixed and the kernel checks the
+/// signature.
+pub fn reload_ucsi_main() -> Result<String, String> {
+    let release = kernel_release().ok_or("the kernel release is unknown")?;
+    let prepared = prepare_module(
+        Path::new("/lib/modules"),
+        &PathBuf::from(format!("/boot/config-{release}")),
+        &release,
+        0,
+    );
+    reload_module(&SystemModuleCalls, prepared)
 }
 
 fn read_hex(path: &Path) -> Option<u32> {
@@ -922,9 +1029,13 @@ pub fn after_sleep_hook(program: &Path, settings: &Path, phase: &str, operation:
 /// What the after-sleep run reads from logind and does through it.
 pub trait SleepWorld {
     fn lid_closed(&self) -> Option<bool>;
+    /// logind's `Docked`; `None` when it could not say.
+    fn docked(&self) -> Option<bool>;
     fn shutdown_blocked(&self) -> bool;
-    /// The uids of the active local graphical sessions, and whether anyone
-    /// else has a session.
+    /// Better Manager's privileged service is in a transaction.
+    fn daemon_busy(&self) -> bool;
+    /// The uids of the active local graphical sessions, and whether any
+    /// other session exists ([`sessions_people`]).
     fn people(&self) -> (Vec<u32>, bool);
     fn notify(&self, uid: u32);
     fn power_off(&self) -> Result<(), String>;
@@ -996,7 +1107,9 @@ pub fn after_sleep(
             &settings,
             GuardWorld {
                 lid_closed: world.lid_closed(),
+                docked: world.docked(),
                 shutdown_blocked: world.shutdown_blocked(),
+                daemon_busy: world.daemon_busy(),
                 other_people,
                 notified_run: state.notified_run,
             },
@@ -1054,10 +1167,10 @@ pub fn sleep_blocked_notice(zh_tw: bool) -> (&'static str, &'static str) {
     }
 }
 
-/// Whether a locale names Traditional Chinese for Taiwan.
+/// Whether a locale gets the notification in Traditional Chinese: the one
+/// rule every Better OS notification follows (`better_core::locale`).
 pub fn is_zh_tw(locale: &str) -> bool {
-    let locale = locale.trim().to_ascii_lowercase();
-    locale.starts_with("zh_tw") || locale.starts_with("zh-tw") || locale.starts_with("zh_hant")
+    better_core::locale::is_traditional_chinese(locale)
 }
 
 /// `--notify-sleep-blocked LANG`, run as the person with their session bus
@@ -1069,7 +1182,10 @@ pub fn notify_main(language: &str) -> Result<(), String> {
         _ => return Err("--notify-sleep-blocked takes zh-TW or en".into()),
     };
     let (summary, body) = sleep_blocked_notice(zh_tw);
-    let bus = zbus::blocking::Connection::session().map_err(|e| e.to_string())?;
+    // A session bus that never answers must not hold the after-sleep run.
+    let bus = zbus::blocking::connection::Builder::session()
+        .and_then(|builder| builder.method_timeout(NOTIFY_DEADLINE / 2).build())
+        .map_err(|e| e.to_string())?;
     let hints: std::collections::HashMap<&str, zbus::zvariant::Value<'_>> =
         [("urgency", zbus::zvariant::Value::U8(2))]
             .into_iter()
@@ -1092,6 +1208,59 @@ pub fn notify_main(language: &str) -> Result<(), String> {
     )
     .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// One `user`-class session as logind describes it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SessionSeen {
+    pub uid: u32,
+    pub active: bool,
+    pub remote: bool,
+    /// `wayland`, `x11`, `tty`, …
+    pub kind: String,
+}
+
+/// Who is told and whether anything else is open: the uids of the active,
+/// local, graphical sessions, and whether any other `user` session exists,
+/// whatever its uid (an SSH login or a tty of the same person may be
+/// running work a power-off would end). A session whose properties could
+/// not be read counts as another session.
+pub fn sessions_people(sessions: &[Option<SessionSeen>]) -> (Vec<u32>, bool) {
+    let mut people = Vec::new();
+    let mut others = false;
+    for session in sessions {
+        match session {
+            Some(s) if s.active && !s.remote && matches!(s.kind.as_str(), "wayland" | "x11") => {
+                if !people.contains(&s.uid) {
+                    people.push(s.uid);
+                }
+            }
+            _ => others = true,
+        }
+    }
+    (people, others)
+}
+
+/// How long one notification may take, the child's whole run included.
+pub const NOTIFY_DEADLINE: Duration = Duration::from_secs(10);
+
+/// Waits for a child, and kills it once `deadline` has passed.
+pub fn wait_with_deadline(
+    child: &mut std::process::Child,
+    deadline: Duration,
+) -> std::io::Result<Option<std::process::ExitStatus>> {
+    let started = Instant::now();
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(Some(status));
+        }
+        if started.elapsed() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Ok(None);
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 /// One row of logind's ListInhibitors: what, who, why, mode, uid, pid.
@@ -1174,6 +1343,19 @@ impl SleepWorld for LogindWorld {
         self.manager()?.get_property::<bool>("LidClosed").ok()
     }
 
+    fn docked(&self) -> Option<bool> {
+        self.manager()?.get_property::<bool>("Docked").ok()
+    }
+
+    fn daemon_busy(&self) -> bool {
+        // Present exactly while a transaction or a repair runs; a marker
+        // that cannot be looked at is read as busy.
+        !matches!(
+            std::fs::symlink_metadata(crate::BUSY_MARKER),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound
+        )
+    }
+
     fn shutdown_blocked(&self) -> bool {
         let Some(manager) = self.manager() else {
             // Not knowing is never read as safe.
@@ -1197,8 +1379,7 @@ impl SleepWorld for LogindWorld {
         let Ok(listed) = listed else {
             return (Vec::new(), true);
         };
-        let mut people = Vec::new();
-        let mut everyone = Vec::new();
+        let mut seen = Vec::new();
         for (_, uid, _, _, path) in listed {
             let Some(bus) = self.bus.as_ref() else { break };
             let Ok(session) = zbus::blocking::Proxy::new(
@@ -1207,26 +1388,28 @@ impl SleepWorld for LogindWorld {
                 path,
                 "org.freedesktop.login1.Session",
             ) else {
+                seen.push(None);
                 continue;
             };
-            let class = session.get_property::<String>("Class").unwrap_or_default();
-            if class != "user" {
-                continue;
+            match session.get_property::<String>("Class") {
+                Ok(class) if class != "user" => continue,
+                Ok(_) => {}
+                Err(_) => {
+                    seen.push(None);
+                    continue;
+                }
             }
-            everyone.push(uid);
-            let active = session.get_property::<bool>("Active").unwrap_or(false);
-            let remote = session.get_property::<bool>("Remote").unwrap_or(true);
-            let kind = session.get_property::<String>("Type").unwrap_or_default();
-            if active
-                && !remote
-                && matches!(kind.as_str(), "wayland" | "x11")
-                && !people.contains(&uid)
-            {
-                people.push(uid);
-            }
+            let read = || -> Result<SessionSeen, zbus::Error> {
+                Ok(SessionSeen {
+                    uid,
+                    active: session.get_property("Active")?,
+                    remote: session.get_property("Remote")?,
+                    kind: session.get_property("Type")?,
+                })
+            };
+            seen.push(read().ok());
         }
-        let others = everyone.iter().any(|uid| !people.contains(uid));
-        (people, others)
+        sessions_people(&seen)
     }
 
     fn notify(&self, uid: u32) {
@@ -1236,7 +1419,10 @@ impl SleepWorld for LogindWorld {
         // Run as the person: their uid and primary group, no supplementary
         // groups (std drops them when root sets a uid), and nothing of this
         // unit's environment but their own bus.
-        let status = std::process::Command::new(&self.program)
+        // Its output goes nowhere: the unit's stdout and stderr are root's
+        // journal stream, whose markers the recovery trusts, and a process
+        // of the person's must hold no descriptor of it.
+        let child = std::process::Command::new(&self.program)
             .arg("--notify-sleep-blocked")
             .arg(language)
             .env_clear()
@@ -1248,8 +1434,11 @@ impl SleepWorld for LogindWorld {
             .uid(uid)
             .gid(gid)
             .stdin(std::process::Stdio::null())
-            .status();
-        if !matches!(status, Ok(status) if status.success()) {
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+        let status = child.and_then(|mut child| wait_with_deadline(&mut child, NOTIFY_DEADLINE));
+        if !matches!(status, Ok(Some(status)) if status.success()) {
             eprintln!("usb-recovery: the notification for {uid} was not shown: {status:?}");
         }
     }
@@ -1298,6 +1487,8 @@ mod tests {
     #[test]
     fn the_language_follows_the_locale() {
         assert!(is_zh_tw("zh_TW.UTF-8"));
+        // The same rule as Better Awake's notifications (review finding 9).
+        assert!(is_zh_tw("zh_HK.UTF-8"));
         assert!(!is_zh_tw("zh_CN.UTF-8"));
         assert!(!is_zh_tw("en_US.UTF-8"));
         let (title, body) = sleep_blocked_notice(true);

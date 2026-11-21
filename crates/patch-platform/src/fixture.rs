@@ -94,12 +94,12 @@ impl CommandRunner for FixtureCommands {
             Command::ShowFlatpakOverride(app) => {
                 ok(std::fs::read_to_string(self.paths.user_override(app)).unwrap_or_default())
             }
-            // journalctl prints the lines the query keeps; the fixture's
-            // log is already that.
-            Command::KernelUsbLog { .. } => ok(std::fs::read_to_string(
-                self.root.join(MACHINE).join(crate::usb::FIXTURE_LOG),
-            )
-            .unwrap_or_default()),
+            // journalctl prints the entries the query keeps as JSON; the
+            // fixture keeps their text.
+            Command::KernelUsbLog { .. } => ok(hardware_core::usb_recovery::as_journal(
+                &std::fs::read_to_string(self.root.join(MACHINE).join(crate::usb::FIXTURE_LOG))
+                    .unwrap_or_default(),
+            )),
         }
     }
 }

@@ -35,18 +35,27 @@ pub const KERNEL_LOG_PATTERN: &str = concat!(
     r"|^Freezing .* failed",
     r"|^workqueue usb_hub_wq:",
     r"|^Workqueue: usb_hub_wq ",
+    r"|^INFO: task .* blocked for more than ",
     r"|^usb-recovery: ",
 );
 
 /// The arguments of the kernel log query: this boot's kernel messages, and
 /// the daemon's own recovery markers (root's, from its unit's output), as
-/// plain message text. `grep` false is the same query for a journalctl
-/// built without PCRE2, which refuses `--grep`.
+/// JSON with each entry's transport, so [`classify_journal`] reads a kernel
+/// line only when the kernel wrote it and takes nothing but the two marker
+/// forms from the daemon's stream. `grep` false is the same query for a
+/// journalctl built without PCRE2, which refuses `--grep`.
 pub fn kernel_log_args(grep: bool) -> Vec<String> {
-    let mut args: Vec<String> = ["--boot=0", "--no-pager", "--quiet", "--output=cat"]
-        .iter()
-        .map(|arg| arg.to_string())
-        .collect();
+    let mut args: Vec<String> = [
+        "--boot=0",
+        "--no-pager",
+        "--quiet",
+        "--output=json",
+        "--output-fields=MESSAGE,_TRANSPORT",
+    ]
+    .iter()
+    .map(|arg| arg.to_string())
+    .collect();
     if grep {
         args.push("--case-sensitive=true".to_string());
         args.push(format!("--grep={KERNEL_LOG_PATTERN}"));
@@ -74,6 +83,66 @@ pub const REBOUND_MARKER_PREFIX: &str = "usb-recovery: controller rebound ";
 /// The marker line for a rebound controller.
 pub fn rebound_marker(address: &PciAddress) -> String {
     format!("{REBOUND_MARKER_PREFIX}{address}")
+}
+
+/// Whether a line is exactly one of the daemon's two markers.
+pub fn is_marker(line: &str) -> bool {
+    line == UCSI_RELOADED_MARKER
+        || line
+            .strip_prefix(REBOUND_MARKER_PREFIX)
+            .and_then(PciAddress::parse)
+            .is_some()
+}
+
+#[derive(Deserialize)]
+struct JournalEntry {
+    #[serde(rename = "MESSAGE")]
+    message: Option<serde_json::Value>,
+    #[serde(rename = "_TRANSPORT")]
+    transport: Option<String>,
+}
+
+/// The lines [`classify`] may read from the query's JSON output (one entry
+/// per line): every message the kernel wrote (`_TRANSPORT=kernel`), and
+/// from anything else only an exact marker. A line any other process wrote
+/// into the daemon's stream, a forged `HC died` or a run of failed sleeps,
+/// is dropped. A message journald stored as bytes (not UTF-8) is dropped.
+pub fn journal_lines(json: &str) -> String {
+    let mut out = String::new();
+    for line in json.lines() {
+        let Ok(entry) = serde_json::from_str::<JournalEntry>(line) else {
+            continue;
+        };
+        let Some(serde_json::Value::String(message)) = entry.message else {
+            continue;
+        };
+        let kernel = entry.transport.as_deref() == Some("kernel");
+        if kernel || is_marker(&message) {
+            out.push_str(&message);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// [`classify`] over the query's JSON output.
+pub fn classify_journal(json: &str) -> UsbFindings {
+    classify(&journal_lines(json))
+}
+
+/// Plain lines as the query prints them: a marker as the daemon's stream
+/// writes it, anything else as the kernel's. For fixture machines and
+/// tests, which keep their log as text.
+pub fn as_journal(text: &str) -> String {
+    text.lines()
+        .map(|line| {
+            let transport = if is_marker(line) { "stdout" } else { "kernel" };
+            format!(
+                "{}\n",
+                serde_json::json!({ "MESSAGE": line, "_TRANSPORT": transport })
+            )
+        })
+        .collect()
 }
 
 /// One PCI function's address, `dddd:bb:dd.f`, lower-case hex, as the
@@ -254,8 +323,10 @@ impl SleepFindings {
 pub struct UsbFindings {
     pub ucsi: UcsiFindings,
     pub controllers: Vec<ControllerDeath>,
-    /// A `usb_hub_wq` work item that never ends: a hung-task report naming
-    /// `Workqueue: usb_hub_wq`, or a failed freeze listing `usb_hub_wq`.
+    /// A `usb_hub_wq` work item that never ends: a hung-task report
+    /// (`INFO: task … blocked for more than …`) naming `Workqueue:
+    /// usb_hub_wq`, or a failed freeze listing `usb_hub_wq`. Any other
+    /// stack dump of a hub worker (a WARN during enumeration) is not one.
     pub hub_work_hung: bool,
     pub sleep: SleepFindings,
 }
@@ -288,6 +359,8 @@ pub fn classify(log: &str) -> UsbFindings {
     let mut pending: std::collections::BTreeMap<PciAddress, Pending> = Default::default();
     // The attempt in progress: (failed, failed because of the hub work).
     let mut attempt: Option<(bool, bool)> = None;
+    // Inside a hung-task report, until the next report or sleep line.
+    let mut hung_report = false;
     let close = |attempt: &mut Option<(bool, bool)>, sleep: &mut SleepFindings| {
         if let Some((failed, hub)) = attempt.take() {
             if failed && hub {
@@ -344,6 +417,7 @@ pub fn classify(log: &str) -> UsbFindings {
                 });
             }
         } else if line.starts_with("PM: suspend entry") {
+            hung_report = false;
             close(&mut attempt, &mut findings.sleep);
             findings.sleep.attempts += 1;
             attempt = Some((false, false));
@@ -364,8 +438,15 @@ pub fn classify(log: &str) -> UsbFindings {
                 attempt.1 = true;
                 findings.hub_work_hung = true;
             }
+        } else if line.starts_with("INFO: task ") && line.contains(" blocked for more than ") {
+            hung_report = true;
+            continue;
         } else if line.starts_with("Workqueue: usb_hub_wq ") {
-            findings.hub_work_hung = true;
+            if hung_report {
+                findings.hub_work_hung = true;
+            }
+        } else if line.starts_with("WARNING:") || line.contains("[ cut here ]") {
+            hung_report = false;
         }
     }
     close(&mut attempt, &mut findings.sleep);
@@ -709,8 +790,17 @@ pub struct GuardWorld {
     pub lid_closed: Option<bool>,
     /// A `block` inhibitor on `shutdown` is held (an upgrade, a burn).
     pub shutdown_blocked: bool,
-    /// Someone other than the people being told has a session.
+    /// A session other than the active local graphical ones being told
+    /// (another person's, or the same person's on a tty or over SSH, which
+    /// may be running work) exists, or the list could not be read.
     pub other_people: bool,
+    /// logind's `Docked` (an external screen or a dock is attached): a
+    /// lid-closed laptop that is docked may be in use. `None` when it could
+    /// not say, which is never read as undocked.
+    pub docked: Option<bool>,
+    /// Better Manager's privileged service is in a transaction (its busy
+    /// marker exists): a power-off now could cut dpkg off half way.
+    pub daemon_busy: bool,
     /// The run of failures this boot's notification was already sent for,
     /// by [`SleepFindings::run_start`], if any.
     pub notified_run: Option<u32>,
@@ -728,9 +818,10 @@ pub const BLOCKED_STREAK: u32 = 2;
 
 /// The overnight loop (ticket 101): once a sleep has failed twice in a row
 /// because `usb_hub_wq` would not freeze, tell the person, once per run of
-/// failures. Turn the PC off only when they chose it, the lid is closed
-/// (logind says so, not a guess), nothing holds a block on shutdown, and
-/// nobody else has a session whose work it would end.
+/// failures. Turn the PC off only when they chose it, the lid is closed and
+/// the laptop is not docked (logind says both, not a guess), nothing holds
+/// a block on shutdown, Better Manager's privileged service is not in a
+/// transaction, and no other session exists whose work it would end.
 pub fn guard(
     findings: &UsbFindings,
     settings: &UsbRecoverySettings,
@@ -742,8 +833,10 @@ pub fn guard(
     let notify = world.notified_run != Some(findings.sleep.run_start());
     let power_off = settings.power_off_when_sleep_blocked
         && world.lid_closed == Some(true)
+        && world.docked == Some(false)
         && !world.shutdown_blocked
-        && !world.other_people;
+        && !world.other_people
+        && !world.daemon_busy;
     GuardAction { notify, power_off }
 }
 

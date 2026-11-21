@@ -83,8 +83,10 @@ PCI restriction is on BAR access and config space, `kernel_lockdown(7)`).
     line not followed by a verified rebind, and acts only when sysfs shows
     that function with class 0x0c0330, vendor and device on the list
     (1022:151e), and `xhci_hcd` bound. Refused as `usb_restart_needed` when
-    the hub work is stuck: logged (a hung-task report naming
-    `Workqueue: usb_hub_wq`, or a failed freeze listing it), or seen now (a
+    the hub work is stuck: logged (`Workqueue: usb_hub_wq` inside a
+    hung-task report, `INFO: task … blocked for more than …`, or a failed
+    freeze listing `usb_hub_wq`; the same line in any other stack dump is
+    not stuck work), or seen now (a
     worker named `kworker/…+usb_hub_wq` in state D in two looks two seconds
     apart; the kernel names a worker `+WQ` while it runs a work item of
     `WQ`, `wq_worker_comm()` in `kernel/workqueue.c`). Unbinding then would
@@ -97,12 +99,16 @@ PCI restriction is on BAR access and config space, `kernel_lockdown(7)`).
     deleted when nothing is on. Power-off needs `controller-automatic`.
 - **The reload helper** (`--reload-ucsi`, no argument) runs in a transient
   unit `better-os-ucsi-reload` (a fixed name: two reloads never run at once,
-  whoever asked). It calls `delete_module("ucsi_acpi", O_NONBLOCK)`, then
-  `finit_module(2)` on `/lib/modules/$(uname -r)/kernel/drivers/usb/typec/
-  ucsi/ucsi_acpi.ko{.zst,.xz,.gz,}` opened with `O_NOFOLLOW`, a regular file
-  owned by root and writable by nobody else, with
-  `MODULE_INIT_COMPRESSED_FILE` for a compressed one (Linux 5.17). The kernel
-  checks the signature. Its unit is `helper_sandbox()` with
+  whoever asked). It first finds and opens
+  `/lib/modules/$(uname -r)/kernel/drivers/usb/typec/ucsi/
+  ucsi_acpi.ko{.zst,.xz,.gz,}` with `O_NOFOLLOW` and checks it is a regular
+  file owned by root and writable by nobody else, and, for a compressed one,
+  that `/boot/config-$(uname -r)` has `CONFIG_MODULE_DECOMPRESS=y` and the
+  matching `CONFIG_MODULE_COMPRESS_*` (`MODULE_INIT_COMPRESSED_FILE`, Linux
+  5.17). Only then does it call `delete_module("ucsi_acpi", O_NONBLOCK)`
+  and `finit_module(2)` on the open file, twice if the first load fails;
+  any check that fails leaves the loaded module alone. The kernel checks
+  the signature. Its unit is `helper_sandbox()` with
   `ProtectKernelModules=` left out, `SystemCallFilter=@module` added beside
   `@system-service`, `CapabilityBoundingSet=CAP_SYS_MODULE`, an empty
   read-only `/sys`, and `RuntimeMaxSec=30s` (an interface that is stuck can
@@ -121,11 +127,17 @@ PCI restriction is on BAR access and config space, `kernel_lockdown(7)`).
   directory entries and links are read under the controller: on a host
   whose hub work hangs, reading a USB device's attribute blocks (ticket 101
   saw `usb1/product` do it). The answer says what came back and what did
-  not, and a verified recovery writes a marker line to the daemon's journal
-  (`usb-recovery: ucsi_acpi reloaded`, `usb-recovery: controller rebound
-  ADDRESS`), which the kernel log query (`_TRANSPORT=kernel` or `_UID=0
-  SYSLOG_IDENTIFIER=better-manager-daemon`) reads back, so "failing now"
-  means a fault after the last verified recovery.
+  not. A recovery that restored everything it checks (`Restored::complete`:
+  for a reload, both ports and a plugged-in charger shown; for a rebind,
+  the driver bound with root hubs) writes a marker line to the daemon's
+  journal (`usb-recovery: ucsi_acpi reloaded`, `usb-recovery: controller
+  rebound ADDRESS`); one that did not leaves the fault failing, to be tried
+  again. The kernel log query (`_TRANSPORT=kernel` or `_UID=0
+  SYSLOG_IDENTIFIER=better-manager-daemon`, as JSON with each entry's
+  `_TRANSPORT`) reads every line the kernel wrote and, from the daemon's
+  stream, only the two exact marker forms, so "failing now" means a fault
+  after the last verified recovery and no other line from that stream is
+  read as a fault or a sleep.
 - **The sleep hook.** The daemon package ships
   `/usr/lib/systemd/system-sleep/better-os-usb-recovery`, one line:
   `exec /usr/libexec/better-manager-daemon --after-sleep "$1" "$2"`. The
@@ -157,13 +169,25 @@ PCI restriction is on BAR access and config space, `kernel_lockdown(7)`).
   notification is sent as that person: the program starts itself with
   `--notify-sleep-blocked zh-TW|en` under their uid and primary group, no
   supplementary group, an empty environment but
-  `DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/UID/bus`, in the language
-  AccountsService (else `/etc/default/locale`) names. It powers off through
-  logind's `PowerOff(false)` only when the person chose it, logind says the
-  lid is closed (`LidClosed`; not knowing is not closed), no `block`
-  inhibitor holds `shutdown` (an upgrade, a burn; not knowing counts as
-  held), and no one else has a session; at most once per run of failures.
-  The default, once the fix is on, is notify only.
+  `DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/UID/bus`, its standard
+  input, output, and error on `/dev/null` (so no process of the person's
+  holds the unit's journal stream, whose markers the recovery trusts), in
+  the language AccountsService (else `/etc/default/locale`) names, by the
+  one rule every Better OS notification follows (`better_core::locale`:
+  `zh_TW`, `zh_HK`, `zh_Hant` are Traditional Chinese). The call has a
+  five-second timeout and the child ten seconds, then it is ended. It
+  powers off through logind's `PowerOff(false)` only when the person chose
+  it, logind says the lid is closed (`LidClosed`; not knowing is not
+  closed) and the laptop is not docked (`Docked`: a dock or an external
+  screen may mean it is in use with the lid shut; not knowing is docked),
+  no `block` inhibitor holds `shutdown` (an upgrade, a burn; not knowing
+  counts as held), Better Manager's privileged service is not in a
+  transaction (`/run/better-os/daemon-busy`, which exists exactly while one
+  runs; whether apt itself holds a logind inhibitor while dpkg runs is not
+  known, so the marker is checked regardless), and no other `user` session
+  exists, whatever its uid (the same person over SSH or on a tty may be
+  running work; a session that cannot be read counts as one); at most once
+  per run of failures. The default, once the fix is on, is notify only.
 
 ## Why these are acceptable
 
@@ -187,22 +211,31 @@ PCI restriction is on BAR access and config space, `kernel_lockdown(7)`).
 
 - **At the desk** (the active local session, `allow_active=yes`): call
   `ReloadUcsi` and `RebindController`. Each runs only when this boot's log
-  shows the fault after the last verified recovery, at most one reload every
-  30 s and one rebind every 60 s (a call inside the cooldown gets the last
-  answer, `recent`, with no second run), one at a time (an async lock, no
-  thread per caller; and systemd refuses a second unit of the same name).
-  So: reload a driver that has stopped answering, twice a minute at most;
-  rebind a dead controller once a minute at most. `Findings` reads the
-  journal at most once in five seconds whatever the number of callers.
+  shows the fault after the last verified recovery, and at most one call of
+  each kind runs every 30 s (reload) or 60 s (rebind), whatever it ended
+  with: a call inside the cooldown gets the last answer back (`recent`, or
+  the same refusal or failure) with no second run, no second journal read,
+  and no helper started; one at a time (an async lock, no thread per
+  caller; and systemd refuses a second unit of the same name). So: reload
+  a driver that has stopped answering, twice a minute at most; rebind a
+  dead controller once a minute at most. `Findings` reads the journal at
+  most once in five seconds whatever the number of callers.
 - **To change a choice** an administrator authenticates
   (`auth_admin_keep`): a hostile process cannot turn the power-off on.
 - **Inactive or remote sessions** authenticate for everything.
 - **The sleep hook** runs as root from `systemd-sleep` with arguments from
   systemd only; with nothing chosen it reads one file and returns.
-- **A forged marker** would make the page and the after-sleep run believe a
-  recovery happened. Markers are read only from root's
-  (`_UID=0`) `better-manager-daemon` journal stream, which only root can
-  write as.
+- **A forged line** in the daemon's stream would make the page and the
+  after-sleep run believe a recovery, a controller death, or a run of
+  failed sleeps happened. Markers are read only from root's (`_UID=0`)
+  `better-manager-daemon` stream, and from it only the two exact marker
+  forms; every fault and sleep line must carry `_TRANSPORT=kernel`, which
+  only the kernel's log gives. The one child of the person's the run
+  starts, the notification, gets `/dev/null` for its output, so no
+  process of theirs holds a descriptor of that stream (an independent
+  review on 2026-11-22 found it did, and that on a machine with
+  `kernel.yama.ptrace_scope=0` the person could have written trusted lines
+  through it).
 - **A compromised reload helper** holds `CAP_SYS_MODULE` and nothing else,
   with no writable file system, no network, an empty `/sys`, a read-only
   `/proc/sys`, a private `/dev`, a system-call allow-list, and 30 s. Under
@@ -257,8 +290,8 @@ PCI restriction is on BAR access and config space, `kernel_lockdown(7)`).
   unload the CI host's module), and no real controller is unbound; no
   `finit_module` has run through the sandbox, and whether
   `SystemCallFilter=@module` with `@system-service` admits it is read from
-  systemd's documentation, not seen. The notification as the person, the
-  logind calls, and the post hook after a *failed* attempt (read from
+  systemd's documentation, not seen. The notification as the person (with its timeouts), the
+  logind calls (`Docked` included), and the post hook after a *failed* attempt (read from
   systemd 255's `src/sleep/sleep.c`; the hook also queues the run from its
   `pre` call, so the run happens either way) have run only against fakes.
   Until CI has run the check once, even the container part is unobserved:

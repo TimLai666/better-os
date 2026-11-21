@@ -86,6 +86,12 @@ struct Fake {
     rebinds: Mutex<Vec<PciAddress>>,
     /// What a reload brings back: both ports and the charger, or one port.
     reload_restores: bool,
+    /// Both ports come back and the charger does not.
+    charger_stays_hidden: bool,
+    /// The helper fails.
+    reload_fails: bool,
+    /// How many times the journal was read.
+    reads: Mutex<u32>,
 }
 
 impl Fake {
@@ -97,13 +103,19 @@ impl Fake {
             reloads: Mutex::new(0),
             rebinds: Mutex::new(Vec::new()),
             reload_restores: true,
+            charger_stays_hidden: false,
+            reload_fails: false,
+            reads: Mutex::new(0),
         }
     }
 }
 
 impl UsbMachine for Fake {
     fn kernel_log(&self) -> Result<String, DaemonError> {
-        Ok(self.log.lock().unwrap().clone())
+        *self.reads.lock().unwrap() += 1;
+        // As journalctl prints it: JSON, the marker from the daemon's
+        // stream and everything else from the kernel.
+        Ok(core::as_journal(&self.log.lock().unwrap()))
     }
     fn present(&self) -> UsbPresent {
         self.present.lock().unwrap().clone()
@@ -114,10 +126,13 @@ impl UsbMachine for Fake {
     fn pause(&self, _duration: Duration) {}
     fn reload_ucsi(&self) -> Result<(), DaemonError> {
         *self.reloads.lock().unwrap() += 1;
+        if self.reload_fails {
+            return Err(DaemonError::UsbRecoveryFailed("helper failed".into()));
+        }
         let mut present = self.present.lock().unwrap();
         if self.reload_restores {
             present.typec_ports = 2;
-            present.supplies[0].online = Some(true);
+            present.supplies[0].online = Some(!self.charger_stays_hidden);
         }
         Ok(())
     }
@@ -238,7 +253,9 @@ fn stuck_hub_work_is_a_restart_and_nothing_is_unbound() {
 #[derive(Default)]
 struct World {
     lid_closed: Option<bool>,
+    docked: Option<bool>,
     blocked: bool,
+    busy: bool,
     others: bool,
     notified: Mutex<Vec<u32>>,
     powered_off: Mutex<u32>,
@@ -248,8 +265,14 @@ impl SleepWorld for World {
     fn lid_closed(&self) -> Option<bool> {
         self.lid_closed
     }
+    fn docked(&self) -> Option<bool> {
+        self.docked
+    }
     fn shutdown_blocked(&self) -> bool {
         self.blocked
+    }
+    fn daemon_busy(&self) -> bool {
+        self.busy
     }
     fn people(&self) -> (Vec<u32>, bool) {
         (vec![1000], self.others)
@@ -315,6 +338,7 @@ fn the_overnight_loop_is_told_once_and_powered_off_only_when_chosen() {
     let fake = Fake::new(&format!("{DIED_LOG}{BLOCKED}"), broken("M5406WA"));
     let world = World {
         lid_closed: Some(true),
+        docked: Some(false),
         ..World::default()
     };
     let done = recovery::after_sleep(&fake, &world, &path, &run, Timings::INSTANT);
@@ -337,22 +361,38 @@ fn the_overnight_loop_is_told_once_and_powered_off_only_when_chosen() {
     assert!(!twice.powered_off);
     assert_eq!(*world.powered_off.lock().unwrap(), 1);
 
-    // Never with the lid open, another person's session, or a block held.
+    // Never with the lid open, another session open, a block held, docked
+    // or not known to be undocked, or the daemon in a transaction.
+    let closed = || World {
+        lid_closed: Some(true),
+        docked: Some(false),
+        ..World::default()
+    };
     for world in [
         World {
             lid_closed: Some(false),
-            ..World::default()
+            ..closed()
         },
         World::default(),
         World {
-            lid_closed: Some(true),
             others: true,
-            ..World::default()
+            ..closed()
         },
         World {
-            lid_closed: Some(true),
             blocked: true,
-            ..World::default()
+            ..closed()
+        },
+        World {
+            docked: Some(true),
+            ..closed()
+        },
+        World {
+            docked: None,
+            ..closed()
+        },
+        World {
+            busy: true,
+            ..closed()
         },
     ] {
         let run = dir.path().join("fresh.json");
@@ -673,4 +713,258 @@ async fn a_choice_outside_the_set_is_refused_before_anything() {
     )
     .unwrap();
     assert!(set.ucsi_automatic);
+}
+
+/// Review finding 4: both ports back and a plugged-in charger still not
+/// shown is the fault itself; no "reloaded" marker, so it stays failing
+/// and may be tried again.
+#[test]
+fn a_reload_that_left_the_charger_hidden_is_not_marked() {
+    let mut fake = Fake::new(UCSI_LOG, broken("M5406WA"));
+    fake.charger_stays_hidden = true;
+    let restored = recovery::reload(&fake, Timings::INSTANT).unwrap();
+    assert_eq!(
+        restored,
+        Restored::Ucsi {
+            ports: 2,
+            expected_ports: 2,
+            charger: core::ChargerShown::NotShown
+        }
+    );
+    assert!(!fake.log.lock().unwrap().contains("reloaded"));
+    assert!(recovery::findings(&fake).unwrap().ucsi.active);
+}
+
+/// Review finding 2: a line written into the daemon's journal stream by
+/// anything else (here a forged HC death naming a working controller) is
+/// not read, so no rebind follows from it.
+#[test]
+fn a_forged_line_in_the_daemons_stream_moves_nothing() {
+    struct Forged(Fake);
+    impl UsbMachine for Forged {
+        fn kernel_log(&self) -> Result<String, DaemonError> {
+            let forged = serde_json::json!({
+                "MESSAGE": "xhci_hcd 0000:63:00.4: HC died; cleaning up",
+                "_TRANSPORT": "stdout",
+            });
+            Ok(format!("{}{forged}\n", self.0.kernel_log()?))
+        }
+        fn present(&self) -> UsbPresent {
+            self.0.present()
+        }
+        fn workers(&self) -> Vec<Worker> {
+            self.0.workers()
+        }
+        fn pause(&self, duration: Duration) {
+            self.0.pause(duration)
+        }
+        fn reload_ucsi(&self) -> Result<(), DaemonError> {
+            self.0.reload_ucsi()
+        }
+        fn rebind(&self, address: &PciAddress) -> Result<(), DaemonError> {
+            self.0.rebind(address)
+        }
+        fn mark(&self, line: &str) {
+            self.0.mark(line)
+        }
+    }
+    let forged = Forged(Fake::new(
+        "PM: suspend entry (s2idle)\nPM: suspend exit\n",
+        broken("M5406WA"),
+    ));
+    assert_eq!(
+        recovery::rebind(&forged, Timings::INSTANT),
+        Err(DaemonError::UsbRefused(Refusal::NothingToReset))
+    );
+    assert!(forged.0.rebinds.lock().unwrap().is_empty());
+}
+
+/// Review finding 5: a failed run and a refused call hold the cooldown
+/// too, so a caller in a loop neither unloads the module again nor reads
+/// the journal again inside it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_or_refused_reset_holds_the_cooldown_too() {
+    let runtime = tokio::runtime::Handle::current();
+    let mut failing = Fake::new(UCSI_LOG, broken("M5406WA"));
+    failing.reload_fails = true;
+    let failing = Arc::new(failing);
+    let limiter = recovery::Limiter::default();
+    for _ in 0..3 {
+        let machine = failing.clone();
+        let answer = limiter
+            .run(Duration::from_secs(30), &runtime, move || {
+                recovery::reload(machine.as_ref(), Timings::INSTANT)
+            })
+            .await;
+        assert!(matches!(answer, Err(DaemonError::UsbRecoveryFailed(_))));
+    }
+    assert_eq!(*failing.reloads.lock().unwrap(), 1);
+
+    let healthy = Arc::new(Fake::new(
+        "PM: suspend entry (s2idle)\nPM: suspend exit\n",
+        broken("M5406WA"),
+    ));
+    let limiter = recovery::Limiter::default();
+    for _ in 0..3 {
+        let machine = healthy.clone();
+        let answer = limiter
+            .run(Duration::from_secs(30), &runtime, move || {
+                recovery::reload(machine.as_ref(), Timings::INSTANT)
+            })
+            .await;
+        assert_eq!(
+            answer,
+            Err(DaemonError::UsbRefused(Refusal::NothingToReset))
+        );
+    }
+    assert_eq!(*healthy.reads.lock().unwrap(), 1);
+}
+
+/// Review finding 1: everything about the file is checked before the
+/// module is unloaded; a file that is missing, a link, writable by others,
+/// or compressed for a kernel that cannot decompress it leaves the loaded
+/// module alone.
+#[test]
+fn the_module_stays_loaded_unless_its_file_is_ready() {
+    use std::os::unix::fs::PermissionsExt as _;
+    #[derive(Default)]
+    struct Calls {
+        unloads: Mutex<u32>,
+        loads: Mutex<u32>,
+        load_fails: bool,
+    }
+    impl recovery::ModuleCalls for Calls {
+        fn unload(&self) -> std::io::Result<bool> {
+            *self.unloads.lock().unwrap() += 1;
+            Ok(true)
+        }
+        fn load(&self, _: &recovery::ModuleFile) -> std::io::Result<()> {
+            *self.loads.lock().unwrap() += 1;
+            if self.load_fails {
+                Err(std::io::Error::from_raw_os_error(libc::EKEYREJECTED))
+            } else {
+                Ok(())
+            }
+        }
+        fn pause(&self, _: Duration) {}
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let modules = dir.path().join("modules");
+    let release = "7.0.0-43-generic";
+    let ko_dir = modules.join(release).join(recovery::UCSI_MODULE_DIR);
+    std::fs::create_dir_all(&ko_dir).unwrap();
+    let config = dir.path().join("config");
+    // SAFETY: getuid has no preconditions.
+    let me = unsafe { libc::getuid() };
+    let prepare = || recovery::prepare_module(&modules, &config, release, me);
+    let reload = |calls: &Calls| recovery::reload_module(calls, prepare());
+
+    // Missing.
+    let calls = Calls::default();
+    assert!(reload(&calls).is_err());
+    assert_eq!(*calls.unloads.lock().unwrap(), 0);
+
+    // Compressed, and the kernel config is missing, then says no.
+    let ko = ko_dir.join("ucsi_acpi.ko.zst");
+    std::fs::write(&ko, b"module").unwrap();
+    std::fs::set_permissions(&ko, std::fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(reload(&calls).is_err());
+    std::fs::write(
+        &config,
+        "CONFIG_MODULE_DECOMPRESS=y\n# CONFIG_MODULE_COMPRESS_ZSTD is not set\n",
+    )
+    .unwrap();
+    assert!(reload(&calls).is_err());
+    assert_eq!(*calls.unloads.lock().unwrap(), 0);
+
+    // Writable by others.
+    std::fs::write(
+        &config,
+        "CONFIG_MODULE_DECOMPRESS=y\nCONFIG_MODULE_COMPRESS_ZSTD=y\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&ko, std::fs::Permissions::from_mode(0o666)).unwrap();
+    assert!(reload(&calls).is_err());
+    assert_eq!(*calls.unloads.lock().unwrap(), 0);
+
+    // Ready: unloaded, then loaded.
+    std::fs::set_permissions(&ko, std::fs::Permissions::from_mode(0o644)).unwrap();
+    assert_eq!(reload(&calls), Ok("reloaded".to_string()));
+    assert_eq!(
+        (*calls.unloads.lock().unwrap(), *calls.loads.lock().unwrap()),
+        (1, 1)
+    );
+
+    // A load the kernel refuses is tried twice and said plainly.
+    let refusing = Calls {
+        load_fails: true,
+        ..Calls::default()
+    };
+    let error = reload(&refusing).unwrap_err();
+    assert!(error.contains("could not be loaded again"), "{error}");
+    assert_eq!(*refusing.loads.lock().unwrap(), 2);
+
+    // A link in the file's place is not the distribution's file.
+    std::fs::remove_file(&ko).unwrap();
+    std::os::unix::fs::symlink(&config, &ko).unwrap();
+    let calls = Calls::default();
+    assert!(reload(&calls).is_err());
+    assert_eq!(*calls.unloads.lock().unwrap(), 0);
+}
+
+/// Review finding 6: any session but the active local graphical ones is
+/// another session, the same person's SSH or tty login included, and one
+/// that could not be read too.
+#[test]
+fn every_other_session_blocks_the_power_off() {
+    use recovery::{SessionSeen, sessions_people};
+    let desk = || SessionSeen {
+        uid: 1000,
+        active: true,
+        remote: false,
+        kind: "wayland".into(),
+    };
+    assert_eq!(sessions_people(&[Some(desk())]), (vec![1000], false));
+    for other in [
+        Some(SessionSeen {
+            kind: "tty".into(),
+            ..desk()
+        }),
+        Some(SessionSeen {
+            remote: true,
+            ..desk()
+        }),
+        Some(SessionSeen {
+            active: false,
+            ..desk()
+        }),
+        Some(SessionSeen {
+            uid: 1001,
+            kind: "tty".into(),
+            ..desk()
+        }),
+        None,
+    ] {
+        assert_eq!(
+            sessions_people(&[Some(desk()), other.clone()]),
+            (vec![1000], true),
+            "{other:?}"
+        );
+    }
+}
+
+/// Review finding 7: a child that does not finish is ended at the deadline.
+#[test]
+fn a_notification_that_hangs_is_ended_at_its_deadline() {
+    let mut child = test_prerequisites::require!(
+        "sleep",
+        Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .map_err(|_| "sleep is not installed")
+    );
+    let started = std::time::Instant::now();
+    let status = recovery::wait_with_deadline(&mut child, Duration::from_millis(200)).unwrap();
+    assert_eq!(status, None);
+    assert!(started.elapsed() < Duration::from_secs(5));
 }

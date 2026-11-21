@@ -167,6 +167,37 @@ ADR 0046 (proposed). Every state and sentence is in zh-TW and English.
   the classified traces, the hung-task call trace, a reply to the M5506WA
   thread). No patch, no module.
 
+### Review fixes (2026-11-22)
+
+An independent review of the pull request found four P2 and five P3
+problems and one to investigate (its text:
+`better-os-evidence/101/review-2026-11-22.md`). All are fixed, each with a
+test that fails without the fix:
+
+- The reload helper checks the module file (present, not a link, root's,
+  and for a compressed file a kernel config that can decompress it) before
+  it unloads anything (`the_module_stays_loaded_unless_its_file_is_ready`).
+- The kernel log is read as JSON with each entry's transport: kernel lines
+  only from the kernel, and from the daemon's stream only the two exact
+  markers; the notification child's output goes to `/dev/null`
+  (`only_kernel_lines_and_exact_markers_are_read_from_the_journal`,
+  `a_forged_line_in_the_daemons_stream_moves_nothing`).
+- Power-off also needs logind's `Docked` to say no, the daemon not in a
+  transaction (its busy marker), and no other session of any uid; the card
+  says so (`the_overnight_guard_notifies_once_and_powers_off_only_when_chosen_and_safe`,
+  `the_overnight_loop_is_told_once_and_powered_off_only_when_chosen`,
+  `every_other_session_blocks_the_power_off`).
+- A reload is marked only when the charger shows too
+  (`a_reload_that_left_the_charger_hidden_is_not_marked`).
+- A failed or refused reset holds the cooldown too
+  (`a_failed_or_refused_reset_holds_the_cooldown_too`).
+- A notification has a five-second call timeout and a ten-second child
+  deadline (`a_notification_that_hangs_is_ended_at_its_deadline`).
+- `Workqueue: usb_hub_wq` counts as stuck hub work only inside a hung-task
+  report (`a_hub_worker_in_a_warning_is_not_hung_hub_work`).
+- The notification's language follows the one rule in `better_core::locale`,
+  which Better Awake now calls too (`zh_HK` is Traditional Chinese).
+
 ### Left: measured on the owner's machine before and after
 
 This needs the release that carries the above installed (not an
@@ -194,6 +225,7 @@ notification (or one power-off). Record both in this ticket, then move it to
 
 Not verified by anyone yet (ADR 0046's consequences): a real
 `finit_module` through the helper's sandbox, a real unbind and bind, the
-notification as the person, the logind calls, and the post hook after a
+notification as the person, the logind calls (`Docked` included), whether
+apt holds a logind inhibitor while dpkg runs, and the post hook after a
 failed attempt (the hook also queues the run from its `pre` call).
 

@@ -736,6 +736,7 @@ name = "awake-ipc"
 version = "0.2.16"
 dependencies = [
  "awake-core",
+ "better-core",
  "serde",
  "serde_json",
  "thiserror 2.0.19",

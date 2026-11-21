@@ -664,11 +664,9 @@ mod usb {
                     .to_string()
             )
         );
-        assert!(
-            row.facts
-                .iter()
-                .any(|f| f.starts_with("It never turns off the PC while the lid is open"))
-        );
+        assert!(row.facts.iter().any(|f| {
+            f.starts_with("It never turns off the PC while the lid is open, while it's docked")
+        }));
 
         let chosen = settings.with(UsbChoice::PowerOffWhenSleepBlocked, true);
         let rows = page_rows_with(Locale::ZhTw, &reports, &BTreeMap::new(), DIR, &chosen);
@@ -683,7 +681,7 @@ mod usb {
         );
         assert!(
             row.facts.contains(
-                &"闔上螢幕後睡眠一直失敗時，Better OS 會關機。開著的應用程式裡沒存的內容會不見。"
+                &"闔上螢幕、沒有接擴充座或外接螢幕時，睡眠一直失敗，Better OS 會關機。開著的應用程式裡沒存的內容會不見。"
                     .to_string()
             )
         );

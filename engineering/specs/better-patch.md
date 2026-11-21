@@ -291,11 +291,19 @@ classified.
     whether it failed because `usb_hub_wq` would not freeze (a `Freezing …
     failed` line followed by `workqueue usb_hub_wq:`), and how many of the
     last attempts in a row did;
-  - hung hub work: that failed freeze, or a hung-task report's
-    `Workqueue: usb_hub_wq hub_event`;
+  - hung hub work: that failed freeze, or `Workqueue: usb_hub_wq hub_event`
+    inside a hung-task report (`INFO: task … blocked for more than …`); the
+    same line in any other stack dump (a warning during enumeration) is not
+    hung work;
   - the daemon's markers after a verified recovery (`usb-recovery: ucsi_acpi
     reloaded`, `usb-recovery: controller rebound ADDRESS`). A fault before
-    the last marker is not failing now.
+    the last marker is not failing now. The query is read as JSON with each
+    entry's transport: a line counts as the kernel's only when the kernel
+    wrote it (`_TRANSPORT=kernel`), and from the daemon's own stream only
+    the two exact marker forms are taken, so nothing another process writes
+    into that stream reads as a fault, a sleep, or a recovery. A reload is
+    marked only when both ports are back and a plugged-in charger shows;
+    one that did not is still failing and may be tried again.
 - **Who reads the log.** On Ubuntu 24.04 and 22.04 the system journal is
   readable by `root`, `adm`, and `systemd-journal` (the journal files' group
   and access lists); `dmesg` is not used, since `kernel.dmesg_restrict=1`
@@ -403,28 +411,35 @@ working; logind retried about every 40 s for 11 hours with the lid closed
   language: 這台電腦現在無法進入睡眠 / This PC can't go to sleep right now, and
   睡眠之後，一側的 USB 停止運作，電腦也因此一直無法進入睡眠。重新開機就能修好。 / USB on one
   side stopped working after sleep, and that keeps the PC from sleeping.
-  Restarting the PC fixes it. A sleep that works ends the run.
+  Restarting the PC fixes it. A sleep that works ends the run. Traditional
+  Chinese goes to a person whose language (AccountsService, else the
+  system's) is `zh_TW`, `zh_HK`, or `zh_Hant`, the rule every Better OS
+  notification follows (`better_core::locale`). A notification gets ten
+  seconds; a session bus that does not answer does not hold the run.
 - **Default: notify only.** The card, once the fix is on, says 闔上螢幕後睡眠一直
   失敗時，Better OS 只會通知你。 / When sleep keeps failing with the lid closed,
   Better OS only notifies you., with 改成關機 / Turn off the PC instead.
 - **Power-off is the person's choice**, made on that card (an administrator
-  authenticates): 闔上螢幕後睡眠一直失敗時，Better OS 會關機。開著的應用程式裡沒存的內容會不見。
-  / When sleep keeps failing with the lid closed, Better OS turns off the
-  PC. Work you haven't saved in open apps is lost., with 只通知我 / Only
-  notify me. The card says what it never does: 螢幕打開時、有程式暫緩關機時（例如正在
-  更新），或有其他人登入時，都不會關機。 / It never turns off the PC while the lid is
-  open, while something holds off shutting down (an update, for example),
-  or while someone else is signed in.
-- Why those three: with the lid open the person may be at the machine,
-  and the loop is not burning a battery in a bag; a `block` inhibitor on
-  `shutdown` is someone saying a power-off now would break their work
-  (unattended-upgrades, a disc burn), and root's `PowerOff` would not be
-  stopped by it, so the guard asks logind's `ListInhibitors` itself and
-  treats not knowing as held; another person's session holds work that
-  person did not choose to lose. The lid state is logind's `LidClosed`;
-  not knowing is not "closed". `PowerOff(false)` goes through logind, so
-  its delay inhibitors (an application saving) still get their time. At
-  most one power-off is asked for per run of failures.
+  authenticates): 闔上螢幕、沒有接擴充座或外接螢幕時，睡眠一直失敗，Better OS 會關機。開著的應用程式裡沒存的內容會不見。
+  / When sleep keeps failing with the lid closed and no dock or external screen, Better OS turns off the PC. Work you haven't saved in open apps is lost., with 只通知我 / Only
+  notify me. The card says what it never does: 螢幕打開時、接著擴充座或外接螢幕時、有程式暫緩關機時（例如正在更新）、Better Manager 正在變更套件時，或還有其他登入的工作階段時（包括你自己在別的螢幕或從網路登入的），都不會關機。 / It never turns off the PC while the lid is open, while it's docked or an external screen is connected, while something holds off shutting down (an update, for example), while Better Manager is changing packages, or while any other session is signed in, yours on another screen or over the network included.
+- Why these: with the lid open the person may be at the machine, and the
+  loop is not burning a battery in a bag. A closed lid alone cannot tell a
+  bag from a desk: a laptop on a dock or with an external screen may be in
+  use with its lid shut, so logind's `Docked` must say no (not knowing is
+  docked). A `block` inhibitor on `shutdown` is someone saying a power-off
+  now would break their work (unattended-upgrades, a disc burn), and
+  root's `PowerOff` would not be stopped by it, so the guard asks logind's
+  `ListInhibitors` itself and treats not knowing as held. Better
+  Manager's own privileged service marks a transaction it runs
+  (`/run/better-os/daemon-busy`), and a power-off then could leave dpkg
+  half way; whether apt itself holds a logind inhibitor while dpkg runs is
+  not known, so the marker is checked whatever it does. Any other session
+  holds work nobody chose to lose: another person's, or the same person's
+  over SSH or on a tty (a long job). The lid state is logind's
+  `LidClosed`; not knowing is not "closed". `PowerOff(false)` goes through
+  logind, so its delay inhibitors (an application saving) still get their
+  time. At most one power-off is asked for per run of failures.
 
 ### Limits, which the page states
 

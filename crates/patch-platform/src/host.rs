@@ -81,7 +81,9 @@ impl LinuxHost {
             let command = patch_core::Command::KernelUsbLog { grep };
             match self.commands.run(&command) {
                 Ok(output) if output.success => {
-                    return Ok(hardware_core::usb_recovery::classify(&output.stdout));
+                    return Ok(hardware_core::usb_recovery::classify_journal(
+                        &output.stdout,
+                    ));
                 }
                 Ok(output) => last = Some(ReadError::Failed(output.failure(command.program()))),
                 Err(error) => {
