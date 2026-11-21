@@ -995,7 +995,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &manager_platform::shell_extensions::GsettingsShellExtensions::from_environment(),
             &mut std::io::stderr(),
         );
-        if std::env::var_os(manager_platform::user_units::SYSTEMCTL_GUARD_VARIABLE).is_none() {
+        if !better_core::test_guard::is_on() {
             finish_touchpad_restore(
                 &state,
                 &DpkgProbe,

@@ -555,6 +555,16 @@ pub struct FilesSession {
     /// into it. Set by a click on an unmounted row and cleared by the mount.
     pending_open: Option<String>,
     pub preview: PreviewPanel,
+    /// The large preview's program when a test names it; `None` is the
+    /// companion rule's.
+    preview_program: Option<String>,
+    /// The folder each server this window mounted was mounted at, by the
+    /// address it was asked for, so the sidebar can light that server's row
+    /// (ticket 175).
+    server_folders: Vec<(String, std::path::PathBuf)>,
+    /// The network or FUSE mount the last folder asked about is on, read
+    /// from the kernel's mount table once per folder.
+    foreign_mount: Option<(std::path::PathBuf, Option<std::path::PathBuf>)>,
     pub search: SearchState,
     /// How much each folder in view holds (ticket 126).
     pub folder_sizes: crate::folder_sizes::FolderSizes,
@@ -726,6 +736,9 @@ impl FilesSession {
             devices: DeviceInventory::default(),
             pending_open: None,
             preview,
+            preview_program: None,
+            server_folders: Vec::new(),
+            foreign_mount: None,
             search: SearchState::default(),
             folder_sizes: crate::folder_sizes::FolderSizes::default()
                 .watching_with(Arc::clone(&hub)),
@@ -3698,6 +3711,35 @@ impl FilesSession {
         self.mounter = mounter;
     }
 
+    /// The folder a server this window mounted was mounted at, by the
+    /// address it was asked for.
+    pub fn server_folder(&self, address: &str) -> Option<&std::path::Path> {
+        self.server_folders
+            .iter()
+            .find(|(known, _)| known == address)
+            .map(|(_, folder)| folder.as_path())
+    }
+
+    /// The mount point of the network or FUSE filesystem `path` is on, or
+    /// `None` for a local disk. Read from the kernel's mount table, once for
+    /// each folder asked about.
+    pub fn foreign_mount(&mut self, path: &std::path::Path) -> Option<std::path::PathBuf> {
+        if let Some((known, foreign)) = &self.foreign_mount
+            && known == path
+        {
+            return foreign.clone();
+        }
+        let table = files_platform::MountTable::from_env();
+        let foreign = match table.reach(path) {
+            files_platform::Reach::Local => None,
+            files_platform::Reach::Network | files_platform::Reach::Fuse => {
+                table.mount_for(path).map(|mount| mount.mount_point.clone())
+            }
+        };
+        self.foreign_mount = Some((path.to_path_buf(), foreign.clone()));
+        foreign
+    }
+
     /// Whether a server is being opened.
     pub fn is_mounting(&self) -> bool {
         self.mounting.is_some()
@@ -3737,9 +3779,11 @@ impl FilesSession {
         self.server_asks = None;
         self.server_prompt = None;
         match result {
-            Ok(path) => match Location::local(path) {
+            Ok(path) => match Location::local(path.clone()) {
                 Ok(location) => {
                     self.notice = None;
+                    self.server_folders.retain(|(known, _)| *known != address);
+                    self.server_folders.push((address, path));
                     self.navigate_to(location);
                 }
                 Err(_) => {
@@ -3795,11 +3839,18 @@ impl FilesSession {
             self.notice = Some(Notice::Command(CommandRefusal::NothingToActOn));
             return;
         };
-        let invocation = app_catalog_core::Invocation {
-            program: preview_program(),
-            arguments: vec![path],
+        let program = match self.preview_program.clone() {
+            Some(program) => Ok(program),
+            None => preview_program(),
         };
-        if self.spawner.spawn(&invocation).is_err() {
+        let started = program.ok().is_some_and(|program| {
+            let invocation = app_catalog_core::Invocation {
+                program,
+                arguments: vec![path],
+            };
+            self.spawner.spawn(&invocation).is_ok()
+        });
+        if !started {
             // No separate preview: the side pane shows what it can.
             if !self.preview.open {
                 self.toggle_preview();
@@ -3824,6 +3875,13 @@ impl FilesSession {
             }
             None => false,
         }
+    }
+
+    /// Starts `program` for the large preview instead of the one the
+    /// companion rule finds. For tests, whose executable has no preview
+    /// program beside it.
+    pub fn set_preview_program(&mut self, program: impl Into<String>) {
+        self.preview_program = Some(program.into());
     }
 
     /// Uses `root` as the home trash for what undo puts away, instead of the
@@ -3910,15 +3968,13 @@ fn mirror(preferences: &mut FilesPreferences, view: FolderView) {
     preferences.set_order(view.order());
 }
 
-/// The preview program: `better-files-preview` beside this executable, or on
-/// `$PATH` when this one is not where it can be found.
-pub fn preview_program() -> String {
-    std::env::current_exe()
-        .ok()
-        .map(|exe| exe.with_file_name("better-files-preview"))
-        .filter(|candidate| candidate.is_file())
-        .map(|candidate| candidate.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "better-files-preview".to_string())
+/// The preview program by the companion rule (`better_core::companion`,
+/// ticket 179): `better-files-preview` beside this executable, then where the
+/// package installs it for an installed Better Files, and never a name looked
+/// up through `$PATH`, which would give a build the installed preview.
+pub fn preview_program() -> Result<String, better_core::companion::Refusal> {
+    better_core::companion::locate(&better_core::companion::FILES_PREVIEW)
+        .map(|program| program.to_string_lossy().into_owned())
 }
 
 /// How often a visible folder whose changes are not announced (a network or

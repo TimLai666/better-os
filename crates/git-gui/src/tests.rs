@@ -704,14 +704,6 @@ fn launches_use_argument_vectors() {
             .unwrap();
     assert_eq!(gnome.args, vec!["--working-directory=/r"]);
     assert!(crate::settings::terminal_launch(&settings, Path::new("/r"), |_| false).is_none());
-    assert_eq!(
-        crate::settings::files_launch(Path::new("/r"), |p| p == "better-files").program,
-        "better-files"
-    );
-    assert_eq!(
-        crate::settings::files_launch(Path::new("/r"), |_| false).program,
-        "xdg-open"
-    );
 }
 
 #[test]

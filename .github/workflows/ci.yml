@@ -30,7 +30,7 @@ jobs:
         # needs one goes through `test_prerequisites`, so under CI a missing
         # one fails the test rather than skipping it (ticket 177):
         # - dbus (`dbus-daemon`): every private-bus test, in awake-service,
-        #   awake-tray, files-gui, hardware-platform, launcher-platform,
+        #   awake-tray, files-gui, git-gui, hardware-platform, launcher-platform,
         #   manager-daemon, manager-gui, monitor-service, monitor-tray,
         #   storage-service, touchpad-gesture-service, touchpad-platform, and
         #   window-attention-service.

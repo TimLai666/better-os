@@ -18,6 +18,7 @@ pub mod commit;
 pub mod conflicts;
 pub mod dialog_check;
 pub mod dialogs;
+pub mod file_manager;
 pub mod github;
 pub mod graph;
 pub mod history;

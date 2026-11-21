@@ -3262,8 +3262,8 @@ impl GitApp {
                     self.item(c.copy_relative, cx, move |this, _, cx| {
                         this.copy_text(relative.clone(), cx)
                     }),
-                    self.item(c.show_in_folder, cx, move |this, _, _| {
-                        this.show_in_files(p4.parent().map(Path::to_path_buf))
+                    self.item(c.show_in_folder, cx, move |this, _, cx| {
+                        this.show_in_files(p4.parent().map(Path::to_path_buf), cx)
                     }),
                     self.item(c.open_file_in_editor, cx, move |this, _, _| {
                         this.open_in_editor(Some(p5.clone()))
@@ -3365,8 +3365,8 @@ impl GitApp {
             }));
         }
         entries.extend([
-            self.item(c.show_in_files, cx, move |this, _, _| {
-                this.show_in_files(Some(b.clone()))
+            self.item(c.show_in_files, cx, move |this, _, cx| {
+                this.show_in_files(Some(b.clone()), cx)
             }),
             self.item(c.copy_path, cx, move |this, _, cx| {
                 this.copy_text(e.clone(), cx)

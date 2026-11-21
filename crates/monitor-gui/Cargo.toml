@@ -17,6 +17,8 @@ bench = false
 app-catalog-core.workspace = true
 # The catalog's host probe, for an autostart entry's `TryExec` (ticket 173).
 app-catalog-platform.workspace = true
+# The test guard (ticket 178) and the companion rule (ticket 179).
+better-core.workspace = true
 better-ui.workspace = true
 # The battery's state, icon and words, shared by every battery icon
 # (ticket 170).

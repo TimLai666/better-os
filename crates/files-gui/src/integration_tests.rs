@@ -2613,15 +2613,37 @@ fn space_opens_the_selected_file_in_the_preview_program() {
         .iter_visible()
         .position(|entry| entry.name == "notes.txt")
         .expect("notes.txt is listed");
+    session.set_preview_program("/build/target/debug/better-files-preview");
     session.apply_selection(crate::content::SelectionInput::Click(notes), 1);
     session.dispatch(crate::keys::Command::PreviewWindow, 1, 10);
     let calls = rig.spawner.calls();
     let last = calls.last().expect("the preview was started");
-    assert!(last.program.ends_with("better-files-preview"));
+    assert_eq!(last.program, "/build/target/debug/better-files-preview");
     assert_eq!(
         last.arguments,
         [rig.home.join("Documents/notes.txt").display().to_string()]
     );
+}
+
+/// Ticket 179: a test executable (a build, in `target/…/deps`) has no
+/// preview program beside it, so the rule finds none and nothing is started
+/// through `PATH`; the side pane shows the file instead.
+#[test]
+fn with_no_preview_program_beside_a_build_nothing_is_started_and_the_pane_opens() {
+    let (rig, mut session) = plain();
+    settle(&mut session);
+    assert!(crate::session::preview_program().is_err());
+    let notes = session
+        .pane()
+        .model()
+        .iter_visible()
+        .position(|entry| entry.name == "notes.txt")
+        .expect("notes.txt is listed");
+    session.apply_selection(crate::content::SelectionInput::Click(notes), 1);
+    let before = rig.spawner.calls().len();
+    session.dispatch(crate::keys::Command::PreviewWindow, 1, 10);
+    assert_eq!(rig.spawner.calls().len(), before, "nothing was started");
+    assert!(session.preview.open, "the side pane shows the file");
 }
 
 #[test]

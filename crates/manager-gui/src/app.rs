@@ -799,9 +799,7 @@ impl ManagerApp {
                     // a Better OS activation file `apt remove` left pointing
                     // at a program that is gone. A component dpkg cannot be
                     // read for waits for next time.
-                    if std::env::var_os(manager_platform::user_units::SYSTEMCTL_GUARD_VARIABLE)
-                        .is_none()
-                    {
+                    if !better_core::test_guard::is_on() {
                         let manifests: Vec<_> = manager.manifests().cloned().collect();
                         let _ = defaults_core::removal::finish_in_session(manifests, |id| {
                             let installed = snapshot.installed_by_record_or_dpkg(id, &DpkgProbe)?;

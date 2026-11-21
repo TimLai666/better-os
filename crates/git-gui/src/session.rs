@@ -770,6 +770,8 @@ pub enum Problem {
     Platform(String),
     /// A program could not be started.
     Launch(String),
+    /// The file manager was not asked, or could not show the folder.
+    FileManager(String),
     /// The keyring refused.
     Keyring(String),
     /// A file of Better Git's own could not be written.
@@ -3421,6 +3423,10 @@ impl GitSession {
 
     pub fn launch_failed(&mut self, message: impl Into<String>) {
         self.problem = Some(Problem::Launch(message.into()));
+    }
+
+    pub fn file_manager_failed(&mut self, message: impl Into<String>) {
+        self.problem = Some(Problem::FileManager(message.into()));
     }
 
     pub fn keyring_failed(&mut self, message: impl Into<String>) {
