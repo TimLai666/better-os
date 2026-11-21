@@ -23,6 +23,13 @@ header beside the charge figure): 使用電池 / On battery, 接電仍耗電 / D
 Above {limit}% limit above it), 已充滿 / Fully charged, 沒有充電 / Not charging,
 無法判讀 / Unknown.
 
+A button that draws only the picture and the charge figure (the login and
+lock screens' status row, ticket 260) is named for a screen reader by the
+charge and the state's full words: 電池 {n}%，{words} / Battery {n}%: {words},
+for example 電池 87%，充電中 / Battery 87%: Charging. With no charge read it
+is 電池：{words} / Battery: {words}, and the unknown state is its own words,
+無法判讀電池狀態 / Battery state unknown. `BatteryLook::spoken` carries it.
+
 No two states draw the same picture at the same charge; the two caution
 states share theirs and differ in words. Nothing with a charger online draws a
 level picture, so a laptop on its charger never looks like one on battery.
