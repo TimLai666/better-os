@@ -41,10 +41,10 @@ the same there.
 
 ## Notes
 
-**Blocked:** the owner: the power mode item's look is designed with the
-owner in an icon design round; the owner decides whether the menu also
-switches the mode; and the panel is seen on the owner's machine after a
-release.
+**Blocked:** the owner: the look of the mark and the picture is designed
+with the owner in an icon design round; the owner decides whether the menu
+also switches the mode; and the panel is seen on the owner's machine after
+a release.
 
 ### Decisions (owner, 2026-11-22)
 
@@ -56,50 +56,71 @@ release.
   status area in the Better OS session (ticket 157, which designs every
   state's picture with the owner); under GNOME it cannot be changed from
   outside the shell (spec).
-- The pixel pictures the first branch drew were judged ugly and are gone,
-  not kept for later. The power mode item's look gets its own design round
-  with the owner.
+- Better Monitor is **one button** in the panel, as a macOS menu bar item
+  is: the power mode's mark and the readings in one picture, one menu, one
+  tooltip. This replaces the second panel item built before it.
+- The mark is the desktop's own power mode icon, never a drawing of ours.
 
 ### Built
 
 - The readings icon offers no battery: `Reading` has no battery, "Show in
-  the taskbar" no battery check box, and a choice stored before this that
-  named the battery is rewritten without it when the item starts (the
-  battery alone falls back to processor and memory, so the icon is never
-  empty). The other bars have their widths from before ticket 295 back.
-- The power mode is a second panel item (`monitor_tray::PowerModeItem`) with
-  the icon theme's `power-profile-*-symbolic`, on a connection of its own
-  that exists only while there is a mode to show, so every watcher forgets
-  it when there is none (COSMIC's status area ignores `Passive`). It is
-  registered and reported apart from the icon. The menu (shared), the
-  tooltips and the popup name the mode and the System page's caution
-  sentences through one rule, `hardware_core::power::mode_shown`;
-  `Caution::words` and `Profile::name` are the System page's words, which it
-  now calls too.
-- The modes come from power-profiles-daemon (`hardware_platform::bus::
-  follow_power_profiles`), only from one that is running: a stopped or
-  masked daemon is absent and is never started through D-Bus activation, for
-  the System page too. A watch that ends says "could not be read" last.
-  Not from `/sys/firmware/acpi/platform_profile_choices` as this ticket's
-  text says: ADR 0017 keeps Better OS off `platform_profile`. The System page
-  sets the mode through the daemon directly, not through ADR 0029's path; a
-  menu switch would call `bus::set_power_profile` the same way.
-- A debug build of `better-monitor-service` reads `/sys` from
-  `BETTER_OS_DEBUG_SYS_ROOT` like the window (`ServiceConfig::for_session`).
+  the taskbar" no battery check box, and a choice stored before that named
+  the battery is rewritten without it when the item starts (the battery
+  alone falls back to processor and memory). The readings have their widths
+  from before ticket 295.
+- The picture (`monitor_tray::picture`, GPUI-free): the theme's
+  `power-profile-*-symbolic` found by the Icon Theme Specification's lookup
+  (`picture::find_icon`), drawn with `resvg` (`resvg 0.46`, GPUI's own),
+  tinted by the readings' rule, then a gap, then the readings scaled to 16
+  pixels. The theme comes from the settings portal and is followed
+  (`icon_theme`). No mark, no icon: the picture is the square pixmaps.
+- GNOME's AppIndicator extension fits a pixmap into a square and draws a
+  wide PNG named by `IconName` at its own size (spec, with file and line), so
+  with a mark the item writes the picture under
+  `$XDG_RUNTIME_DIR/better-os/monitor-tray/` (`picture_file`) and sends no
+  pixmaps. A mode change is a new picture on the same item: no second item,
+  no second connection, no new registration.
+- The menu, the tooltip and the popup name the mode and the System page's
+  caution sentences through one rule, `hardware_core::power::mode_shown`.
+- The modes come from power-profiles-daemon; every call carries
+  `NO_AUTO_START` (`hardware_platform::bus::invoke`), so no read or write
+  starts a stopped, masked or just-stopped daemon, for the System page too.
+  A watch that ends says "could not be read" last. Not from
+  `/sys/firmware/acpi/platform_profile_choices` as this ticket's text says:
+  ADR 0017 keeps Better OS off `platform_profile`. The System page sets the
+  mode through the daemon directly, not through ADR 0029's path; a menu
+  switch would call `bus::set_power_profile` the same way.
+- A debug build of `better-monitor-service` reads `/sys`, and `/proc` and
+  `etc/passwd` when the fixture has them, from `BETTER_OS_DEBUG_SYS_ROOT`
+  (`ServiceConfig::for_session`).
+
+### Limits found
+
+- The wide picture is drawn one file pixel to one logical pixel: soft on a
+  scale-2 display, and the extension's "icon size" setting does not grow it
+  (`icon-size-24-balanced-zh-TW-light-panel-zoom6.png`). Without a mark the
+  item is its pixmaps and follows both, as before.
+- A panel that does not take a path in `IconName` shows nothing while there
+  is a mark. COSMIC's status area does take one (read from source); KDE,
+  waybar and swaybar were not read or run.
 
 ### Checked
 
-- Tests in `monitor-tray` (`menu::tests`, `lib::tests`, `tests/power.rs`),
-  `hardware-core` (`power::tests`), `hardware-platform` (`tests/bus.rs`:
-  nothing activated on a bus that could start the daemon; a closed bus ends
-  unreadable), `monitor-gui` (`popup::tests`), `manager-gui`.
+- Tests in `monitor-tray` (`picture`, `picture_file`, `icon_theme`,
+  `menu`, `lib`, `tests/power.rs`), `hardware-core` (`power`),
+  `hardware-platform` (`tests/bus.rs`: nothing activated on a bus that could
+  start the daemon, including a daemon that leaves between calls; a closed
+  bus ends unreadable), `monitor-gui` (`popup`), `monitor-service`,
+  `manager-gui`, `awake-gui`, `window-attention-service`, `manager-daemon`.
 - Screenshots in `/home/tim/Developer/better-os-evidence/295/`, headless
-  GNOME Shell 46 with the Zorin AppIndicator extension, a stand-in daemon on
-  a private system bus, a fixture `/sys` and `/proc` (processes `systemd`
-  and `bash`): each mode with the menu open, English and zh-TW, dark and
-  light (`mode-*`), the popup (`popup-*`), and no modes
-  (`no-power-modes-zh-TW-light.png`: the item has left the panel). Never the
-  machine's own power mode.
-- Read from source only, not run: COSMIC's status area (ignores `Status`),
-  dbus-daemon's and dbus-broker's activation errors. Not checked: swaybar,
-  waybar, KDE, the owner's desktop.
+  GNOME Shell 46 with the Zorin AppIndicator extension and the Adwaita icon
+  theme, a stand-in daemon on a private system bus, fixture `/sys` and
+  `/proc` with invented round figures: each mode with the menu open and the
+  panel at real size and zoomed 6×, English and zh-TW, dark and light
+  (`mode-*`); the extension at icon size 24; the popup (`popup-*`); no
+  modes; the wide pixmap against the wide file (`wide-pixmap-vs-file*`).
+  Never the machine's own power mode.
+- Read from source only: Ubuntu's AppIndicator extension (`fbc758a4`, the
+  same rule as Zorin's copy), COSMIC's status area, dbus-daemon's and
+  dbus-broker's activation errors. Not checked: KDE, waybar, swaybar, a
+  scale-2 display, the owner's desktop.

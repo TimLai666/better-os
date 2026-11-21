@@ -87,11 +87,20 @@ pub fn mode_shown(facts: &PowerProfilesFacts, language: Language) -> Option<Mode
     })
 }
 
-/// What a place that shows the mode says when the daemon answers and could
-/// not be read.
+/// What a place that shows the mode says after "Power mode:" when the
+/// daemon answers and could not be read.
 pub fn unreadable_words(language: Language) -> &'static str {
     match language {
         Language::English => "could not be read",
+        Language::TraditionalChinese => "無法讀取",
+    }
+}
+
+/// The same on its own, where it stands in for the mode's name (the
+/// popup's figure under "Power mode").
+pub fn unreadable_figure(language: Language) -> &'static str {
+    match language {
+        Language::English => "Couldn't be read",
         Language::TraditionalChinese => "無法讀取",
     }
 }
@@ -368,6 +377,8 @@ mod tests {
             "Performance is reduced for now (x)."
         );
         assert_eq!(unreadable_words(Language::TraditionalChinese), "無法讀取");
+        assert_eq!(unreadable_words(Language::English), "could not be read");
+        assert_eq!(unreadable_figure(Language::English), "Couldn't be read");
     }
 
     #[test]

@@ -4966,6 +4966,7 @@ dependencies = [
  "monitor-core",
  "monitor-ipc",
  "monitor-service",
+ "resvg 0.46.0",
  "serde",
  "tempfile",
  "test-prerequisites",

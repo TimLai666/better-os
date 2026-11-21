@@ -21,6 +21,9 @@ monitor-core.workspace = true
 hardware-core.workspace = true
 # The power mode, read the way the System page reads it (ticket 295).
 hardware-platform.workspace = true
+# Draws the desktop's own power mode icon into the picture: the SVG renderer
+# GPUI already brings (ticket 295), not a second one.
+resvg = { version = "0.46", default-features = false }
 monitor-ipc.workspace = true
 monitor-service.workspace = true
 serde.workspace = true

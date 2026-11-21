@@ -116,20 +116,44 @@ impl<T> From<BusError> for Presence<T> {
     }
 }
 
-fn get(connection: &Connection, at: &Endpoint, property: &str) -> Result<OwnedValue, BusError> {
-    let reply = connection
-        .call_method(
-            Some(at.name),
-            at.path,
-            Some("org.freedesktop.DBus.Properties"),
-            "Get",
-            &(at.interface, property),
-        )
+/// One method call that never starts the service it is sent to: every
+/// message carries `NO_AUTO_START`, so a service that is not running (or
+/// stops between two calls) answers `ServiceUnknown`, which is absent.
+/// Nothing here may start the desktop's services: Better Monitor's taskbar
+/// item follows power-profiles-daemon all day, and starting it would undo a
+/// person stopping it or its package's removal (ticket 295 reviews).
+fn invoke<B, R>(
+    connection: &Connection,
+    at: &Endpoint,
+    interface: &str,
+    method: &str,
+    body: &B,
+) -> Result<R, BusError>
+where
+    B: serde::ser::Serialize + zbus::zvariant::DynamicType,
+    R: for<'d> zbus::zvariant::DynamicDeserialize<'d>,
+{
+    let proxy: zbus::blocking::Proxy<'_> = zbus::blocking::proxy::Builder::new(connection)
+        .destination(at.name)
+        .and_then(|b| b.path(at.path))
+        .and_then(|b| b.interface(interface.to_string()))
+        .map(|b| b.cache_properties(zbus::proxy::CacheProperties::No))
+        .and_then(|b| b.build())
         .map_err(BusError::from_zbus)?;
-    reply
-        .body()
-        .deserialize::<OwnedValue>()
-        .map_err(|error| BusError::Failed(error.to_string()))
+    proxy
+        .call_with_flags::<_, B, R>(method, zbus::proxy::MethodFlags::NoAutoStart.into(), body)
+        .map_err(BusError::from_zbus)?
+        .ok_or_else(|| BusError::Failed(format!("{method} gave no reply")))
+}
+
+fn get(connection: &Connection, at: &Endpoint, property: &str) -> Result<OwnedValue, BusError> {
+    invoke(
+        connection,
+        at,
+        "org.freedesktop.DBus.Properties",
+        "Get",
+        &(at.interface, property),
+    )
 }
 
 fn set(
@@ -138,30 +162,21 @@ fn set(
     property: &str,
     value: Value<'_>,
 ) -> Result<(), BusError> {
-    connection
-        .call_method(
-            Some(at.name),
-            at.path,
-            Some("org.freedesktop.DBus.Properties"),
-            "Set",
-            &(at.interface, property, value),
-        )
-        .map(|_| ())
-        .map_err(BusError::from_zbus)
+    invoke(
+        connection,
+        at,
+        "org.freedesktop.DBus.Properties",
+        "Set",
+        &(at.interface, property, value),
+    )
 }
 
-fn call<B>(
-    connection: &Connection,
-    at: &Endpoint,
-    method: &str,
-    body: &B,
-) -> Result<zbus::Message, BusError>
+fn call<B, R>(connection: &Connection, at: &Endpoint, method: &str, body: &B) -> Result<R, BusError>
 where
     B: serde::ser::Serialize + zbus::zvariant::DynamicType,
+    R: for<'d> zbus::zvariant::DynamicDeserialize<'d>,
 {
-    connection
-        .call_method(Some(at.name), at.path, Some(at.interface), method, body)
-        .map_err(BusError::from_zbus)
+    invoke(connection, at, at.interface, method, body)
 }
 
 fn string(value: OwnedValue) -> Result<String, BusError> {
@@ -186,37 +201,11 @@ fn entry(dict: &HashMap<String, OwnedValue>, key: &str) -> Option<String> {
         .and_then(|v| String::try_from(v).ok())
 }
 
-/// Whether a name has an owner now, asked of the bus itself, which never
-/// starts anything.
-fn has_owner(system: &Connection, name: &str) -> Result<bool, BusError> {
-    let reply = system
-        .call_method(
-            Some("org.freedesktop.DBus"),
-            "/org/freedesktop/DBus",
-            Some("org.freedesktop.DBus"),
-            "NameHasOwner",
-            &(name,),
-        )
-        .map_err(BusError::from_zbus)?;
-    reply
-        .body()
-        .deserialize::<bool>()
-        .map_err(|error| BusError::Failed(error.to_string()))
-}
-
-/// The first power-profiles-daemon name that answers.
-///
-/// Only a daemon that is running is asked: a name with no owner is absent,
-/// never started through D-Bus activation. Better Monitor's taskbar item
-/// follows the daemon all day, and asking a stopped one would start it again
-/// the moment someone stopped it, or its package's removal stopped it
-/// (ticket 295 review).
+/// The first power-profiles-daemon name that answers. Only a daemon that
+/// is running answers: no call here starts one ([`invoke`]).
 pub fn power_profiles_endpoint(system: &Connection) -> Result<Endpoint, BusError> {
     let mut last = BusError::Absent("power-profiles-daemon".into());
     for endpoint in POWER_PROFILES {
-        if !has_owner(system, endpoint.name)? {
-            continue;
-        }
         match get(system, &endpoint, "ActiveProfile") {
             Ok(_) => return Ok(endpoint),
             Err(error @ BusError::Failed(_)) => return Err(error),
@@ -324,17 +313,9 @@ pub fn keyboard(session: &Connection, system: &Connection) -> Presence<KeyboardL
         Err(BusError::Failed(text)) => return Presence::Unreadable(text),
         Err(BusError::Absent(_)) => {}
     }
-    let upower = call(system, &UPOWER_KEYBOARD, "GetMaxBrightness", &())
-        .and_then(|m| {
-            m.body()
-                .deserialize::<i32>()
-                .map_err(|e| BusError::Failed(e.to_string()))
-        })
-        .and_then(|max| {
-            let level = call(system, &UPOWER_KEYBOARD, "GetBrightness", &())?
-                .body()
-                .deserialize::<i32>()
-                .map_err(|e| BusError::Failed(e.to_string()))?;
+    let upower =
+        call::<_, i32>(system, &UPOWER_KEYBOARD, "GetMaxBrightness", &()).and_then(|max| {
+            let level = call::<_, i32>(system, &UPOWER_KEYBOARD, "GetBrightness", &())?;
             Ok((level, max))
         });
     match upower {
@@ -357,7 +338,7 @@ pub fn set_keyboard(
             set(session, &GSD_KEYBOARD, "Brightness", Value::from(value))
         }
         KeyboardSource::UPower { .. } => {
-            call(system, &UPOWER_KEYBOARD, "SetBrightness", &(value,)).map(|_| ())
+            call::<_, ()>(system, &UPOWER_KEYBOARD, "SetBrightness", &(value,))
         }
     }
 }

@@ -78,7 +78,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .as_deref()
         .map(IconChoice::load)
         .unwrap_or_default();
-    let tray = Tray::new(TrayState::new(locale, choice, choice_path));
+    let mut state = TrayState::new(locale, choice, choice_path);
+    // The power mode's mark comes from the desktop's icon theme.
+    state.marks = monitor_tray::icon_theme::Marks::from_environment();
+    let tray = Tray::with_pictures(
+        state,
+        monitor_tray::picture_file::Pictures::in_runtime_dir(),
+    );
 
     // Both interfaces are served before the name is requested, and the builder
     // waits for the object server to subscribe, so a panel call that arrives
@@ -147,6 +153,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // The power mode beside the icon, followed on the system bus.
     monitor_tray::power::spawn(tray.clone());
+    // The icon theme the mark is drawn from, followed as it changes.
+    tokio::spawn(monitor_tray::icon_theme::follow(
+        connection.clone(),
+        tray.clone(),
+    ));
 
     let poller = tray.clone();
     let polling = tokio::spawn(async move {

@@ -300,6 +300,27 @@ fn reading_and_following_the_daemon_never_start_it() {
     });
     assert_eq!(end, bus::WatchEnd::Stopped);
     assert_eq!(readings, vec![Presence::Absent]);
+
+    // The race: a daemon that answers and then goes away between two calls.
+    // Every call after it left is absent, never an activation.
+    let daemon = fakes::serve_system(
+        zbus::blocking::connection::Builder::address(address.as_str()).unwrap(),
+        FakeProfiles::owners_machine(),
+        false,
+        false,
+    )
+    .unwrap();
+    assert!(matches!(bus::power_profiles(&client), Presence::Present(_)));
+    let at = bus::power_profiles_endpoint(&client).unwrap();
+    drop(daemon);
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    assert_eq!(bus::power_profiles(&client), Presence::Absent);
+    assert!(matches!(
+        bus::set_power_profile(&client, Profile::Balanced),
+        Err(bus::BusError::Absent(_))
+    ));
+    assert_eq!(at.name, "org.freedesktop.UPower.PowerProfiles");
+
     std::thread::sleep(std::time::Duration::from_millis(300));
     assert!(!mark.exists(), "power-profiles-daemon was started");
     let _ = child.kill();

@@ -138,7 +138,7 @@ fn a_machine_without_the_daemon_shows_nothing_until_one_starts() {
         state.adopt_power(first);
         state
     };
-    assert_eq!(state.power_item.status(), "Passive");
+    assert_eq!(state.mark_mode, None);
     assert!(
         !state
             .menu
@@ -170,8 +170,8 @@ fn a_daemon_that_offers_no_modes_shows_nothing() {
     assert!(matches!(first, Presence::Present(_)), "{first:?}");
     let mut state = TrayState::new(Locale::English, IconChoice::default(), None);
     state.adopt_power(first);
-    assert_eq!(state.power_item.status(), "Passive");
-    assert_eq!(state.power_item.icon_name(), "");
+    assert_eq!(state.mark_mode, None);
+    assert_eq!(state.picture, None);
 }
 
 #[zbus::proxy(
@@ -183,6 +183,8 @@ trait Item {
     fn status(&self) -> zbus::Result<String>;
     #[zbus(property)]
     fn icon_name(&self) -> zbus::Result<String>;
+    #[zbus(property)]
+    fn icon_pixmap(&self) -> zbus::Result<Vec<(i32, i32, Vec<u8>)>>;
     #[zbus(property)]
     fn id(&self) -> zbus::Result<String>;
     #[zbus(property)]
@@ -225,22 +227,34 @@ fn modes(active: &str) -> PowerFacts {
     })
 }
 
-async fn has_owner(panel: &zbus::Connection, name: &str) -> bool {
-    zbus::fdo::DBusProxy::new(panel)
-        .await
-        .unwrap()
-        .name_has_owner(name.try_into().unwrap())
-        .await
-        .unwrap()
+/// A theme with the three power mode icons.
+fn theme() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path().join("Test");
+    std::fs::create_dir_all(base.join("status")).unwrap();
+    std::fs::write(
+        base.join("index.theme"),
+        "[Icon Theme]\nDirectories=status\n\n[status]\nSize=16\nType=Scalable\n",
+    )
+    .unwrap();
+    for (mode, x) in [("power-saver", 1), ("balanced", 6), ("performance", 11)] {
+        std::fs::write(
+            base.join(format!("status/power-profile-{mode}-symbolic.svg")),
+            format!(
+                r#"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"><rect x="{x}" y="2" width="4" height="12"/></svg>"#
+            ),
+        )
+        .unwrap();
+    }
+    dir
 }
 
-/// The power mode item is on the bus only while it has a mode to show: a
-/// panel that ignores a `Passive` status (COSMIC's status area) or keeps it
-/// in an overflow (KDE) would otherwise show an empty item. It has its own
-/// name, registers itself apart from the icon, and says when its mode
-/// changes.
+/// One item, as a macOS menu bar item is: the power mode's mark is part of
+/// the item's own picture, which a panel reads from the file `IconName`
+/// names while there is a mark and from the square pixmaps otherwise. A new
+/// mode is a new picture on the same item, never a second registration.
 #[tokio::test]
-async fn the_mode_item_is_on_the_bus_only_while_it_has_a_mode() {
+async fn the_mark_is_in_the_one_items_picture_and_follows_the_mode() {
     use zbus::export::futures_core::Stream;
     let bus = bus_or_skip!();
     let panel = zbus::connection::Builder::address(bus.address.as_str())
@@ -264,23 +278,24 @@ async fn the_mode_item_is_on_the_bus_only_while_it_has_a_mode() {
         .await
         .unwrap();
 
-    let tray = Tray::new(TrayState::new(Locale::English, IconChoice::default(), None));
-    tray.use_bus_address(&bus.address).await;
+    let icons = theme();
+    let files = tempfile::tempdir().unwrap();
+    let mut state = TrayState::new(Locale::English, IconChoice::default(), None);
+    state.marks = monitor_tray::icon_theme::Marks::new(vec![icons.path().to_path_buf()]);
+    state.adopt_icon_theme(Some("Test".into()));
+    let pictures = monitor_tray::picture_file::Pictures::at(files.path().join("p")).unwrap();
+    let tray = Tray::with_pictures(state, Some(pictures));
     let connection = monitor_tray::serve(
         zbus::connection::Builder::address(bus.address.as_str()).unwrap(),
         tray.clone(),
     )
     .await
     .unwrap();
-    let main = connection.unique_name().unwrap().to_string();
-    assert!(tray.power_connection().await.is_none(), "no mode, no item");
-
-    let changes = tray.state.lock().await.adopt_power(modes("performance"));
-    tray.announce(changes).await;
-    let power = tray.power_connection().await.expect("the item came");
-    let name = power.unique_name().unwrap().to_string();
-    assert_ne!(name, main);
-    assert_eq!(*items.lock().unwrap(), vec![name.clone()]);
+    let name = connection.unique_name().unwrap().to_string();
+    assert_eq!(
+        monitor_tray::register_and_verify(&connection, &name).await,
+        monitor_tray::TrayAvailability::Registered
+    );
     let item = ItemProxy::builder(&panel)
         .destination(name.as_str())
         .unwrap()
@@ -288,44 +303,50 @@ async fn the_mode_item_is_on_the_bus_only_while_it_has_a_mode() {
         .build()
         .await
         .unwrap();
-    assert_eq!(item.status().await.unwrap(), "Active");
-    assert_eq!(item.id().await.unwrap(), "better-monitor-power-mode");
-    assert_eq!(item.menu().await.unwrap().as_str(), monitor_tray::MENU_PATH);
-    assert_eq!(
-        item.icon_name().await.unwrap(),
-        "power-profile-performance-symbolic"
-    );
+    assert_eq!(item.icon_name().await.unwrap(), "", "no mode, the pixmaps");
 
-    // Another program changes the mode: the same item says so.
-    let mut icons = item.receive_new_icon().await.unwrap();
+    let changes = tray.state.lock().await.adopt_power(modes("performance"));
+    tray.announce(changes).await;
+    let first = item.icon_name().await.unwrap();
+    assert!(first.starts_with(files.path().to_str().unwrap()), "{first}");
+    // No pixmap beside it: GNOME's extension would draw the square pixmap
+    // over the wide file.
+    assert!(item.icon_pixmap().await.unwrap().is_empty());
+    let png = std::fs::read(&first).unwrap();
+    assert!(png.starts_with(b"\x89PNG"));
+    // Wider than tall by at least half, so the extension draws it at its own
+    // size rather than fitting it into a square.
+    let (width, height) = (
+        u32::from_be_bytes(png[16..20].try_into().unwrap()),
+        u32::from_be_bytes(png[20..24].try_into().unwrap()),
+    );
+    assert_eq!(height, monitor_tray::picture::HEIGHT);
+    assert!(width * 2 >= height * 3, "{width}x{height}");
+
+    // Another program changes the mode: the same item, a new picture.
+    let mut icons_changed = item.receive_new_icon().await.unwrap();
     let changes = tray.state.lock().await.adopt_power(modes("power-saver"));
     tray.announce(changes).await;
     tokio::time::timeout(
         Duration::from_secs(5),
-        std::future::poll_fn(|context| std::pin::Pin::new(&mut icons).poll_next(context)),
+        std::future::poll_fn(|context| std::pin::Pin::new(&mut icons_changed).poll_next(context)),
     )
     .await
     .expect("NewIcon arrives");
-    assert_eq!(
-        item.icon_name().await.unwrap(),
-        "power-profile-power-saver-symbolic"
+    let second = item.icon_name().await.unwrap();
+    assert_ne!(first, second);
+    assert!(
+        !std::path::Path::new(&first).exists(),
+        "the old picture is gone"
     );
-    assert!(tray.power_connection().await.is_some());
+    assert_eq!(items.lock().unwrap().len(), 1, "registered once");
 
-    // The daemon went away: the item leaves the bus.
+    // No mode: back to the square pixmaps, and no picture is left behind.
     let changes = tray.state.lock().await.adopt_power(Presence::Absent);
     tray.announce(changes).await;
-    assert!(tray.power_connection().await.is_none());
-    let mut gone = false;
-    for _ in 0..50 {
-        if !has_owner(&panel, &name).await {
-            gone = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    assert!(gone, "the item's name is still on the bus");
-    assert!(has_owner(&panel, &main).await, "the icon stays");
+    assert_eq!(item.icon_name().await.unwrap(), "");
+    assert_eq!(item.icon_pixmap().await.unwrap().len(), 2);
+    assert!(!std::path::Path::new(&second).exists());
 }
 
 /// The icon's registration is judged by its own name, never by another

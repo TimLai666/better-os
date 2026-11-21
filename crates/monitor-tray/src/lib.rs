@@ -9,13 +9,14 @@
 //! through D-Bus activation when it is not running; when it cannot be reached
 //! the item stays, says so in its menu, and asks again.
 //!
-//! Beside it, a second item shows the power mode in force with the
-//! desktop's own icon for it (ticket 295), read from power-profiles-daemon
-//! the way the System page reads it ([`power`]). Both items share one menu.
-//! The second item has a connection of its own, opened while there is a
-//! mode to show and closed when there is none: a watcher forgets an item
-//! whose name leaves the bus, while a `Passive` status is ignored by
-//! COSMIC's status area and kept in KDE's overflow.
+//! It is one item, as a macOS menu bar item is (owner, 2026-11-22, ticket
+//! 295): the power mode in force, read from power-profiles-daemon the way
+//! the System page reads it ([`power`]), is the desktop's own power mode
+//! icon drawn beside the readings in the same picture ([`picture`]). A
+//! picture wider than tall is handed to the panel as a PNG file named by
+//! `IconName`, because GNOME's AppIndicator extension fits a pixmap into a
+//! square and draws a file of a wide picture at its own size
+//! ([`picture_file`]); without a mark the item keeps its square pixmaps.
 //!
 //! The StatusNotifierItem and dbusmenu interfaces are written directly on
 //! zbus, the same way Better Awake's tray does (see its `sni` module for why
@@ -23,7 +24,10 @@
 //! never assumed.
 
 pub mod icon;
+pub mod icon_theme;
 pub mod menu;
+pub mod picture;
+pub mod picture_file;
 pub mod popup;
 pub mod power;
 
@@ -41,9 +45,10 @@ use zbus::zvariant::{ObjectPath, OwnedObjectPath, OwnedValue, Type, Value};
 use crate::icon::IconStyle;
 use crate::icon::Pixmap;
 use crate::menu::{
-    IconChoice, ItemKind, Locale, Menu, MenuAction, MenuItem, PowerFacts, PowerItem, ServiceState,
+    IconChoice, ItemKind, Locale, Menu, MenuAction, MenuItem, PowerFacts, ServiceState,
     TrayReadings,
 };
+use crate::picture::Image;
 use crate::popup::PopupLauncher;
 
 pub const WATCHER_SERVICE: &str = "org.kde.StatusNotifierWatcher";
@@ -56,8 +61,15 @@ pub struct TrayState {
     pub readings: Option<TrayReadings>,
     /// What power-profiles-daemon says (ticket 295).
     pub power: PowerFacts,
-    /// The power mode item as the panel was last told about it.
-    pub power_item: PowerItem,
+    /// The mode whose mark the picture shows, when it shows one.
+    pub mark_mode: Option<hardware_core::power::Profile>,
+    /// Where the marks come from: the icon theme and its directories.
+    pub marks: icon_theme::Marks,
+    /// The picture with the mark, or `None` when there is no mark and the
+    /// square pixmaps are the icon.
+    pub picture: Option<Image>,
+    /// The file that picture was last written to (`IconName`).
+    pub picture_file: Option<PathBuf>,
     pub choice: IconChoice,
     pub choice_path: Option<PathBuf>,
     pub icon: Vec<Pixmap>,
@@ -165,8 +177,6 @@ pub struct Changes {
     /// Anything in the menu the panel shows changed.
     pub menu: bool,
     pub tooltip: bool,
-    /// The power mode item's icon, status or tooltip changed.
-    pub power_item: bool,
     /// Items were added, removed or moved: `LayoutUpdated`.
     pub layout: bool,
     /// Items the panel already has, each with the names of the properties
@@ -180,7 +190,10 @@ impl TrayState {
             locale,
             readings: None,
             power: hardware_core::Presence::Absent,
-            power_item: PowerItem::default(),
+            mark_mode: None,
+            marks: icon_theme::Marks::default(),
+            picture: None,
+            picture_file: None,
             choice,
             choice_path,
             icon: Vec::new(),
@@ -230,14 +243,24 @@ impl TrayState {
             self.locale,
             self.service,
         );
-        let power_item = menu::power_item(&self.power, &self.choice, self.locale);
+        let mark_mode = menu::mark_mode(&self.power, &self.choice);
+        let picture = mark_mode
+            .and_then(|mode| self.marks.mark(mode, picture::HEIGHT))
+            .map(|mark| {
+                let readings = icon
+                    .iter()
+                    .find(|(width, height, _)| *width == 22 && *height == 22)
+                    .map(|(w, h, argb)| Image::from_argb(*w, *h, argb));
+                readings.map(|readings| {
+                    picture::compose(&picture::scaled(&readings, picture::HEIGHT), Some(&mark))
+                })
+            })
+            .flatten();
         let mut changes = self.install(menu, now);
-        changes.icon = icon != self.icon;
+        changes.icon = icon != self.icon || picture != self.picture;
         changes.tooltip = tooltip != self.tooltip;
-        changes.power_item = power_item != self.power_item;
-        if changes.power_item {
-            self.power_item = power_item;
-        }
+        self.mark_mode = mark_mode;
+        self.picture = picture;
         if changes.tooltip {
             self.tooltip = tooltip;
         }
@@ -328,6 +351,12 @@ impl TrayState {
         self.redraw()
     }
 
+    /// Adopt the desktop's icon theme now (`None` when it cannot be read).
+    pub fn adopt_icon_theme(&mut self, theme: Option<String>) -> Changes {
+        self.marks.set_theme(theme);
+        self.redraw()
+    }
+
     /// Adopt what the service said, or why it said nothing. Returns the
     /// changes and whether the service's state is new, so a caller logs a
     /// failure once rather than every few seconds.
@@ -388,24 +417,23 @@ pub struct Tray {
     pub state: Mutex<TrayState>,
     pub quit: tokio::sync::Notify,
     connection: Mutex<Option<zbus::Connection>>,
-    /// The power mode item's own connection while it shows a mode.
-    power_connection: Mutex<Option<zbus::Connection>>,
-    /// The bus the power mode item connects to: the session bus, or in a
-    /// test the private bus the item was served on.
-    bus_address: Mutex<Option<String>>,
-    /// Itself, for the power mode item's interfaces it serves later.
-    me: std::sync::Weak<Tray>,
+    /// Where the picture with the power mode's mark is written for the
+    /// panel to read (`IconName` names it); `None` writes nothing.
+    pictures: Option<picture_file::Pictures>,
 }
 
 impl Tray {
     pub fn new(state: TrayState) -> Arc<Self> {
-        Arc::new_cyclic(|me| Self {
-            me: me.clone(),
+        Self::with_pictures(state, None)
+    }
+
+    /// A tray that writes its wide pictures under `pictures`.
+    pub fn with_pictures(state: TrayState, pictures: Option<picture_file::Pictures>) -> Arc<Self> {
+        Arc::new(Self {
             state: Mutex::new(state),
             quit: tokio::sync::Notify::new(),
             connection: Mutex::new(None),
-            power_connection: Mutex::new(None),
-            bus_address: Mutex::new(None),
+            pictures,
         })
     }
 
@@ -413,74 +441,33 @@ impl Tray {
         *self.connection.lock().await = Some(connection);
     }
 
-    /// The bus the power mode item's connection goes to, when it is not the
-    /// session bus (a test's private bus).
-    pub async fn use_bus_address(&self, address: &str) {
-        *self.bus_address.lock().await = Some(address.to_string());
-    }
-
-    /// The power mode item's connection, while it shows a mode.
-    pub async fn power_connection(&self) -> Option<zbus::Connection> {
-        self.power_connection.lock().await.clone()
-    }
-
-    /// Puts the power mode item on the bus when it has a mode to show and
-    /// it is not there, takes it off when it has none, and otherwise tells
-    /// the panel its icon and tooltip changed.
-    async fn sync_power_item(&self) {
-        let shown = self.state.lock().await.power_item.mode.is_some();
-        let mut slot = self.power_connection.lock().await;
-        match (shown, slot.take()) {
-            (true, Some(connection)) => {
-                if let Ok(emitter) = SignalEmitter::new(&connection, ITEM_PATH) {
-                    let _ = PowerModeItem::new_icon(&emitter).await;
-                    let _ = PowerModeItem::new_tool_tip(&emitter).await;
-                    let _ = PowerModeItem::new_title(&emitter).await;
+    /// Writes the picture with the mark, when there is one and it changed,
+    /// and keeps its file's path for `IconName`; without a mark the item
+    /// goes back to its square pixmaps.
+    async fn write_picture(&self) {
+        let mut state = self.state.lock().await;
+        let file = match (&state.picture, &self.pictures) {
+            (Some(picture), Some(pictures)) => match pictures.write(picture) {
+                Ok(path) => Some(path),
+                Err(error) => {
+                    eprintln!("better-monitor-tray: the picture could not be written: {error}");
+                    None
                 }
-                *slot = Some(connection);
-            }
-            (true, None) => match self.open_power_item().await {
-                Ok(connection) => {
-                    let unique = connection
-                        .unique_name()
-                        .map(|name| name.to_string())
-                        .unwrap_or_default();
-                    report_power_item(register_and_verify(&connection, &unique).await);
-                    *slot = Some(connection);
-                }
-                Err(error) => eprintln!(
-                    "better-monitor-tray: the power mode item could not be shown: {error}"
-                ),
             },
-            // Leaving the bus is what makes every watcher forget it.
-            (false, Some(connection)) => {
-                let _ = connection.close().await;
+            _ => {
+                if let Some(pictures) = &self.pictures {
+                    pictures.clear();
+                }
+                None
             }
-            (false, None) => {}
-        }
-    }
-
-    async fn open_power_item(&self) -> zbus::Result<zbus::Connection> {
-        let tray = self
-            .me
-            .upgrade()
-            .ok_or_else(|| zbus::Error::Failure("the tray is gone".into()))?;
-        let address = self.bus_address.lock().await.clone();
-        let builder = match address {
-            Some(address) => zbus::connection::Builder::address(address.as_str())?,
-            None => zbus::connection::Builder::session()?,
         };
-        builder
-            .serve_at(ITEM_PATH, PowerModeItem::new(tray.clone()))?
-            .serve_at(MENU_PATH, DbusMenu::new(tray))?
-            .build()
-            .await
+        state.picture_file = file;
     }
 
     /// Announce what changed to the panel.
     pub async fn announce(&self, changes: Changes) {
-        if changes.power_item {
-            self.sync_power_item().await;
+        if changes.icon {
+            self.write_picture().await;
         }
         let Some(connection) = self.connection.lock().await.clone() else {
             return;
@@ -495,16 +482,8 @@ impl Tray {
                 let _ = StatusNotifierItem::new_tool_tip(&emitter).await;
             }
         }
-        // Both items serve the menu, so both say when it changed.
-        let power = self.power_connection.lock().await.clone();
-        for connection in std::iter::once(connection).chain(power) {
-            self.announce_menu(&connection, &changes).await;
-        }
-    }
-
-    async fn announce_menu(&self, connection: &zbus::Connection, changes: &Changes) {
         if (changes.layout || !changes.properties.is_empty())
-            && let Ok(emitter) = SignalEmitter::new(connection, MENU_PATH)
+            && let Ok(emitter) = SignalEmitter::new(&connection, MENU_PATH)
         {
             // Read under the lock together, so the values sent are the ones
             // a `GetLayout` at this revision would return.
@@ -555,14 +534,6 @@ impl Tray {
     pub async fn host_changed(&self) {
         let changes = self.state.lock().await.host_changed(Instant::now());
         self.announce(changes).await;
-        // A new watcher has never heard of the power mode item either.
-        if let Some(connection) = self.power_connection().await {
-            let unique = connection
-                .unique_name()
-                .map(|name| name.to_string())
-                .unwrap_or_default();
-            report_power_item(register_and_verify(&connection, &unique).await);
-        }
     }
 
     pub async fn activate_menu(&self, id: i32) {
@@ -661,15 +632,31 @@ impl StatusNotifierItem {
         "Active"
     }
 
-    /// Empty, so the panel draws the pixmap.
+    /// Empty, so the panel draws the square pixmap; or, while the picture
+    /// shows the power mode's mark, the PNG file of that wider picture.
     #[zbus(property)]
-    async fn icon_name(&self) -> &str {
-        ""
+    async fn icon_name(&self) -> String {
+        self.tray
+            .state
+            .lock()
+            .await
+            .picture_file
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_default()
     }
 
+    /// The square pixmaps, or none while `IconName` names the wide picture:
+    /// GNOME's AppIndicator extension draws a wide file without handing a
+    /// result back and then falls through to the pixmaps, which would cover
+    /// it with the square picture (`appIndicator.js`, `_createIcon`).
     #[zbus(property)]
     async fn icon_pixmap(&self) -> Vec<(i32, i32, Vec<u8>)> {
-        self.tray.state.lock().await.icon.clone()
+        let state = self.tray.state.lock().await;
+        if state.picture_file.is_some() {
+            return Vec::new();
+        }
+        state.icon.clone()
     }
 
     #[zbus(property)]
@@ -697,101 +684,6 @@ impl StatusNotifierItem {
 
     #[zbus(signal)]
     async fn new_tool_tip(emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
-}
-
-/// The power mode beside the icon (ticket 295): `org.kde.StatusNotifierItem`
-/// at [`ITEM_PATH`] on a connection of its own. The panel draws the icon
-/// theme's picture for the mode, so it takes the panel's colour and size.
-/// It exists only while there is a mode to show, so it is always `Active`.
-/// A click does what the icon's does, and its menu is the icon's.
-pub struct PowerModeItem {
-    tray: Arc<Tray>,
-}
-
-impl PowerModeItem {
-    pub fn new(tray: Arc<Tray>) -> Self {
-        Self { tray }
-    }
-}
-
-#[interface(name = "org.kde.StatusNotifierItem")]
-impl PowerModeItem {
-    async fn activate(&self, x: i32, y: i32) {
-        self.tray.toggle_popup(x, y).await;
-    }
-
-    async fn secondary_activate(&self, _x: i32, _y: i32) {
-        if let Err(error) = self.tray.state.lock().await.launcher.open_window() {
-            eprintln!("better-monitor-tray: the window could not be opened: {error}");
-        }
-    }
-
-    async fn context_menu(&self, _x: i32, _y: i32) {}
-
-    async fn scroll(&self, _delta: i32, _orientation: &str) {}
-
-    #[zbus(property)]
-    async fn category(&self) -> &str {
-        "Hardware"
-    }
-
-    #[zbus(property)]
-    async fn id(&self) -> &str {
-        "better-monitor-power-mode"
-    }
-
-    #[zbus(property)]
-    async fn title(&self) -> String {
-        self.tray.state.lock().await.power_item.title.clone()
-    }
-
-    #[zbus(property)]
-    async fn status(&self) -> &str {
-        "Active"
-    }
-
-    #[zbus(property)]
-    async fn icon_name(&self) -> &str {
-        self.tray.state.lock().await.power_item.icon_name()
-    }
-
-    #[zbus(property)]
-    async fn icon_pixmap(&self) -> Vec<(i32, i32, Vec<u8>)> {
-        Vec::new()
-    }
-
-    #[zbus(property)]
-    async fn icon_theme_path(&self) -> &str {
-        ""
-    }
-
-    #[zbus(property)]
-    async fn tool_tip(&self) -> (String, Vec<(i32, i32, Vec<u8>)>, String, String) {
-        let state = self.tray.state.lock().await;
-        let (title, body) = state.power_item.tooltip.clone();
-        (String::new(), Vec::new(), title, body)
-    }
-
-    #[zbus(property)]
-    async fn item_is_menu(&self) -> bool {
-        false
-    }
-
-    #[zbus(property)]
-    async fn menu(&self) -> OwnedObjectPath {
-        ObjectPath::try_from(MENU_PATH)
-            .expect("the menu path is a constant and is valid")
-            .into()
-    }
-
-    #[zbus(signal)]
-    async fn new_icon(emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
-
-    #[zbus(signal)]
-    async fn new_tool_tip(emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
-
-    #[zbus(signal)]
-    async fn new_title(emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
 }
 
 /// `(ia{sv}av)`: an id, its properties, and its children as variants.
@@ -1094,17 +986,6 @@ pub fn lists(entry: &str, name: &str) -> bool {
         || entry
             .strip_prefix(name)
             .is_some_and(|path| path.starts_with('/'))
-}
-
-/// Say what happened to the power mode item's registration, apart from the
-/// icon's.
-fn report_power_item(availability: TrayAvailability) {
-    match availability {
-        TrayAvailability::Registered | TrayAvailability::NoWatcher => {}
-        other => eprintln!(
-            "better-monitor-tray: the taskbar did not take the power mode item ({other:?})"
-        ),
-    }
 }
 
 /// Keep the item registered with whichever watcher the panel runs.
@@ -1451,37 +1332,73 @@ mod tests {
         })
     }
 
-    #[test]
-    fn a_mode_changed_by_something_else_is_announced_on_the_item_and_the_menu() {
+    /// A theme with the three power mode icons, each a different shape.
+    fn theme() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("Test");
+        std::fs::create_dir_all(base.join("status")).unwrap();
+        std::fs::write(
+            base.join("index.theme"),
+            "[Icon Theme]\nDirectories=status\n\n[status]\nSize=16\nType=Scalable\n",
+        )
+        .unwrap();
+        for (mode, x) in [("power-saver", 1), ("balanced", 6), ("performance", 11)] {
+            std::fs::write(
+                base.join(format!("status/power-profile-{mode}-symbolic.svg")),
+                format!(
+                    r#"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"><rect x="{x}" y="2" width="4" height="12"/></svg>"#
+                ),
+            )
+            .unwrap();
+        }
+        dir
+    }
+
+    fn themed(dir: &tempfile::TempDir) -> TrayState {
         let mut state = state();
+        state.marks = icon_theme::Marks::new(vec![dir.path().to_path_buf()]);
+        state.adopt_icon_theme(Some("Test".into()));
+        state
+    }
+
+    #[test]
+    fn a_mode_changed_by_something_else_redraws_the_one_picture_and_the_menu() {
+        let dir = theme();
+        let mut state = themed(&dir);
         state.adopt(Some(cpu(0.2)));
+        assert_eq!(state.picture, None, "no mode, the picture is the pixmap");
         let first = state.adopt_power(modes("balanced"));
-        assert!(first.power_item && first.layout && first.tooltip);
-        assert_eq!(
-            state.power_item.icon_name(),
-            "power-profile-balanced-symbolic"
-        );
+        assert!(first.icon && first.layout && first.tooltip);
+        let balanced = state.picture.clone().expect("the mark is drawn");
+        assert_eq!(balanced.width, 16 + picture::GAP + 16);
         let line = state.menu.find_by_label("Power mode: Balanced").unwrap().id;
 
         // The System page, the charger switch or another program set it.
         let changes = state.adopt_power(modes("performance"));
-        assert!(changes.power_item);
+        assert!(changes.icon, "the picture is redrawn");
         assert!(changes.tooltip);
         assert!(!changes.layout, "a new mode is a new label, not a new row");
         assert_eq!(changes.properties, vec![(line, vec!["label".to_string()])]);
-        assert_eq!(state.power_item.status(), "Active");
-        assert_eq!(
-            state.power_item.icon_name(),
-            "power-profile-performance-symbolic"
+        let performance = state.picture.clone().unwrap();
+        assert_ne!(balanced, performance);
+        // The readings are the same pixels beside either mark.
+        let readings = picture::scaled(
+            &Image::from_argb(state.icon[0].0, state.icon[0].1, &state.icon[0].2),
+            picture::HEIGHT,
         );
-        assert!(!changes.icon, "the readings icon is not redrawn for it");
+        for picture in [&balanced, &performance] {
+            assert_eq!(
+                picture.region(16 + picture::GAP, 0, readings.width, readings.height),
+                readings.region(0, 0, readings.width, readings.height)
+            );
+        }
 
         assert_eq!(state.adopt_power(modes("performance")), Changes::default());
 
-        // The daemon went away: the item hides and the line goes.
+        // The daemon went away: no mark, the picture is as narrow as before.
         let gone = state.adopt_power(hardware_core::Presence::Absent);
-        assert!(gone.power_item && gone.layout);
-        assert_eq!(state.power_item.status(), "Passive");
+        assert!(gone.icon && gone.layout);
+        assert_eq!(state.picture, None);
         assert!(
             state
                 .menu
@@ -1491,16 +1408,29 @@ mod tests {
     }
 
     #[test]
-    fn hiding_the_power_mode_hides_the_item_and_keeps_the_choice() {
-        let mut state = state();
+    fn a_theme_without_the_icon_draws_no_mark_and_the_words_stay() {
+        let dir = theme();
+        let mut state = themed(&dir);
+        state.adopt_icon_theme(Some("Missing".into()));
+        state.adopt(Some(cpu(0.2)));
         state.adopt_power(modes("balanced"));
+        assert_eq!(state.picture, None);
+        assert!(state.tooltip.1.contains("Power mode: Balanced"));
+    }
+
+    #[test]
+    fn unticking_the_power_mode_takes_the_mark_away_and_keeps_the_choice() {
+        let dir = theme();
+        let mut state = themed(&dir);
+        state.adopt_power(modes("balanced"));
+        assert!(state.picture.is_some());
         let changes = state.choose(MenuAction::TogglePowerMode);
-        assert!(changes.power_item);
+        assert!(changes.icon);
         assert!(!state.choice.power_mode);
-        assert_eq!(state.power_item.status(), "Passive");
+        assert_eq!(state.picture, None);
         let changes = state.choose(MenuAction::TogglePowerMode);
-        assert!(changes.power_item);
-        assert_eq!(state.power_item.status(), "Active");
+        assert!(changes.icon);
+        assert!(state.picture.is_some());
     }
 
     #[test]

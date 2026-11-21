@@ -1026,55 +1026,10 @@ pub fn tooltip(
     (locale.app_name().to_string(), lines.join("\n"))
 }
 
-/// What the power mode item beside the icon shows (ticket 295): the desktop's
-/// own icon for the mode, its name, and whether it is there at all.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct PowerItem {
-    /// The mode in force, or `None` when the item is hidden.
-    pub mode: Option<Profile>,
-    pub title: String,
-    pub tooltip: (String, String),
-}
-
-impl PowerItem {
-    /// `Active` while it shows a mode, `Passive` (hidden) otherwise.
-    pub fn status(&self) -> &'static str {
-        if self.mode.is_some() {
-            "Active"
-        } else {
-            "Passive"
-        }
-    }
-
-    /// The icon theme's name for the mode, which GNOME's own power mode
-    /// menu uses too, so the panel draws it in its own colour and size.
-    pub fn icon_name(&self) -> &'static str {
-        match self.mode {
-            Some(Profile::PowerSaver) => "power-profile-power-saver-symbolic",
-            Some(Profile::Balanced) => "power-profile-balanced-symbolic",
-            Some(Profile::Performance) => "power-profile-performance-symbolic",
-            None => "",
-        }
-    }
-}
-
-pub fn power_item(power: &PowerFacts, choice: &IconChoice, locale: Locale) -> PowerItem {
-    let shown = shown(power, locale).filter(|_| choice.power_mode);
-    PowerItem {
-        mode: shown.as_ref().map(|shown| shown.mode),
-        title: locale.power_mode().to_string(),
-        tooltip: (
-            locale.power_mode().to_string(),
-            shown
-                .map(|shown| {
-                    std::iter::once(shown.name.to_string())
-                        .chain(shown.cautions)
-                        .collect::<Vec<_>>()
-                        .join("\n")
-                })
-                .unwrap_or_default(),
-        ),
-    }
+/// The mode whose mark the picture shows (ticket 295): the mode to show,
+/// unless the person unticked "Power mode" under "Show in the taskbar".
+pub fn mark_mode(power: &PowerFacts, choice: &IconChoice) -> Option<Profile> {
+    power_mode(power).filter(|_| choice.power_mode)
 }
 
 #[cfg(test)]
@@ -1412,10 +1367,8 @@ mod tests {
                 let (_, body) = tooltip(Some(&readings()), &facts, locale, ServiceState::Answering);
                 assert!(body.ends_with(line), "{body}");
             }
-            let item = power_item(&facts, &IconChoice::default(), Locale::English);
-            assert_eq!(item.status(), "Active");
-            assert_eq!(item.icon_name(), icon);
-            assert_eq!(item.tooltip.0, "Power mode");
+            let mode = mark_mode(&facts, &IconChoice::default()).unwrap();
+            assert_eq!(crate::picture::icon_name(mode), icon);
         }
     }
 
@@ -1441,9 +1394,7 @@ mod tests {
                 ServiceState::Answering,
             );
             assert!(!body.contains("Power mode"), "{body}");
-            let item = power_item(&facts, &IconChoice::default(), Locale::English);
-            assert_eq!(item.status(), "Passive");
-            assert_eq!(item.icon_name(), "");
+            assert_eq!(mark_mode(&facts, &IconChoice::default()), None);
             // Its check box has nothing to show.
             assert!(!menu.find_by_label("Power mode").unwrap().enabled);
         }
@@ -1466,10 +1417,7 @@ mod tests {
             "{:?}",
             menu.labels()
         );
-        assert_eq!(
-            power_item(&facts, &IconChoice::default(), Locale::English).status(),
-            "Passive"
-        );
+        assert_eq!(mark_mode(&facts, &IconChoice::default()), None);
         let unreadable: PowerFacts = Presence::Unreadable("the daemon failed".into());
         let menu = build(
             Some(&readings()),
@@ -1483,10 +1431,7 @@ mod tests {
             "{:?}",
             menu.labels()
         );
-        assert_eq!(
-            power_item(&unreadable, &IconChoice::default(), Locale::English).status(),
-            "Passive"
-        );
+        assert_eq!(mark_mode(&unreadable, &IconChoice::default()), None);
     }
 
     #[test]
@@ -1513,10 +1458,15 @@ mod tests {
             ),
             "{body}"
         );
-        let item = power_item(&facts, &IconChoice::default(), Locale::TraditionalChinese);
-        assert_eq!(
-            item.tooltip.1,
-            "最佳效能\nGNOME Boxes 正在要求「最佳效能」模式。"
+        let (_, body) = tooltip(
+            Some(&readings()),
+            &facts,
+            Locale::TraditionalChinese,
+            ServiceState::Answering,
+        );
+        assert!(
+            body.ends_with("電源模式：最佳效能\nGNOME Boxes 正在要求「最佳效能」模式。"),
+            "{body}"
         );
     }
 
@@ -1538,10 +1488,7 @@ mod tests {
         let mut choice = IconChoice::default();
         assert!(choice.power_mode);
         choice.power_mode = false;
-        assert_eq!(
-            power_item(&facts, &choice, Locale::English).status(),
-            "Passive"
-        );
+        assert_eq!(mark_mode(&facts, &choice), None);
         let menu = build(
             Some(&readings()),
             &facts,
@@ -1553,7 +1500,7 @@ mod tests {
         assert_eq!(check.kind, ItemKind::Checkmark { checked: false });
         assert!(check.enabled);
         assert_eq!(check.action, Some(MenuAction::TogglePowerMode));
-        // The line in the menu stays: hiding the item hides the item.
+        // The line in the menu stays: unticking it takes only the mark away.
         assert!(menu.labels().contains(&"Power mode: Balanced"));
         assert_eq!(IconChoice::parse(&choice.render()), choice);
         assert!(IconChoice::parse("show=cpu\nstyle=bars\n").power_mode);

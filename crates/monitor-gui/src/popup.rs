@@ -30,7 +30,7 @@ use better_ui::icon_set::{self, Picture};
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use hardware_core::Presence;
-use hardware_core::power::{PowerProfilesFacts, mode_shown, unreadable_words};
+use hardware_core::power::{PowerProfilesFacts, mode_shown, unreadable_figure};
 use monitor_core::{EntityKind, MetricId};
 use monitor_store::Sample;
 use monitor_views::ProcessFacts;
@@ -321,7 +321,7 @@ pub(crate) fn power_block(power: &PowerFacts, locale: Locale) -> Option<PowerBlo
     let shown = match power {
         Presence::Unreadable(_) => {
             return Some(PowerBlock {
-                figure: unreadable_words(language).to_string(),
+                figure: unreadable_figure(language).to_string(),
                 modes: Vec::new(),
                 cautions: Vec::new(),
             });
@@ -1073,6 +1073,8 @@ mod tests {
         assert_eq!(power_block(&modes(&["turbo"], "turbo"), Locale::ZhTw), None);
         let unreadable = power_block(&Presence::Unreadable("failed".into()), Locale::ZhTw).unwrap();
         assert_eq!(unreadable.figure, "無法讀取");
+        let unreadable = power_block(&Presence::Unreadable("failed".into()), Locale::EnUs).unwrap();
+        assert_eq!(unreadable.figure, "Couldn't be read");
         assert!(unreadable.modes.is_empty());
     }
 

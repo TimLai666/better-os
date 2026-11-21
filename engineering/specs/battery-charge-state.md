@@ -149,47 +149,69 @@ and nothing outside the shell's code can change its picture (below). In the
 Better OS session it is the top bar's status area (ticket 157), which draws
 this rule's states; their pictures are designed there with the owner.
 
-### The power mode beside it
+### The power mode in the same item
 
-The taskbar shows the power mode in force as a second item beside the icon,
-drawn by the desktop from its icon theme (`power-profile-power-saver-symbolic`,
-`power-profile-balanced-symbolic`, `power-profile-performance-symbolic`), so it
-takes the panel's own colour in light and dark and is drawn at the panel's
-own size. The mock-up that compared it with a mark inside the readings icon
-is `better-os-evidence/295/mockup-power-mode.png`. How it looks is still to be
-designed with the owner (ticket 295).
+Better Monitor is one button in the panel, as a macOS menu bar item is
+(owner, 2026-11-22): one StatusNotifierItem, one menu, one tooltip. Its
+picture is the power mode's mark, a gap of 4 pixels, then the readings
+(`monitor_tray::picture`, GPUI-free, so the Better OS session's top bar,
+tickets 156 and 157, composes the same picture).
 
+- The mark is the desktop's own icon, `power-profile-power-saver-symbolic`,
+  `-balanced-` or `-performance-`, found in the current icon theme by the Icon
+  Theme Specification's lookup (the theme, what it inherits, then `hicolor`;
+  SVG files only) and drawn with `resvg`, the renderer GPUI already brings. It
+  is tinted by the readings' rule, light ink with a dark edge. The theme's
+  name comes from the settings portal (`org.gnome.desktop.interface`
+  `icon-theme`) and is followed through its `SettingChanged` signal. A theme
+  without the icon gets no mark; the tooltip and menu still name the mode.
+- The readings are drawn on their own 22-pixel canvas as before and scaled
+  to the picture's height; the mark adds width beside them and takes none,
+  and they are the same pixels with and without it.
+- With no mode to show (no daemon, a masked or stopped one, a mode this
+  version does not know, a daemon that cannot be read, or "Power mode"
+  unticked under "Show in the taskbar") there is no mark, and the item is
+  the square pixmaps it always was.
+- How a panel gets a picture wider than tall: GNOME's AppIndicator extension
+  (Zorin's copy, `/usr/share/gnome-shell/extensions/zorin-appindicator@zorinos.com/appIndicator.js`,
+  and Ubuntu's upstream at `fbc758a4`, the same code) fits every
+  `IconPixmap` into a square of the panel's icon size, keeping its aspect
+  (`_createIconFromPixmap`, `_setImageContent(imageContent, scaledSize,
+  scaledSize)` with `RESIZE_ASPECT`: Zorin's lines 1421-1444), so a wide
+  pixmap shrinks to a strip. An `IconName` that is the path of a PNG in a
+  place the person can write and at least half again as wide as tall is
+  drawn at the file's own pixel size (`_createIconByIconData`, line 1271,
+  and `_loadCustomImage`). Seen in a headless GNOME Shell 46:
+  `better-os-evidence/295/wide-pixmap-vs-file.png` (real size) and
+  `wide-pixmap-vs-file-zoom4.png`. So while there is a mark the item writes
+  the picture as a PNG 16 pixels tall (GNOME's panel icon size) under
+  `$XDG_RUNTIME_DIR/better-os/monitor-tray/`, a new name each time, names it
+  in `IconName`, and sends no pixmaps, because the extension would draw them
+  over the file (`_createIcon`, line 1579).
+- What that costs: the file is drawn one file pixel to one logical pixel, so
+  on a scale-2 display the picture is scaled up and soft, and the
+  extension's own "icon size" setting (20 or 24) does not grow it. A panel
+  that does not take a path in `IconName` shows no icon while there is a mark.
+  COSMIC's status area takes one (`Path::new(&icon_name).exists()`, read from
+  source at `cb3ea91a`); KDE, waybar and swaybar were not read or run.
 - The modes are the ones power-profiles-daemon lists (`Profiles`), read the
   way the System page reads them (`hardware_platform::bus::power_profiles`).
-  Better OS never reads or writes `platform_profile` itself (ADR 0017); on a
-  machine with `/sys/firmware/acpi/platform_profile_choices` the daemon's
-  list is drawn from it.
-- Only a daemon that is running is read: a name with no owner is absent and
-  is never started through D-Bus activation, so a daemon someone stopped, or
-  its package's removal stopped, stays stopped. A masked daemon is absent
-  too.
+  Better OS never reads or writes `platform_profile` itself (ADR 0017).
+- Every call to the daemon carries `NO_AUTO_START`, so no read or write ever
+  starts it: a daemon that is not running, stops between two calls, or is
+  masked answers `ServiceUnknown` (or systemd's `UnitMasked`/`NoSuchUnit`
+  under dbus-daemon, `NameHasNoOwner` under dbus-broker) and is absent.
 - What is shown is one rule, `hardware_core::power::mode_shown`: the mode in
   force by name (`Profile::name`, the System page's words), the modes the
   daemon lists that this version knows, and the System page's caution
-  sentences (`Caution::words`) when an application holds the mode or the
-  daemon reduces it. A mode this version does not know, or one the daemon
-  does not list, is not shown at all, never as the daemon's own word.
-- The item is on the bus only while there is a mode to show, on a
-  connection of its own: with no daemon, no mode to show, or the check box
-  under "Show in the taskbar" unticked, it leaves the bus, which every
-  watcher understands. A `Passive` status would not do: COSMIC's status area
-  ignores it (`cosmic-applet-status-area`, read from source at
-  `cb3ea91a`), and KDE keeps such an item in its overflow.
-- A daemon that answers and cannot be read hides the item, and the menu and
-  the popup say the mode could not be read. A watch on the daemon that ends
-  (the system bus closed) or never starts says the same, so a stale mode is
-  never left showing.
-- The menu (both items share it) and the tooltips name the mode and its
-  cautions; the popup lists every mode the machine offers with the one in
-  force marked, and the cautions under them.
+  sentences (`Caution::words`). A mode this version does not know, or one the
+  daemon does not list, is not shown, never as the daemon's own word. A
+  daemon that answers and cannot be read is "could not be read" in the menu
+  and "Couldn't be read" where it stands alone in the popup; a watch that
+  ends (the system bus closed) says the same.
 - It follows the daemon's `PropertiesChanged` and its name coming and going,
   so a mode set on the System page, by "Switch power mode with the charger",
-  or by any other program shows at once.
+  or by any other program redraws the picture at once.
 - Whether the menu also switches the mode is the owner's to decide (ticket
   295); until then the menu only names it.
 
