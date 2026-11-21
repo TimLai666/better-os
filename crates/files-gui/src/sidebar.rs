@@ -367,3 +367,136 @@ fn device_label(mount_point: &Path, identity_name: &str) -> String {
         .filter(|name| !name.is_empty())
         .unwrap_or_else(|| identity_name.to_string())
 }
+
+/// What a sidebar line stands for when the highlight is chosen (ticket 175).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RowPlace {
+    /// A favourite or a folder row: highlighted only while it is the open
+    /// folder itself.
+    Exact(Location),
+    /// A drive, by its mount point: highlighted while the open folder is on
+    /// it and no line is more specific.
+    Mount(std::path::PathBuf),
+}
+
+/// The line to highlight for the open folder: a favourite or folder row
+/// that is exactly it, else the drive whose mount point is the longest
+/// prefix of its path. The first line wins a tie. `None` when no line
+/// contains the folder (the Trash, a network share with no row).
+pub fn highlighted_row(places: &[Option<RowPlace>], current: &Location) -> Option<usize> {
+    let exact = places
+        .iter()
+        .position(|place| matches!(place, Some(RowPlace::Exact(location)) if location == current));
+    if exact.is_some() {
+        return exact;
+    }
+    let path = current.as_local_path()?.as_path();
+    places
+        .iter()
+        .enumerate()
+        .filter_map(|(index, place)| match place {
+            Some(RowPlace::Mount(point)) if path.starts_with(point) => {
+                Some((index, point.components().count()))
+            }
+            _ => None,
+        })
+        .max_by_key(|&(index, depth)| (depth, std::cmp::Reverse(index)))
+        .map(|(index, _)| index)
+}
+
+#[cfg(test)]
+mod highlight_tests {
+    use super::{RowPlace, highlighted_row};
+    use files_core::Location;
+    use std::path::PathBuf;
+
+    fn local(path: &str) -> Location {
+        Location::local(path).unwrap()
+    }
+
+    fn mount(path: &str) -> Option<RowPlace> {
+        Some(RowPlace::Mount(PathBuf::from(path)))
+    }
+
+    fn exact(path: &str) -> Option<RowPlace> {
+        Some(RowPlace::Exact(local(path)))
+    }
+
+    /// A sidebar like the window's: Home and Documents as places, a pinned
+    /// folder, a header, the system drive, a second drive, and a drive
+    /// mounted inside the second one.
+    fn sidebar() -> Vec<Option<RowPlace>> {
+        vec![
+            exact("/home/a"),
+            exact("/home/a/Documents"),
+            exact("/home/a/Projects/site"),
+            None,
+            mount("/"),
+            mount("/media/a/Data"),
+            mount("/media/a/Data/inner"),
+        ]
+    }
+
+    #[test]
+    fn the_root_folder_lights_the_system_drive() {
+        assert_eq!(highlighted_row(&sidebar(), &local("/")), Some(4));
+    }
+
+    #[test]
+    fn a_folder_on_the_system_drive_with_a_favourite_lights_the_favourite() {
+        assert_eq!(
+            highlighted_row(&sidebar(), &local("/home/a/Projects/site")),
+            Some(2)
+        );
+        assert_eq!(highlighted_row(&sidebar(), &local("/home/a")), Some(0));
+    }
+
+    #[test]
+    fn a_folder_on_the_system_drive_without_a_favourite_lights_the_system_drive() {
+        // Not Home, though Home contains it: a place lights only when it is
+        // the open folder.
+        assert_eq!(
+            highlighted_row(&sidebar(), &local("/home/a/Projects/site/src")),
+            Some(4)
+        );
+        assert_eq!(highlighted_row(&sidebar(), &local("/etc")), Some(4));
+    }
+
+    #[test]
+    fn a_folder_on_a_second_drive_lights_that_drive() {
+        assert_eq!(
+            highlighted_row(&sidebar(), &local("/media/a/Data")),
+            Some(5)
+        );
+        assert_eq!(
+            highlighted_row(&sidebar(), &local("/media/a/Data/photos/2026")),
+            Some(5)
+        );
+    }
+
+    #[test]
+    fn a_folder_on_a_drive_mounted_inside_another_lights_the_inner_drive() {
+        assert_eq!(
+            highlighted_row(&sidebar(), &local("/media/a/Data/inner/music")),
+            Some(6)
+        );
+        // A sibling whose name only starts the same is not on it.
+        assert_eq!(
+            highlighted_row(&sidebar(), &local("/media/a/Data/inner-old")),
+            Some(5)
+        );
+    }
+
+    #[test]
+    fn a_place_with_no_containing_line_lights_nothing() {
+        assert_eq!(
+            highlighted_row(
+                &sidebar(),
+                &Location::Trash(files_core::TrashLocation::Root)
+            ),
+            None
+        );
+        let no_drives = vec![exact("/home/a"), None];
+        assert_eq!(highlighted_row(&no_drives, &local("/home/a/x")), None);
+    }
+}
