@@ -14,7 +14,7 @@ It does not replace the license text supplied by each upstream project.
 - Packages with an SPDX license expression: 987.
 - Packages with only a license-file field: 0.
 - Packages without package-level license metadata: 2.
-- `Cargo.lock` SHA-256: `36db0cc1242493a929a68122da7ebeb956e73b77f78ff7d04149e68eff3dab20`.
+- `Cargo.lock` SHA-256: `915484a54397489cf55ab34b47835478ff377901b1cf19f518ab12ca05676303`.
 
 The 2 package(s) without package-level license metadata are
 listed separately below. Their pinned upstream checkout contains both

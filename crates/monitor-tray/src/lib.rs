@@ -9,14 +9,29 @@
 //! through D-Bus activation when it is not running; when it cannot be reached
 //! the item stays, says so in its menu, and asks again.
 //!
+//! It is one item, as a macOS menu bar item is (owner, 2026-11-22, ticket
+//! 295): the power mode in force, read from power-profiles-daemon the way
+//! the System page reads it ([`power`]), is the desktop's own power mode
+//! icon drawn beside the readings in the same picture ([`picture`]). A
+//! picture wider than tall is handed to the panel as an SVG file named by
+//! `IconName`, because GNOME's AppIndicator extension fits a pixmap into a
+//! square and draws a file of a wide picture at its own size, an SVG at the
+//! display's scale ([`picture_file`]); without a mark the item keeps its
+//! square pixmaps. The pixmaps stay beside the file for every panel but
+//! GNOME's, so a panel that cannot use the file draws the readings.
+//!
 //! The StatusNotifierItem and dbusmenu interfaces are written directly on
 //! zbus, the same way Better Awake's tray does (see its `sni` module for why
 //! not `ksni`), and registration is verified against the watcher's own list,
 //! never assumed.
 
 pub mod icon;
+pub mod icon_theme;
 pub mod menu;
+pub mod picture;
+pub mod picture_file;
 pub mod popup;
+pub mod power;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -32,7 +47,8 @@ use zbus::zvariant::{ObjectPath, OwnedObjectPath, OwnedValue, Type, Value};
 use crate::icon::IconStyle;
 use crate::icon::Pixmap;
 use crate::menu::{
-    IconChoice, ItemKind, Locale, Menu, MenuAction, MenuItem, ServiceState, TrayReadings,
+    IconChoice, ItemKind, Locale, Menu, MenuAction, MenuItem, PowerFacts, ServiceState,
+    TrayReadings,
 };
 use crate::popup::PopupLauncher;
 
@@ -44,6 +60,21 @@ pub const MENU_PATH: &str = "/MenuBar";
 pub struct TrayState {
     pub locale: Locale,
     pub readings: Option<TrayReadings>,
+    /// What power-profiles-daemon says (ticket 295).
+    pub power: PowerFacts,
+    /// The mode whose mark the picture shows, when it shows one.
+    pub mark_mode: Option<hardware_core::power::Profile>,
+    /// Where the marks come from: the icon theme and its directories.
+    pub marks: icon_theme::Marks,
+    /// The picture with the mark as an SVG document, or `None` when there
+    /// is no mark and the square pixmaps are the icon.
+    pub picture: Option<String>,
+    /// Whether the panel draws the pixmaps over a file named by `IconName`
+    /// (GNOME's AppIndicator extension does, `appIndicator.js` `_createIcon`),
+    /// so they are left out while the file is named.
+    pub pixmaps_cover_file: bool,
+    /// The file that picture was last written to (`IconName`).
+    pub picture_file: Option<PathBuf>,
     pub choice: IconChoice,
     pub choice_path: Option<PathBuf>,
     pub icon: Vec<Pixmap>,
@@ -163,6 +194,12 @@ impl TrayState {
         let mut state = Self {
             locale,
             readings: None,
+            power: hardware_core::Presence::Absent,
+            mark_mode: None,
+            marks: icon_theme::Marks::default(),
+            picture: None,
+            pixmaps_cover_file: false,
+            picture_file: None,
             choice,
             choice_path,
             icon: Vec::new(),
@@ -201,14 +238,31 @@ impl TrayState {
         let icon = icon::draw(&self.choice.shown, self.choice.style, readings);
         let menu = menu::build(
             self.readings.as_ref(),
+            &self.power,
             &self.choice,
             self.locale,
             self.service,
         );
-        let tooltip = menu::tooltip(self.readings.as_ref(), self.locale, self.service);
+        let tooltip = menu::tooltip(
+            self.readings.as_ref(),
+            &self.power,
+            self.locale,
+            self.service,
+        );
+        let mark_mode = menu::mark_mode(&self.power, &self.choice);
+        // The readings drawn natively on the picture's grid beside the mark.
+        let picture = mark_mode
+            .and_then(|mode| self.marks.mark(mode))
+            .map(|mark| {
+                let readings =
+                    icon::draw_on_grid(&self.choice.shown, self.choice.style, readings, icon::GRID);
+                picture::compose(&readings, Some(&mark))
+            });
         let mut changes = self.install(menu, now);
-        changes.icon = icon != self.icon;
+        changes.icon = icon != self.icon || picture != self.picture;
         changes.tooltip = tooltip != self.tooltip;
+        self.mark_mode = mark_mode;
+        self.picture = picture;
         if changes.tooltip {
             self.tooltip = tooltip;
         }
@@ -293,6 +347,24 @@ impl TrayState {
         self.redraw()
     }
 
+    /// Adopt what power-profiles-daemon says now.
+    pub fn adopt_power(&mut self, power: PowerFacts) -> Changes {
+        self.power = power;
+        self.redraw()
+    }
+
+    /// Adopt the desktop's icon theme now (`None` when it cannot be read).
+    pub fn adopt_icon_theme(&mut self, theme: Option<String>) -> Changes {
+        self.marks.set_theme(theme);
+        self.redraw()
+    }
+
+    /// Adopt what the desktop says about the panel's colour now.
+    pub fn adopt_panel_hints(&mut self, hints: picture::PanelHints) -> Changes {
+        self.marks.set_hints(hints);
+        self.redraw()
+    }
+
     /// Adopt what the service said, or why it said nothing. Returns the
     /// changes and whether the service's state is new, so a caller logs a
     /// failure once rather than every few seconds.
@@ -311,6 +383,7 @@ impl TrayState {
         match action {
             MenuAction::Toggle(reading) => self.choice.toggle(reading),
             MenuAction::Style(style) => self.choice.style = style,
+            MenuAction::TogglePowerMode => self.choice.power_mode = !self.choice.power_mode,
             _ => return Changes::default(),
         }
         if let Some(path) = &self.choice_path
@@ -352,14 +425,23 @@ pub struct Tray {
     pub state: Mutex<TrayState>,
     pub quit: tokio::sync::Notify,
     connection: Mutex<Option<zbus::Connection>>,
+    /// Where the picture with the power mode's mark is written for the
+    /// panel to read (`IconName` names it); `None` writes nothing.
+    pictures: Option<picture_file::Pictures>,
 }
 
 impl Tray {
     pub fn new(state: TrayState) -> Arc<Self> {
+        Self::with_pictures(state, None)
+    }
+
+    /// A tray that writes its wide pictures under `pictures`.
+    pub fn with_pictures(state: TrayState, pictures: Option<picture_file::Pictures>) -> Arc<Self> {
         Arc::new(Self {
             state: Mutex::new(state),
             quit: tokio::sync::Notify::new(),
             connection: Mutex::new(None),
+            pictures,
         })
     }
 
@@ -367,8 +449,42 @@ impl Tray {
         *self.connection.lock().await = Some(connection);
     }
 
+    /// Writes the picture with the mark, when there is one and it changed,
+    /// and keeps its file's path for `IconName`; without a mark the item
+    /// goes back to its square pixmaps.
+    async fn write_picture(&self) {
+        let mut state = self.state.lock().await;
+        let file = match (&state.picture, &self.pictures) {
+            (Some(picture), Some(pictures)) => match pictures.write(picture) {
+                Ok(path) => Some(path),
+                Err(error) => {
+                    eprintln!("better-monitor-tray: the picture could not be written: {error}");
+                    None
+                }
+            },
+            _ => {
+                if let Some(pictures) = &self.pictures {
+                    pictures.clear();
+                }
+                None
+            }
+        };
+        state.picture_file = file;
+    }
+
+    /// Removes the picture files, as the item ends: an `Arc` the bus
+    /// connection still holds may keep the tray alive past `main`.
+    pub fn clear_pictures(&self) {
+        if let Some(pictures) = &self.pictures {
+            pictures.close();
+        }
+    }
+
     /// Announce what changed to the panel.
     pub async fn announce(&self, changes: Changes) {
+        if changes.icon {
+            self.write_picture().await;
+        }
         let Some(connection) = self.connection.lock().await.clone() else {
             return;
         };
@@ -430,9 +546,23 @@ impl Tray {
         layout
     }
 
-    /// A panel started or restarted; see [`TrayState::host_changed`].
+    /// A panel started or restarted; see [`TrayState::host_changed`]. Which
+    /// panel it is decides whether the pixmaps go beside the picture's file.
     pub async fn host_changed(&self) {
-        let changes = self.state.lock().await.host_changed(Instant::now());
+        let connection = self.connection.lock().await.clone();
+        let gnome = match &connection {
+            Some(connection) => watcher_is_gnome_shell(connection).await,
+            None => false,
+        };
+        let changes = {
+            let mut state = self.state.lock().await;
+            let mut changes = state.host_changed(Instant::now());
+            if state.pixmaps_cover_file != gnome {
+                state.pixmaps_cover_file = gnome;
+                changes.icon = true;
+            }
+            changes
+        };
         self.announce(changes).await;
     }
 
@@ -532,15 +662,33 @@ impl StatusNotifierItem {
         "Active"
     }
 
-    /// Empty, so the panel draws the pixmap.
+    /// Empty, so the panel draws the square pixmap; or, while the picture
+    /// shows the power mode's mark, the SVG file of that wider picture.
     #[zbus(property)]
-    async fn icon_name(&self) -> &str {
-        ""
+    async fn icon_name(&self) -> String {
+        self.tray
+            .state
+            .lock()
+            .await
+            .picture_file
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_default()
     }
 
+    /// The square pixmaps; for GNOME's AppIndicator extension none while
+    /// `IconName` names the wide picture, because it draws a wide file
+    /// without handing a result back and then falls through to the pixmaps,
+    /// which would cover it with the square picture (`appIndicator.js`,
+    /// `_createIcon`). waybar, KDE, swaybar and COSMIC draw `IconName` when
+    /// they can and fall back to the pixmaps, so they keep them.
     #[zbus(property)]
     async fn icon_pixmap(&self) -> Vec<(i32, i32, Vec<u8>)> {
-        self.tray.state.lock().await.icon.clone()
+        let state = self.tray.state.lock().await;
+        if state.picture_file.is_some() && state.pixmaps_cover_file {
+            return Vec::new();
+        }
+        state.icon.clone()
     }
 
     #[zbus(property)]
@@ -850,7 +998,7 @@ pub async fn register_and_verify(connection: &zbus::Connection, name: &str) -> T
         return TrayAvailability::RegistrationFailed(error.to_string());
     }
     match watcher.registered_status_notifier_items().await {
-        Ok(items) if items.iter().any(|item| item.starts_with(name)) => {}
+        Ok(items) if items.iter().any(|item| lists(item, name)) => {}
         Ok(_) => return TrayAvailability::NotListed,
         Err(error) => return TrayAvailability::RegistrationFailed(error.to_string()),
     }
@@ -859,6 +1007,41 @@ pub async fn register_and_verify(connection: &zbus::Connection, name: &str) -> T
         Ok(false) => TrayAvailability::NoHost,
         Err(error) => TrayAvailability::RegistrationFailed(error.to_string()),
     }
+}
+
+/// Whether a watcher's entry is the item registered under `name`: the name
+/// itself, or the name followed by the item's path, as GNOME's AppIndicator
+/// extension and KDE's watcher write it. Never a longer name that starts the
+/// same (`:1.1` is not `:1.10`).
+pub fn lists(entry: &str, name: &str) -> bool {
+    entry == name
+        || entry
+            .strip_prefix(name)
+            .is_some_and(|path| path.starts_with('/'))
+}
+
+/// Whether the panel's watcher is GNOME Shell's AppIndicator extension: the
+/// process that owns `org.kde.StatusNotifierWatcher` is `gnome-shell`.
+pub async fn watcher_is_gnome_shell(connection: &zbus::Connection) -> bool {
+    let Ok(dbus) = zbus::fdo::DBusProxy::new(connection).await else {
+        return false;
+    };
+    let Ok(name) = zbus::names::BusName::try_from(WATCHER_SERVICE) else {
+        return false;
+    };
+    match dbus.get_connection_unix_process_id(name).await {
+        Ok(pid) => is_gnome_shell(
+            std::fs::read_to_string(format!("/proc/{pid}/comm"))
+                .ok()
+                .as_deref(),
+        ),
+        Err(_) => false,
+    }
+}
+
+/// A process's `comm` is GNOME Shell's.
+pub fn is_gnome_shell(comm: Option<&str>) -> bool {
+    comm.is_some_and(|comm| comm.trim() == "gnome-shell")
 }
 
 /// Keep the item registered with whichever watcher the panel runs.
@@ -1191,6 +1374,146 @@ mod tests {
                     .any(|name| name == "type" || name == "children-display")
             );
         }
+    }
+
+    fn modes(active: &str) -> PowerFacts {
+        hardware_core::Presence::Present(hardware_core::power::PowerProfilesFacts {
+            active: active.into(),
+            profiles: vec![
+                "power-saver".into(),
+                "balanced".into(),
+                "performance".into(),
+            ],
+            ..Default::default()
+        })
+    }
+
+    /// A theme with the three power mode icons, each a different shape.
+    fn theme() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("icons/Test");
+        std::fs::create_dir_all(base.join("status")).unwrap();
+        std::fs::write(
+            base.join("index.theme"),
+            "[Icon Theme]\nDirectories=status\n\n[status]\nContext=Status\nSize=16\nType=Scalable\n",
+        )
+        .unwrap();
+        for (mode, x) in [("power-saver", 1), ("balanced", 6), ("performance", 11)] {
+            std::fs::write(
+                base.join(format!("status/power-profile-{mode}-symbolic.svg")),
+                format!(
+                    r#"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"><rect x="{x}" y="2" width="4" height="12"/></svg>"#
+                ),
+            )
+            .unwrap();
+        }
+        dir
+    }
+
+    fn themed(dir: &tempfile::TempDir) -> TrayState {
+        let mut state = state();
+        state.marks = icon_theme::Marks::new(vec![dir.path().to_path_buf()]);
+        state.adopt_icon_theme(Some("Test".into()));
+        state
+    }
+
+    #[test]
+    fn a_mode_changed_by_something_else_redraws_the_one_picture_and_the_menu() {
+        let dir = theme();
+        let mut state = themed(&dir);
+        state.adopt(Some(cpu(0.2)));
+        assert_eq!(state.picture, None, "no mode, the picture is the pixmap");
+        let first = state.adopt_power(modes("balanced"));
+        assert!(first.icon && first.layout && first.tooltip);
+        let balanced = state.picture.clone().expect("the mark is drawn");
+        let drawn = |svg: &str| picture::testing::render(svg, 2.0).unwrap();
+        assert_eq!(drawn(&balanced).width, 2 * (16 + picture::GAP + 16));
+        let line = state.menu.find_by_label("Power mode: Balanced").unwrap().id;
+
+        // The System page, the charger switch or another program set it.
+        let changes = state.adopt_power(modes("performance"));
+        assert!(changes.icon, "the picture is redrawn");
+        assert!(changes.tooltip);
+        assert!(!changes.layout, "a new mode is a new label, not a new row");
+        assert_eq!(changes.properties, vec![(line, vec!["label".to_string()])]);
+        let performance = state.picture.clone().unwrap();
+        assert_ne!(balanced, performance);
+        // The readings are the same pixels beside either mark as alone.
+        let readings = icon::draw_on_grid(
+            &state.choice.shown,
+            state.choice.style,
+            state.readings.as_ref().unwrap(),
+            icon::GRID,
+        );
+        let alone = drawn(&picture::compose(&readings, None));
+        for picture in [&balanced, &performance] {
+            let offset = 2 * (16 + picture::GAP);
+            assert_eq!(
+                drawn(picture).region(offset, 0, alone.width, alone.height),
+                alone.region(0, 0, alone.width, alone.height)
+            );
+        }
+
+        assert_eq!(state.adopt_power(modes("performance")), Changes::default());
+
+        // The daemon went away: no mark, the picture is as narrow as before.
+        let gone = state.adopt_power(hardware_core::Presence::Absent);
+        assert!(gone.icon && gone.layout);
+        assert_eq!(state.picture, None);
+        assert!(
+            state
+                .menu
+                .find_by_label("Power mode: Best performance")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn only_gnome_shells_watcher_loses_the_pixmaps_beside_the_file() {
+        assert!(is_gnome_shell(Some("gnome-shell\n")));
+        assert!(!is_gnome_shell(Some("plasmashell\n")));
+        assert!(!is_gnome_shell(Some("waybar")));
+        assert!(!is_gnome_shell(None));
+    }
+
+    #[test]
+    fn a_light_panel_redraws_the_mark_in_dark_ink() {
+        let dir = theme();
+        let mut state = themed(&dir);
+        state.adopt_power(modes("balanced"));
+        let unknown = state.picture.clone().unwrap();
+        let changes = state.adopt_panel_hints(picture::PanelHints {
+            gtk_theme: Some("ZorinBlue-Light".into()),
+            ..picture::PanelHints::default()
+        });
+        assert!(changes.icon);
+        assert_ne!(state.picture.clone().unwrap(), unknown);
+    }
+
+    #[test]
+    fn a_theme_without_the_icon_draws_no_mark_and_the_words_stay() {
+        let dir = theme();
+        let mut state = themed(&dir);
+        state.adopt_icon_theme(Some("Missing".into()));
+        state.adopt(Some(cpu(0.2)));
+        state.adopt_power(modes("balanced"));
+        assert_eq!(state.picture, None);
+        assert!(state.tooltip.1.contains("Power mode: Balanced"));
+    }
+
+    #[test]
+    fn unticking_the_power_mode_takes_the_mark_away_and_keeps_the_choice() {
+        let dir = theme();
+        let mut state = themed(&dir);
+        state.adopt_power(modes("balanced"));
+        assert!(state.picture.is_some());
+        let changes = state.choose(MenuAction::TogglePowerMode);
+        assert!(changes.icon);
+        assert!(!state.choice.power_mode);
+        assert_eq!(state.picture, None);
+        let changes = state.choose(MenuAction::TogglePowerMode);
+        assert!(changes.icon);
+        assert!(state.picture.is_some());
     }
 
     #[test]

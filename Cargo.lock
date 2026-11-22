@@ -4931,6 +4931,7 @@ dependencies = [
  "gpui-component-assets",
  "gpui_platform",
  "hardware-core",
+ "hardware-platform",
  "monitor-actions-linux",
  "monitor-collectors-linux",
  "monitor-core",
@@ -4962,6 +4963,7 @@ name = "monitor-service"
 version = "0.2.16"
 dependencies = [
  "better-core",
+ "hardware-core",
  "manager-store",
  "monitor-collectors-linux",
  "monitor-core",
@@ -4994,13 +4996,16 @@ version = "0.2.16"
 dependencies = [
  "better-core",
  "hardware-core",
+ "hardware-platform",
  "monitor-core",
  "monitor-ipc",
  "monitor-service",
+ "resvg 0.46.0",
  "serde",
  "tempfile",
  "test-prerequisites",
  "tokio",
+ "usvg 0.46.0",
  "zbus",
 ]
 
