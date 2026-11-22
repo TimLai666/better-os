@@ -20,10 +20,30 @@ fn plugin_dir(root: &Path, id: &str, manifest: &str) -> PathBuf {
     dir
 }
 
+/// Writes a plugin's program. A child writes it, never this process: a
+/// descriptor this process held open for writing is copied into every other
+/// test thread's fork until its exec, and running the program meanwhile
+/// fails with ETXTBSY (AGENTS.md: a test never executes a file it has just
+/// written).
 fn script(dir: &Path, name: &str, body: &str) {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
     let path = dir.join(name);
-    fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    let mut writer = Command::new("/bin/sh")
+        .arg("-c")
+        .arg(r#"cat > "$1" && chmod 755 "$1""#)
+        .arg("sh")
+        .arg(&path)
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap();
+    writer
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(format!("#!/bin/sh\n{body}\n").as_bytes())
+        .unwrap();
+    assert!(writer.wait().unwrap().success(), "{name} was not written");
 }
 
 fn root() -> tempfile::TempDir {

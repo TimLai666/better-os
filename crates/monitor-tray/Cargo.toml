@@ -19,6 +19,12 @@ better-core.workspace = true
 monitor-core.workspace = true
 # The battery's state and words, shared by every battery icon (ticket 170).
 hardware-core.workspace = true
+# The power mode, read the way the System page reads it (ticket 295).
+hardware-platform.workspace = true
+# Reads the desktop's own power mode icon and writes it out again
+# self-contained for the picture: the SVG parser of the renderer GPUI already
+# brings (ticket 295), not a second one. Nothing here rasterises.
+usvg = { version = "0.46", default-features = false }
 monitor-ipc.workspace = true
 monitor-service.workspace = true
 serde.workspace = true
@@ -31,4 +37,8 @@ zbus = { version = "5" }
 # under CI (ticket 177).
 test-prerequisites.workspace = true
 tempfile.workspace = true
+# Draws the picture in the tests, as a panel does.
+resvg = { version = "0.46", default-features = false }
+# A stand-in power-profiles-daemon on a private bus.
+hardware-platform = { workspace = true, features = ["test-support"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "signal", "test-util"] }

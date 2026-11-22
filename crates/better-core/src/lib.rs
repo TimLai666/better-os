@@ -5,6 +5,7 @@ pub mod companion;
 pub mod defaults;
 pub mod desktop;
 pub mod host;
+pub mod icon_theme;
 pub mod local_time;
 pub mod locale;
 pub mod manifest;

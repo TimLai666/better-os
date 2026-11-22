@@ -63,3 +63,5 @@ desktop's own services and never through `manager-daemon`.
 ## Notes
 
 The network, sound, and battery models are the shared crates of `design/system-settings-spec.md` section 3.1 (`network-core`, `sound-core`), used by Better Manager's pages too (tickets 232, 234): whichever of this ticket and those starts first creates them to that section. Each settings link opens the Better Manager page once it exists (section 4.3's names).
+
+The battery's picture for every `battery_look` state (on battery at each level, plugged in and still draining, charging, held at the limit, plugged in and full, plugged in and not charging, unknown) is designed here, with the owner. The owner decided on 2026-11-22 that Better Monitor's taskbar item draws no battery, because the desktop already has one, and found the pixel pictures drawn for it on ticket 295's first branch ugly; nothing is taken from that branch. Until this ticket draws them, the pictures are `better-ui`'s `BatteryIcon` files (ticket 170).
