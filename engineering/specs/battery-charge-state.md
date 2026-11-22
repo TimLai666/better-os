@@ -117,8 +117,8 @@ and short. Its callers:
 
 - Better Monitor: the Overview's battery card (short words in its header, the
   time or the energy at its foot) and Performance list row (short words), the
-  Battery page, the taskbar popup, and the taskbar item's menu line
-  (`monitor-tray`). The "what is using the battery" section and the popup's
+  Battery page, the taskbar popup, and the taskbar item's menu line and
+  tooltip (`monitor-tray`), which draws no battery picture (below). The "what is using the battery" section and the popup's
   battery list follow `ChargeState::on_battery`, not a metric of their own.
 - Better Manager: Home's device banner, the System page's battery card and
   charge limit card, and the Keep awake page's charge card.
@@ -139,10 +139,133 @@ off the UI thread, and read again when the service signals or UPower's
 POWER_SUPPLY_CHANGES`), rather than widen the service's protocol. Without a
 battery reading of their own, the rule gets only the charger the service saw.
 
-Better Monitor's taskbar icon draws the battery as a level bar or a number,
-the same in every state; only its menu line carries the state. Whether the
-panel icon itself should show the state is a question for the owner, recorded
-in ticket 170.
+## The taskbar item
+
+Better Monitor's taskbar icon draws no battery (owner, 2026-11-22, ticket
+295). The panel already has the desktop's own battery icon, and a second
+beside it is a duplicate. So the icon offers no battery reading in either
+style and "Show in the taskbar" has no battery check box; a choice stored
+before that which showed the battery is rewritten without it the next time
+the item starts (a choice of the battery alone falls back to the default
+readings, so the icon never goes empty). The battery stays in the item's
+menu and tooltip, and in the popup, as words: its charge and its state from
+`battery_look`, and the time while the charge moves.
+
+The desktop's battery is the one to change. Under GNOME it is the shell's,
+and nothing outside the shell's code can change its picture (below). In the
+Better OS session it is the top bar's status area (ticket 157), which draws
+this rule's states; their pictures are designed there with the owner.
+
+### The power mode in the same item
+
+Better Monitor is one button in the panel, as a macOS menu bar item is
+(owner, 2026-11-22): one StatusNotifierItem, one menu, one tooltip. Its
+picture is the power mode's mark, a gap of 4 pixels, then the readings
+(`monitor_tray::picture`, GPUI-free, so the Better OS session's top bar,
+tickets 156 and 157, composes the same picture).
+
+- The picture is an SVG document 16 logical pixels tall, so a panel draws
+  it at the display's own resolution.
+- The mark is the desktop's own icon, `power-profile-power-saver-symbolic`,
+  `-balanced-` or `-performance-`, found by the icon theme lookup every
+  Better OS program shares (`better_core::icon_theme`, moved there from
+  `better-ui`: the theme, what it inherits, Adwaita, `hicolor`; the theme's
+  `Status` directories from its `index.theme`; theme names and directories
+  that are paths refused; an SVG within `MAX_ICON_BYTES`). It is parsed and
+  written out again by `usvg` (`Tree::to_string`), so what goes into the
+  picture is self-contained: styles applied and dropped, entities expanded,
+  no namespace it does not declare, ids prefixed. Its colours are then
+  replaced by the panel's ink.
+- The ink: the shell theme in force (the User Themes extension's `name`,
+  read with `gsettings` since the settings portal does not offer it), else
+  the GTK theme's `-Light`/`-Dark` name (every Zorin theme, `Adwaita-dark`),
+  else an explicit `color-scheme`: white on a dark panel, `#2e3436` on a
+  light one. Anything else is not known (Zorin's light desktop leaves
+  `color-scheme` at `default`, and GNOME 46's own panel ignores it), and the
+  mark is then light ink with a dark edge, the readings' own rule, which
+  reads on both. Re-read whenever the portal says the GTK theme, the icon
+  theme or the colour scheme changed.
+- The readings are drawn natively on the picture's 16-pixel grid
+  (`icon::draw_on_grid`), bars and numbers, one square per cell with
+  `crispEdges`: no row is dropped at 100 %, 125 %, 150 % or 200 % (each cell
+  keeps a pixel of its colour, tested), and at 200 % each cell is two by two.
+  The mark adds width beside them and takes none; they are the same pixels
+  with and without it (tested). The square pixmaps keep the 22-pixel canvas.
+- With no mode to show (no daemon, a masked or stopped one, a mode this
+  version does not know, a daemon that cannot be read, "Power mode"
+  unticked, or a theme without the icon) there is no mark and no file: the
+  item is the square pixmaps it always was.
+- How a panel gets a picture wider than tall. GNOME's AppIndicator extension
+  (Zorin's copy, `/usr/share/gnome-shell/extensions/zorin-appindicator@zorinos.com/appIndicator.js`,
+  and Ubuntu's upstream at `fbc758a4`, read: the same code) fits every
+  `IconPixmap` into a square of the panel's icon size, keeping its aspect
+  (`_createIconFromPixmap`, lines 1421-1444), so a wide pixmap shrinks to a
+  strip. An `IconName` that is the path of an image in a place the person
+  can write and at least half again as wide as tall is drawn at the image's
+  own size (`_createIconByIconData`, line 1271; `_loadCustomImage`, line
+  1290). An SVG's own size is in logical pixels and St rasterises it at the
+  stage's scale, so it is sharp at 200 %; a PNG is scaled up
+  (`better-os-evidence/295/scale2-png-vs-svg.png`).
+- The file: GNOME Shell 46's texture cache keeps a `GFileMonitor` for every
+  path it ever loaded until the shell ends (`st-texture-cache.c`,
+  `ensure_monitor_for_file`, lines 1173-1191, keyed by `g_file_equal`), and
+  loads a file again each time with no cache (`ST_TEXTURE_CACHE_POLICY_NONE`,
+  line 1442). So the picture is written under `picture-a.svg` and
+  `picture-b.svg` in `$XDG_RUNTIME_DIR/better-os/monitor-tray/` in turn:
+  `IconName` changes with every new picture, which makes the extension load
+  it again, and the shell holds two monitors. A picture identical to the
+  one on disk is not written. The files are removed when the item ends
+  (Quit, SIGTERM; nothing is written after) and when it starts.
+- The pixmaps: GNOME's extension draws a wide file without handing a result
+  back and then falls through to the pixmaps, which would cover it
+  (`_createIcon`, line 1579), so while its watcher (the process owning
+  `org.kde.StatusNotifierWatcher` is `gnome-shell`) draws the item, the
+  pixmaps are left out while the file is named. Every other panel keeps
+  them. waybar loads a path starting with `/` keeping its aspect and falls
+  back to the pixmap (`src/modules/sni/item.cpp` at `b4f03e63`); swaybar
+  looks `IconName` up only in icon themes, finds no path, and uses the pixmap
+  (`swaybar/tray/item.c`, `reload_sni`); COSMIC's status area loads a path
+  that exists (`cb3ea91a`); KDE Plasma takes `IconName` first and the
+  pixmap only when `KIconEngine` says the icon is null, which for an
+  absolute path is only when the file is missing (`kiconengine.cpp`
+  `isNull`, `kiconloader.cpp` `iconPath`), so it draws the file through Qt's
+  SVG renderer, which has no filters: there the mark would keep the theme's
+  own colour. All four were read from source only.
+- What it costs: the file follows the readings. In a minute of this
+  machine's live readings in the sandbox at scale 2 it was written 34 times
+  (before identical pictures were skipped); the tray used 0.44 s of
+  processor and GNOME Shell 0.61 s, against 0.45 s and 0.37 s with no mark.
+  10,000 picture changes in the sandbox shell: under a new name each time
+  its resident memory grew by 3.4 MB, under two names by 2.9 MB; open files
+  and inotify watches did not grow in either (GLib's inotify backend watches
+  the directory, not each file), so the per-path monitors cost memory and
+  main-loop sources rather than watches. Two names keeps both at two.
+- The extension's own icon size (its `icon-size` key: 20 or 24) does not
+  change a picture drawn at its own size, so the item stays 16 pixels tall
+  there; following it would mean reading that extension's private settings,
+  which differ by distribution, so it is not done.
+- Fractional scales: 125 % and 150 % were set in the sandbox through
+  Mutter's `scale-monitor-framebuffer` and drawn sharp.
+- The modes are the ones power-profiles-daemon lists (`Profiles`), read the
+  way the System page reads them (`hardware_platform::bus::power_profiles`).
+  Better OS never reads or writes `platform_profile` itself (ADR 0017).
+- Every call to the daemon carries `NO_AUTO_START`, so no read or write ever
+  starts it: a daemon that is not running, stops between two calls, or is
+  masked answers `ServiceUnknown` (or systemd's `UnitMasked`/`NoSuchUnit`
+  under dbus-daemon, `NameHasNoOwner` under dbus-broker) and is absent.
+- What is shown is one rule, `hardware_core::power::mode_shown`: the mode in
+  force by name (`Profile::name`, the System page's words), the modes the
+  daemon lists that this version knows, and the System page's caution
+  sentences (`Caution::words`). A mode this version does not know, or one the
+  daemon does not list, is not shown, never as the daemon's own word. A
+  daemon that answers and cannot be read is "could not be read" in the menu
+  and "Couldn't be read" where it stands alone in the popup; a watch that
+  ends (the system bus closed) says the same.
+- It follows the daemon's `PropertiesChanged` and its name coming and going,
+  so a mode set on the System page, by "Switch power mode with the charger",
+  or by any other program redraws the picture at once.
+- Whether the menu also switches the mode is the owner's to decide (ticket
+  295); until then the menu only names it.
 
 ## The desktop's own battery icon (GNOME)
 
