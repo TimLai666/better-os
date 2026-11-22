@@ -73,3 +73,64 @@ switch or upgrade stops the wrong thing.
       leaves the session running and unlockable.
 - [ ] Removing `gdm3` on Ubuntu leaves the unlock service owning its name.
 - [ ] A greeter that cannot start ends in the text login, never in GDM.
+
+## Notes
+
+From ticket 267 (2026-11-22): what it built for this package, and left to it.
+
+- The units are written and tested: `packaging/greeter/`
+  (`better-os-login-supervisor.service`, `better-os-greeter.service`,
+  `better-os-login-fallback@.service`, `better-os-login-backstop.service`
+  and `.timer`), with the bus policy `org.betteros.LoginSupervisor1.conf`
+  and the backstop's fixed message `login-supervisor-failed.issue`.
+  `crates/login-supervisor/tests/units.rs` holds them to the spec; the
+  package should install them as they are, not copies, so that test keeps
+  covering what ships.
+- Install paths the units and programs name: `/usr/sbin/better-os-login-supervisor`
+  and `/usr/bin/better-os-login-status` (both from `cargo build -p
+  login-supervisor`), `/usr/sbin/greetd`, the policy into
+  `/usr/share/dbus-1/system.d/`, the message into
+  `/usr/share/better-os/login-supervisor-failed.issue`.
+- The supervisor's unit has no `[Install]` section: the display manager
+  alias is the debconf registration's to make, so installing the package
+  must not link it (no `dh_installsystemd` enabling of it).
+- The supervisor's unit deliberately has no `Conflicts=` (not even GDM's
+  `Conflicts=plymouth-quit.service getty@tty1.service`): the greeter's
+  `OnFailure=plymouth-quit.service` and a getty on tty1 would then stop the
+  supervisor. `verify-deb.sh` should check that, as `tests/units.rs` does.
+- The supervisor's unit needs `RestartMode=direct` (systemd 254 and
+  newer): without it systemd 255 triggers `OnFailure=` on every failure,
+  restarts included, so one crash would start the backstop's text login.
+  CI's container check found it; `verify-deb.sh` should check it too.
+- Depends: `procps` (`pkill`), `kbd` (`chvt`), `util-linux` (`agetty`),
+  `coreutils`, which the backstop and the fall back run; `plymouth` is not
+  a dependency (every `plymouth` call tolerates its absence).
+- The fall back's agetty has never run on a real terminal: the container
+  check replaces it with a stand-in (no terminal there). Its `ExecStart=`
+  and `TTY*=` settings are getty@.service's, with `Type=simple`.
+
+After the second review of ticket 267 (2026-11-22), `packaging/greeter/`
+also holds, and the package must ship:
+
+- `better-os-login-backstop-failed.service` (the supervisor's `OnFailure=`
+  now, with conditions on the present) beside `better-os-login-backstop.service`
+  (the timer's, with conditions on the boot's history);
+- the timer ordered right before the supervisor (`DefaultDependencies=no`,
+  the supervisor's `After=`, `Before=better-os-login-supervisor.service`,
+  `OnActiveSec=82`): `verify-deb.sh` should keep it from gaining the default
+  dependencies, as `tests/units.rs` does;
+- two drop-ins, `/usr/lib/systemd/system/getty@tty1.service.d/better-os-login.conf`
+  and `plymouth-quit.service.d/better-os-login.conf`, whose `ExecCondition=`
+  skips the unit while `display-manager.service` links to the supervisor;
+  they change nothing with another display manager chosen, and must go with
+  the package;
+- the text logins on tty8 and tty9 (ADR 0047, proposed), and the
+  supervisor's `DeviceAllow=` for `/dev/tty1`, `/dev/tty8`, `/dev/tty9`;
+- `StartLimitIntervalSec=120` on the supervisor's unit.
+
+After the third review of ticket 267 (2026-11-22): the supervisor's
+`OnFailure=` is now `better-os-login-backstop-failed.timer` (at once and
+every 30 s), which the package ships beside the service; the two drop-ins
+gained `After=better-os-login-supervisor.service` and test the
+supervisor's state, not the display-manager link, so they are safe on every
+boot whatever is chosen.

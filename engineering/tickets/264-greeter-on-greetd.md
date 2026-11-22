@@ -93,3 +93,39 @@ shares everything with it but the identity and the authentication path.
       `better-os-remember-login`; a failed login writes nothing.
 - [ ] Starting GNOME with the unlock service stopped is refused with the
       spec's message.
+
+## Notes
+
+From ticket 267 (the login supervisor, 2026-11-22), what this program must
+do for the supervisor, which already reads it this way
+(`crates/login-supervisor/src/read.rs`, `rules.rs`):
+
+- `/run/better-os-greeter/alive`: a new file renamed into place each time,
+  holding `starting` once the greeter runs under the compositor and `ready`
+  once its first frame is presented on every output and the password field
+  has focus, rewritten every 5 seconds while it runs. At most 64 bytes, a
+  regular file. The supervisor judges it by change (a new inode or
+  modification time), not by a time written in it, so it must really be
+  rewritten every 5 s: 30 s without a change after `ready`, with no
+  person's session, restarts the login screen.
+- `/run/better-os-greeter/ready-seen`, created at the first `ready` of the
+  boot: the backstop's first condition.
+- `/run/better-os/greeter-mode`: `/usr/sbin/better-os-greeter` reads it at
+  start; `safe` means the third attempt's safe mode (only the first card,
+  software rendering if `cosmic-comp` has it, no fractional scale); absent
+  or anything else is a plain start.
+- The supervisor's stage 5 looks for a logind session of class `greeter`
+  owned by `_better-greeter`, and its stage 9 for a person's session as a
+  process under greetd of an account other than root and
+  `_better-greeter`: the greeter's processes must all run as
+  `_better-greeter`.
+
+After the second review of ticket 267 (2026-11-22):
+
+- 4 s into every stop the supervisor sends `SIGKILL` to the greeter
+  session's scope (ADR 0047, proposed): the greeter gets greetd's `SIGTERM`
+  first and should save what it must within those 4 s.
+- With no screen connected the supervisor runs the attempts as on any
+  machine: a greeter with no output should write `ready` once it would be
+  presented (its surfaces made, the field focused), so that a machine whose
+  screen is off is not taken for a greeter that failed.

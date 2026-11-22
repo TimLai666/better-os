@@ -1,0 +1,35 @@
+[package]
+name = "login-supervisor"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# `better-os-login-supervisor`, the Better OS display manager, and
+# `better-os-login-status` (design/login-screen-spec.md section 5.10,
+# ticket 267). A root service with no GPUI: its rules are `rules`, with no
+# I/O; everything it touches is behind `world::World`.
+
+[[bin]]
+name = "better-os-login-supervisor"
+path = "src/bin/supervisor.rs"
+
+[[bin]]
+name = "better-os-login-status"
+path = "src/bin/status.rs"
+
+[dependencies]
+# The one local-time conversion (ticket 146) for the text login's message
+# and the status command.
+better-core.workspace = true
+libc.workspace = true
+# The records' format and writer, shared with the login screen watch
+# (ADR 0033) and read by Better Manager.
+manager-ipc.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# `org.betteros.LoginSupervisor1`, read-only, served from its own thread.
+zbus.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

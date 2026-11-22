@@ -1,0 +1,33 @@
+[Unit]
+Description=Better OS text login on %I
+Documentation=https://github.com/TimLai666/better-os/blob/main/design/login-screen-spec.md
+# The fall back when the login screen cannot appear (design/login-screen-spec.md
+# section 5.10): a standard text login with the supervisor's message, started
+# only by better-os-login-supervisor.service (tty8, or tty9 when tty8's
+# start is not seen active) or by the two backstops (tty9). Both are past
+# logind's automatic VTs (NAutoVTs=6), so logind never starts a getty there
+# that would conflict this one out and lose the message.
+Conflicts=getty@%i.service
+After=getty@%i.service systemd-user-sessions.service
+IgnoreOnIsolate=yes
+# The supervisor may start it again while it is starting.
+StartLimitIntervalSec=0
+
+[Service]
+# Not getty's Type=idle, which may wait 5 s for other jobs: the text login
+# accepts input within 3 s of its start.
+Type=simple
+ExecStart=-/sbin/agetty -o "-p -- \\u" --noclear --issue-file /etc/issue:/run/better-os/login-fallback.issue - linux
+Restart=always
+RestartSec=0
+UtmpIdentifier=%I
+StandardInput=tty
+StandardOutput=tty
+TTYPath=/dev/%I
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=yes
+IgnoreSIGPIPE=no
+SendSIGHUP=yes
+KillMode=process
+UnsetEnvironment=LANG LANGUAGE LC_CTYPE LC_NUMERIC LC_TIME LC_COLLATE LC_MONETARY LC_MESSAGES LC_PAPER LC_NAME LC_ADDRESS LC_TELEPHONE LC_MEASUREMENT LC_IDENTIFICATION

@@ -4436,6 +4436,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "login-supervisor"
+version = "0.2.17"
+dependencies = [
+ "better-core",
+ "libc",
+ "manager-ipc",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "zbus",
+]
+
+[[package]]
 name = "loop9"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4659,6 +4672,7 @@ name = "manager-ipc"
 version = "0.2.17"
 dependencies = [
  "better-core",
+ "libc",
  "serde",
  "serde_json",
  "tempfile",

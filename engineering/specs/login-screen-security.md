@@ -101,8 +101,8 @@ OS code running as root. So the review has to establish, in this order:
 
 | Process | Account | Started by | Holds |
 | --- | --- | --- | --- |
-| `better-os-login-supervisor` | root | `display-manager.service` (its alias), `Type=notify`, `WatchdogSec=10`, `Restart=always`, `StartLimitBurst=5` in 60 s, `OnFailure=better-os-login-backstop.service` | start and stop of exactly `better-os-greeter.service`, `better-os-gnome-unlock.service`, `better-os-login-fallback@tty1.service` and `@tty2.service` through systemd's bus; `plymouth` commands and a kill of `plymouthd`; `KDSETMODE` and `VT_SETMODE` on `/dev/tty1`, `chvt`; reads logind, `/sys/class/drm`, the greeter's heartbeat, greetd's cgroup; writes `/var/lib/better-os/boot-watch/` and `/run/better-os/` |
-| `better-os-login-backstop` (a unit, no program of Better OS's) | root | the supervisor's `OnFailure=` and a 90 s timer | `plymouth quit`, `systemctl start better-os-login-fallback@tty2.service`, `chvt 2`, only when the greeter never reported `ready` and no fall back runs |
+| `better-os-login-supervisor` | root | `display-manager.service` (its alias), `Type=notify`, `WatchdogSec=10`, `Restart=always`, `RestartMode=direct`, `StartLimitBurst=5` in 120 s, `OnFailure=better-os-login-backstop-failed.timer` | start and stop of exactly `better-os-greeter.service`, `better-os-login-fallback@tty8.service` and `@tty9.service`, by `systemctl --no-block` (`better-os-gnome-unlock.service` only through its unit's `Wants=`); `SIGKILL` to the processes of the greeter session's scope (a cgroup of the shape `/user.slice/user-<uid>.slice/session-<id>.scope`, only processes of root and `_better-greeter`, each through a pidfd whose uid and cgroup are checked after it is opened, and never a scope with any other account's process when read at that moment), 4 s into a stop (ADR 0047, proposed); `plymouth` commands and a kill of `plymouthd`; `KDSETMODE`, `VT_SETMODE` and `VT_ACTIVATE` on `/dev/tty1`, `/dev/tty8` and `/dev/tty9`; reads logind (a `busctl` probe and `/run/systemd/sessions/`), `/sys/class/drm`, `/etc/passwd`, the greeter's heartbeat, greetd's cgroup and its processes in `/proc`, the greeter session's scope's `cgroup.procs`, and, during a stop, which processes hold `/dev/dri/card*` (the targets of `/proc/<pid>/fd` links, compared and not kept; only the greeter's count); writes `/var/lib/better-os/boot-watch/` and `/run/better-os/` |
+| `better-os-login-backstop` and `better-os-login-backstop-failed` (units, no program of Better OS's) | root | the timer, 82 s after the supervisor's first start (ordered right before it); a second timer the supervisor's `OnFailure=` starts, at once and every 30 s | `cp --update=none` of a shipped message file into `/run/better-os/`, `systemctl --no-block start better-os-login-fallback@tty9.service`, `touch /run/better-os/login-fallback.active`, `timeout 2 chvt 9`, `timeout 4 plymouth quit`, `pkill -KILL -x plymouthd`, `timeout 2 chvt 9`; the timer's only when the greeter never reported `ready`, no fall back runs and the supervisor never saw the property hold this boot; the failed supervisor's only when the supervisor does not run, no text login is active, no greeter wrote `ready` in the last 30 s and logind's session files list no person's greetd session (read with `sh`, `systemctl is-active`, `find`, `grep -D skip`) |
 | `greetd` 0.9.0 | root | `better-os-greeter.service`, started only by the supervisor | PAM for `greetd` and `greetd-greeter`, the VT, the socket it gives to the greeter (`greetd/src/server.rs` line 182) |
 | `better-os-gnome-unlock` | root | `better-os-gnome-unlock.service` (`Type=dbus`, `Conflicts=gdm.service`) | the bus name `org.gnome.DisplayManager` (under its own bus policy file); PAM for the services `better-os-gnome-unlock`, `-fingerprint`, `-smartcard`; `/run/better-os-gnome-unlock/` |
 | `/usr/sbin/better-os-greeter`, `cosmic-comp`, `better-greeter` | `_better-greeter` | greetd's greeter session | the seat's devices through logind (class `greeter`); greetd's socket; the system bus as an unprivileged client; `/var/lib/better-os-greeter/` and `/run/better-os-greeter/` |
@@ -147,24 +147,88 @@ text login when every other program has failed. What limits it:
 
 - It runs no PAM, reads no password, and has no D-Bus interface that changes
   anything (`org.betteros.LoginSupervisor1` offers only the last record,
-  read-only, for `better-os-login-status`).
+  read-only, for `better-os-login-status`: one method, `LastRecord`, with no
+  argument, returning the state file and the newest event as JSON; its bus
+  policy lets root own the name and anyone call it). The bus is served from
+  its own thread: a system bus that is down or hung never holds up a stage.
+- What it reads from others is untrusted and bounded, and nothing it reads
+  names a program, a path or a unit for it to act on. Every read:
+  - `/sys/class/drm`: the entries, each card's `device/driver` link target
+    (its last component only) and each connector's `status` (4 KiB at most);
+  - `/run/systemd/sessions/<id>`: logind's session files, regular files of
+    at most 64 KiB, only `UID`, `CLASS`, `SERVICE`, `SEAT`, `TYPE`, `SCOPE`
+    and `STATE`;
+  - `/sys/fs/cgroup/system.slice/better-os-greeter.service/cgroup.procs`,
+    and for each of those processes and their descendants
+    `/proc/<pid>/status` (the `Uid:` line) and `/proc/<pid>/task/*/children`;
+  - `/proc/<pid>/cgroup` of greetd's descendants outside its cgroup, to find
+    the greeter session's scope;
+  - `/sys/fs/cgroup/user.slice/user-<uid>.slice/session-<id>.scope/cgroup.procs`
+    of a path of exactly that shape, and `/proc/<pid>/status` of its
+    processes;
+  - while a stop runs: every `/proc/<pid>/comm` (to leave `plymouthd` out)
+    and the targets of every `/proc/<pid>/fd/*` link, compared with
+    `/dev/dri/card<digits>` and not kept, with `/proc/<pid>/status` of a
+    holder; the descriptors are never opened;
+  - before a kill: `/proc/<pid>/cgroup` and `/proc/<pid>/status` of the
+    process, after its pidfd is open;
+  - for a plymouthd that did not answer: every `/proc/<pid>/comm`;
+  - after a text login on a machine that had no screen, when a screen comes:
+    that unit's `ControlGroup` (`systemctl show`) and its `cgroup.procs`,
+    with `/proc/<pid>/comm` and `/proc/<pid>/status` of each;
+  - `/run/better-os-greeter/alive` with `O_NOFOLLOW | O_NONBLOCK`, a regular
+    file of at most 64 bytes, compared and never interpreted beyond the
+    words `starting` and `ready`;
+  - `/etc/passwd`, at most 16 MiB, only `_better-greeter`'s uid;
+  - its own `/run/better-os/login-path.json` and the records it wrote.
+- Every program it runs is a fixed absolute path with fixed arguments
+  (`/usr/bin/systemctl`, `/usr/bin/busctl`, `/usr/bin/plymouth`), with an
+  empty environment and a time limit after which the child is killed: 2 s
+  for `systemctl` and `busctl`, 5 s for `plymouth`. `plymouthd` is killed
+  only when a `plymouth` command did not return, and only a process whose
+  name is `plymouthd`.
+- A test hook, `BETTER_OS_TEST_SUPERVISOR_ABORT=<stage>`, read from the
+  unit's environment, makes it abort on reaching that stage, for ticket
+  281's crash loop. Only root can set a unit's environment, and the hook
+  can only end the supervisor, which the backstop covers.
 - The units it acts on are a fixed list compiled in (above); a test feeds it
   every stage outcome against a fake systemd and checks it never names
   another unit. It is not `PartOf=`, `BindsTo=` or `Requires=` any of them,
   so stopping them never stops it (systemd.unit(5), `PartOf=`: "When systemd
   stops or restarts the units listed here, the action is propagated to this
   unit").
-- Its unit sandbox: `ProtectHome=yes`; `ProtectSystem=strict` with
-  `ReadWritePaths=/var/lib/better-os/boot-watch /run/better-os`; the network
-  closed by `IPAddressDeny=any`, **not** by `PrivateNetwork=`, because a
-  private network namespace also hides abstract Unix sockets
-  (network_namespaces(7)) and `plymouth` reaches `plymouthd` only at the
-  abstract address `/org/freedesktop/plymouthd` (in `libply-boot-client.so.5`);
-  `RestrictAddressFamilies=AF_UNIX` (it polls `/sys/class/drm` and does not
-  open a udev monitor, so it needs no `AF_NETLINK`); `NoNewPrivileges=yes`;
-  `MemoryDenyWriteExecute=yes`; `SystemCallFilter=@system-service` plus the
-  `ioctl`s on `/dev/tty1` it needs (`DeviceAllow=/dev/tty1 rw`,
-  `/dev/tty2 rw`).
+- Its unit sandbox, as `packaging/greeter/better-os-login-supervisor.service`
+  has it, line by line (`tests/units.rs` holds the unit to it):
+  - `ProtectSystem=strict`: every file system read-only but `/dev`, `/proc`
+    and `/sys`, and its two directories below;
+  - `ProtectHome=yes`: no home directory is visible;
+  - `PrivateTmp=yes`;
+  - `IPAddressDeny=any`: no IP traffic, the network closed **not** by
+    `PrivateNetwork=`, because a private network namespace also hides
+    abstract Unix sockets (network_namespaces(7)) and `plymouth` reaches
+    `plymouthd` only at the abstract address `/org/freedesktop/plymouthd`
+    (in `libply-boot-client.so.5`);
+  - `RestrictAddressFamilies=AF_UNIX`: it polls `/sys/class/drm` and opens
+    no udev monitor, so it needs no `AF_NETLINK`;
+  - `NoNewPrivileges=yes`, `MemoryDenyWriteExecute=yes`;
+  - `SystemCallFilter=@system-service` (which has `ioctl`, `kill`,
+    `pidfd_open` and `pidfd_send_signal`), `SystemCallArchitectures=native`;
+  - `ProtectKernelModules=yes`, `ProtectKernelLogs=yes`, `ProtectClock=yes`,
+    `LockPersonality=yes`, `RestrictRealtime=yes`, `RestrictNamespaces=yes`;
+  - `DeviceAllow=/dev/tty1 rw`, `/dev/tty8 rw`, `/dev/tty9 rw` and no other
+    device (the `ioctl`s it makes are `KDSETMODE`, `VT_SETMODE` and
+    `VT_ACTIVATE` there);
+  - `RuntimeDirectory=better-os` (0755, preserved, so its state outlives its
+    restarts) and `StateDirectory=better-os/boot-watch` (0755), `UMask=0022`,
+    and **no** `ReadWritePaths=`, which could name a directory that does not
+    exist yet and keep it from starting;
+  - left out on purpose: `ProtectKernelTunables=`, `ProtectControlGroups=`,
+    `ProtectProc=` and `ProcSubset=` (each would hide part of `/sys` or
+    `/proc` it reads), `PrivateNetwork=` (above), `PrivateDevices=` (it needs
+    the terminals);
+  - `TimeoutStartSec=10`, so a hang before it is ready is killed like one
+    after; `WatchdogSec=10`; `Restart=always` with `RestartMode=direct` and
+    a start limit of 5 in 120 s.
 - It does not repair accounts. `/etc` stays read-only to it; a missing or
   locked `_better-greeter` is a failed stage 5 and a text login, and Better
   Manager's health check repairs it from the person's next session.
@@ -176,12 +240,24 @@ text login when every other program has failed. What limits it:
 
 ### The backstop
 
-`better-os-login-backstop.service` runs only `plymouth`, `systemctl` and
-`chvt`, with `ExecCondition=` on two files in `/run`; it exists so that a
-bug in the supervisor (a crash loop, a binary that will not start, a sandbox
-that refuses it) still ends in a text login. It is started by the
-supervisor's `OnFailure=` (after five starts in 60 s) and by a timer 90
-seconds after the supervisor's first start.
+Two units, no program of Better OS's in either: they exist so that a bug
+in the supervisor (a crash loop, a hang loop, a binary that will not start,
+a sandbox that refuses it) still ends in a text login.
+`better-os-login-backstop.service` is the boot's: its timer fires 82 s after
+the supervisor's first start (ordered right before that start, never at
+`sysinit.target`), and its `ExecCondition=` is three files of this boot's
+history. `better-os-login-backstop-failed.service` is run by a timer the
+supervisor's `OnFailure=` starts (after five starts in 120 s, which a hang
+loop of 16 s cycles also reaches; `RestartMode=direct` keeps systemd 255
+from triggering it on each restart), at once and every 30 s after, for the
+rest of the boot, so its conditions are the present: the supervisor not
+running, no text login active, no greeter ready (`ready` written in the
+last 30 s), no person's greetd session in logind's own files. Both run only `test`, `sh`, `find`, `grep`,
+`timeout`, `plymouth`, `pkill`, `cp`, `touch`, `systemctl` and `chvt`, start
+the text login first and bound every wait (`chvt` waits for a switch that a
+VT held in process mode by a hung owner never completes). They never reset
+tty1's mode; the supervisor does, the backstops cannot without a program of
+their own (spec section 5.10, "What it cannot promise").
 
 ### The GNOME unlock service
 
@@ -336,10 +412,10 @@ removed. What limits it:
 | What fails | What the person sees | What brings it back |
 | --- | --- | --- |
 | Any stage of the spec's section 5.10 | the splash or a black screen for at most 80 seconds | the supervisor retries, then starts the text login naming the stage; never the splash, never GDM on its own |
-| A process of the greeter path that the kernel cannot kill | the fall back starts on tty2 without waiting for it | whether the text console can draw while that process holds the device depends on the driver: **not promised** |
+| A process of the greeter path that the kernel cannot kill | the text login starts on tty8 without waiting for it, and the greeter is not started again | whether the text console can draw while that process holds the device depends on the driver: **not promised** |
 | The greeter hangs after it was ready | a frozen login screen | its heartbeat goes stale; the supervisor restarts it within 30 s |
 | The supervisor hangs | nothing at first | its watchdog aborts it within 10 s and `Restart=always` starts it again; it continues from `/run/better-os/login-path.json` |
-| The supervisor cannot start or keeps crashing | nothing from it | after five starts in 60 s, `OnFailure=` starts the backstop; in any case the backstop's timer fires at 90 s: `plymouth quit` and a text login on tty2 |
+| The supervisor cannot start or keeps crashing | nothing from it | after five starts in 120 s, `OnFailure=` starts the failed supervisor's backstop when nobody is signed in and no greeter lives now; at boot the timer's backstop fires 82 s after the supervisor's first start: a text login on tty9 by 90 s |
 | logind crashes at logout (ticket 256) | a black screen | the supervisor sees the session's end in greetd's cgroup as well as in logind, and starts a new appearance |
 | The GNOME unlock service crashes | a GNOME lock screen saying "Authentication error" | systemd restarts it within a second; the next attempt opens a new channel |
 | The GNOME unlock service is absent when a GNOME session starts | — | the greeter checks it right before starting GNOME and does not start GNOME without it (spec section 5.6) |
@@ -454,8 +530,13 @@ screen back rather than the session unlocked.
 
 ## Not proven
 
-- Only the password buffer's tests exist (ticket 260); the others named
-  above are for tickets 261 to 268, 280 and 281.
+- The password buffer's tests exist (ticket 260), and the supervisor's
+  (ticket 267): every stage, deadline, retry and the fall back against a
+  fake world (`crates/login-supervisor/tests/property.rs`), the fixed unit
+  list and the unit files (`tests/units.rs`), and, on a real systemd in CI's
+  container, the fall back, a restart mid-attempt and the backstop
+  (`packaging/boot-watch/login-path.sh`). The others named above are for
+  tickets 261 to 266, 268, 280 and 281.
 - That GNOME Shell 46 locks and unlocks through the unlock service as it
   does through GDM, that GDM's session worker does nothing more on
   reauthentication that the shell relies on, how `pam_gnome_keyring`

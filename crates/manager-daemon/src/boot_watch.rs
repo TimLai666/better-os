@@ -12,13 +12,12 @@
 //! manager. Everything it touches is behind [`WatchHost`], so every rule here
 //! is tested without logind, systemd, or a journal.
 
-use std::io::Write as _;
 use std::path::Path;
 use std::time::Duration;
 
 use manager_ipc::boot_watch::{
-    Event, Evidence, LastBoot, LastBootOutcome, MAX_EVENTS, MAX_SECTION_BYTES, RECORD_VERSION,
-    Records, RestartOutcome, SessionSeen, Setting, Summary, is_boot_id, tail,
+    Event, Evidence, LastBoot, LastBootOutcome, MAX_SECTION_BYTES, RECORD_VERSION, Records,
+    RestartOutcome, SessionSeen, Setting, is_boot_id, tail,
 };
 
 /// The display manager units this watch knows. Anything else is left alone.
@@ -336,120 +335,9 @@ fn wait_after_restart(host: &dyn WatchHost, timings: Timings) -> RestartOutcome 
     }
 }
 
-/// Keeps the newest [`MAX_EVENTS`] event records.
-/// Never this boot's own record, whatever its name sorts as (a clock that was
-/// wrong at boot names it as the oldest).
-pub fn prune(records: &Records, current_boot: &str) {
-    let own = format!("-{current_boot}{}", manager_ipc::boot_watch::EVENT_SUFFIX);
-    let names: Vec<String> = records
-        .event_names()
-        .into_iter()
-        .filter(|name| !name.ends_with(&own))
-        .collect();
-    let others_kept = MAX_EVENTS.saturating_sub(1);
-    let excess = names.len().saturating_sub(others_kept);
-    for name in names.iter().take(excess) {
-        let _ = std::fs::remove_file(records.evidence_dir().join(name));
-    }
-}
-
-/// Who may read a file the watch writes.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Readers {
-    /// 0644: the setting, the last boot, the summary.
-    Everyone,
-    /// 0640 root:adm: an event with its journal excerpts.
-    Administrators,
-}
-
-/// The `adm` group's id, when it exists.
-fn evidence_gid() -> Option<libc::gid_t> {
-    let name = std::ffi::CString::new(manager_ipc::boot_watch::EVIDENCE_GROUP).ok()?;
-    // SAFETY: a valid C string; the returned pointer is read at once and
-    // not kept.
-    let group = unsafe { libc::getgrnam(name.as_ptr()) };
-    // SAFETY: non-null pointers from getgrnam point at a valid group.
-    (!group.is_null()).then(|| unsafe { (*group).gr_gid })
-}
-
-/// Hands `path` to root:adm when this runs as root. Elsewhere (a test) the
-/// mode alone is set.
-fn give_to_administrators(path: &Path) -> std::io::Result<()> {
-    // SAFETY: geteuid has no preconditions.
-    if unsafe { libc::geteuid() } != 0 {
-        return Ok(());
-    }
-    let gid = evidence_gid().ok_or_else(|| std::io::Error::other("there is no adm group"))?;
-    std::os::unix::fs::lchown(path, Some(0), Some(gid))
-}
-
-/// Writes `value` as JSON for `readers`, replacing the file whole. The
-/// temporary file is created new and never through a symbolic link, and the
-/// rename replaces a link rather than following it.
-pub fn write_record<T: serde::Serialize>(
-    path: &Path,
-    value: &T,
-    readers: Readers,
-) -> std::io::Result<()> {
-    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-    let mode = match readers {
-        Readers::Everyone => 0o644,
-        Readers::Administrators => 0o640,
-    };
-    let dir = path.parent().unwrap_or(Path::new("."));
-    std::fs::create_dir_all(dir)?;
-    let temporary = dir.join(format!(
-        ".{}.tmp",
-        path.file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("record")
-    ));
-    match std::fs::remove_file(&temporary) {
-        Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error),
-        _ => {}
-    }
-    let json = serde_json::to_vec_pretty(value).map_err(std::io::Error::other)?;
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .mode(mode)
-        .open(&temporary)?;
-    file.write_all(&json)?;
-    file.set_permissions(std::fs::Permissions::from_mode(mode))?;
-    if readers == Readers::Administrators {
-        give_to_administrators(&temporary)?;
-    }
-    file.sync_all()?;
-    std::fs::rename(&temporary, path)
-}
-
-/// Writes an event into the evidence directory (0750 root:adm, the file
-/// 0640), then the public summary of every kept event.
-pub fn write_event(records: &Records, path: &Path, event: &Event) -> std::io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    let evidence = records.evidence_dir();
-    std::fs::create_dir_all(&evidence)?;
-    let meta = std::fs::symlink_metadata(&evidence)?;
-    if !meta.is_dir() {
-        return Err(std::io::Error::other(
-            "the evidence directory is not a directory",
-        ));
-    }
-    std::fs::set_permissions(&evidence, std::fs::Permissions::from_mode(0o750))?;
-    give_to_administrators(&evidence)?;
-    write_record(path, event, Readers::Administrators)?;
-    write_summary(records)
-}
-
-/// Rewrites the public summary from the evidence directory.
-pub fn write_summary(records: &Records) -> std::io::Result<()> {
-    write_record(
-        &records.summary_path(),
-        &Summary::of(&records.events()),
-        Readers::Everyone,
-    )
-}
+// The records' writers live with their format, because the Better OS login
+// supervisor (ticket 267) writes the same directory.
+pub use manager_ipc::boot_watch::{Readers, prune, write_event, write_record, write_summary};
 
 /// Turns the watch on or off. Written by the privileged service, never by a
 /// window (ADR 0033).
@@ -847,6 +735,7 @@ impl WatchHost for SystemWatchHost {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use manager_ipc::boot_watch::MAX_EVENTS;
     use std::cell::{Cell, RefCell};
 
     const BOOT: &str = "0123456789abcdef0123456789abcdef";

@@ -6,8 +6,8 @@
 //! and `better-manager-cli doctor` never disagree.
 
 pub use manager_ipc::boot_watch::{
-    Event, Evidence, LastBoot, LastBootOutcome, Records, RestartOutcome, Setting, current_boot_id,
-    interrupted,
+    Event, Evidence, LOGIN_SUPERVISOR_UNIT, LastBoot, LastBootOutcome, LoginStage, Records,
+    RestartOutcome, Setting, current_boot_id, interrupted,
 };
 
 /// How long after a late login screen Home keeps saying so. Health and the
@@ -61,10 +61,14 @@ impl Report {
             RestartOutcome::Recovered { .. }
             | RestartOutcome::AppearedBeforeRestart
             | RestartOutcome::PersonAppeared
-            | RestartOutcome::LoginInProgress => Severity::Warning,
+            | RestartOutcome::LoginInProgress
+            | RestartOutcome::LoginScreenRestarted { .. }
+            // A newer version's outcome: something happened, its weight unknown.
+            | RestartOutcome::Unknown => Severity::Warning,
             RestartOutcome::Pending
             | RestartOutcome::StillMissing { .. }
-            | RestartOutcome::RestartFailed { .. } => Severity::Error,
+            | RestartOutcome::RestartFailed { .. }
+            | RestartOutcome::TextLoginUsed { .. } => Severity::Error,
         }
     }
 }
@@ -152,6 +156,29 @@ mod tests {
         ] {
             assert_eq!(Report::severity(&event(0, outcome)), Severity::Error);
         }
+    }
+
+    #[test]
+    fn a_restarted_login_screen_is_a_warning_and_the_text_login_an_error() {
+        use manager_ipc::boot_watch::LoginStage;
+        let restarted = event(
+            0,
+            RestartOutcome::LoginScreenRestarted {
+                stage: LoginStage::DisplayServer,
+                restarts: 1,
+                after_seconds: 30,
+            },
+        );
+        assert_eq!(Report::severity(&restarted), Severity::Warning);
+        let text = event(
+            0,
+            RestartOutcome::TextLoginUsed {
+                stage: LoginStage::LoginManager,
+                tty: "tty1".to_string(),
+                after_seconds: 20,
+            },
+        );
+        assert_eq!(Report::severity(&text), Severity::Error);
     }
 
     #[test]

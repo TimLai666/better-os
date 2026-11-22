@@ -9,8 +9,13 @@
 //! the person turns the watch off or on.
 //!
 //! Everything here is read as untrusted input: a file larger than its limit is
-//! skipped before it is parsed, unknown fields are refused, and a file that
-//! does not parse is left out of the list rather than guessed at.
+//! skipped before it is parsed, and a file that does not parse is left out of
+//! the list rather than guessed at. Records are also read by older and newer
+//! versions than the one that wrote them, so a record is read per entry: an
+//! outcome or a stage this version does not know is
+//! [`RestartOutcome::Unknown`] or [`LoginStage::Unknown`], shown as unknown,
+//! never a reason to drop the record or the summary around it, and a field
+//! this version does not know is ignored.
 
 use std::path::{Path, PathBuf};
 
@@ -84,7 +89,6 @@ impl Setting {
 /// One login session logind listed, as the watch saw it. No user name is
 /// kept: the class says whether it is a person's.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct SessionSeen {
     pub id: String,
     pub class: String,
@@ -110,7 +114,7 @@ impl SessionSeen {
 
 /// What was recorded before the restart.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(default)]
 pub struct Evidence {
     /// GDM's journal for this boot, the tail.
     pub display_manager_journal: String,
@@ -132,7 +136,7 @@ pub struct Evidence {
 
 /// How the restart ended.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", tag = "result", deny_unknown_fields)]
+#[serde(rename_all = "snake_case", tag = "result")]
 pub enum RestartOutcome {
     /// Written before the restart is asked for, so a watch that is killed in
     /// the middle still leaves a record of having restarted.
@@ -152,11 +156,108 @@ pub enum RestartOutcome {
     /// The login screen appeared between the deadline and the restart, so
     /// nothing was restarted.
     AppearedBeforeRestart,
+    /// The Better OS login supervisor (ticket 267) had to restart the login
+    /// screen `restarts` times (one or two) before it accepted input;
+    /// `stage` is the stage the last miss was at.
+    LoginScreenRestarted {
+        stage: LoginStage,
+        restarts: u32,
+        after_seconds: u32,
+    },
+    /// The Better OS login supervisor gave up on the login screen at
+    /// `stage` and started the text login on `tty` (`tty1` or `tty2`).
+    TextLoginUsed {
+        stage: LoginStage,
+        tty: String,
+        after_seconds: u32,
+    },
+    /// An outcome a newer version wrote: shown as unknown, never dropped.
+    #[serde(other)]
+    Unknown,
 }
+
+/// The stages of the Better OS login path a record can name
+/// (design/login-screen-spec.md section 5.10, its table of stage names):
+/// the ones the fall back or a retry can be at. The supervisor's journal
+/// lines name more (1a, 2, 4, 9), which never end an appearance.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LoginStage {
+    /// 1: no graphics device.
+    GraphicsDevice,
+    /// 3: logind did not answer.
+    LoginManager,
+    /// 5: greetd or the greeter's session did not start.
+    SignInService,
+    /// 6: the compositor did not start.
+    DisplayServer,
+    /// 7: the greeter did not become ready, or stopped answering.
+    LoginScreenProgram,
+    /// The supervisor itself (its state could not be read; the backstop's
+    /// own message names this row too).
+    Supervisor,
+    /// A stage a newer version wrote.
+    #[serde(other)]
+    Unknown,
+}
+
+impl LoginStage {
+    pub const ALL: [LoginStage; 6] = [
+        LoginStage::GraphicsDevice,
+        LoginStage::LoginManager,
+        LoginStage::SignInService,
+        LoginStage::DisplayServer,
+        LoginStage::LoginScreenProgram,
+        LoginStage::Supervisor,
+    ];
+
+    /// The stage's number in the spec's table, as the journal lines carry it.
+    pub fn code(self) -> &'static str {
+        match self {
+            LoginStage::GraphicsDevice => "1",
+            LoginStage::LoginManager => "3",
+            LoginStage::SignInService => "5",
+            LoginStage::DisplayServer => "6",
+            LoginStage::LoginScreenProgram => "7",
+            LoginStage::Supervisor => "supervisor",
+            LoginStage::Unknown => "?",
+        }
+    }
+
+    /// The stage's name in English: what the text console shows.
+    pub fn english(self) -> &'static str {
+        match self {
+            LoginStage::GraphicsDevice => "no graphics device",
+            LoginStage::LoginManager => "the login manager didn't respond",
+            LoginStage::SignInService => "the sign-in service didn't start",
+            LoginStage::DisplayServer => "the display server didn't start",
+            LoginStage::LoginScreenProgram => "the login screen program didn't respond",
+            LoginStage::Supervisor => "the login supervisor couldn't run",
+            LoginStage::Unknown => "a stage this version doesn't know",
+        }
+    }
+
+    /// The stage's name in zh-TW: what Better Manager and a terminal that
+    /// can draw it show.
+    pub fn zh_tw(self) -> &'static str {
+        match self {
+            LoginStage::GraphicsDevice => "找不到顯示卡",
+            LoginStage::LoginManager => "登入管理服務沒有回應",
+            LoginStage::SignInService => "登入服務無法啟動",
+            LoginStage::DisplayServer => "顯示伺服器無法啟動",
+            LoginStage::LoginScreenProgram => "登入畫面程式沒有回應",
+            LoginStage::Supervisor => "登入監督程式無法執行",
+            LoginStage::Unknown => "這個版本不認得的階段",
+        }
+    }
+}
+
+/// The unit the Better OS login supervisor's records name as their display
+/// manager.
+pub const LOGIN_SUPERVISOR_UNIT: &str = "better-os-login-supervisor.service";
 
 /// One boot on which the login screen did not appear in time.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Event {
     pub version: u32,
     pub boot_id: String,
@@ -172,7 +273,7 @@ pub struct Event {
 
 /// What the watch did on one boot, every boot.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", tag = "outcome", deny_unknown_fields)]
+#[serde(rename_all = "snake_case", tag = "outcome")]
 pub enum LastBootOutcome {
     /// The login screen appeared this many seconds after GDM started.
     LoginScreenAppeared { after_seconds: u32 },
@@ -200,6 +301,9 @@ pub enum LastBootOutcome {
     /// The watch could not do its job: logind did not answer, there was no
     /// boot id, or the record could not be written. Nothing was restarted.
     CouldNotWatch { details: String },
+    /// An outcome a newer version wrote.
+    #[serde(other)]
+    Unknown,
 }
 
 /// Not `deny_unknown_fields`: serde cannot combine it with the flattened
@@ -334,11 +438,18 @@ impl Records {
                 evidence_readable: true,
             };
         }
+        // Per entry: one record this version cannot read leaves the others.
         let mut events: Vec<Event> = read_capped(&self.summary_path(), MAX_EVENT_BYTES)
-            .and_then(|bytes| serde_json::from_slice::<Summary>(&bytes).ok())
-            .filter(|summary| summary.version == RECORD_VERSION)
-            .map(|summary| summary.events)
-            .unwrap_or_default();
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+            .filter(|summary| summary["version"] == RECORD_VERSION)
+            .and_then(|mut summary| match summary["events"].take() {
+                serde_json::Value::Array(entries) => Some(entries),
+                _ => None,
+            })
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|entry| serde_json::from_value::<Event>(entry).ok())
+            .collect();
         events.retain(|event| event.version == RECORD_VERSION);
         events.sort_by_key(|event| std::cmp::Reverse(event.detected_at_unix_seconds));
         Events {
@@ -360,7 +471,6 @@ pub struct Events {
 
 /// [`SUMMARY_FILE`]: every record with its evidence left empty.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Summary {
     pub version: u32,
     pub events: Vec<Event>,
@@ -443,11 +553,268 @@ pub fn tail(text: &str, limit: usize) -> String {
     format!("[{} earlier bytes not kept]\n{}", start, &text[start..])
 }
 
+/// Keeps the newest [`MAX_EVENTS`] event records.
+/// Never this boot's own records, whatever their names sort as (a clock that
+/// was wrong at boot names one as the oldest).
+pub fn prune(records: &Records, current_boot: &str) {
+    let own = format!("-{current_boot}{EVENT_SUFFIX}");
+    let names: Vec<String> = records
+        .event_names()
+        .into_iter()
+        .filter(|name| !name.ends_with(&own))
+        .collect();
+    let others_kept = MAX_EVENTS.saturating_sub(1);
+    let excess = names.len().saturating_sub(others_kept);
+    for name in names.iter().take(excess) {
+        let _ = std::fs::remove_file(records.evidence_dir().join(name));
+    }
+}
+
+/// Who may read a record file.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Readers {
+    /// 0644: the setting, the last boot, the summary.
+    Everyone,
+    /// 0640 root:adm: an event with its journal excerpts.
+    Administrators,
+}
+
+/// The `adm` group's id, when it exists.
+fn evidence_gid() -> Option<libc::gid_t> {
+    let name = std::ffi::CString::new(EVIDENCE_GROUP).ok()?;
+    // SAFETY: a valid C string; the returned pointer is read at once and
+    // not kept.
+    let group = unsafe { libc::getgrnam(name.as_ptr()) };
+    // SAFETY: non-null pointers from getgrnam point at a valid group.
+    (!group.is_null()).then(|| unsafe { (*group).gr_gid })
+}
+
+/// Hands `path` to root:adm when this runs as root. Elsewhere (a test) the
+/// mode alone is set.
+fn give_to_administrators(path: &Path) -> std::io::Result<()> {
+    // SAFETY: geteuid has no preconditions.
+    if unsafe { libc::geteuid() } != 0 {
+        return Ok(());
+    }
+    let gid = evidence_gid().ok_or_else(|| std::io::Error::other("there is no adm group"))?;
+    std::os::unix::fs::lchown(path, Some(0), Some(gid))
+}
+
+/// Writes `value` as JSON for `readers`, replacing the file whole. The
+/// temporary file is created new and never through a symbolic link, and the
+/// rename replaces a link rather than following it. Both writers of the
+/// records directory, the login screen watch (ADR 0033) and the Better OS
+/// login supervisor (ticket 267), write through here.
+pub fn write_record<T: serde::Serialize>(
+    path: &Path,
+    value: &T,
+    readers: Readers,
+) -> std::io::Result<()> {
+    use std::io::Write as _;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    let mode = match readers {
+        Readers::Everyone => 0o644,
+        Readers::Administrators => 0o640,
+    };
+    let dir = path.parent().unwrap_or(Path::new("."));
+    std::fs::create_dir_all(dir)?;
+    let temporary = dir.join(format!(
+        ".{}.tmp",
+        path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("record")
+    ));
+    match std::fs::remove_file(&temporary) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error),
+        _ => {}
+    }
+    let json = serde_json::to_vec_pretty(value).map_err(std::io::Error::other)?;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .mode(mode)
+        .open(&temporary)?;
+    file.write_all(&json)?;
+    file.set_permissions(std::fs::Permissions::from_mode(mode))?;
+    if readers == Readers::Administrators {
+        give_to_administrators(&temporary)?;
+    }
+    file.sync_all()?;
+    std::fs::rename(&temporary, path)
+}
+
+/// Writes an event into the evidence directory (0750 root:adm, the file
+/// 0640), then the public summary of every kept event.
+pub fn write_event(records: &Records, path: &Path, event: &Event) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let evidence = records.evidence_dir();
+    std::fs::create_dir_all(&evidence)?;
+    let meta = std::fs::symlink_metadata(&evidence)?;
+    if !meta.is_dir() {
+        return Err(std::io::Error::other(
+            "the evidence directory is not a directory",
+        ));
+    }
+    std::fs::set_permissions(&evidence, std::fs::Permissions::from_mode(0o750))?;
+    give_to_administrators(&evidence)?;
+    write_record(path, event, Readers::Administrators)?;
+    write_summary(records)
+}
+
+/// Rewrites the public summary from the evidence directory.
+pub fn write_summary(records: &Records) -> std::io::Result<()> {
+    write_record(
+        &records.summary_path(),
+        &Summary::of(&records.events()),
+        Readers::Everyone,
+    )
+}
+
+/// The newest event the Better OS login supervisor wrote, for
+/// `better-os-login-status`; the summary when the evidence cannot be read.
+pub fn latest_supervisor_event(records: &Records) -> Option<Event> {
+    records
+        .read_events()
+        .events
+        .into_iter()
+        .find(|event| event.display_manager == LOGIN_SUPERVISOR_UNIT)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const BOOT: &str = "0123456789abcdef0123456789abcdef";
+
+    #[test]
+    fn the_supervisor_outcomes_round_trip_and_name_their_stage() {
+        for restart in [
+            RestartOutcome::LoginScreenRestarted {
+                stage: LoginStage::DisplayServer,
+                restarts: 2,
+                after_seconds: 40,
+            },
+            RestartOutcome::TextLoginUsed {
+                stage: LoginStage::LoginManager,
+                tty: "tty2".to_string(),
+                after_seconds: 75,
+            },
+        ] {
+            let mut record = event(5, BOOT);
+            record.display_manager = LOGIN_SUPERVISOR_UNIT.to_string();
+            record.restart = restart;
+            let json = serde_json::to_string(&record).unwrap();
+            assert_eq!(serde_json::from_str::<Event>(&json).unwrap(), record);
+        }
+        let json = serde_json::to_string(&RestartOutcome::TextLoginUsed {
+            stage: LoginStage::SignInService,
+            tty: "tty1".to_string(),
+            after_seconds: 1,
+        })
+        .unwrap();
+        assert!(json.contains(r#""result":"text_login_used""#), "{json}");
+        assert!(json.contains(r#""stage":"sign_in_service""#), "{json}");
+        // A stage outside the closed set is unknown, not guessed at.
+        assert_eq!(
+            serde_json::from_str::<RestartOutcome>(
+                r#"{"result":"text_login_used","stage":"bios","tty":"tty1","after_seconds":1}"#
+            )
+            .unwrap(),
+            RestartOutcome::TextLoginUsed {
+                stage: LoginStage::Unknown,
+                tty: "tty1".to_string(),
+                after_seconds: 1
+            }
+        );
+        for stage in LoginStage::ALL {
+            assert!(!stage.english().is_empty() && !stage.zh_tw().is_empty());
+        }
+    }
+
+    #[test]
+    fn a_record_from_a_newer_version_is_read_as_unknown_and_drops_nothing_around_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let records = Records::at(dir.path());
+        let mut gdm = event(100, BOOT);
+        gdm.display_manager = "gdm.service".to_string();
+        let newer = serde_json::json!({
+            "version": RECORD_VERSION,
+            "boot_id": BOOT,
+            "detected_at_unix_seconds": 200,
+            "display_manager": LOGIN_SUPERVISOR_UNIT,
+            "waited_seconds": 3,
+            "evidence": { "drm_devices": ["card0"], "a_field_from_later": 1 },
+            "restart": { "result": "something_this_version_never_heard_of", "stage": "warp" },
+            "another_field_from_later": true,
+        });
+        let staged = serde_json::json!({
+            "version": RECORD_VERSION,
+            "boot_id": BOOT,
+            "detected_at_unix_seconds": 300,
+            "display_manager": LOGIN_SUPERVISOR_UNIT,
+            "waited_seconds": 3,
+            "evidence": {},
+            "restart": { "result": "text_login_used", "stage": "warp", "tty": "tty8", "after_seconds": 3 },
+        });
+        let broken = serde_json::json!({ "version": RECORD_VERSION, "boot_id": 7 });
+        let summary = serde_json::json!({
+            "version": RECORD_VERSION,
+            "events": [serde_json::to_value(&gdm).unwrap(), newer.clone(), staged.clone(), broken],
+        });
+        std::fs::write(records.summary_path(), summary.to_string()).unwrap();
+        let read = records.read_events();
+        assert!(!read.evidence_readable);
+        let outcomes: Vec<&RestartOutcome> = read.events.iter().map(|e| &e.restart).collect();
+        assert_eq!(
+            outcomes,
+            [
+                &RestartOutcome::TextLoginUsed {
+                    stage: LoginStage::Unknown,
+                    tty: "tty8".to_string(),
+                    after_seconds: 3
+                },
+                &RestartOutcome::Unknown,
+                &gdm.restart,
+            ],
+            "the one entry that is no record at all is the only one left out"
+        );
+        // The same records read from the evidence directory.
+        std::fs::create_dir_all(records.evidence_dir()).unwrap();
+        std::fs::write(records.event_path(200, BOOT), newer.to_string()).unwrap();
+        assert_eq!(records.events()[0].restart, RestartOutcome::Unknown);
+        let last: LastBoot = serde_json::from_str(&format!(
+            r#"{{"version":{RECORD_VERSION},"boot_id":"{BOOT}","checked_at_unix_seconds":1,"outcome":"from_later"}}"#
+        ))
+        .unwrap();
+        assert_eq!(last.outcome, LastBootOutcome::Unknown);
+    }
+
+    #[test]
+    fn the_newest_supervisor_event_is_found_beside_the_watchs_own() {
+        let dir = tempfile::tempdir().unwrap();
+        let records = Records::at(dir.path());
+        let mut watch = event(300, BOOT);
+        watch.display_manager = "gdm.service".to_string();
+        let mut older = event(100, BOOT);
+        older.display_manager = LOGIN_SUPERVISOR_UNIT.to_string();
+        let mut newer = event(200, BOOT);
+        newer.display_manager = LOGIN_SUPERVISOR_UNIT.to_string();
+        for record in [&watch, &older, &newer] {
+            write_event(
+                &records,
+                &records.event_path(record.detected_at_unix_seconds, BOOT),
+                record,
+            )
+            .unwrap();
+        }
+        assert_eq!(latest_supervisor_event(&records), Some(newer));
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&records.evidence_dir()), 0o750);
+        assert_eq!(mode(&records.event_path(100, BOOT)), 0o640);
+        assert_eq!(mode(&records.summary_path()), 0o644);
+    }
 
     fn event(at: u64, boot: &str) -> Event {
         Event {

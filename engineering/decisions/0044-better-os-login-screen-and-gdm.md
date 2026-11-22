@@ -217,19 +217,28 @@ section disagree, this section holds. The design
    nothing it controls; it keeps its state in `/run`, so a restart
    continues; it has `Restart=always` with a start limit (a watchdog alone
    only marks a unit failed, systemd.service(5)).
-2. **A backstop independent of the supervisor:**
-   `better-os-login-backstop.service`, standard programs only, started by
-   the supervisor's `OnFailure=` and by a timer 90 seconds after its first
-   start, gives `plymouth quit` and a text login on tty2 when the greeter
-   never became ready.
+2. **A backstop independent of the supervisor:** standard programs only,
+   in two units: `better-os-login-backstop.service`, started by a timer 82
+   seconds after the supervisor's first start (ordered right before that
+   start), when the property never held this boot, and
+   `better-os-login-backstop-failed.service`, the supervisor's `OnFailure=`,
+   when nobody is signed in and no greeter lives at that moment. Each gives
+   a text login on tty9, then `plymouth quit`, within 90 seconds
+   (corrected by the second review below; the first text said one unit,
+   90 seconds and tty2).
 3. **The figure is 80 seconds, not 60** (90 when the supervisor itself
    fails): the 60 counted stopping a unit as free. Every stop now has a
-   4-second `SIGTERM` limit and `SIGKILL`; the fall back moves to tty2
+   4-second `SIGTERM` limit and `SIGKILL`; the text login starts at once
    rather than wait for a process the kernel cannot kill, and such a
-   process is stated as a limit, not promised away.
+   process is stated as a limit, not promised away. A restart of the
+   supervisor during an appearance costs its downtime on top (about a
+   second for a crash, up to 16 s for a hang; 90 s at boot, where the
+   backstop's timer caps it).
 4. **The greeter's unit is not Debian's `greetd.service`:** no
    `After=plymouth-quit-wait.service` (it would wait for a splash only the
-   supervisor quits), `TimeoutStopSec=4`, `Restart=no`, and no `OnFailure=`
+   supervisor quits: true once the package's drop-ins take Ubuntu's
+   `plymouth-quit.service` and `getty@tty1.service` out of the boot while
+   this display manager is chosen, which the second review found missing), `TimeoutStopSec=4`, `Restart=no`, and no `OnFailure=`
    to a text login (it raced the supervisor's attempts on tty1); only
    `OnFailure=plymouth-quit.service`.
 5. **The supervisor's sandbox** closes the network with `IPAddressDeny=any`,
@@ -269,3 +278,11 @@ section disagree, this section holds. The design
     `initial_session` by the switch, and GDM's file is never edited.
 11. **AGENTS.md records the exception** this decision makes to "privileged
     system mutation … belongs in `manager-daemon`", as a working rule.
+12. **Corrected after the second review (2026-11-22, ticket 267).** A stop
+    of greetd's unit never reaches the greeter's own session scope, so the
+    supervisor ends that scope itself and waits until nothing holds the
+    DRM card; the text login is on tty8 and tty9, past logind's automatic
+    VTs; and both widen what this record lets the supervisor do, so they
+    are ADR 0047's to decide. "No screen" is said only when no card at all
+    shows one, and the attempts run on such a machine too. The text login's
+    markers are written only once it is seen active.

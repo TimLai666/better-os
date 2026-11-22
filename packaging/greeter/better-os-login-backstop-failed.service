@@ -1,0 +1,37 @@
+[Unit]
+Description=Better OS login backstop for a failed login supervisor
+Documentation=https://github.com/TimLai666/better-os/blob/main/design/login-screen-spec.md
+# Run by better-os-login-backstop-failed.timer, which the supervisor's
+# OnFailure= starts (design/login-screen-spec.md section 5.10): systemd gave
+# up on it, at any point of the boot. What this boot already saw says
+# nothing about now, so its conditions are the present, looked at again
+# every 30 s: the supervisor does not run, no text login runs, no greeter
+# is ready (its heartbeat says `ready` and changed in the last 30 s; one
+# stuck on `starting` is not a login screen),
+# and nobody is signed in through greetd (logind's own session files, read
+# without asking logind; -D skip, because the directory holds FIFOs a plain
+# grep would wait on forever). Then the same standard programs as the timer's
+# backstop.
+
+[Service]
+Type=oneshot
+ExecCondition=/bin/sh -c '! /usr/bin/systemctl is-active --quiet better-os-login-fallback@tty8.service better-os-login-fallback@tty9.service'
+ExecCondition=/bin/sh -c '! /usr/bin/systemctl is-active --quiet better-os-login-supervisor.service'
+ExecCondition=/bin/sh -c '! { test -n "$$(/usr/bin/find /run/better-os-greeter/alive -newermt "-30 seconds" 2>/dev/null)" && /usr/bin/grep -D skip -qx ready /run/better-os-greeter/alive; }'
+ExecCondition=/bin/sh -c '! /usr/bin/grep -D skip -lsx SERVICE=greetd /run/systemd/sessions/* | /usr/bin/xargs -r /usr/bin/grep -D skip -Lsx STATE=closing | /usr/bin/xargs -r /usr/bin/grep -D skip -lsE "^CLASS=user" | /usr/bin/grep -q .'
+ExecStart=-/usr/bin/cp --update=none /usr/share/better-os/login-supervisor-failed.issue /run/better-os/login-fallback.issue
+# The text login first, then the splash: a plymouthd that does not answer
+# costs its 4 s after the prompt is started, not before.
+ExecStart=/usr/bin/systemctl --no-block start better-os-login-fallback@tty9.service
+ExecStart=/usr/bin/touch /run/better-os/login-fallback.active
+# chvt waits for the switch; a VT held in process mode by a process that
+# does not answer never lets it complete, so each try has a limit, and the
+# second comes after plymouthd, which may be that process, is gone.
+ExecStart=-/usr/bin/timeout 2 /usr/bin/chvt 9
+ExecStart=-/usr/bin/timeout 4 /usr/bin/plymouth quit
+ExecStart=-/usr/bin/pkill -KILL -x plymouthd
+ExecStart=-/usr/bin/timeout 2 /usr/bin/chvt 9
+TimeoutStartSec=30
+RuntimeDirectory=better-os
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes

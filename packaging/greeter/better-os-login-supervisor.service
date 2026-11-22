@@ -1,0 +1,76 @@
+[Unit]
+Description=Better OS login supervisor (the display manager)
+Documentation=https://github.com/TimLai666/better-os/blob/main/design/login-screen-spec.md
+# The display manager while the Better OS login screen is chosen:
+# display-manager.service is an alias of this unit (design/login-screen-spec.md
+# section 5.10, ticket 267). Within 80 s of this unit starting, the login
+# screen or a text login accepts input.
+#
+# It depends on nothing it controls and conflicts with nothing: a unit that
+# names this one in PartOf=, BindsTo=, Requires= or Conflicts= would stop it
+# when that unit stops or starts, and greetd's unit, its OnFailure=
+# plymouth-quit.service and the getty it replaces all stop and start during
+# a retry or the fall back. Nothing orders it after logind or D-Bus either:
+# a logind that hangs is a stage it watches, not a start it waits for.
+After=rc-local.service plymouth-start.service systemd-user-sessions.service
+Wants=better-os-login-backstop.timer better-os-gnome-unlock.service
+# When systemd gives up on it (five starts in two minutes: a hang loop of
+# watchdog 10 s, abort 5 s and restart 1 s makes five in 80 s, a crash loop
+# in 5 s), the timer of the failed supervisor's backstop, which runs no
+# Better OS code, looks at once and then every 30 s, and gives the text
+# login on tty9 whenever nobody is signed in, no greeter is ready and no
+# text login runs.
+OnFailure=better-os-login-backstop-failed.timer
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Service]
+Type=notify
+NotifyAccess=main
+ExecStart=/usr/sbin/better-os-login-supervisor
+WatchdogSec=10
+# A hang before it says it is ready is killed like one after.
+TimeoutStartSec=10
+TimeoutStopSec=5
+Restart=always
+RestartSec=1
+# Without it systemd 255 triggers OnFailure= on every failure, restarts
+# included (seen in CI's container check, ticket 267): one crash would run
+# the backstop and take the screen to tty2 while the supervisor continues.
+# With it, OnFailure= runs only when systemd gives up (systemd 254 and newer;
+# the login screen is offered on Ubuntu 24.04 bases only, ADR 0044).
+RestartMode=direct
+# Its state (/run/better-os/login-path.json) outlives its own restarts and
+# stops, so a restarted supervisor continues the same appearance.
+RuntimeDirectory=better-os
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
+# The records, in ADR 0033's place and format.
+StateDirectory=better-os/boot-watch
+StateDirectoryMode=0755
+UMask=0022
+
+# The security review's sandbox (engineering/specs/login-screen-security.md,
+# "The supervisor"). The network is closed by IPAddressDeny=, never by
+# PrivateNetwork=: a network namespace hides plymouthd's abstract socket.
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+IPAddressDeny=any
+RestrictAddressFamilies=AF_UNIX
+NoNewPrivileges=yes
+MemoryDenyWriteExecute=yes
+SystemCallFilter=@system-service
+SystemCallArchitectures=native
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectClock=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+DeviceAllow=/dev/tty1 rw
+DeviceAllow=/dev/tty8 rw
+DeviceAllow=/dev/tty9 rw
+# No [Install]: display-manager.service is linked to this unit by the
+# package's debconf registration (spec section 5.5), never by enabling it,
+# so installing the package leaves GDM chosen.

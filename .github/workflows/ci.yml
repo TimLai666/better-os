@@ -258,8 +258,8 @@ jobs:
           shellcheck --shell=sh packaging/maintainer/files-activation.sh
           shellcheck packaging/tests/files-activation.test.sh
           bash packaging/tests/files-activation.test.sh
-          bash -n packaging/boot-watch/run.sh packaging/boot-watch/check.sh
-          shellcheck packaging/boot-watch/run.sh packaging/boot-watch/check.sh
+          bash -n packaging/boot-watch/run.sh packaging/boot-watch/check.sh packaging/boot-watch/login-path.sh
+          shellcheck packaging/boot-watch/run.sh packaging/boot-watch/check.sh packaging/boot-watch/login-path.sh
           bash -n packaging/hardware-unit/run.sh packaging/hardware-unit/check.sh
           shellcheck packaging/hardware-unit/run.sh packaging/hardware-unit/check.sh
           sh -n packaging/maintainer/greeter-watch.sh
@@ -410,9 +410,16 @@ jobs:
       # logind, and journal, with a stand-in gdm.service that starts and never
       # opens a session. It runs in a throwaway container because it restarts
       # a unit named gdm.service.
-      - name: The login screen watch restarts a GDM that shows nothing, once
+      # Ticket 267: the Better OS login supervisor on the same systemd, with a
+      # stand-in greeter that never becomes ready (three attempts, then the
+      # text login within 80 s), the supervisor killed mid-attempt (it
+      # continues with the same T0), and a supervisor that cannot start
+      # (the backstop's text login on tty2 within 90 s).
+      - name: The login screen watch restarts a GDM that shows nothing, once; the login supervisor always ends in a prompt
         run: |
-          bash packaging/boot-watch/run.sh target/release/better-manager-daemon
+          cargo build --release -p login-supervisor
+          bash packaging/boot-watch/run.sh target/release/better-manager-daemon \
+            target/release/better-os-login-supervisor target/release/better-os-login-status
       # ADR 0029 and ADR 0034: the hardware helpers' transient units against
       # a real systemd as PID 1, with the property list read from the release
       # daemon itself (`--helper-properties`). The attribute helper writes
