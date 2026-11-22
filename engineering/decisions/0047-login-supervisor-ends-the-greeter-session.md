@@ -2,13 +2,11 @@
 
 ## Status
 
-Proposed on 2026-11-22 for ticket 267, after the second independent review
-of the login supervisor. It widens what ADR 0044 and AGENTS.md let
-`better-os-login-supervisor` do, which AGENTS.md says needs a record of its
-own: the owner accepts or refuses it. The code that does it is on the
-`ticket-267` branch and ships only if this is accepted; until then
-AGENTS.md's working rule stays as ADR 0044 left it, and ticket 267 is
-blocked on this decision.
+Accepted by the owner on 2026-11-22. Proposed the same day for ticket 267,
+after the second independent review of the login supervisor. It widens
+what ADR 0044 and AGENTS.md let `better-os-login-supervisor` do, which
+AGENTS.md says needs a record of its own. AGENTS.md's working rule now
+reads as the section "The working rule, on acceptance" below gives it.
 
 ## Context
 

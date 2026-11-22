@@ -3,7 +3,6 @@
 **Spec:** `design/login-screen-spec.md` section 5.10; `engineering/specs/login-screen-security.md` (the supervisor, the backstop); ADR 0044 and its amendment of 2026-11-22; ADR 0033 (the records' format)
 **Blocked by:** 260
 
-**Blocked:** on the owner's decision about ADR 0047 (proposed 2026-11-22; the owner has been asked): the scope kill, the DRM-holder reads and the move to tty8 and tty9 widen what ADR 0044 and AGENTS.md let the supervisor do. Accepted, AGENTS.md takes the rule text the ADR gives and this ticket goes to `done/`; refused, the supervisor needs another way to end the greeter's session.
 
 ## Why
 
@@ -220,3 +219,24 @@ every item fixed and tested:
 - Corrected: no released Better Manager reads these records at all (the
   reader came with ticket 140 after v0.2.16), so nothing released drops
   them; the lenient reading is for versions to come.
+
+2026-11-22, the decision: the owner accepted ADR 0047 ("接受 ADR 0047 嗎？",
+answered "接受"). AGENTS.md's rule for the supervisor now has the ADR's
+text (the greeter session's scope, the DRM card holders, tty8 and tty9);
+the ADR and `engineering/README.md` say accepted.
+
+The "Done when" items, checked against what was built and proved:
+
+- Every stage's rule has a unit test (`src/rules/tests.rs`), and the
+  property is asserted on the fake clock for every injected outcome
+  (`tests/property.rs`, with the 2000-seed randomized run); the restart
+  bounds the spec states are measured there.
+- The container check (`packaging/boot-watch/login-path.sh`, run by
+  `run.sh`) has the stand-in greeter that never becomes ready and the
+  supervisor that cannot start, and passed in CI run 44966908849 on all
+  four runners: the text login in the first case, the backstop in the
+  second, with every later case of the review rounds.
+- The VM proof is ticket 281's; what it checks, and what tickets 264 and
+  265 still owe the supervisor, is written in those tickets' notes.
+
+Nothing of this ticket's own is left.

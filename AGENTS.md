@@ -50,9 +50,13 @@ contract.
   may ship two root system services outside `manager-daemon`, and nothing
   else. `better-os-login-supervisor` is the display manager while the Better
   OS login screen is chosen; it may start and stop only the units its
-  compiled-in list names, run `plymouth`, reset `/dev/tty1` and `/dev/tty2`
-  to text and switch to them, read logind (its bus and its session files),
-  `/sys/class/drm`, greetd's cgroup and the processes under it, and the
+  compiled-in list names, end the greeter session's own scope (`SIGKILL`,
+  through pidfds, to its root and `_better-greeter` processes during a
+  stop, never a scope with anyone else's process, ADR 0047), run
+  `plymouth`, reset `/dev/tty1`, `/dev/tty8` and `/dev/tty9` to text and
+  switch to them, read logind (its bus and its session files),
+  `/sys/class/drm`, greetd's cgroup and the processes under it, the
+  greeter's session scopes, which processes hold a DRM card, and the
   greeter's account in `/etc/passwd`, and write only
   `/var/lib/better-os/boot-watch/` and `/run/better-os/`; it runs no PAM and
   serves no method that changes anything. `better-os-gnome-unlock` owns
@@ -793,9 +797,9 @@ GUI or dependency compiles when the relevant command was not executed.
   a real terminal, a real card or a boot, which are tickets 264, 265 and
   281's. A restart of the supervisor mid-appearance costs its downtime and
   calls on top of 80 s (90 s at boot, up to 86 s after a crash and 101 s
-  after a hang later): the spec says so. The branch's scope kill, DRM-holder
-  reads and tty8/tty9 wait on ADR 0047 (proposed); the working rule above
-  changes only when the owner accepts it. The records it writes share
+  after a hang later): the spec says so. The scope kill, the DRM-holder
+  reads and the text login on tty8 and tty9 are ADR 0047's, accepted on
+  2026-11-22. The records it writes share
   `manager_ipc::boot_watch`'s writer with ADR 0033's watch; `last-boot.json`
   stays the watch's.
 - Which drives mount automatically (ticket 127, ADR 0032) lives only in the
