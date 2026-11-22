@@ -61,13 +61,13 @@ fn files() -> InstalledFiles {
 }
 
 fn packages() -> FixedPackageStateProbe {
-    FixedPackageStateProbe::new(&[("better-touchpad", "0.2.16")])
+    FixedPackageStateProbe::new(&[("better-touchpad", env!("CARGO_PKG_VERSION"))])
         .with_files("better-touchpad", files())
 }
 
 fn record(enabled: bool) -> ComponentRecord {
     ComponentRecord {
-        installed_version: Some("0.2.16".to_string()),
+        installed_version: Some(env!("CARGO_PKG_VERSION").to_string()),
         enabled,
         health: HealthState::Healthy,
         installed_artifact: None,
