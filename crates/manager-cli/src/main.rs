@@ -1288,8 +1288,10 @@ mod tests {
         assert!(String::from_utf8(said).unwrap().contains("were put back"));
 
         // Installed again through apt, with no record of it in Better Manager.
-        let apt =
-            manager_platform::dpkg::FixedPackageStateProbe::new(&[("better-touchpad", "0.2.16")]);
+        let apt = manager_platform::dpkg::FixedPackageStateProbe::new(&[(
+            "better-touchpad",
+            env!("CARGO_PKG_VERSION"),
+        )]);
         let mut said = Vec::new();
         finish_touchpad_restore(&ManagerState::default(), &apt, &finish, &mut said);
         assert!(said.is_empty());
@@ -1298,7 +1300,7 @@ mod tests {
         state.components.insert(
             better_core::ComponentId::new("better-touchpad").unwrap(),
             manager_core::ComponentRecord {
-                installed_version: Some("0.2.16".to_string()),
+                installed_version: Some(env!("CARGO_PKG_VERSION").to_string()),
                 enabled: true,
                 health: manager_core::HealthState::Healthy,
                 installed_artifact: None,

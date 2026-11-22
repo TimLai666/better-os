@@ -14,7 +14,7 @@ It does not replace the license text supplied by each upstream project.
 - Packages with an SPDX license expression: 987.
 - Packages with only a license-file field: 0.
 - Packages without package-level license metadata: 2.
-- `Cargo.lock` SHA-256: `1477386616da0f52e476ed47e5dbd03e6c6b53e527ea3f0a8168f44c5e3f85c9`.
+- `Cargo.lock` SHA-256: `0119879c1e9296fe0e6872acb3aca1635745d5bd822477e84437b75162be046f`.
 
 The 2 package(s) without package-level license metadata are
 listed separately below. Their pinned upstream checkout contains both
@@ -74,88 +74,88 @@ Better OS does not relicense or silently select a different expression.
 
 | Package | Version | License expression | Source |
 | --- | --- | --- | --- |
-| `app-catalog-core` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `app-catalog-platform` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `app-chooser-core` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `app-chooser-gui` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `awake-core` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `awake-gui` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `awake-ipc` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `awake-platform` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `awake-service` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `awake-store` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `awake-tray` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `better-actions` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `better-core` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `better-ui` | `0.2.16` | `GPL-3.0-or-later` | workspace |
+| `app-catalog-core` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `app-catalog-platform` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `app-chooser-core` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `app-chooser-gui` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `awake-core` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `awake-gui` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `awake-ipc` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `awake-platform` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `awake-service` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `awake-store` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `awake-tray` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `better-actions` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `better-core` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `better-ui` | `0.2.17` | `GPL-3.0-or-later` | workspace |
 | `cbindgen` | `0.28.0` | `MPL-2.0` | [crates.io](https://crates.io/crates/cbindgen/0.28.0) |
-| `defaults-core` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `defaults-platform` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `defaults-store` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `drive-mounts` | `0.2.16` | `GPL-3.0-or-later` | workspace |
+| `defaults-core` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `defaults-platform` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `defaults-store` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `drive-mounts` | `0.2.17` | `GPL-3.0-or-later` | workspace |
 | `dwrote` | `0.11.5` | `MPL-2.0` | [crates.io](https://crates.io/crates/dwrote/0.11.5) |
-| `files-core` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `files-gui` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `files-operations` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `files-platform` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `files-preview` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `files-search` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `fluent-gallery` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `git-core` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `git-gui` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `git-platform` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `github-api` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `hardware-core` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `hardware-platform` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `launcher-core` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `launcher-gui` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `launcher-platform` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `layer-check` | `0.2.16` | `GPL-3.0-or-later` | workspace |
+| `files-core` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `files-gui` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `files-operations` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `files-platform` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `files-preview` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `files-search` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `fluent-gallery` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `git-core` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `git-gui` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `git-platform` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `github-api` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `hardware-core` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `hardware-platform` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `launcher-core` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `launcher-gui` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `launcher-platform` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `layer-check` | `0.2.17` | `GPL-3.0-or-later` | workspace |
 | `libbz2-rs-sys` | `0.2.5` | `bzip2-1.0.6` | [crates.io](https://crates.io/crates/libbz2-rs-sys/0.2.5) |
 | `libfuzzer-sys` | `0.4.13` | `(MIT OR Apache-2.0) AND NCSA` | [crates.io](https://crates.io/crates/libfuzzer-sys/0.4.13) |
-| `login-screen-core` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `manager-cli` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `manager-core` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `manager-daemon` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `manager-gui` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `manager-ipc` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `manager-platform` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `manager-store` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `monitor-actions-linux` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `monitor-cli` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `monitor-collectors-linux` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `monitor-core` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `monitor-export` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `monitor-gui` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `monitor-ipc` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `monitor-service` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `monitor-store` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `monitor-tray` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `monitor-views` | `0.2.16` | `GPL-3.0-or-later` | workspace |
+| `login-screen-core` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `manager-cli` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `manager-core` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `manager-daemon` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `manager-gui` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `manager-ipc` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `manager-platform` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `manager-store` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `monitor-actions-linux` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `monitor-cli` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `monitor-collectors-linux` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `monitor-core` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `monitor-export` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `monitor-gui` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `monitor-ipc` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `monitor-service` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `monitor-store` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `monitor-tray` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `monitor-views` | `0.2.17` | `GPL-3.0-or-later` | workspace |
 | `option-ext` | `0.2.0` | `MPL-2.0` | [crates.io](https://crates.io/crates/option-ext/0.2.0) |
-| `patch-core` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `patch-platform` | `0.2.16` | `GPL-3.0-or-later` | workspace |
+| `patch-core` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `patch-platform` | `0.2.17` | `GPL-3.0-or-later` | workspace |
 | `r-efi` | `5.3.0` | `MIT OR Apache-2.0 OR LGPL-2.1-or-later` | [crates.io](https://crates.io/crates/r-efi/5.3.0) |
 | `r-efi` | `6.0.0` | `MIT OR Apache-2.0 OR LGPL-2.1-or-later` | [crates.io](https://crates.io/crates/r-efi/6.0.0) |
-| `screenshot-capture` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `screenshot-core` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `screenshot-gui` | `0.2.16` | `GPL-3.0-or-later` | workspace |
+| `screenshot-capture` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `screenshot-core` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `screenshot-gui` | `0.2.17` | `GPL-3.0-or-later` | workspace |
 | `self_cell` | `1.3.0` | `Apache-2.0 OR GPL-2.0-only` | [crates.io](https://crates.io/crates/self_cell/1.3.0) |
-| `session-launcher` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `storage-core` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `storage-platform` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `storage-service` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `test-prerequisites` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `touchpad-core` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `touchpad-gesture-service` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `touchpad-gestures` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `touchpad-gui` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `touchpad-platform` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `touchpad-scroll` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `touchpad-session` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `touchpad-views` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `window-attention-core` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `window-attention-service` | `0.2.16` | `GPL-3.0-or-later` | workspace |
+| `session-launcher` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `storage-core` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `storage-platform` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `storage-service` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `test-prerequisites` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `touchpad-core` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `touchpad-gesture-service` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `touchpad-gestures` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `touchpad-gui` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `touchpad-platform` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `touchpad-scroll` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `touchpad-session` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `touchpad-views` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `window-attention-core` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `window-attention-service` | `0.2.17` | `GPL-3.0-or-later` | workspace |
 | `zlog` | `0.1.0` | `GPL-3.0-or-later` | `git+https://github.com/TimLai666/zed?rev=f05b2a9790aefeca74b4df38489d568d08ab3b4d#f05b2a9790aefeca74b4df38489d568d08ab3b4d` |
 | `ztracing` | `0.1.0` | `GPL-3.0-or-later` | `git+https://github.com/TimLai666/zed?rev=f05b2a9790aefeca74b4df38489d568d08ab3b4d#f05b2a9790aefeca74b4df38489d568d08ab3b4d` |
 | `ztracing_macro` | `0.1.0` | `GPL-3.0-or-later` | `git+https://github.com/TimLai666/zed?rev=f05b2a9790aefeca74b4df38489d568d08ab3b4d#f05b2a9790aefeca74b4df38489d568d08ab3b4d` |
@@ -205,10 +205,10 @@ keeps its own license.
 | `anstyle-query` | `1.1.5` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/anstyle-query/1.1.5) |
 | `anstyle-wincon` | `3.0.11` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/anstyle-wincon/3.0.11) |
 | `anyhow` | `1.0.104` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/anyhow/1.0.104) |
-| `app-catalog-core` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `app-catalog-platform` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `app-chooser-core` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `app-chooser-gui` | `0.2.16` | `GPL-3.0-or-later` | workspace |
+| `app-catalog-core` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `app-catalog-platform` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `app-chooser-core` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `app-chooser-gui` | `0.2.17` | `GPL-3.0-or-later` | workspace |
 | `ar_archive_writer` | `0.5.2` | `Apache-2.0 WITH LLVM-exception` | [crates.io](https://crates.io/crates/ar_archive_writer/0.5.2) |
 | `arbitrary` | `1.4.2` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/arbitrary/1.4.2) |
 | `arc-swap` | `1.9.2` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/arc-swap/1.9.2) |
@@ -246,19 +246,19 @@ keeps its own license.
 | `av-scenechange` | `0.14.1` | `MIT` | [crates.io](https://crates.io/crates/av-scenechange/0.14.1) |
 | `av1-grain` | `0.2.5` | `BSD-2-Clause` | [crates.io](https://crates.io/crates/av1-grain/0.2.5) |
 | `avif-serialize` | `0.8.9` | `BSD-3-Clause` | [crates.io](https://crates.io/crates/avif-serialize/0.8.9) |
-| `awake-core` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `awake-gui` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `awake-ipc` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `awake-platform` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `awake-service` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `awake-store` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `awake-tray` | `0.2.16` | `GPL-3.0-or-later` | workspace |
+| `awake-core` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `awake-gui` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `awake-ipc` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `awake-platform` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `awake-service` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `awake-store` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `awake-tray` | `0.2.17` | `GPL-3.0-or-later` | workspace |
 | `backtrace` | `0.3.76` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/backtrace/0.3.76) |
 | `base62` | `2.2.4` | `MIT` | [crates.io](https://crates.io/crates/base62/2.2.4) |
 | `base64` | `0.22.1` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/base64/0.22.1) |
-| `better-actions` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `better-core` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `better-ui` | `0.2.16` | `GPL-3.0-or-later` | workspace |
+| `better-actions` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `better-core` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `better-ui` | `0.2.17` | `GPL-3.0-or-later` | workspace |
 | `bindgen` | `0.71.1` | `BSD-3-Clause` | [crates.io](https://crates.io/crates/bindgen/0.71.1) |
 | `bit-set` | `0.8.0` | `Apache-2.0 OR MIT` | [crates.io](https://crates.io/crates/bit-set/0.8.0) |
 | `bit-set` | `0.9.1` | `Apache-2.0 OR MIT` | [crates.io](https://crates.io/crates/bit-set/0.9.1) |
@@ -346,9 +346,9 @@ keeps its own license.
 | `ctor` | `1.0.12` | `Apache-2.0 OR MIT` | [crates.io](https://crates.io/crates/ctor/1.0.12) |
 | `data-encoding` | `2.11.1` | `MIT` | [crates.io](https://crates.io/crates/data-encoding/2.11.1) |
 | `data-url` | `0.3.2` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/data-url/0.3.2) |
-| `defaults-core` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `defaults-platform` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `defaults-store` | `0.2.16` | `GPL-3.0-or-later` | workspace |
+| `defaults-core` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `defaults-platform` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `defaults-store` | `0.2.17` | `GPL-3.0-or-later` | workspace |
 | `der-parser` | `10.0.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/der-parser/10.0.0) |
 | `deranged` | `0.5.8` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/deranged/0.5.8) |
 | `derive_more` | `2.1.1` | `MIT` | [crates.io](https://crates.io/crates/derive_more/2.1.1) |
@@ -364,7 +364,7 @@ keeps its own license.
 | `dlib` | `0.5.3` | `MIT` | [crates.io](https://crates.io/crates/dlib/0.5.3) |
 | `document-features` | `0.2.12` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/document-features/0.2.12) |
 | `downcast-rs` | `1.2.1` | `MIT/Apache-2.0` | [crates.io](https://crates.io/crates/downcast-rs/1.2.1) |
-| `drive-mounts` | `0.2.16` | `GPL-3.0-or-later` | workspace |
+| `drive-mounts` | `0.2.17` | `GPL-3.0-or-later` | workspace |
 | `dunce` | `1.0.5` | `CC0-1.0 OR MIT-0 OR Apache-2.0` | [crates.io](https://crates.io/crates/dunce/1.0.5) |
 | `dwrote` | `0.11.5` | `MPL-2.0` | [crates.io](https://crates.io/crates/dwrote/0.11.5) |
 | `dyn-clone` | `1.0.20` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/dyn-clone/1.0.20) |
@@ -392,12 +392,12 @@ keeps its own license.
 | `fax` | `0.2.7` | `MIT` | [crates.io](https://crates.io/crates/fax/0.2.7) |
 | `fdeflate` | `0.3.7` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/fdeflate/0.3.7) |
 | `filedescriptor` | `0.8.3` | `MIT` | [crates.io](https://crates.io/crates/filedescriptor/0.8.3) |
-| `files-core` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `files-gui` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `files-operations` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `files-platform` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `files-preview` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `files-search` | `0.2.16` | `GPL-3.0-or-later` | workspace |
+| `files-core` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `files-gui` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `files-operations` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `files-platform` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `files-preview` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `files-search` | `0.2.17` | `GPL-3.0-or-later` | workspace |
 | `filetime` | `0.2.29` | `MIT/Apache-2.0` | [crates.io](https://crates.io/crates/filetime/0.2.29) |
 | `find-msvc-tools` | `0.1.9` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/find-msvc-tools/0.1.9) |
 | `fixedbitset` | `0.5.7` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/fixedbitset/0.5.7) |
@@ -405,7 +405,7 @@ keeps its own license.
 | `float-cmp` | `0.9.0` | `MIT` | [crates.io](https://crates.io/crates/float-cmp/0.9.0) |
 | `float-ord` | `0.3.2` | `MIT / Apache-2.0` | [crates.io](https://crates.io/crates/float-ord/0.3.2) |
 | `float_next_after` | `1.0.0` | `MIT` | [crates.io](https://crates.io/crates/float_next_after/1.0.0) |
-| `fluent-gallery` | `0.2.16` | `GPL-3.0-or-later` | workspace |
+| `fluent-gallery` | `0.2.17` | `GPL-3.0-or-later` | workspace |
 | `fluent-uri` | `0.1.4` | `MIT` | [crates.io](https://crates.io/crates/fluent-uri/0.1.4) |
 | `flume` | `0.12.0` | `Apache-2.0/MIT` | [crates.io](https://crates.io/crates/flume/0.12.0) |
 | `fnv` | `1.0.7` | `Apache-2.0 / MIT` | [crates.io](https://crates.io/crates/fnv/1.0.7) |
@@ -442,10 +442,10 @@ keeps its own license.
 | `gif` | `0.14.2` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/gif/0.14.2) |
 | `gimli` | `0.32.3` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/gimli/0.32.3) |
 | `gio-sys` | `0.22.9` | `MIT` | [crates.io](https://crates.io/crates/gio-sys/0.22.9) |
-| `git-core` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `git-gui` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `git-platform` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `github-api` | `0.2.16` | `GPL-3.0-or-later` | workspace |
+| `git-core` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `git-gui` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `git-platform` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `github-api` | `0.2.17` | `GPL-3.0-or-later` | workspace |
 | `gl_generator` | `0.14.0` | `Apache-2.0` | [crates.io](https://crates.io/crates/gl_generator/0.14.0) |
 | `glib` | `0.22.10` | `MIT` | [crates.io](https://crates.io/crates/glib/0.22.10) |
 | `glib-macros` | `0.22.9` | `MIT` | [crates.io](https://crates.io/crates/glib-macros/0.22.9) |
@@ -484,8 +484,8 @@ keeps its own license.
 | `gstreamer-video-sys` | `0.25.4` | `MIT` | [crates.io](https://crates.io/crates/gstreamer-video-sys/0.25.4) |
 | `h2` | `0.4.15` | `MIT` | [crates.io](https://crates.io/crates/h2/0.4.15) |
 | `half` | `2.7.1` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/half/2.7.1) |
-| `hardware-core` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `hardware-platform` | `0.2.16` | `GPL-3.0-or-later` | workspace |
+| `hardware-core` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `hardware-platform` | `0.2.17` | `GPL-3.0-or-later` | workspace |
 | `harfrust` | `0.5.2` | `MIT` | [crates.io](https://crates.io/crates/harfrust/0.5.2) |
 | `hash32` | `0.3.1` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/hash32/0.3.1) |
 | `hashbrown` | `0.14.5` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/hashbrown/0.14.5) |
@@ -557,10 +557,10 @@ keeps its own license.
 | `kstring` | `2.0.2` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/kstring/2.0.2) |
 | `kurbo` | `0.11.3` | `Apache-2.0 OR MIT` | [crates.io](https://crates.io/crates/kurbo/0.11.3) |
 | `kurbo` | `0.13.1` | `Apache-2.0 OR MIT` | [crates.io](https://crates.io/crates/kurbo/0.13.1) |
-| `launcher-core` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `launcher-gui` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `launcher-platform` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `layer-check` | `0.2.16` | `GPL-3.0-or-later` | workspace |
+| `launcher-core` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `launcher-gui` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `launcher-platform` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `layer-check` | `0.2.17` | `GPL-3.0-or-later` | workspace |
 | `lazy_static` | `1.5.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/lazy_static/1.5.0) |
 | `leak` | `0.1.2` | `Apache-2.0 OR MIT` | [crates.io](https://crates.io/crates/leak/0.1.2) |
 | `leaky-cow` | `0.1.1` | `MIT / Apache-2.0` | [crates.io](https://crates.io/crates/leaky-cow/0.1.1) |
@@ -580,7 +580,7 @@ keeps its own license.
 | `litrs` | `1.0.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/litrs/1.0.0) |
 | `lock_api` | `0.4.14` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/lock_api/0.4.14) |
 | `log` | `0.4.33` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/log/0.4.33) |
-| `login-screen-core` | `0.2.16` | `GPL-3.0-or-later` | workspace |
+| `login-screen-core` | `0.2.17` | `GPL-3.0-or-later` | workspace |
 | `loop9` | `0.1.5` | `MIT` | [crates.io](https://crates.io/crates/loop9/0.1.5) |
 | `lru-slab` | `0.1.2` | `MIT OR Apache-2.0 OR Zlib` | [crates.io](https://crates.io/crates/lru-slab/0.1.2) |
 | `lsp-types` | `0.97.0` | `MIT` | [crates.io](https://crates.io/crates/lsp-types/0.97.0) |
@@ -593,13 +593,13 @@ keeps its own license.
 | `mac-notification-sys` | `0.6.15` | `MIT/Apache-2.0` | [crates.io](https://crates.io/crates/mac-notification-sys/0.6.15) |
 | `mach2` | `0.5.0` | `BSD-2-Clause OR MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/mach2/0.5.0) |
 | `malloc_buf` | `0.0.6` | `MIT` | [crates.io](https://crates.io/crates/malloc_buf/0.0.6) |
-| `manager-cli` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `manager-core` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `manager-daemon` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `manager-gui` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `manager-ipc` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `manager-platform` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `manager-store` | `0.2.16` | `GPL-3.0-or-later` | workspace |
+| `manager-cli` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `manager-core` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `manager-daemon` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `manager-gui` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `manager-ipc` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `manager-platform` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `manager-store` | `0.2.17` | `GPL-3.0-or-later` | workspace |
 | `markdown` | `1.0.0` | `MIT` | [crates.io](https://crates.io/crates/markdown/1.0.0) |
 | `markup5ever` | `0.12.1` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/markup5ever/0.12.1) |
 | `markup5ever_rcdom` | `0.3.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/markup5ever_rcdom/0.3.0) |
@@ -615,17 +615,17 @@ keeps its own license.
 | `minimal-lexical` | `0.2.1` | `MIT/Apache-2.0` | [crates.io](https://crates.io/crates/minimal-lexical/0.2.1) |
 | `miniz_oxide` | `0.8.9` | `MIT OR Zlib OR Apache-2.0` | [crates.io](https://crates.io/crates/miniz_oxide/0.8.9) |
 | `mio` | `1.2.2` | `MIT` | [crates.io](https://crates.io/crates/mio/1.2.2) |
-| `monitor-actions-linux` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `monitor-cli` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `monitor-collectors-linux` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `monitor-core` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `monitor-export` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `monitor-gui` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `monitor-ipc` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `monitor-service` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `monitor-store` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `monitor-tray` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `monitor-views` | `0.2.16` | `GPL-3.0-or-later` | workspace |
+| `monitor-actions-linux` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `monitor-cli` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `monitor-collectors-linux` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `monitor-core` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `monitor-export` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `monitor-gui` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `monitor-ipc` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `monitor-service` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `monitor-store` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `monitor-tray` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `monitor-views` | `0.2.17` | `GPL-3.0-or-later` | workspace |
 | `moxcms` | `0.8.1` | `BSD-3-Clause OR Apache-2.0` | [crates.io](https://crates.io/crates/moxcms/0.8.1) |
 | `muldiv` | `1.0.1` | `MIT` | [crates.io](https://crates.io/crates/muldiv/1.0.1) |
 | `naga` | `29.0.4` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/naga/29.0.4) |
@@ -698,8 +698,8 @@ keeps its own license.
 | `paste` | `1.0.15` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/paste/1.0.15) |
 | `pastey` | `0.1.1` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/pastey/0.1.1) |
 | `pastey` | `0.2.3` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/pastey/0.2.3) |
-| `patch-core` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `patch-platform` | `0.2.16` | `GPL-3.0-or-later` | workspace |
+| `patch-core` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `patch-platform` | `0.2.17` | `GPL-3.0-or-later` | workspace |
 | `pathfinder_geometry` | `0.5.1` | `MIT/Apache-2.0` | [crates.io](https://crates.io/crates/pathfinder_geometry/0.5.1) |
 | `pathfinder_simd` | `0.5.6` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/pathfinder_simd/0.5.6) |
 | `pbkdf2` | `0.12.2` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/pbkdf2/0.12.2) |
@@ -828,9 +828,9 @@ keeps its own license.
 | `scopeguard` | `1.2.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/scopeguard/1.2.0) |
 | `screencapturekit` | `0.2.8` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/screencapturekit/0.2.8) |
 | `screencapturekit-sys` | `0.2.8` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/screencapturekit-sys/0.2.8) |
-| `screenshot-capture` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `screenshot-core` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `screenshot-gui` | `0.2.16` | `GPL-3.0-or-later` | workspace |
+| `screenshot-capture` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `screenshot-core` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `screenshot-gui` | `0.2.17` | `GPL-3.0-or-later` | workspace |
 | `seahash` | `4.1.0` | `MIT` | [crates.io](https://crates.io/crates/seahash/4.1.0) |
 | `security-framework` | `3.7.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/security-framework/3.7.0) |
 | `security-framework-sys` | `2.17.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/security-framework-sys/2.17.0) |
@@ -849,7 +849,7 @@ keeps its own license.
 | `serde_spanned` | `1.1.1` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/serde_spanned/1.1.1) |
 | `serde_urlencoded` | `0.7.1` | `MIT/Apache-2.0` | [crates.io](https://crates.io/crates/serde_urlencoded/0.7.1) |
 | `serde_yaml` | `0.9.34+deprecated` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/serde_yaml/0.9.34+deprecated) |
-| `session-launcher` | `0.2.16` | `GPL-3.0-or-later` | workspace |
+| `session-launcher` | `0.2.17` | `GPL-3.0-or-later` | workspace |
 | `sha1_smol` | `1.0.1` | `BSD-3-Clause` | [crates.io](https://crates.io/crates/sha1_smol/1.0.1) |
 | `sha2` | `0.10.9` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/sha2/0.10.9) |
 | `sha2` | `0.11.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/sha2/0.11.0) |
@@ -878,9 +878,9 @@ keeps its own license.
 | `stacksafe` | `0.1.4` | `Apache-2.0` | [crates.io](https://crates.io/crates/stacksafe/0.1.4) |
 | `stacksafe-macro` | `0.1.4` | `Apache-2.0` | [crates.io](https://crates.io/crates/stacksafe-macro/0.1.4) |
 | `static_assertions` | `1.1.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/static_assertions/1.1.0) |
-| `storage-core` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `storage-platform` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `storage-service` | `0.2.16` | `GPL-3.0-or-later` | workspace |
+| `storage-core` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `storage-platform` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `storage-service` | `0.2.17` | `GPL-3.0-or-later` | workspace |
 | `str_indices` | `0.4.4` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/str_indices/0.4.4) |
 | `strict-num` | `0.1.1` | `MIT` | [crates.io](https://crates.io/crates/strict-num/0.1.1) |
 | `string_cache` | `0.8.9` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/string_cache/0.8.9) |
@@ -919,7 +919,7 @@ keeps its own license.
 | `tempfile` | `3.27.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/tempfile/3.27.0) |
 | `tendril` | `0.4.3` | `MIT/Apache-2.0` | [crates.io](https://crates.io/crates/tendril/0.4.3) |
 | `termcolor` | `1.4.1` | `Unlicense OR MIT` | [crates.io](https://crates.io/crates/termcolor/1.4.1) |
-| `test-prerequisites` | `0.2.16` | `GPL-3.0-or-later` | workspace |
+| `test-prerequisites` | `0.2.17` | `GPL-3.0-or-later` | workspace |
 | `thiserror` | `1.0.69` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/thiserror/1.0.69) |
 | `thiserror` | `2.0.19` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/thiserror/2.0.19) |
 | `thiserror-impl` | `1.0.69` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/thiserror-impl/1.0.69) |
@@ -949,14 +949,14 @@ keeps its own license.
 | `toml_parser` | `1.1.3+spec-1.1.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/toml_parser/1.1.3+spec-1.1.0) |
 | `toml_write` | `0.1.2` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/toml_write/0.1.2) |
 | `toml_writer` | `1.1.2+spec-1.1.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/toml_writer/1.1.2+spec-1.1.0) |
-| `touchpad-core` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `touchpad-gesture-service` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `touchpad-gestures` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `touchpad-gui` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `touchpad-platform` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `touchpad-scroll` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `touchpad-session` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `touchpad-views` | `0.2.16` | `GPL-3.0-or-later` | workspace |
+| `touchpad-core` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `touchpad-gesture-service` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `touchpad-gestures` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `touchpad-gui` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `touchpad-platform` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `touchpad-scroll` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `touchpad-session` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `touchpad-views` | `0.2.17` | `GPL-3.0-or-later` | workspace |
 | `tower` | `0.5.3` | `MIT` | [crates.io](https://crates.io/crates/tower/0.5.3) |
 | `tower-layer` | `0.3.3` | `MIT` | [crates.io](https://crates.io/crates/tower-layer/0.3.3) |
 | `tower-service` | `0.3.3` | `MIT` | [crates.io](https://crates.io/crates/tower-service/0.3.3) |
@@ -1048,8 +1048,8 @@ keeps its own license.
 | `winapi-i686-pc-windows-gnu` | `0.4.0` | `MIT/Apache-2.0` | [crates.io](https://crates.io/crates/winapi-i686-pc-windows-gnu/0.4.0) |
 | `winapi-util` | `0.1.11` | `Unlicense OR MIT` | [crates.io](https://crates.io/crates/winapi-util/0.1.11) |
 | `winapi-x86_64-pc-windows-gnu` | `0.4.0` | `MIT/Apache-2.0` | [crates.io](https://crates.io/crates/winapi-x86_64-pc-windows-gnu/0.4.0) |
-| `window-attention-core` | `0.2.16` | `GPL-3.0-or-later` | workspace |
-| `window-attention-service` | `0.2.16` | `GPL-3.0-or-later` | workspace |
+| `window-attention-core` | `0.2.17` | `GPL-3.0-or-later` | workspace |
+| `window-attention-service` | `0.2.17` | `GPL-3.0-or-later` | workspace |
 | `windows` | `0.57.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/windows/0.57.0) |
 | `windows` | `0.58.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/windows/0.58.0) |
 | `windows` | `0.61.3` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/windows/0.61.3) |
