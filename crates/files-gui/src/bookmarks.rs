@@ -55,6 +55,20 @@ impl Bookmark {
         }
     }
 
+    /// Builds a bookmark for a folder, or a server folder by its address
+    /// (ticket 310). `None` for a location with neither.
+    pub fn for_location(location: &Location) -> Option<Self> {
+        match location {
+            Location::Local(path) => Some(Self::for_path(path)),
+            Location::Network(_) => Some(Self {
+                uri: location.to_uri(),
+                location: location.clone(),
+                label: None,
+            }),
+            _ => None,
+        }
+    }
+
     pub fn location(&self) -> &Location {
         &self.location
     }
@@ -171,14 +185,35 @@ impl BookmarkFile {
     /// favorite goes at the end of Favorites, which is where a user who just
     /// dropped one looks for it.
     pub fn pin(&mut self, location: &Location) -> PinOutcome {
-        let Some(path) = location.as_local_path() else {
+        let Some(bookmark) = Bookmark::for_location(location) else {
             return PinOutcome::NotPinnable;
         };
         if self.contains(location) {
             return PinOutcome::AlreadyPinned;
         }
-        self.lines.push(Line::Bookmark(Bookmark::for_path(path)));
+        self.lines.push(Line::Bookmark(bookmark));
         PinOutcome::Pinned
+    }
+
+    /// Points the bookmark at `index` at another location, keeping its label
+    /// and its place: a favourite written as a GVfs folder becoming its
+    /// server's address (ticket 310). Returns whether the line changed.
+    pub fn replace_location(&mut self, index: usize, location: &Location) -> bool {
+        let Some(position) = self.positions().get(index).copied() else {
+            return false;
+        };
+        let Some(mut replacement) = Bookmark::for_location(location) else {
+            return false;
+        };
+        let Line::Bookmark(bookmark) = &mut self.lines[position] else {
+            return false;
+        };
+        if bookmark.location == *location {
+            return false;
+        }
+        replacement.label = bookmark.label.take();
+        *bookmark = replacement;
+        true
     }
 
     /// Removes one bookmark. The directory it pointed at is untouched.
@@ -295,6 +330,16 @@ fn parse_line(raw: &str) -> Line {
         Some((uri, label)) => (uri, Some(label.trim().to_string())),
         None => (raw, None),
     };
+    // A server folder, as Nautilus and Better Files (ticket 310) write one.
+    if let Some(address) = crate::network::server_address(uri)
+        && let location @ Location::Network(_) = Location::parse_uri(&address)
+    {
+        return Line::Bookmark(Bookmark {
+            uri: uri.to_string(),
+            location,
+            label: label.filter(|value| !value.is_empty()),
+        });
+    }
     let Some(encoded) = uri.strip_prefix("file://") else {
         return Line::Foreign(raw.to_string());
     };
@@ -382,6 +427,21 @@ impl BookmarkStore {
         }
     }
 
+    /// The file's text as it is now (`None`: there is none).
+    pub fn text(&self) -> Option<String> {
+        fs::read_to_string(&self.path).ok()
+    }
+
+    /// Writes `file` only if the file still holds `expected`, the text it
+    /// was made from: a line another program wrote in between is never
+    /// lost. Returns whether it wrote.
+    pub fn save_if_unchanged(&self, file: &BookmarkFile, expected: &str) -> io::Result<bool> {
+        if self.text().as_deref() != Some(expected) {
+            return Ok(false);
+        }
+        self.save(file).map(|()| true)
+    }
+
     /// Writes through a temporary file and a rename, so an interrupted save
     /// cannot leave a half-written bookmarks file for the whole desktop.
     ///
@@ -407,7 +467,33 @@ impl BookmarkStore {
             std::process::id(),
             WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
-        fs::write(&temporary, file.render().as_bytes())?;
+        // The shared file keeps the mode it had (ticket 310's reviews), and
+        // its new text is never readable more widely than the file was, not
+        // even for a moment: the temporary file is made with that mode. A
+        // file that is new gets 0644, what GLib's `g_file_set_contents`
+        // gives it under the usual umask.
+        {
+            use std::io::Write;
+            use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+            let mode = fs::metadata(&target)
+                .map_or(0o644, |metadata| metadata.permissions().mode() & 0o7777);
+            let written = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(mode)
+                .open(&temporary)
+                .and_then(|mut out| {
+                    out.write_all(file.render().as_bytes())?;
+                    // The umask may have narrowed it; the mode is the
+                    // target's exactly.
+                    out.set_permissions(fs::Permissions::from_mode(mode))?;
+                    out.sync_all()
+                });
+            if let Err(error) = written {
+                let _ = fs::remove_file(&temporary);
+                return Err(error);
+            }
+        }
         fs::rename(&temporary, &target).inspect_err(|_| {
             let _ = fs::remove_file(&temporary);
         })

@@ -23,6 +23,9 @@
 
 use std::sync::Arc;
 
+mod remote_tabs;
+pub use remote_tabs::{LinkState, PasteWhy, SavedView, TabLink};
+
 use files_core::{
     Entry, EntryId, LocalPath, Location, NavigationError, OpenRefusal, Pane, SortKey, SortOrder,
     TabId, TabSet, TrashLocation,
@@ -118,6 +121,19 @@ pub enum Notice {
     /// The folder a view showed was deleted or moved away (its name); the
     /// view went to the folder above it.
     FolderGone(String),
+    /// A folder on a server that connected is not there any more; the view
+    /// went to the nearest folder above it (ticket 310).
+    RemoteFolderGone {
+        folder: String,
+        server: String,
+    },
+    /// A paste held for a server folder's connection was not done, and why
+    /// (ticket 310).
+    PasteNotDone {
+        folder: String,
+        server: String,
+        why: remote_tabs::PasteWhy,
+    },
     /// Retry was asked of a job the engine no longer keeps.
     RetryGone,
     /// A drive could not be mounted or unlocked.
@@ -225,9 +241,10 @@ impl Notice {
                 | DeviceEvent::DisconnectedWhileViewing { .. } => NoticeTone::Information,
                 _ => NoticeTone::Warning,
             },
-            Notice::WritingImage { .. } | Notice::Mounting(_) | Notice::FolderGone(_) => {
-                NoticeTone::Information
-            }
+            Notice::WritingImage { .. }
+            | Notice::Mounting(_)
+            | Notice::FolderGone(_)
+            | Notice::RemoteFolderGone { .. } => NoticeTone::Information,
             Notice::Launch(
                 LaunchReport::Started { .. }
                 | LaunchReport::Activated { .. }
@@ -252,6 +269,22 @@ impl Notice {
         match self {
             Notice::Path(rejection) => rejection.message(c).to_string(),
             Notice::FolderGone(name) => c.folder_gone.replace("{folder}", name),
+            Notice::RemoteFolderGone { folder, server } => c
+                .remote_folder_gone
+                .replace("{folder}", folder)
+                .replace("{server}", server),
+            Notice::PasteNotDone {
+                folder,
+                server,
+                why,
+            } => match why {
+                remote_tabs::PasteWhy::Left => c.remote_paste_left,
+                remote_tabs::PasteWhy::Gone => c.remote_paste_gone,
+                remote_tabs::PasteWhy::Failed => c.remote_paste_failed,
+                remote_tabs::PasteWhy::Cancelled => c.remote_paste_cancelled,
+            }
+            .replace("{folder}", folder)
+            .replace("{server}", server),
             Notice::RetryGone => c.retry_gone.to_string(),
             Notice::DriveFailed { drive, detail } => c
                 .drive_failed
@@ -331,12 +364,20 @@ impl Notice {
                     F::HostNotFound => c.server_not_found,
                     F::Refused => c.server_refused,
                     F::PermissionDenied => c.server_denied,
+                    F::ShareGone => c.remote_share_gone,
+                    F::NetworkDown => c.remote_no_network,
                     F::HostKeyChanged => c.server_key_changed,
                     F::NotSupported => c.server_not_supported,
                     F::NoLocalFolder => c.server_no_folder,
                     F::UntrustedGvfs => c.server_untrusted_gvfs,
                 }
                 .replace("{server}", &server)
+                .replace(
+                    "{share}",
+                    &crate::remote::Remote::from_address(address)
+                        .map(|remote| remote.folder_name())
+                        .unwrap_or_default(),
+                )
             }
             Notice::AlreadyPinned => c.already_pinned.to_string(),
             Notice::NotPinnable => c.not_writable_here.to_string(),
@@ -465,11 +506,9 @@ pub struct FilesSession {
     /// The jobs this window submitted that undo will cover once they finish,
     /// with what each was asked to do.
     undoable: Vec<(files_operations::JobId, files_operations::Operation)>,
-    /// Opens servers typed in the path bar, and the mount in flight.
-    mounter: Arc<dyn crate::network::Mounter>,
-    mounting: Option<std::sync::mpsc::Receiver<MountResult>>,
-    /// The questions the mount in flight asks (ticket 117).
-    server_asks: Option<std::sync::mpsc::Receiver<crate::network::Ask>>,
+    /// Server folders (ticket 310): GVfs's folder, its mount list, the
+    /// connections being made and the tabs waiting on them.
+    pub(crate) remote: remote_tabs::RemoteSide,
     /// The question shown in the content area, with where its answer goes.
     pub server_prompt: Option<crate::network::Ask>,
     /// Counts the questions shown, so the window readies its fields once
@@ -494,6 +533,9 @@ pub struct FilesSession {
     pub focus: Focus,
     /// Which favourite the keyboard is on, for the reorder and remove keys.
     pub sidebar_cursor: Option<usize>,
+    /// How the sidebar looks at folders: one on a network or FUSE
+    /// filesystem never on the window's thread (ticket 310).
+    pub probes: crate::sidebar::BackgroundProbe,
     pub operations_open: bool,
     /// Copies and moves an earlier Better Files left unfinished, offered
     /// in the operation center until resumed or dismissed.
@@ -665,7 +707,12 @@ impl FilesSession {
         );
         reader.set_include_hidden_applications(preferences.show_hidden);
         let view = preferences.view_preferences();
-        let bookmarks = bookmark_store.load();
+        let gvfs_root = reader.gvfs_root().map(std::path::Path::to_path_buf);
+        let bookmarks = load_bookmarks(&bookmark_store, gvfs_root.as_deref(), true);
+        let mount_list: Arc<dyn crate::remote::MountsSource> = match &gvfs_root {
+            Some(root) => Arc::new(crate::remote::GvfsTracker::session(Some(root.clone()))),
+            None => Arc::new(crate::remote::NoMounts),
+        };
         // The process's watch hub, or this thread's own (a test's).
         let hub = files_platform::WatchHub::current();
         let preference_watch = preference_store
@@ -689,9 +736,11 @@ impl FilesSession {
             view_store,
             views,
             history: crate::undo::History::default(),
-            mounter: Arc::new(crate::network::SystemMounter),
-            mounting: None,
-            server_asks: None,
+            remote: remote_tabs::RemoteSide::new(
+                gvfs_root,
+                mount_list,
+                Arc::new(crate::network::SystemMounter),
+            ),
             server_prompt: None,
             server_prompt_serial: 0,
             undoable: Vec::new(),
@@ -709,6 +758,7 @@ impl FilesSession {
             dialog: None,
             focus: Focus::Content,
             sidebar_cursor: None,
+            probes: crate::sidebar::BackgroundProbe::default(),
             operations_open: false,
             interrupted: crate::interrupted::InterruptedJobs::default(),
             jobs: Vec::new(),
@@ -885,24 +935,28 @@ impl FilesSession {
     // --- Navigation ------------------------------------------------------
 
     pub fn navigate_to(&mut self, location: Location) {
+        self.forget_open_folder();
         let reader = self.reader.clone();
         self.pane_mut().navigate_to(location, reader.as_ref());
         self.after_navigation();
     }
 
     pub fn go_back(&mut self) {
+        self.forget_open_folder();
         let reader = self.reader.clone();
         self.pane_mut().go_back(reader.as_ref());
         self.after_navigation();
     }
 
     pub fn go_forward(&mut self) {
+        self.forget_open_folder();
         let reader = self.reader.clone();
         self.pane_mut().go_forward(reader.as_ref());
         self.after_navigation();
     }
 
     pub fn go_to_parent(&mut self) {
+        self.forget_open_folder();
         let reader = self.reader.clone();
         self.pane_mut().go_to_parent(reader.as_ref());
         self.after_navigation();
@@ -931,9 +985,23 @@ impl FilesSession {
         // the next folder would show results from a place the user has left.
         self.search.clear();
         self.details = None;
+        // A folder on a server whose connection the rule already knows is
+        // not there starts connecting now (ticket 310).
+        self.link_after_navigation();
         self.refresh_preview();
         // The new folder's watch is asked for now, in the frame its listing
         // started, not on the next pump.
+        self.pump_watches();
+    }
+
+    /// What a tab that came back from its server needs, as a navigation
+    /// does: the cursor, the preview, the watch.
+    fn after_landing(&mut self) {
+        let id = self.active_tab();
+        self.sync_history(id);
+        self.adopt_folder_view();
+        self.resync_content();
+        self.refresh_preview();
         self.pump_watches();
     }
 
@@ -945,6 +1013,7 @@ impl FilesSession {
         validator: &dyn PathValidator,
     ) {
         if let Some(address) = crate::network::server_address(text) {
+            self.note_address_typed(&address);
             self.mount_server(address);
             return;
         }
@@ -1351,6 +1420,24 @@ impl FilesSession {
                 self.launch_application(&desktop_id, action.as_deref(), &[]);
             }
             files_core::OpenIntent::OpenFile { path, mime } => {
+                // A file on a server that is not connected (a recent one):
+                // its folder opens, connecting first, with it selected
+                // (ticket 310).
+                if let Some(folder) = path.parent().map(Location::Local)
+                    && matches!(
+                        crate::remote::need(
+                            &folder,
+                            self.remote.gvfs_root.as_deref(),
+                            &self.remote.watch.current()
+                        ),
+                        crate::remote::Need::Connect(_)
+                    )
+                {
+                    self.notice = None;
+                    self.navigate_to(folder);
+                    self.select_by_name(&path.file_name());
+                    return;
+                }
                 self.open_file(&path, mime.as_ref());
             }
             files_core::OpenIntent::Refused(refusal) => {
@@ -2504,6 +2591,8 @@ impl FilesSession {
     /// Pins a location. The directory is never moved: this writes a line to
     /// the bookmarks file and nothing else.
     pub fn pin(&mut self, location: &Location) {
+        // A server folder is pinned by its address (ticket 310).
+        let location = &self.stored_form(location);
         let outcome = self.edit_bookmarks(|file| {
             let outcome = file.pin(location);
             (outcome == PinOutcome::Pinned, outcome)
@@ -2528,7 +2617,11 @@ impl FilesSession {
     /// Nautilus, another window or the other half of a split is kept.
     /// `edit` says whether it changed anything.
     fn edit_bookmarks<R>(&mut self, edit: impl FnOnce(&mut BookmarkFile) -> (bool, R)) -> R {
-        let mut file = self.bookmark_store.load();
+        let mut file = load_bookmarks(
+            &self.bookmark_store,
+            self.remote.gvfs_root.as_deref(),
+            false,
+        );
         let (changed, result) = edit(&mut file);
         if changed && let Err(error) = self.bookmark_store.save(&file) {
             self.notice = Some(Notice::Key(format!(
@@ -2578,7 +2671,8 @@ impl FilesSession {
     /// Pins a folder dropped on the Favourites at `position` (ticket 121),
     /// rather than at the end; a folder already pinned moves there instead.
     pub fn pin_at(&mut self, location: &Location, position: usize) {
-        if location.as_local_path().is_none() {
+        let location = &self.stored_form(location);
+        if !matches!(location, Location::Local(_) | Location::Network(_)) {
             self.notice = Some(Notice::NotPinnable);
             return;
         }
@@ -2666,7 +2760,11 @@ impl FilesSession {
         if !touched {
             return false;
         }
-        let fresh = self.bookmark_store.load();
+        let fresh = load_bookmarks(
+            &self.bookmark_store,
+            self.remote.gvfs_root.as_deref(),
+            false,
+        );
         if fresh == self.bookmarks {
             return false;
         }
@@ -2729,6 +2827,12 @@ impl FilesSession {
     }
 
     pub fn paste(&mut self) {
+        // Into a server folder that is not connected: the paste waits for
+        // the connection (ticket 310).
+        if self.hold_paste() {
+            self.notice = None;
+            return;
+        }
         let destination = self.location().clone();
         let built = commands::paste(&self.clipboard, &destination);
         let was_cut = matches!(self.clipboard, Clipboard::Cut(_));
@@ -2995,7 +3099,7 @@ impl FilesSession {
         self.watches
             .retain(|watch| panes.iter().any(|(tab, _)| *tab == watch.tab));
         let mut changed = false;
-        let mut gone: Vec<(TabId, Option<std::path::PathBuf>)> = Vec::new();
+        let mut gone: Vec<(TabId, Location, Option<std::path::PathBuf>)> = Vec::new();
         for (tab, pane) in &mut self.panes {
             let index = match self.watches.iter().position(|watch| watch.tab == *tab) {
                 Some(index) if self.watches[index].folder == *pane.location() => index,
@@ -3058,7 +3162,9 @@ impl FilesSession {
                         }
                         pane.refresh(reader.as_ref())
                     }
-                    files_platform::HubUpdate::Gone { nearest } => gone.push((*tab, nearest)),
+                    files_platform::HubUpdate::Gone { nearest } => {
+                        gone.push((*tab, watch.folder.clone(), nearest))
+                    }
                     files_platform::HubUpdate::Suspended => {}
                 }
             }
@@ -3076,8 +3182,16 @@ impl FilesSession {
                 pane.refresh(reader.as_ref());
             }
         }
-        for (tab, nearest) in gone {
-            changed |= self.folder_gone(tab, nearest);
+        for (tab, folder, nearest) in gone {
+            // A folder the tab has already left (a server folder that was
+            // not there, found again above) is not this tab's news.
+            let still_there = self
+                .panes
+                .iter()
+                .any(|(id, pane)| *id == tab && *pane.location() == folder);
+            if still_there {
+                changed |= self.folder_gone(tab, nearest);
+            }
         }
         changed
     }
@@ -3085,6 +3199,13 @@ impl FilesSession {
     /// The folder a pane shows was deleted or moved away: the pane goes to
     /// the nearest folder above it that is still there, and says why.
     fn folder_gone(&mut self, tab: TabId, nearest: Option<std::path::PathBuf>) -> bool {
+        // On a server, "gone" is most often the connection (ticket 310): the
+        // tab connects again in place, and goes to the folder above only if
+        // the server, once there, says the folder is gone.
+        if self.remote_folder_gone(tab) {
+            self.watches.retain(|watch| watch.tab != tab);
+            return true;
+        }
         let reader = self.reader.clone();
         let home = self.home_location();
         let Some((_, pane)) = self.panes.iter_mut().find(|(id, _)| *id == tab) else {
@@ -3207,7 +3328,7 @@ impl FilesSession {
         changed |= self.pump_bookmarks();
         changed |= self.pump_preferences();
         changed |= self.pump_drives();
-        changed |= self.pump_mount();
+        changed |= self.pump_remote();
         // Search is fed after the pane, so entries that arrived this frame are
         // considered this frame rather than next.
         let mut search = std::mem::take(&mut self.search);
@@ -3482,6 +3603,7 @@ impl FilesSession {
 
     /// Pins `location`, or unpins it when it is pinned already.
     pub fn toggle_pin_of(&mut self, location: &Location) {
+        let location = &self.stored_form(location);
         let pinned = (0..self.bookmarks.len()).find(|index| {
             self.bookmarks
                 .get(*index)
@@ -3503,7 +3625,7 @@ impl FilesSession {
         let single_folder_pinned = single_folder
             && selected[0]
                 .as_local_path()
-                .is_some_and(|path| self.bookmarks.contains(&Location::Local(path.clone())));
+                .is_some_and(|path| self.is_pinned(&Location::Local(path.clone())));
         let all_local =
             !selected.is_empty() && selected.iter().all(|entry| entry.as_local_path().is_some());
         crate::context_menu::SelectionFacts {
@@ -3671,52 +3793,16 @@ impl FilesSession {
         }
     }
 
-    /// Opens a server through GVfs on a worker thread. Whatever it asks
-    /// (sign-in, a host key) is shown in the content area
-    /// ([`Self::server_prompt`]); [`Self::pump`] goes to its folder once it
-    /// is mounted.
-    pub fn mount_server(&mut self, address: String) {
-        // A mount already asking something is answered "cancel" first.
-        self.cancel_server_prompt();
-        let (sender, receiver) = std::sync::mpsc::channel();
-        let (asks, questions) = std::sync::mpsc::channel();
-        let mounter = Arc::clone(&self.mounter);
-        self.notice = Some(Notice::Mounting(address.clone()));
-        let _ = std::thread::Builder::new()
-            .name("files-server-mount".to_string())
-            .spawn(move || {
-                let asker = crate::network::Asker::new(&address, asks);
-                let result = mounter.mount(&address, &asker);
-                let _ = sender.send((address, result));
-            });
-        self.mounting = Some(receiver);
-        self.server_asks = Some(questions);
-    }
-
-    /// Sends the person's answer to the question shown, and takes it off
-    /// the screen until GVfs asks the next one or the mount ends.
-    pub fn answer_server(&mut self, answer: crate::network::Answer) {
-        if let Some(ask) = self.server_prompt.take() {
-            let _ = ask.reply.try_send(answer);
-        }
-    }
-
-    /// Cancels the question shown, if any: the mount ends quietly.
-    pub fn cancel_server_prompt(&mut self) {
-        self.answer_server(crate::network::Answer::Cancel);
-    }
-
-    /// Uses another way of mounting servers. For tests.
-    pub fn set_mounter(&mut self, mounter: Arc<dyn crate::network::Mounter>) {
-        self.mounter = mounter;
-    }
-
     /// The folder a server this window mounted was mounted at, by the
     /// address it was asked for.
     pub fn server_folder(&self, address: &str) -> Option<&std::path::Path> {
+        // Any address of the same mount: `sftp://nas`, `sftp://nas/`.
+        let wanted = crate::remote::Remote::from_address(address)
+            .map(|remote| remote.mount_address())
+            .unwrap_or_else(|| address.to_string());
         self.server_folders
             .iter()
-            .find(|(known, _)| known == address)
+            .find(|(known, _)| *known == wanted)
             .map(|(_, folder)| folder.as_path())
     }
 
@@ -3738,71 +3824,6 @@ impl FilesSession {
         };
         self.foreign_mount = Some((path.to_path_buf(), foreign.clone()));
         foreign
-    }
-
-    /// Whether a server is being opened.
-    pub fn is_mounting(&self) -> bool {
-        self.mounting.is_some()
-    }
-
-    fn pump_mount(&mut self) -> bool {
-        let mut changed = false;
-        // GVfs withdrew the question (it sent `Aborted`, or the mount was
-        // given up on): it leaves the screen.
-        if self
-            .server_prompt
-            .as_ref()
-            .is_some_and(|ask| ask.reply.is_closed())
-        {
-            self.server_prompt = None;
-            changed = true;
-        }
-        if let Some(questions) = &self.server_asks
-            && let Ok(ask) = questions.try_recv()
-        {
-            // A question replaces the "Connecting to…" bar.
-            if matches!(self.notice, Some(Notice::Mounting(_))) {
-                self.notice = None;
-            }
-            self.cancel_server_prompt();
-            self.server_prompt = Some(ask);
-            self.server_prompt_serial += 1;
-            changed = true;
-        }
-        let Some(receiver) = &self.mounting else {
-            return changed;
-        };
-        let Ok((address, result)) = receiver.try_recv() else {
-            return changed;
-        };
-        self.mounting = None;
-        self.server_asks = None;
-        self.server_prompt = None;
-        match result {
-            Ok(path) => match Location::local(path.clone()) {
-                Ok(location) => {
-                    self.notice = None;
-                    self.server_folders.retain(|(known, _)| *known != address);
-                    self.server_folders.push((address, path));
-                    self.navigate_to(location);
-                }
-                Err(_) => {
-                    self.notice = Some(Notice::MountFailed {
-                        address,
-                        error: crate::network::MountError::new(
-                            crate::network::MountFailure::NoLocalFolder,
-                            "",
-                        ),
-                    })
-                }
-            },
-            // The person cancelled: nothing to say.
-            Err(error) if error.failure == crate::network::MountFailure::Cancelled => {
-                self.notice = None;
-            }
-            Err(error) => self.notice = Some(Notice::MountFailed { address, error }),
-        }
-        true
     }
 
     /// The name of the application an entry opens with, as the details pane
@@ -3952,6 +3973,36 @@ impl FilesSession {
     }
 }
 
+/// Reads the bookmarks file, with a favourite an earlier version stored as a
+/// folder under GVfs's folder read as its server's address (ticket 310).
+/// With `write`, the migrated file is written: once a process (the first
+/// window's start), only if the file still holds what was read, and with the
+/// mode it had. Nothing else rewrites the shared file without the person
+/// doing something to it.
+fn load_bookmarks(
+    store: &BookmarkStore,
+    gvfs_root: Option<&std::path::Path>,
+    write: bool,
+) -> BookmarkFile {
+    // Once a process for each bookmarks file.
+    static WRITTEN: std::sync::Mutex<std::collections::BTreeSet<std::path::PathBuf>> =
+        std::sync::Mutex::new(std::collections::BTreeSet::new());
+    let text = store.text();
+    let mut file = text.as_deref().map(BookmarkFile::parse).unwrap_or_default();
+    if let Some(root) = gvfs_root
+        && crate::remote::migrate_bookmarks(&mut file, root)
+        && write
+        && WRITTEN
+            .lock()
+            .map(|mut written| written.insert(store.path().to_path_buf()))
+            .unwrap_or(false)
+        && let Some(text) = &text
+    {
+        let _ = store.save_if_unchanged(&file, text);
+    }
+    file
+}
+
 /// The folder behind a location, when it is one on this machine.
 pub(crate) fn local_folder(location: &Location) -> Option<std::path::PathBuf> {
     match location {
@@ -4049,12 +4100,6 @@ fn apply_rows(pane: &mut Pane, rows: Vec<files_core::RefreshEvent>) -> bool {
     }
     changed
 }
-
-/// A server mount's address and how it ended.
-type MountResult = (
-    String,
-    Result<std::path::PathBuf, crate::network::MountError>,
-);
 
 /// A drive action's outcome with the key of the drive it was for.
 type KeyedOutcome = (String, DriveOutcome);

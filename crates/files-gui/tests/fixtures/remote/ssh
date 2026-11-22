@@ -1,0 +1,6 @@
+#!/bin/sh
+# The ssh GVfs's SFTP backend runs in ticket 310's real-server check: the
+# system's ssh with the test's own configuration only (its own key, its own
+# known_hosts), never the person's ~/.ssh. The test puts a link to this file
+# first on the private bus's PATH.
+exec /usr/bin/ssh -F "$BETTER_FILES_TEST_SSH_CONFIG" "$@"

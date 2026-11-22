@@ -389,6 +389,25 @@ impl ListingSession {
             }
         }
     }
+
+    /// Waits at most `timeout` for the next event: `Some(Some(event))`,
+    /// `Some(None)` when the producer is gone, `None` when nothing came in
+    /// time. For a worker thread that bounds a producer it cannot trust.
+    pub fn recv_timeout(&mut self, timeout: std::time::Duration) -> Option<Option<ListingEvent>> {
+        match self.receiver.recv_timeout(timeout) {
+            Ok(event) => {
+                if event.is_terminal() {
+                    self.complete = true;
+                }
+                Some(Some(event))
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => None,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                self.complete = true;
+                Some(None)
+            }
+        }
+    }
 }
 
 impl Drop for ListingSession {

@@ -47,6 +47,15 @@ pub enum ListingError {
     NameTooLong { path: String },
     #[error("files.listing.error.io:{path}:{reason}")]
     Io { path: String, reason: String },
+    /// The location is on a server whose connection is not there (ticket
+    /// 310): `address` is what connecting again needs. A view does not draw
+    /// this as an error; the window connects the tab that listed it.
+    #[error("files.listing.error.not_connected:{address}")]
+    NotConnected { address: String },
+    /// The location is on a server whose connection is there but did not
+    /// answer in time: a dropped connection, not a missing folder.
+    #[error("files.listing.error.not_answering:{address}")]
+    NotAnswering { address: String },
 }
 
 /// Why the model would not do what was asked of it. These are programming

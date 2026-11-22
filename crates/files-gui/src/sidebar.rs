@@ -133,6 +133,9 @@ pub struct SidebarRow {
     pub device_state: Option<DeviceStateKind>,
     /// True when the device's identity only holds for this connection.
     pub identity_volatile: bool,
+    /// For a favourite on a server, whether its connection is there
+    /// (ticket 310); `None` for anything else, or not known yet.
+    pub connected: Option<bool>,
 }
 
 impl SidebarRow {
@@ -186,6 +189,104 @@ impl LocationProbe for FilesystemProbe {
     }
 }
 
+/// The window's probe (ticket 310): a folder on a local disk is looked at
+/// at once; one on a network or FUSE filesystem never on the calling
+/// thread. Its answer is the last a probe thread of its own brought back
+/// (every 10 s at most, one thread per folder at a time), and until the
+/// first one comes back it is taken as there, so a dead mount never holds
+/// the sidebar up and never draws a row "Unavailable" that has not been
+/// looked at.
+#[derive(Clone, Default)]
+pub struct BackgroundProbe {
+    table: std::sync::Arc<std::sync::Mutex<Option<(std::time::Instant, MountTable)>>>,
+    known:
+        std::sync::Arc<std::sync::Mutex<HashMap<std::path::PathBuf, (std::time::Instant, bool)>>>,
+    running: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<std::path::PathBuf>>>,
+}
+
+/// How often a folder on a network or FUSE filesystem is looked at again.
+const BACKGROUND_PROBE_AGE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// How old the mount table may be before it is read again.
+const MOUNT_TABLE_AGE: std::time::Duration = std::time::Duration::from_secs(5);
+
+impl BackgroundProbe {
+    fn reach(&self, path: &Path) -> files_platform::Reach {
+        let mut table = self.table.lock().expect("mount table");
+        if table
+            .as_ref()
+            .is_none_or(|(read, _)| read.elapsed() >= MOUNT_TABLE_AGE)
+        {
+            // `/proc/self/mountinfo`: the kernel's own list, no filesystem
+            // is touched to read it.
+            *table = Some((std::time::Instant::now(), MountTable::from_env()));
+        }
+        table
+            .as_ref()
+            .map_or(files_platform::Reach::Local, |(_, table)| table.reach(path))
+    }
+
+    /// The last answer for `path` (`true` until there is one), starting a
+    /// look when it is due.
+    fn remembered(&self, path: &Path) -> bool {
+        let known = self.known.lock().expect("probe answers").get(path).copied();
+        if known.is_none_or(|(at, _)| at.elapsed() >= BACKGROUND_PROBE_AGE)
+            && self
+                .running
+                .lock()
+                .expect("probes")
+                .insert(path.to_path_buf())
+        {
+            let (path_owned, answers, running) = (
+                path.to_path_buf(),
+                std::sync::Arc::clone(&self.known),
+                std::sync::Arc::clone(&self.running),
+            );
+            let spawned = std::thread::Builder::new()
+                .name("files-sidebar-probe".to_string())
+                .spawn(move || {
+                    let there = path_owned.is_dir();
+                    answers
+                        .lock()
+                        .expect("probe answers")
+                        .insert(path_owned.clone(), (std::time::Instant::now(), there));
+                    running.lock().expect("probes").remove(&path_owned);
+                });
+            if spawned.is_err() {
+                self.running.lock().expect("probes").remove(path);
+            }
+        }
+        known.is_none_or(|(_, there)| there)
+    }
+}
+
+impl LocationProbe for BackgroundProbe {
+    fn is_available(&self, path: &Path) -> bool {
+        match self.reach(path) {
+            files_platform::Reach::Local => path.is_dir(),
+            files_platform::Reach::Network | files_platform::Reach::Fuse => self.remembered(path),
+        }
+    }
+}
+
+/// Whether a location is on a server and whether it is connected, as the
+/// sidebar needs it (ticket 310).
+pub trait RemoteState {
+    /// `None`: not on a server. `Some(None)`: on one, not known yet.
+    /// `Some(Some(connected))` otherwise.
+    fn connection(&self, location: &Location) -> Option<Option<bool>>;
+}
+
+/// Nothing is on a server.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NoRemote;
+
+impl RemoteState for NoRemote {
+    fn connection(&self, _location: &Location) -> Option<Option<bool>> {
+        None
+    }
+}
+
 /// A probe backed by a fixed set of present paths.
 #[derive(Clone, Debug, Default)]
 pub struct FixedProbe {
@@ -213,6 +314,8 @@ pub struct SidebarInputs<'a> {
     pub bookmarks: &'a BookmarkFile,
     pub states: &'a dyn DeviceStates,
     pub probe: &'a dyn LocationProbe,
+    /// Which favourites are on servers, and connected (ticket 310).
+    pub remote: &'a dyn RemoteState,
 }
 
 /// Builds the rows for one frame.
@@ -234,6 +337,7 @@ pub fn build_rows(inputs: &SidebarInputs<'_>, c: &'static Copy) -> Vec<SidebarRo
             bookmark_index: None,
             device_state: None,
             identity_volatile: false,
+            connected: None,
         });
     }
     // Recents: the files opened lately, from the shared GTK list, as in
@@ -247,6 +351,7 @@ pub fn build_rows(inputs: &SidebarInputs<'_>, c: &'static Copy) -> Vec<SidebarRo
         bookmark_index: None,
         device_state: None,
         identity_volatile: false,
+        connected: None,
     });
     // Trash is a place, not a device and not a folder. It is always reachable:
     // an empty trash is still the Trash.
@@ -259,6 +364,7 @@ pub fn build_rows(inputs: &SidebarInputs<'_>, c: &'static Copy) -> Vec<SidebarRo
         bookmark_index: None,
         device_state: None,
         identity_volatile: false,
+        connected: None,
     });
 
     for mount in inputs.mounts.external_mounts() {
@@ -279,6 +385,7 @@ pub fn build_rows(inputs: &SidebarInputs<'_>, c: &'static Copy) -> Vec<SidebarRo
                     .unwrap_or(DeviceStateKind::Unknown),
             ),
             identity_volatile: !mount.identity.confidence().persistable(),
+            connected: None,
         });
     }
 
@@ -291,6 +398,7 @@ pub fn build_rows(inputs: &SidebarInputs<'_>, c: &'static Copy) -> Vec<SidebarRo
         bookmark_index: None,
         device_state: None,
         identity_volatile: false,
+        connected: None,
     });
 
     // A bookmark of a user folder the Places section already lists (the ones
@@ -310,9 +418,16 @@ pub fn build_rows(inputs: &SidebarInputs<'_>, c: &'static Copy) -> Vec<SidebarRo
         if places.contains(bookmark.location()) {
             continue;
         }
-        let available = bookmark
-            .path()
-            .is_some_and(|path| inputs.probe.is_available(path));
+        // A server folder is always there to be opened: opening it connects
+        // (ticket 310). Whether it is connected comes from GVfs's mount list;
+        // its folder is never looked at here.
+        let connection = inputs.remote.connection(bookmark.location());
+        let available = match connection {
+            Some(_) => true,
+            None => bookmark
+                .path()
+                .is_some_and(|path| inputs.probe.is_available(path)),
+        };
         rows.push(SidebarRow {
             section: SidebarSection::Favorites,
             key: format!("favorite-{index}"),
@@ -322,6 +437,7 @@ pub fn build_rows(inputs: &SidebarInputs<'_>, c: &'static Copy) -> Vec<SidebarRo
             bookmark_index: Some(index),
             device_state: None,
             identity_volatile: false,
+            connected: connection.flatten(),
         });
     }
 

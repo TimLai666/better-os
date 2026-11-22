@@ -225,6 +225,7 @@ impl FilesSession {
         if self.jobs.iter().any(|job| !job.state.is_terminal()) {
             Some(Blocker::Task)
         } else if self.dialog.is_some()
+            || self.server_prompt.is_some()
             || self.chooser.is_some()
             || self.policy_confirmation.is_some()
         {

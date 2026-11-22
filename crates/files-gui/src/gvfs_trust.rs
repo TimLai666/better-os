@@ -50,6 +50,10 @@ use std::path::{Path, PathBuf};
 /// program of theirs can write.
 const SYSTEM_DATA_DIRS: &[&str] = &["/usr/share", "/usr/local/share"];
 
+/// Set in a debug build's sandbox whose private bus starts the installed
+/// gvfsd itself (ticket 310): the systemd unit is not required of it.
+pub const SANDBOX_GVFS_VARIABLE: &str = "BETTER_FILES_TEST_SANDBOX_GVFS";
+
 /// What GVfs is on this computer.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Trust {
@@ -73,6 +77,13 @@ impl Trust {
         // The unit is only there when the session's programs run under
         // `systemd --user`; elsewhere the bus starts `gvfsd` itself.
         if !own_cgroup().is_some_and(|path| path.contains("/user@")) {
+            trust.unit = None;
+        }
+        // Debug builds only: a sandbox's own GVfs on a private bus (ticket
+        // 310's screenshots) is the installed gvfsd started by that bus, not
+        // by `systemd --user`. The program and its backends are still
+        // checked; a release build never reads this.
+        if cfg!(debug_assertions) && std::env::var_os(SANDBOX_GVFS_VARIABLE).is_some() {
             trust.unit = None;
         }
         Ok(trust)

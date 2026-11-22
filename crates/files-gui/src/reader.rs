@@ -107,6 +107,11 @@ pub struct FilesReader {
     probed_mounts: ProbedMounts,
     /// Mount points whose probe has not returned yet, across listings.
     probing: Arc<Mutex<HashSet<PathBuf>>>,
+    /// GVfs's folder (ticket 310); `None` treats nothing as remote.
+    gvfs_root: Option<PathBuf>,
+    /// The remote folders' probes still out, by mount.
+    probing_remote: crate::remote::Probing,
+    probe_deadline: Duration,
     /// The shared application catalog, for the Applications location.
     ///
     /// A snapshot is taken per listing and the rows are produced from it. No
@@ -125,7 +130,15 @@ pub struct FilesReader {
     /// The Applications view's sizes (ticket 128). Never read for a reader
     /// built with [`Self::new`], so a test never asks the host's dpkg.
     application_sizes: crate::app_sizes::ApplicationSizes,
+    /// How long a server folder's listing may read nothing (ticket 310).
+    listing_deadline: Duration,
+    /// Called on a server folder's reading thread before it reads, for a
+    /// test to hold a read as a dead mount would.
+    read_gate: Option<ReadGate>,
 }
+
+/// What a test holds a server folder's reading thread on.
+pub type ReadGate = Arc<dyn Fn(&std::path::Path) + Send + Sync>;
 
 impl FilesReader {
     pub fn new(
@@ -139,12 +152,25 @@ impl FilesReader {
             volume_trashes: Arc::new(Vec::new),
             probed_mounts: Arc::new(Vec::new),
             probing: Arc::new(Mutex::new(HashSet::new())),
+            gvfs_root: None,
+            probing_remote: crate::remote::Probing::default(),
+            probe_deadline: crate::remote::PROBE_DEADLINE,
             catalog,
             include_hidden_applications: AtomicBool::new(false),
             recent_list: None,
             recent_mime: None,
             application_sizes: crate::app_sizes::ApplicationSizes::none(),
+            listing_deadline: crate::remote::LISTING_DEADLINE,
+            read_gate: None,
         }
+    }
+
+    /// Another listing deadline, and a gate each server folder's reading
+    /// thread passes before it reads. For tests.
+    pub fn with_slow_reads(mut self, deadline: Duration, gate: ReadGate) -> Self {
+        self.listing_deadline = deadline;
+        self.read_gate = Some(gate);
+        self
     }
 
     /// The reader a running window uses: MIME detection from the session's
@@ -180,6 +206,7 @@ impl FilesReader {
         })
         .with_recent_list(files_platform::recent::recent_file_from_env(), Some(mime))
         .with_application_sizes(crate::app_sizes::ApplicationSizes::from_env())
+        .with_gvfs_root(crate::remote::gvfs_root_from_env())
     }
 
     /// Where the Applications view's sizes come from.
@@ -382,10 +409,214 @@ fn not_answering_error(mount_point: &Path) -> ListingError {
     }
 }
 
+impl FilesReader {
+    /// GVfs's folder, under which a server's files are shown (ticket 310):
+    /// a folder there is probed off this thread with a deadline before it
+    /// is listed, and one whose mount is not there is reported as not
+    /// connected. `None` (a reader built with [`Self::new`]) treats nothing
+    /// as remote.
+    pub fn with_gvfs_root(mut self, root: Option<PathBuf>) -> Self {
+        self.gvfs_root = root;
+        self
+    }
+
+    /// How long a remote folder may take to answer before it is reported as
+    /// not answering. For tests.
+    pub fn with_probe_deadline(mut self, deadline: Duration) -> Self {
+        self.probe_deadline = deadline;
+        self
+    }
+
+    pub fn gvfs_root(&self) -> Option<&Path> {
+        self.gvfs_root.as_deref()
+    }
+
+    /// A mount made again: a probe stuck on the one before no longer
+    /// answers for it (ticket 310).
+    pub fn forget_probe(&self, mount_folder: &Path) {
+        self.probing_remote.forget(mount_folder);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn hold_probe_for_tests(&self, mount_folder: &Path) {
+        self.probing_remote.hold(mount_folder);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn release_probe_for_tests(&self, mount_folder: &Path) {
+        self.probing_remote.release(mount_folder);
+    }
+
+    /// Lists a folder under GVfs's folder: on a thread of its own, the
+    /// folder is probed with a deadline; only a folder that answered is
+    /// read, by the local reader on its own thread.
+    fn start_remote(&self, request: ListingRequest, sink: ListingSink, root: PathBuf) {
+        let Location::Local(path) = &request.location else {
+            return;
+        };
+        let path = path.as_path().to_path_buf();
+        let Some((name, _)) = crate::remote::split_gvfs_path(&path, &root) else {
+            self.local.start(request, sink);
+            return;
+        };
+        let mount = root.join(&name);
+        let local = self.local.clone();
+        let probing = self.probing_remote.clone();
+        let deadline = self.probe_deadline;
+        let listing_deadline = self.listing_deadline;
+        let gate = self.read_gate.clone();
+        let _ = thread::Builder::new()
+            .name("files-remote-listing".to_string())
+            .spawn(move || {
+                let address = || {
+                    crate::remote::Remote::from_gvfs_path(&path, &root)
+                        .map(|remote| remote.address())
+                        .unwrap_or_default()
+                };
+                // A read of this mount that has gone without progress past
+                // its deadline is still out: the mount does not answer, and
+                // no second thread waits on it.
+                if probing.read_stuck(&mount, listing_deadline) {
+                    sink.fail(ListingError::NotAnswering { address: address() });
+                    return;
+                }
+                match crate::remote::probe(&path, &mount, deadline, &probing) {
+                    crate::remote::Probed::Folder
+                    | crate::remote::Probed::NotFolder
+                    | crate::remote::Probed::Missing => list_bounded(
+                        &local,
+                        request,
+                        sink,
+                        &mount,
+                        &probing,
+                        listing_deadline,
+                        gate,
+                        address(),
+                    ),
+                    crate::remote::Probed::NotMounted => {
+                        sink.fail(ListingError::NotConnected { address: address() })
+                    }
+                    crate::remote::Probed::NotAnswering => {
+                        sink.fail(ListingError::NotAnswering { address: address() })
+                    }
+                }
+            });
+    }
+}
+
+/// Lists a server folder with a deadline (ticket 310's second round): the
+/// read runs on a thread of its own and its entries are passed on as they
+/// come; when it reads nothing for `deadline`, the listing fails "not
+/// answering" and the read is left to return when it will. Until it does
+/// (or the mount is made again), the mount answers "not answering" at once,
+/// so at most one thread per mount waits on it. Whatever it returns then is
+/// for a listing nobody waits for any more and goes nowhere.
+#[allow(clippy::too_many_arguments)]
+fn list_bounded(
+    local: &LocalDirectoryReader,
+    request: ListingRequest,
+    mut sink: ListingSink,
+    mount: &Path,
+    probing: &crate::remote::Probing,
+    deadline: Duration,
+    gate: Option<ReadGate>,
+    address: String,
+) {
+    // The read reports its progress in small batches, so a large folder
+    // that keeps coming is never taken for one that stopped.
+    let inner_request = ListingRequest {
+        listing: files_core::listing::ListingId::next(),
+        batch_size: 32,
+        ..request.clone()
+    };
+    let (mut inner, inner_sink) = ListingSession::start(&inner_request);
+    let token = probing.read_begins(mount);
+    let config = local.config().clone();
+    let (reads, folder, ended) = (probing.clone(), mount.to_path_buf(), probing.clone());
+    let path = request.location.clone();
+    let spawned = thread::Builder::new()
+        .name("files-remote-read".to_string())
+        .spawn(move || {
+            if let (Some(gate), Location::Local(path)) = (&gate, &path) {
+                gate(path.as_path());
+            }
+            files_platform::list_directory_blocking(&inner_request, &config, inner_sink);
+            ended.read_ended(&folder, token);
+        });
+    if spawned.is_err() {
+        reads.read_ended(mount, token);
+        sink.fail(ListingError::NotAnswering { address });
+        return;
+    }
+    // The person may leave the folder meanwhile: looked at often.
+    let step = deadline.min(Duration::from_millis(250));
+    let mut quiet_since = Instant::now();
+    loop {
+        if sink.is_cancelled() {
+            inner.cancel();
+            return;
+        }
+        match inner.recv_timeout(step) {
+            Some(Some(ListingEvent::Batch(batch))) => {
+                quiet_since = Instant::now();
+                reads.read_progressed(mount, token);
+                for entry in batch.entries {
+                    if sink.push(entry).is_err() {
+                        inner.cancel();
+                        return;
+                    }
+                }
+                if sink.flush().is_err() {
+                    inner.cancel();
+                    return;
+                }
+            }
+            Some(Some(ListingEvent::Complete(summary))) => {
+                for skipped in summary.skipped {
+                    let _ = sink.skip(skipped.name, skipped.error);
+                }
+                let _ = sink.finish();
+                return;
+            }
+            Some(Some(ListingEvent::Failed { error, .. })) => {
+                sink.fail(error);
+                return;
+            }
+            // Cancelled, or the read is gone without a word: so is this one.
+            Some(Some(ListingEvent::Cancelled { .. })) | Some(None) => return,
+            None if quiet_since.elapsed() >= deadline => {
+                // Abandoned: it returns when the mount lets it.
+                inner.cancel();
+                sink.fail(ListingError::NotAnswering { address });
+                return;
+            }
+            None => {}
+        }
+    }
+}
+
 impl DirectoryReader for FilesReader {
     fn start(&self, request: ListingRequest, sink: ListingSink) {
+        // The one rule (ticket 310) decides what a remote folder needs; its
+        // probe is the part that has to touch the folder, off this thread.
+        if let Some(root) = self
+            .gvfs_root
+            .as_ref()
+            .filter(|root| crate::remote::is_remote(&request.location, Some(root)))
+            .filter(|_| matches!(request.location, Location::Local(_)))
+        {
+            let root = root.clone();
+            self.start_remote(request, sink, root);
+            return;
+        }
         match &request.location {
             Location::Local(_) => self.local.start(request, sink),
+            // A server address is listed by the folder its connection is
+            // shown under; until the session has made it, it is not
+            // connected (ticket 310).
+            Location::Network(_) => sink.fail(ListingError::NotConnected {
+                address: request.location.to_uri(),
+            }),
             Location::Trash(TrashLocation::Root) => {
                 let home = self.trash.clone();
                 let volume_trashes = Arc::clone(&self.volume_trashes);
@@ -426,6 +657,7 @@ impl DirectoryReader for FilesReader {
             Location::Recent => {
                 let list = self.recent_list.clone();
                 let mime = self.recent_mime.clone();
+                let gvfs_root = self.gvfs_root.clone();
                 let _ = thread::Builder::new()
                     .name("files-recent-listing".to_string())
                     .spawn(move || {
@@ -433,7 +665,11 @@ impl DirectoryReader for FilesReader {
                         let entries = list
                             .as_deref()
                             .map(|list| {
-                                files_platform::recent::recent_entries(list, mime.as_deref())
+                                files_platform::recent::recent_entries_beside(
+                                    list,
+                                    mime.as_deref(),
+                                    gvfs_root.as_deref(),
+                                )
                             })
                             .unwrap_or_default();
                         for entry in entries {

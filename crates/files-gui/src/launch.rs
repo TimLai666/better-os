@@ -66,6 +66,14 @@ pub enum StartTarget {
         folder: LocalPath,
         name: String,
     },
+    /// A folder on a server (ticket 310): an address (`sftp://…`), or a
+    /// folder under GVfs's folder, which is not looked at before the
+    /// window opens; the window connects first. `select` is a file in it
+    /// to select.
+    Remote {
+        location: Location,
+        select: Option<String>,
+    },
 }
 
 /// What the filesystem says about one path.
@@ -125,6 +133,7 @@ impl StartPlan {
             Some(StartTarget::Folder(path)) | Some(StartTarget::File { folder: path, .. }) => {
                 Location::Local(path.clone())
             }
+            Some(StartTarget::Remote { location, .. }) => location.clone(),
             None => default,
         }
     }
@@ -133,6 +142,9 @@ impl StartPlan {
     pub fn selection(&self) -> Option<&str> {
         match &self.target {
             Some(StartTarget::File { name, .. }) => Some(name),
+            Some(StartTarget::Remote {
+                select: Some(name), ..
+            }) => Some(name),
             _ => None,
         }
     }
@@ -151,7 +163,8 @@ better-files — Better OS 檔案管理員 / the Better OS file manager
   better-files <資料夾或檔案>  開啟資料夾；檔案則開啟所在資料夾並選取它
   better-files <folder-or-file>
                                open a folder, or a file's folder with the file selected
-                               (a path or a file:// URI; only the first one is opened)
+                               (a path, a file:// URI, or a server address such as
+                               sftp://server/folder; only the first one is opened)
   better-files --service       由工作階段匯流排啟動，等待「在資料夾中顯示」
                                started by the session bus for \"Show in folder\"
   better-files --version       顯示版本 / print the version
@@ -213,8 +226,25 @@ pub fn resolve_target(
     cwd: Option<&Path>,
     probe: &dyn TargetProbe,
 ) -> Result<StartTarget, StartProblem> {
+    if let Some(location) = raw.to_str().and_then(remote_argument) {
+        return Ok(StartTarget::Remote {
+            location,
+            select: None,
+        });
+    }
     let path = argument_path(raw, cwd)?;
     let local = LocalPath::new(path).map_err(|_| StartProblem::Malformed)?;
+    // A folder under GVfs's folder is not looked at here: a dead mount
+    // would hold the window from opening (ticket 310). The window connects
+    // first, and a file turns out to be one when it is listed.
+    if let Some(root) = crate::remote::gvfs_root_from_env()
+        && crate::remote::is_remote(&Location::Local(local.clone()), Some(&root))
+    {
+        return Ok(StartTarget::Remote {
+            location: Location::Local(local),
+            select: None,
+        });
+    }
     match probe.kind(local.as_path()) {
         TargetKind::Folder => Ok(StartTarget::Folder(local)),
         TargetKind::Missing => Err(StartProblem::NotFound),
@@ -232,6 +262,16 @@ pub fn resolve_target(
                 TargetKind::Unreadable => Err(StartProblem::Unreadable),
             }
         }
+    }
+}
+
+/// A server address given as an argument or a URI (`sftp://nas/srv`), as the
+/// location the window connects to (ticket 310).
+pub fn remote_argument(text: &str) -> Option<Location> {
+    let address = crate::network::server_address(text)?;
+    match Location::parse_uri(&address) {
+        location @ Location::Network(_) => Some(location),
+        _ => None,
     }
 }
 

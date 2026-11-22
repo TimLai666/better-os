@@ -132,7 +132,7 @@ fn the_path_field_states_why_it_refused_rather_than_doing_nothing() {
         ("data", PathRejection::NotAbsolute),
         ("/srv/missing", PathRejection::NotFound),
         ("/srv/data/notes.txt", PathRejection::NotADirectory),
-        ("smb://server/share", PathRejection::Unsupported),
+        ("mtp://phone/DCIM", PathRejection::Unsupported),
         ("wat://nowhere", PathRejection::Unsupported),
     ] {
         assert_eq!(
@@ -530,7 +530,7 @@ fn opening_an_entry_routes_by_what_it_is() {
 
 const FOREIGN_FILE: &str = "\
 file:///home/tim/Documents\n\
-sftp://server.example/srv Remote share\n\
+mtp://phone/DCIM Phone\n\
 # a comment somebody's tooling wrote\n\
 \n\
 file:///home/tim/Pictures Photos\n\
@@ -544,7 +544,7 @@ fn a_bookmark_file_round_trips_byte_for_byte_when_nothing_changed() {
     assert_eq!(
         file.foreign_line_count(),
         4,
-        "the sftp line, the comment, the blank line, and the recent line"
+        "the phone line, the comment, the blank line, and the recent line"
     );
 }
 
@@ -560,7 +560,7 @@ fn pinning_appends_and_never_touches_a_foreign_line() {
     );
 
     let rendered = file.render();
-    assert!(rendered.contains("sftp://server.example/srv Remote share"));
+    assert!(rendered.contains("mtp://phone/DCIM Phone"));
     assert!(rendered.contains("# a comment somebody's tooling wrote"));
     assert!(rendered.ends_with("file:///srv/data\n"));
     assert_eq!(file.len(), 3);
@@ -652,7 +652,7 @@ fn bookmarks_survive_a_restart_with_their_order_labels_and_foreign_lines() {
     assert!(
         fs::read_to_string(&path)
             .unwrap()
-            .contains("sftp://server.example/srv Remote share")
+            .contains("mtp://phone/DCIM Phone")
     );
 }
 
@@ -671,6 +671,7 @@ fn a_bookmark_whose_folder_is_gone_stays_visible_as_unavailable() {
         bookmarks: &bookmarks,
         states: &NoDeviceStates,
         probe: &probe,
+        remote: &crate::sidebar::NoRemote,
     };
     let rows = build_rows(&inputs, &EN_US);
     let favorites: Vec<_> = rows
@@ -704,6 +705,7 @@ fn a_bookmark_of_a_place_is_not_listed_again_under_favorites() {
         bookmarks: &bookmarks,
         states: &NoDeviceStates,
         probe: &FixedProbe::default(),
+        remote: &crate::sidebar::NoRemote,
     };
     let rows = build_rows(&inputs, &EN_US);
     let favorites: Vec<_> = rows
@@ -804,6 +806,7 @@ fn the_sidebar_keeps_its_four_sections_distinct() {
         bookmarks: &bookmarks,
         states: &NoDeviceStates,
         probe: &FixedProbe::default(),
+        remote: &crate::sidebar::NoRemote,
     };
     let rows = build_rows(&inputs, &EN_US);
 
@@ -848,6 +851,7 @@ fn a_pinned_home_and_the_built_in_home_are_two_rows_in_two_sections() {
         bookmarks: &bookmarks,
         states: &NoDeviceStates,
         probe: &FixedProbe::with([home.path().to_path_buf()]),
+        remote: &crate::sidebar::NoRemote,
     };
     let rows = build_rows(&inputs, &EN_US);
     let matching: Vec<_> = rows
@@ -883,6 +887,7 @@ fn a_device_with_no_storage_service_reports_unknown_rather_than_ready() {
         bookmarks: &bookmarks,
         states: &NoDeviceStates,
         probe: &FixedProbe::with([PathBuf::from("/media/tim/PHOTOS")]),
+        remote: &crate::sidebar::NoRemote,
     };
     let rows = build_rows(&inputs, &EN_US);
     let device = rows
@@ -1765,8 +1770,9 @@ fn closing_a_window_leaves_its_jobs_running() {
 #[test]
 fn a_location_this_build_cannot_list_says_so_rather_than_looking_empty() {
     let (_fixture, mut session) = fixture();
-    // A network location is the one this build genuinely cannot list.
-    session.navigate_to(Location::parse_uri("smb://server/share"));
+    // A scheme this build does not model is one it genuinely cannot list
+    // (a server address connects since ticket 310).
+    session.navigate_to(Location::parse_uri("mtp://phone/DCIM"));
     settle(&mut session);
     assert!(matches!(
         session.pane().model().status(),
@@ -2164,6 +2170,7 @@ fn a_server_asks_in_the_window_again_after_a_wrong_password_then_opens_its_folde
     let (fixture, mut session) = fixture();
     settle(&mut session);
     let mounted = fixture.home.join("Documents/reports");
+    fs::create_dir_all(mounted.join("home")).unwrap();
     session.set_mounter(std::sync::Arc::new(FakeServer {
         folder: mounted.clone(),
     }));
@@ -2174,7 +2181,8 @@ fn a_server_asks_in_the_window_again_after_a_wrong_password_then_opens_its_folde
     );
     until_asked(&mut session);
     let shown = session.server_prompt.as_ref().expect("a sign-in");
-    assert_eq!(shown.address, "sftp://nas/home");
+    // The mount is asked for, and the folder found in it (ticket 310).
+    assert_eq!(shown.address, "sftp://nas");
     assert!(matches!(&shown.prompt, Prompt::SignIn { again: false, user, .. } if user == "ann"));
     let answer = |password: &str| Answer::SignIn {
         user: "ann".into(),
@@ -2200,7 +2208,11 @@ fn a_server_asks_in_the_window_again_after_a_wrong_password_then_opens_its_folde
         session.pump();
         std::thread::yield_now();
     }
-    assert_eq!(session.location(), &Location::local(&mounted).unwrap());
+    // The folder the address names, inside the mount (ticket 310).
+    assert_eq!(
+        session.location(),
+        &Location::local(mounted.join("home")).unwrap()
+    );
     assert!(session.notice.is_none());
 }
 
@@ -2221,7 +2233,15 @@ fn cancelling_a_sign_in_ends_the_mount_without_a_message() {
         session.pump();
         std::thread::yield_now();
     }
+    // Ticket 310: the tab stays on the address, "Not connected" with
+    // Connect, and nothing else is said; Back returns to where it was.
     assert!(session.notice.is_none(), "{:?}", session.notice);
+    assert_eq!(session.location(), &Location::parse_uri("sftp://nas/"));
+    assert_eq!(
+        session.link().map(|link| &link.state),
+        Some(&crate::session::LinkState::Cancelled)
+    );
+    session.go_back();
     assert_eq!(session.location(), &before);
 }
 
@@ -3011,7 +3031,7 @@ fn a_favourite_dragged_from_any_place_to_any_other_lands_there_and_foreign_lines
     let names = ["a", "b", "c", "d"];
     let lines = [
         "file:///srv/a",
-        "sftp://server/remote",
+        "mtp://phone/remote",
         "file:///srv/b",
         "# a comment someone else wrote",
         "file:///srv/c",
@@ -3042,7 +3062,7 @@ fn a_favourite_dragged_from_any_place_to_any_other_lands_there_and_foreign_lines
             // Other programs' lines keep their exact lines.
             let text = file.render();
             let rendered: Vec<&str> = text.lines().collect();
-            assert_eq!(rendered[1], "sftp://server/remote", "{from} -> {to}");
+            assert_eq!(rendered[1], "mtp://phone/remote", "{from} -> {to}");
             assert_eq!(
                 rendered[3], "# a comment someone else wrote",
                 "{from} -> {to}"
@@ -3112,6 +3132,7 @@ fn the_favourites_menu_moves_one_to_the_top_and_to_the_bottom() {
         bookmark_index: Some(index),
         device_state: None,
         identity_volatile: false,
+        connected: None,
     };
     let names = |session: &FilesSession| -> Vec<String> {
         (0..session.bookmarks.len())
@@ -3363,6 +3384,7 @@ fn a_pinned_folder_keeps_its_own_icon_and_wears_a_star() {
         bookmark_index: Some(0),
         device_state: None,
         identity_volatile: false,
+        connected: None,
     };
     let favourite = crate::sidebar::SidebarSection::Favorites;
     let (glyph, emblem) = crate::shell::sidebar_row_icon(

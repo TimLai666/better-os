@@ -134,7 +134,7 @@ impl Render for FilesApp {
         }
         // What GVfs asks while a server opens takes the content area.
         self.prepare_server_prompt(window, cx);
-        let server_page = self.server_page(cx);
+        let server_page = self.server_page(cx).or_else(|| self.remote_page(cx));
         let content = match server_page.or_else(|| self.plugin_page(cx)) {
             Some(page) => page,
             None if self.drives_page.is_some() => self.drives_tiles(cx),
@@ -384,7 +384,7 @@ impl FilesApp {
                             if matches!(row.location, files_core::Location::Local(_)) =>
                         {
                             SidebarKind::Place {
-                                pinned: self.session.bookmarks.contains(&row.location),
+                                pinned: self.session.is_pinned(&row.location),
                             }
                         }
                         _ => SidebarKind::View,

@@ -17,11 +17,12 @@ fn show_items_opens_the_folder_with_the_item_selected() {
 }
 
 #[test]
-fn show_folders_opens_each_folder_and_ignores_what_is_not_local() {
+fn show_folders_opens_each_folder_and_server_folder_and_ignores_the_rest() {
     let got = targets(
         &[
             "file:///srv/a".to_string(),
             "sftp://host/x".to_string(),
+            "gopher://host/x".to_string(),
             "file://otherhost/x".to_string(),
             "file:///bad%zz".to_string(),
             "file://localhost/srv/b".to_string(),
@@ -32,6 +33,11 @@ fn show_folders_opens_each_folder_and_ignores_what_is_not_local() {
         got,
         [
             StartTarget::Folder(LocalPath::new("/srv/a").unwrap()),
+            // A server folder: the window connects first (ticket 310).
+            StartTarget::Remote {
+                location: files_core::Location::parse_uri("sftp://host/x"),
+                select: None,
+            },
             StartTarget::Folder(LocalPath::new("/srv/b").unwrap()),
         ]
     );

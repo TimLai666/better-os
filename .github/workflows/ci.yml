@@ -48,6 +48,10 @@ jobs:
         #   zh_TW host-key test, with the locale generated below.
         # - gvfs-backends (with gvfs-daemons): files-gui's
         #   `the_installed_gvfs_is_found_when_there_is_one`.
+        # - openssh-server (`sshd`), samba (`smbd`, `pdbedit`) and gvfs-fuse
+        #   (with gvfs-backends and fuse3): files-gui's ticket 310 checks
+        #   against real servers, `real_sftp_and_smb_servers_connect_again_when_their_folder_is_opened`
+        #   and `a_server_that_stops_answering_never_holds_the_window_up`.
         # - poppler-utils (`pdftoppm`): files-preview's
         #   `poppler_renders_and_searches_a_real_pdf_when_installed`.
         # - dpkg (`dpkg-query`): better-core's self_update journal test; the
@@ -67,7 +71,7 @@ jobs:
         # next step prints the runner's limit).
         run: |
           for attempt in 1 2 3 4 5; do
-            if sudo apt-get update && sudo apt-get install -y libfontconfig1-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-base gstreamer1.0-plugins-good dbus dconf-service gjs locales language-pack-gnome-zh-hant-base gvfs-backends poppler-utils libgdk-pixbuf2.0-bin librsvg2-common; then
+            if sudo apt-get update && sudo apt-get install -y libfontconfig1-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-base gstreamer1.0-plugins-good dbus dconf-service gjs locales language-pack-gnome-zh-hant-base gvfs-backends gvfs-fuse openssh-server samba poppler-utils libgdk-pixbuf2.0-bin librsvg2-common; then
               exit 0
             fi
             echo "apt attempt $attempt failed; waiting before the next" >&2
