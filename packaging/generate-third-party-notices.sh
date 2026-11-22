@@ -167,9 +167,10 @@ MISSING_METADATA_COUNT="$(jq '[.packages[] | select(.license == null and .licens
         '' \
         '## Files copied into the source tree' \
         '' \
-        'These files are copied verbatim from other projects and compiled into the' \
-        'programs named. Each keeps its own license; the notice each carries is' \
-        'reproduced here as that license requires.'
+        'These files are copied from other projects: verbatim and compiled into the' \
+        'programs named, or changed and shipped as data in the package named. Each' \
+        'keeps its own license; the notice each carries is reproduced here as that' \
+        'license requires.'
     while IFS= read -r vendored; do
         relative="${vendored#"$ROOT_DIR"/}"
         printf '\n### `%s`\n\n' "$relative"
@@ -182,6 +183,17 @@ MISSING_METADATA_COUNT="$(jq '[.packages[] | select(.license == null and .licens
         awk '/<copyright>/ {inside = 1; next} /<\/copyright>/ {inside = 0} inside {sub(/^    /, ""); print}' "$vendored"
         printf '```\n'
     done < <(find "$ROOT_DIR/crates" -path '*/target' -prune -o -path '*/protocols/*.xml' -print | LC_ALL=C sort)
+    # The Better OS session's COSMIC shortcut defaults (ticket 203): changed
+    # copies, shipped as data. packaging/session/cosmic/upstream.tsv holds,
+    # tab-separated, the session file, the installed upstream file, its
+    # package, version, upstream source, license, and hash.
+    awk -F '\t' '
+        /^#/ || NF < 7 { next }
+        {
+            printf "\n### `packaging/session/cosmic/com.system76.CosmicSettings.Shortcuts/v1/%s`\n\n", $1
+            printf "A changed copy of [`%s`](%s) (System76, `%s`), as the `%s` package %s installs it at `%s`; shipped as data in `better-os-session` at `/usr/share/better-os/session/cosmic/com.system76.CosmicSettings.Shortcuts/v1/%s`. The upstream file carries no notice of its own; the changes are listed at the top of the shipped file.\n", $1 == "defaults" ? "data/keybindings.ron" : "data/system_actions.ron", $5, $6, $3, $4, $2, $1
+        }
+    ' "$ROOT_DIR/packaging/session/cosmic/upstream.tsv"
 } >"$GENERATED_FILE"
 
 if ((CHECK_ONLY)); then

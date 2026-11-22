@@ -97,7 +97,8 @@ required_data_files() {
                 usr/share/icons/hicolor/scalable/apps/better-manager.svg \
                 usr/lib/systemd/user/better-window-attention.service \
                 usr/share/dbus-1/services/org.betteros.WindowAttention1.service \
-                usr/lib/tmpfiles.d/better-manager.conf
+                usr/lib/tmpfiles.d/better-manager.conf \
+                usr/share/dconf/profile/betteros-default
             ;;
         better-monitor)
             printf '%s\n' \
@@ -975,6 +976,253 @@ assert_nothing_is_enabled_at_install "$storage_name" "$storage_extract"
 assert_user_units_restart_on_upgrade "$storage_name" "$storage_path" "$storage_extract"
 
 printf 'Verified %s (%s)\n' "$storage_path" "$EXPECTED_ARCH"
+
+# The Better OS session (ticket 203) ships for Ubuntu 24.04 bases only. It has
+# no window: a launcher GDM starts, a target, units, and package data.
+if [[ "$RELEASE_TARGET" != ubuntu-22.04 ]]; then
+    session_name="better-os-session"
+    if [[ -n "$RELEASE_TARGET" ]]; then
+        session_paths=("$DIST_DIR/${session_name}_"*"_${RELEASE_TARGET}_${EXPECTED_ARCH}.deb")
+    else
+        session_paths=("$DIST_DIR/${session_name}_"*.deb)
+    fi
+    if [[ ${#session_paths[@]} -ne 1 ]]; then
+        printf 'Expected exactly one target-specific package for %s\n' "$session_name" >&2
+        exit 1
+    fi
+    session_path="${session_paths[0]}"
+    session_extract="$WORK_DIR/$session_name"
+    if [[ ! -f "$session_path" || ! -f "$session_path.sha256" ]]; then
+        printf 'Missing package or checksum: %s\n' "$session_name" >&2
+        exit 1
+    fi
+    (
+        cd "$DIST_DIR"
+        sha256sum --check "$(basename "$session_path.sha256")"
+    )
+    [[ "$(dpkg-deb -f "$session_path" Installed-Size)" =~ ^[1-9][0-9]*$ ]] || {
+        printf 'Missing Installed-Size for %s\n' "$session_name" >&2
+        exit 1
+    }
+    session_depends="$(dpkg-deb -f "$session_path" Depends)"
+    if [[ "$session_depends" =~ (^|,)[[:space:]]*[^,]*-dev([[:space:]]|,|$) ]]; then
+        printf 'Build-time development package leaked into %s: %s\n' "$session_name" "$session_depends" >&2
+        exit 1
+    fi
+    # The pinned closure (ADR 0038 C2) and Fcitx 5 with Chewing (C4), every
+    # one of them: the session runs nothing it does not depend on.
+    for required_dependency in \
+        adw-gtk3 cosmic-bg cosmic-comp cosmic-greeter cosmic-greeter-daemon cosmic-icons \
+        cosmic-idle cosmic-osd cosmic-randr cosmic-settings cosmic-settings-daemon \
+        cosmic-theme-bundles pop-sound-theme xdg-desktop-portal-cosmic \
+        fcitx5 fcitx5-chewing fcitx5-frontend-gtk3 fcitx5-frontend-gtk4 fcitx5-frontend-qt5 \
+        fcitx5-config-qt xdg-desktop-portal-gtk gnome-keyring playerctl better-launcher better-manager \
+        gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
+        libfontconfig1 libwayland-client0 libwayland-egl1 libwayland-cursor0; do
+        if ! printf '%s\n' "$session_depends" | grep -Eq "(^|,)[[:space:]]*${required_dependency}([[:space:]]|,|$)"; then
+            printf 'Missing runtime dependency for %s: %s\n' "$session_name" "$required_dependency" >&2
+            exit 1
+        fi
+    done
+    dpkg-deb --extract "$session_path" "$session_extract"
+    session_shortcuts="usr/share/better-os/session/cosmic/com.system76.CosmicSettings.Shortcuts/v1"
+    # Better Screenshot (ticket 253): the program, its portal backend, its
+    # D-Bus activation file, and its desktop entry.
+    [[ -x "$session_extract/usr/bin/better-screenshot" ]] || {
+        printf 'better-screenshot is missing or not executable in %s\n' "$session_name" >&2
+        exit 1
+    }
+    if ldd "$session_extract/usr/bin/better-screenshot" | grep -q 'not found'; then
+        printf 'Unresolved dynamic library in better-screenshot\n' >&2
+        exit 1
+    fi
+    grep -qxF 'Exec=/usr/bin/better-screenshot --portal' \
+        "$session_extract/usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.betteros.Screenshot.service" &&
+        grep -qxF 'DBusName=org.freedesktop.impl.portal.desktop.betteros.Screenshot' \
+            "$session_extract/usr/share/xdg-desktop-portal/portals/betteros-screenshot.portal" &&
+        grep -qxF 'org.freedesktop.impl.portal.Screenshot=betteros-screenshot;' \
+            "$session_extract/usr/share/xdg-desktop-portal/betteros-portals.conf" || {
+        printf 'The Screenshot portal is not wired to Better Screenshot\n' >&2
+        exit 1
+    }
+    if ((DESKTOP_VALIDATE)); then
+        desktop-file-validate "$session_extract/usr/share/applications/io.betteros.Screenshot.desktop" || {
+            printf 'Invalid desktop entry for Better Screenshot\n' >&2
+            exit 1
+        }
+    fi
+    for required_file in \
+        usr/libexec/better-os/session/start \
+        usr/share/wayland-sessions/better-os.desktop \
+        usr/lib/systemd/user/better-os-session.target \
+        usr/lib/systemd/user/better-os-session-autostart.target \
+        usr/lib/systemd/user/tracker-miner-fs-3.service.d/better-os-session.conf \
+        usr/share/dconf/profile/betteros \
+        usr/share/xdg-desktop-portal/betteros-portals.conf \
+        "$session_shortcuts/defaults" \
+        "$session_shortcuts/system_actions" \
+        usr/share/doc/better-os-session/copyright \
+        usr/share/doc/better-os-session/THIRD-PARTY-LICENSES.md; do
+        if [[ ! -s "$session_extract/$required_file" ]]; then
+            printf 'Missing %s in %s\n' "$required_file" "$session_name" >&2
+            exit 1
+        fi
+    done
+    cmp "$ROOT_DIR/LICENSE" "$session_extract/usr/share/doc/better-os-session/copyright" >/dev/null || {
+        printf 'Project license notice does not match repository LICENSE in %s\n' "$session_name" >&2
+        exit 1
+    }
+    grep -q '^# Third-Party License Notices$' \
+        "$session_extract/usr/share/doc/better-os-session/THIRD-PARTY-LICENSES.md" || {
+        printf 'Invalid third-party license notice inventory in %s\n' "$session_name" >&2
+        exit 1
+    }
+    [[ -x "$session_extract/usr/libexec/better-os/session/start" ]] || {
+        printf 'The session launcher is not executable in %s\n' "$session_name" >&2
+        exit 1
+    }
+    if ldd "$session_extract/usr/libexec/better-os/session/start" | grep -q 'not found'; then
+        printf 'Unresolved dynamic library in %s\n' "$session_name" >&2
+        exit 1
+    fi
+    "$session_extract/usr/libexec/better-os/session/start" --version >/dev/null || {
+        printf 'The session launcher does not answer --version\n' >&2
+        exit 1
+    }
+    # GDM runs exactly the launcher, and the session declares Better OS first.
+    session_file="$session_extract/usr/share/wayland-sessions/better-os.desktop"
+    for line in \
+        'Exec=/usr/libexec/better-os/session/start' \
+        'TryExec=/usr/libexec/better-os/session/start' \
+        'Name=Better OS' \
+        'DesktopNames=BetterOS;COSMIC'; do
+        grep -qxF "$line" "$session_file" || {
+            printf 'The session file does not say %s\n' "$line" >&2
+            exit 1
+        }
+    done
+    # Not desktop-file-validate: DesktopNames is the display managers' key,
+    # not the desktop-entry specification's, and the validator refuses it.
+    # The target binds graphical-session.target, which is what starts and
+    # stops every existing Better OS unit with the session.
+    session_target="$session_extract/usr/lib/systemd/user/better-os-session.target"
+    for line in \
+        'BindsTo=graphical-session.target' \
+        'Wants=graphical-session-pre.target' \
+        'ConditionPathExists=%t/better-os/session/restore.json'; do
+        grep -qxF "$line" "$session_target" || {
+            printf 'better-os-session.target does not say %s\n' "$line" >&2
+            exit 1
+        }
+    done
+    # A condition does not cover what a unit wants, so the XDG autostart
+    # target and Tracker, which carry no condition of ours, are wanted only by
+    # the second target the launcher starts, never by the first, which a
+    # start under GNOME would then pull them in with.
+    if grep -qE '^(Wants|Requires)=(xdg-desktop-autostart\.target|tracker-miner-fs-3\.service)$' \
+        "$session_target"; then
+        printf 'better-os-session.target pulls in autostart or Tracker unconditioned\n' >&2
+        exit 1
+    fi
+    autostart_target="$session_extract/usr/lib/systemd/user/better-os-session-autostart.target"
+    for line in \
+        'PartOf=better-os-session.target' \
+        'ConditionPathExists=%t/better-os/session/restore.json' \
+        'Wants=xdg-desktop-autostart.target' \
+        'Before=xdg-desktop-autostart.target' \
+        'Wants=tracker-miner-fs-3.service'; do
+        grep -qxF "$line" "$autostart_target" || {
+            printf 'better-os-session-autostart.target does not say %s\n' "$line" >&2
+            exit 1
+        }
+    done
+    grep -qxF 'user-db:betteros' "$session_extract/usr/share/dconf/profile/betteros" &&
+        [[ "$(head -1 "$session_extract/usr/share/dconf/profile/betteros")" == 'user-db:betteros' ]] &&
+        grep -qxF 'user-db:user' "$session_extract/usr/share/dconf/profile/betteros" || {
+        printf 'The betteros dconf profile is not user-db:betteros over user-db:user\n' >&2
+        exit 1
+    }
+    grep -qxF 'default=cosmic;gtk;' "$session_extract/usr/share/xdg-desktop-portal/betteros-portals.conf" &&
+        grep -qxF 'org.freedesktop.impl.portal.Secret=gnome-keyring;' \
+            "$session_extract/usr/share/xdg-desktop-portal/betteros-portals.conf" || {
+        printf 'betteros-portals.conf does not name COSMIC, GTK, and the Secret backend\n' >&2
+        exit 1
+    }
+    # Every unit of the session is the target's: started by it, stopped with
+    # it, and never by graphical-session.target, which would start it under
+    # GNOME too.
+    session_units=("$session_extract"/usr/lib/systemd/user/*.service)
+    if ((${#session_units[@]} == 0)); then
+        printf '%s ships no unit\n' "$session_name" >&2
+        exit 1
+    fi
+    for unit in "${session_units[@]}" "$session_target"; do
+        if grep -Eq '^WantedBy=.*graphical-session\.target' "$unit"; then
+            printf '%s is WantedBy=graphical-session.target and would start under GNOME\n' "${unit##*/}" >&2
+            exit 1
+        fi
+    done
+    # Nothing of the session starts outside one: the target and each unit
+    # require the record the launcher writes (ticket 203's review).
+    in_session='ConditionPathExists=%t/better-os/session/restore.json'
+    for unit in "${session_units[@]}" "$session_target"; do
+        grep -qxF "$in_session" "$unit" || {
+            printf '%s can start without a Better OS session (no %s)\n' "${unit##*/}" "$in_session" >&2
+            exit 1
+        }
+    done
+    for unit in "${session_units[@]}"; do
+        case "${unit##*/}" in
+            # The one unit that runs in any session, to put back what a
+            # session that ended without its launcher left.
+            better-os-session-leftovers.service)
+                # GNOME's own early target too: a session whose launcher and
+                # guard both died leaves graphical-session-pre.target active.
+                grep -qxF 'WantedBy=graphical-session-pre.target gnome-session-pre.target' "$unit" &&
+                    grep -qxF 'Before=graphical-session-pre.target gnome-session-pre.target' "$unit" || {
+                    printf 'The leftovers unit does not run in every session\n' >&2
+                    exit 1
+                }
+                continue
+                ;;
+            # Wanted by the target; it stops the target when the launcher
+            # ends, and puts the environment back.
+            better-os-session-guard.service)
+                grep -qxF 'Wants=better-os-session-guard.service' "$session_target" &&
+                    grep -qxF 'ExecStopPost=/usr/libexec/better-os/session/start --restore' "$unit" || {
+                    printf 'The guard does not hold the target or put the environment back\n' >&2
+                    exit 1
+                }
+                ;;
+            *)
+                grep -qxF "Wants=${unit##*/}" "$session_target" || {
+                    printf 'better-os-session.target does not start %s\n' "${unit##*/}" >&2
+                    exit 1
+                }
+                ;;
+        esac
+        grep -qxF 'PartOf=better-os-session.target' "$unit" || {
+            printf '%s does not stop with better-os-session.target\n' "${unit##*/}" >&2
+            exit 1
+        }
+    done
+    session_control="$WORK_DIR/$session_name-control"
+    dpkg-deb --control "$session_path" "$session_control"
+    grep -qxF "better_os_always_on_units='better-os-session-leftovers.service'" "$session_control/postinst" || {
+        printf 'The leftovers unit is not enabled for every person at install\n' >&2
+        exit 1
+    }
+    # dconf's default-equivalent profile, which D-Bus activation names after
+    # the session, ships in better-manager (which the session depends on) so
+    # it never leaves with the session.
+    if [[ -e "$session_extract/usr/share/dconf/profile/betteros-default" ]]; then
+        printf 'betteros-default must ship in better-manager, not in %s\n' "$session_name" >&2
+        exit 1
+    fi
+    assert_nothing_is_enabled_at_install "$session_name" "$session_extract"
+    assert_user_units_restart_on_upgrade "$session_name" "$session_path" "$session_extract"
+    printf 'Verified %s (%s)\n' "$session_path" "$EXPECTED_ARCH"
+fi
 
 # The privileged service is packaged differently from the desktop applications:
 # it has no graphics dependencies, its binary lives in /usr/libexec because a

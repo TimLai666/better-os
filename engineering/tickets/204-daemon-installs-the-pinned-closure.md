@@ -40,6 +40,14 @@ so it is built and tested on its own, with nothing taken from a manifest.
   with anything from System76's origin outside the 14 names (refused before
   anything is installed); a removal while another user's Better OS session is
   open (refused with that user's name).
+- **The session's copy of COSMIC's shortcut defaults** (ticket 203): the
+  closure check compares the installed
+  `/usr/share/cosmic/com.system76.CosmicSettings.Shortcuts/v1/defaults` and
+  `system_actions` with the hashes in `packaging/session/cosmic/upstream.tsv`
+  (`packaging/tests/session-vm/guest/check-shortcut-upstream.sh` does it in
+  the VM). A closure whose files differ is one the session's copy hides
+  changes of, so a new closure version is not taken before that copy and
+  the record are brought up to date.
 - **Tests** with the APT driver faked, a pin tested against a captured copy
   of System76's `noble` `Packages` and a host `apt-cache policy` (the evidence
   of ticket 143), and the container end-to-end check extended to add the

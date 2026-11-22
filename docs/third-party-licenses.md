@@ -10,11 +10,11 @@ It does not replace the license text supplied by each upstream project.
 ## Review summary
 
 - Root project license: `GPL-3.0-or-later`.
-- Resolved Cargo packages: 988.
-- Packages with an SPDX license expression: 986.
+- Resolved Cargo packages: 989.
+- Packages with an SPDX license expression: 987.
 - Packages with only a license-file field: 0.
 - Packages without package-level license metadata: 2.
-- `Cargo.lock` SHA-256: `bf770adbcddb9e75e1e07dafb2d0301ea36bf4d6daf494f219abfc5d76f7e60f`.
+- `Cargo.lock` SHA-256: `0119879c1e9296fe0e6872acb3aca1635745d5bd822477e84437b75162be046f`.
 
 The 2 package(s) without package-level license metadata are
 listed separately below. Their pinned upstream checkout contains both
@@ -28,7 +28,7 @@ source of truth for those packages.
 | `MIT OR Apache-2.0` | 424 |
 | `MIT` | 203 |
 | `Apache-2.0 OR MIT` | 79 |
-| `GPL-3.0-or-later` | 76 |
+| `GPL-3.0-or-later` | 77 |
 | `MIT/Apache-2.0` | 41 |
 | `Apache-2.0` | 32 |
 | `Unicode-3.0` | 18 |
@@ -141,6 +141,7 @@ Better OS does not relicense or silently select a different expression.
 | `screenshot-core` | `0.2.17` | `GPL-3.0-or-later` | workspace |
 | `screenshot-gui` | `0.2.17` | `GPL-3.0-or-later` | workspace |
 | `self_cell` | `1.3.0` | `Apache-2.0 OR GPL-2.0-only` | [crates.io](https://crates.io/crates/self_cell/1.3.0) |
+| `session-launcher` | `0.2.17` | `GPL-3.0-or-later` | workspace |
 | `storage-core` | `0.2.17` | `GPL-3.0-or-later` | workspace |
 | `storage-platform` | `0.2.17` | `GPL-3.0-or-later` | workspace |
 | `storage-service` | `0.2.17` | `GPL-3.0-or-later` | workspace |
@@ -848,6 +849,7 @@ keeps its own license.
 | `serde_spanned` | `1.1.1` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/serde_spanned/1.1.1) |
 | `serde_urlencoded` | `0.7.1` | `MIT/Apache-2.0` | [crates.io](https://crates.io/crates/serde_urlencoded/0.7.1) |
 | `serde_yaml` | `0.9.34+deprecated` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/serde_yaml/0.9.34+deprecated) |
+| `session-launcher` | `0.2.17` | `GPL-3.0-or-later` | workspace |
 | `sha1_smol` | `1.0.1` | `BSD-3-Clause` | [crates.io](https://crates.io/crates/sha1_smol/1.0.1) |
 | `sha2` | `0.10.9` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/sha2/0.10.9) |
 | `sha2` | `0.11.0` | `MIT OR Apache-2.0` | [crates.io](https://crates.io/crates/sha2/0.11.0) |
@@ -1178,9 +1180,10 @@ keeps its own license.
 
 ## Files copied into the source tree
 
-These files are copied verbatim from other projects and compiled into the
-programs named. Each keeps its own license; the notice each carries is
-reproduced here as that license requires.
+These files are copied from other projects: verbatim and compiled into the
+programs named, or changed and shipped as data in the package named. Each
+keeps its own license; the notice each carries is reproduced here as that
+license requires.
 
 ### `crates/screenshot-capture/protocols/cosmic-toplevel-info-unstable-v1.xml`
 
@@ -1243,3 +1246,11 @@ AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION,
 ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
 THIS SOFTWARE.
 ```
+
+### `packaging/session/cosmic/com.system76.CosmicSettings.Shortcuts/v1/defaults`
+
+A changed copy of [`data/keybindings.ron`](https://github.com/pop-os/cosmic-comp/blob/6968c5d81901f110911aaa526af1a46fc9f360ed/data/keybindings.ron) (System76, `GPL-3.0-only`), as the `cosmic-comp` package 0.1~1795167359~24.04~6968c5d installs it at `/usr/share/cosmic/com.system76.CosmicSettings.Shortcuts/v1/defaults`; shipped as data in `better-os-session` at `/usr/share/better-os/session/cosmic/com.system76.CosmicSettings.Shortcuts/v1/defaults`. The upstream file carries no notice of its own; the changes are listed at the top of the shipped file.
+
+### `packaging/session/cosmic/com.system76.CosmicSettings.Shortcuts/v1/system_actions`
+
+A changed copy of [`data/system_actions.ron`](https://github.com/pop-os/cosmic-settings-daemon/blob/a8d9d84cd1c13af510a20dc0f4ab1156c5726515/data/system_actions.ron) (System76, `GPL-3.0-or-later`), as the `cosmic-settings-daemon` package 1.11.0~1794421662~24.04~a8d9d84 installs it at `/usr/share/cosmic/com.system76.CosmicSettings.Shortcuts/v1/system_actions`; shipped as data in `better-os-session` at `/usr/share/better-os/session/cosmic/com.system76.CosmicSettings.Shortcuts/v1/system_actions`. The upstream file carries no notice of its own; the changes are listed at the top of the shipped file.

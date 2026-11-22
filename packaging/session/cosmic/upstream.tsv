@@ -1,0 +1,12 @@
+# The COSMIC files the session's com.system76.CosmicSettings.Shortcuts/v1/
+# directory replaces in the session, as the pinned closure installs them.
+# cosmic-config takes a configuration's defaults from one directory, so the
+# session's copy hides any later change System76 makes to these files: when
+# the installed file's SHA-256 differs from the one here, the session's copy
+# must be compared with the new upstream file and brought up to date, and
+# this record with it (packaging/tests/session-vm/guest/check-shortcut-upstream.sh,
+# ticket 204's closure check). Fields are tab-separated.
+#
+# session file	installed upstream file	package	version	upstream source	license	sha256 of the installed file
+defaults	/usr/share/cosmic/com.system76.CosmicSettings.Shortcuts/v1/defaults	cosmic-comp	0.1~1795167359~24.04~6968c5d	https://github.com/pop-os/cosmic-comp/blob/6968c5d81901f110911aaa526af1a46fc9f360ed/data/keybindings.ron	GPL-3.0-only	3baabdb662524ebfc98381e2d0a800ae798fcfa7288f343e3348f6341cc94d2c
+system_actions	/usr/share/cosmic/com.system76.CosmicSettings.Shortcuts/v1/system_actions	cosmic-settings-daemon	1.11.0~1794421662~24.04~a8d9d84	https://github.com/pop-os/cosmic-settings-daemon/blob/a8d9d84cd1c13af510a20dc0f4ab1156c5726515/data/system_actions.ron	GPL-3.0-or-later	2eb4fcd146153d62d62443830da5d2344aef0be7ccc4b53fba1d661776517060

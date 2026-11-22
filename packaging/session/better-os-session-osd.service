@@ -1,0 +1,15 @@
+[Unit]
+Description=COSMIC on-screen display and polkit agent in the Better OS session
+# Volume and brightness pop-ups, the log out, restart, and power off
+# confirmations, and the polkit authentication agent. It registers the agent
+# for /org/freedesktop/login1/session/auto, which logind resolves to the
+# person's display session for a process outside a session.
+PartOf=better-os-session.target
+After=better-os-session.target
+ConditionPathExists=%t/better-os/session/restore.json
+
+[Service]
+Slice=session.slice
+ExecStart=/usr/bin/cosmic-osd
+Restart=on-failure
+RestartSec=1

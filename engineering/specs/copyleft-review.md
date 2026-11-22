@@ -333,6 +333,24 @@ the SIL Open Font License, but only its tests embed them
 `crates/gpui_wgpu/src/cosmic_text_system.rs`, both under `#[cfg(test)]`). The
 v0.2.8 binaries contain the two family names and none of the font data.
 
+### The Better OS session's key bindings, derived from `cosmic-comp` (added 2026-11-22, ticket 203)
+
+`better-os-session` ships
+`/usr/share/better-os/session/cosmic/com.system76.CosmicSettings.Shortcuts/v1/defaults`,
+a changed copy of `cosmic-comp`'s `data/keybindings.ron` at `6968c5d`
+(System76, GPL-3.0-only; the upstream file carries no notice of its own),
+and `system_actions`, a changed copy of `cosmic-settings-daemon`'s
+`data/system_actions.ron` at `a8d9d84` (GPL-3.0-or-later). They are data
+read by `cosmic-comp`, not code linked with Better OS. A GPL-3.0-only file in
+a package whose code is GPL-3.0-or-later is distributed under GPL-3.0, which
+both allow, and the package's `copyright` is the GPL-3.0 text. Each file
+says at its top what it derives from and what changed;
+`packaging/session/cosmic/upstream.tsv` records the upstream files, their
+versions, licenses, and hashes, and `packaging/generate-third-party-notices.sh`
+lists them in the shipped `THIRD-PARTY-LICENSES.md` ("Files copied into the
+source tree", beside ticket 253's vendored protocol files). No obligation
+beyond keeping those notices.
+
 ## Libraries loaded at run time
 
 The `Depends` fields come from `dpkg-shlibdeps` plus the names

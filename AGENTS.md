@@ -123,7 +123,7 @@ contract.
   Manager, `apt upgrade`, Software Updater, unattended upgrades), every Better
   OS process of that package runs the new program within a few seconds:
   services, tray icons, and open windows (owner, 2026-11-14, ticket 105). No
-  process may keep running a `(deleted)` executable. Three mechanisms carry it,
+  process may keep running a `(deleted)` executable. Four mechanisms carry it,
   and a new process belongs to one of them:
   - A package that ships a systemd user unit gets the preinst and postinst
     `packaging/build-deb.sh` builds from `packaging/maintainer/user-units.sh`:
@@ -153,6 +153,24 @@ contract.
     window shows goes through `better_ui::fluent::toast` and the window's
     one `ToastHost` (`UpdateRestart::toast_host`); there is no second toast. A window built by a
     test or a benchmark uses `UpdateRestart::inactive` and never restarts.
+  - The Better OS session's launcher (`/usr/libexec/better-os/session/start`,
+    `crates/session-launcher`, ticket 203) is the one process with no window
+    that is not a user unit and watches itself. It cannot be a unit: GDM
+    runs it as the session's leader, the session ends when it exits, and
+    its compositor and locker must be its children inside the logind
+    session's scope (the locker finds its session by its own process id).
+    It watches its file with `better_core::self_update`, waits for dpkg to
+    report `better-os-session` configured, and `exec`s the new program in
+    the same process from its main thread, handing over its children's ids,
+    the compositor's socket (the only descriptor kept across, close-on-exec
+    again after), and the session's import in `BETTER_OS_SESSION_RESUME`,
+    which the new program takes out of its environment before anything
+    starts. It never execs with an ending already queued (a stop signal, a
+    logout, the compositor's end): the session ends instead
+    (`session_launcher::resume::may_restart`). Its children keep their
+    parent-death signal across the exec, and the units' guard keeps watching
+    the same process. Nothing else may watch itself this way without being
+    named here.
   - `better-manager-daemon` is never stopped or restarted from inside its own
     unit, where systemd's stop kills the dpkg run executing the maintainer
     script and leaves the package half-installed (reproduced in a VM with the
