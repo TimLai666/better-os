@@ -635,10 +635,15 @@ fn shows(session: &FilesSession, folder: &Path) -> bool {
 /// listing, the notice, and GVfs's folders.
 fn where_(session: &FilesSession) -> String {
     format!(
-        "wait {:?}, at {:?}, listing {:?}, notice {:?}, mounts {:?}",
+        "{} || wait {:?}, at {:?}, listing {:?} (readings started {}, listing {}), \
+         threads {}, notice {:?}, mounts {:?}",
+        session.describe_remote_for_tests(),
         state(session),
         session.location(),
         session.pane().model().status(),
+        session.pane().readings(),
+        session.pane().is_listing(),
+        threads(),
         session.notice,
         session
             .remote
@@ -650,6 +655,59 @@ fn where_(session: &FilesSession) -> String {
                 .map(|entry| entry.file_name().to_string_lossy().into_owned())
                 .collect::<Vec<_>>())
     )
+}
+
+/// Waits for `folder` to show after its server was started again. The
+/// events it waits on are the product's: the folder listed, or its read
+/// given up on past the listing deadline (the tab connecting again, which
+/// is logged with where everything is, since that is a read that hung on
+/// this machine), after which the product lists it again by itself.
+fn opens_after_remount(session: &mut FilesSession, folder: &Path) -> bool {
+    let wait_for_read = crate::remote::LISTING_DEADLINE + crate::remote::RETRY_EVERY;
+    let shown_or_given_up = pump_until(session, OPEN, |s| {
+        shows(s, folder)
+            || matches!(
+                s.pane().model().status(),
+                files_core::ListingStatus::Failed(files_core::ListingError::NotAnswering { .. })
+            )
+    });
+    if shows(session, folder) {
+        return true;
+    }
+    if shown_or_given_up {
+        eprintln!(
+            "ticket-310: a read of the remounted folder was given up on: {}",
+            where_(session)
+        );
+    }
+    // The product's own promise: a read given up on is tried again by
+    // itself, every retry interval, once the mount answers.
+    pump_until(session, OPEN + wait_for_read, |s| shows(s, folder))
+}
+
+/// This process's threads that are not running, with the kernel function
+/// each waits in (`/proc/self/task/*/wchan`): a listing stuck in FUSE shows
+/// as a reader thread in `request_wait_answer` or the like.
+fn threads() -> String {
+    let mut out = Vec::new();
+    for task in fs::read_dir("/proc/self/task")
+        .into_iter()
+        .flatten()
+        .flatten()
+    {
+        let read = |name: &str| {
+            fs::read_to_string(task.path().join(name))
+                .unwrap_or_default()
+                .trim()
+                .to_string()
+        };
+        let name = read("comm");
+        let wchan = read("wchan");
+        if name.starts_with("files-") || wchan.contains("fuse") || wchan.contains("request") {
+            out.push(format!("{name}:{wchan}"));
+        }
+    }
+    out.join(" ")
 }
 
 fn names(session: &FilesSession) -> Vec<String> {
@@ -729,10 +787,7 @@ fn real_sftp_and_smb_servers_connect_again_when_their_folder_is_opened() {
     // The favourite, with nothing else done.
     session.navigate_to(favourite.clone());
     assert!(
-        pump_until(&mut session, OPEN, |s| shows(
-            s,
-            &sandbox.sftp_folder(&projects)
-        )),
+        opens_after_remount(&mut session, &sandbox.sftp_folder(&projects)),
         "the favourite opens after the server is back: {:?}",
         where_(&session)
     );
@@ -758,10 +813,7 @@ fn real_sftp_and_smb_servers_connect_again_when_their_folder_is_opened() {
     );
     sandbox.start_sshd().unwrap();
     assert!(
-        pump_until(&mut session, OPEN + crate::remote::RETRY_EVERY, |s| shows(
-            s,
-            &sandbox.sftp_folder(&projects)
-        )),
+        opens_after_remount(&mut session, &sandbox.sftp_folder(&projects)),
         "it came back by itself: {:?} at {:?}, {:?}; network now {:?}",
         state(&session),
         session.location(),

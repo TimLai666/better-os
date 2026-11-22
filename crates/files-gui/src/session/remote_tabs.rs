@@ -1579,6 +1579,38 @@ impl FilesSession {
 
     /// Makes the mount shown at `mount_folder` look like one whose last
     /// probe has not come back.
+    /// The waits, attempts and looks at hosts, for a test's failure message.
+    #[cfg(test)]
+    pub(crate) fn describe_remote_for_tests(&self) -> String {
+        let now = Instant::now();
+        let waits: Vec<String> = self
+            .remote
+            .links
+            .iter()
+            .map(|link| {
+                format!(
+                    "{:?} dropped={} answering_only={} waited={:?} retry_in={:?} gvfs_in={:?} paused={:?} network={:?}",
+                    link.state,
+                    link.dropped,
+                    link.answering_only,
+                    waited(link),
+                    link.retry_at.map(|at| at.saturating_duration_since(now)),
+                    link.gvfs_try_at.map(|at| at.saturating_duration_since(now)),
+                    link.paused_at.map(|at| at.elapsed()),
+                    link.network,
+                )
+            })
+            .collect();
+        format!(
+            "waits [{}], attempts [{}], host looks out {}, network now {:?} (known {})",
+            waits.join(" | "),
+            self.remote.attempts.describe(),
+            self.remote.reach_checks.len(),
+            self.remote.network.current(),
+            self.remote.network.known()
+        )
+    }
+
     /// A search for the nearest folder above the front tab's that found
     /// nothing (not even the mount's own folder answered). For tests.
     #[cfg(test)]

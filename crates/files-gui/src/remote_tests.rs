@@ -48,7 +48,15 @@ struct World {
     up: std::sync::atomic::AtomicBool,
     /// Which network this computer is on.
     network: Mutex<crate::remote::Network>,
+    /// How many of the next server folder reads hang, as on a dead mount,
+    /// until `let_reads_go`; and how many reads began.
+    hang_reads: std::sync::atomic::AtomicUsize,
+    reads_began: std::sync::atomic::AtomicUsize,
+    reads_let_go: (Mutex<bool>, Condvar),
 }
+
+/// How long a server folder's listing may read nothing in these tests.
+const TEST_LISTING_DEADLINE: Duration = Duration::from_millis(800);
 
 /// The network the tests start on.
 fn home_network() -> crate::remote::Network {
@@ -138,6 +146,46 @@ impl World {
     /// The server answers again.
     fn come_back(&self) {
         self.up.store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    /// The next `count` reads of a server folder hang until let go.
+    fn hang_next_reads(&self, count: usize) {
+        *self.reads_let_go.0.lock().unwrap() = false;
+        self.hang_reads
+            .store(count, std::sync::atomic::Ordering::Release);
+    }
+
+    fn let_reads_go(&self) {
+        *self.reads_let_go.0.lock().unwrap() = true;
+        self.reads_let_go.1.notify_all();
+    }
+
+    fn reads_began(&self) -> usize {
+        self.reads_began.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// What a server folder's reading thread passes before it reads.
+    fn read_gate(&self) {
+        use std::sync::atomic::Ordering;
+        self.reads_began.fetch_add(1, Ordering::AcqRel);
+        let hang = self
+            .hang_reads
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |left| {
+                left.checked_sub(1)
+            })
+            .is_ok();
+        if hang {
+            let mut gone = self.reads_let_go.0.lock().unwrap();
+            let until = Instant::now() + Duration::from_secs(60);
+            while !*gone && Instant::now() < until {
+                gone = self
+                    .reads_let_go
+                    .1
+                    .wait_timeout(gone, Duration::from_millis(100))
+                    .unwrap()
+                    .0;
+            }
+        }
     }
 
     /// This computer is on `network` now (`Network::default()`: none).
@@ -241,6 +289,9 @@ fn world() -> Arc<World> {
         released: (Mutex::new(false), Condvar::new()),
         up: std::sync::atomic::AtomicBool::new(true),
         network: Mutex::new(home_network()),
+        hang_reads: std::sync::atomic::AtomicUsize::new(0),
+        reads_began: std::sync::atomic::AtomicUsize::new(0),
+        reads_let_go: (Mutex::new(false), Condvar::new()),
     })
 }
 
@@ -261,7 +312,15 @@ fn session_at(world: &Arc<World>, start: Location) -> FilesSession {
             None,
             crate::apps::CatalogHandle::empty(Default::default()),
         )
-        .with_gvfs_root(Some(world.gvfs.clone())),
+        .with_gvfs_root(Some(world.gvfs.clone()))
+        .with_slow_reads(TEST_LISTING_DEADLINE, {
+            let world = Arc::downgrade(world);
+            Arc::new(move |_| {
+                if let Some(world) = world.upgrade() {
+                    world.read_gate();
+                }
+            })
+        }),
     );
     let mut session = FilesSession::new(SessionSetup {
         start,
@@ -1006,6 +1065,116 @@ fn a_folder_that_is_not_found_for_a_moment_is_not_left() {
         "{:?}",
         session.notice
     );
+}
+
+/// Ticket 310's second round: a server folder's read that never returns (a
+/// half-ready or dead mount) is not a spinner for ever. Past its deadline
+/// the tab says it is connecting again, with Cancel; no second read waits
+/// on the mount while the first is out; and once the mount answers, the
+/// folder is listed again by itself, on the same selection.
+#[test]
+fn a_read_that_never_returns_is_given_up_on_and_listed_again() {
+    let world = world();
+    let shown = world.server(NAS, &["srv"]);
+    for name in ["a.txt", "b.txt"] {
+        fs::write(
+            world.stash.join(World::name(NAS)).join("srv").join(name),
+            name,
+        )
+        .unwrap();
+    }
+    let mut session = session(&world);
+    session.mount_server("sftp://nas/srv".into());
+    assert!(pump_until(&mut session, |s| shows(s, &shown.join("srv"))
+        && s.pane().model().visible_len() == 2));
+    session.select_by_name("b.txt");
+    session.pump();
+    world.hang_next_reads(1);
+    session.reload();
+    assert!(
+        pump_for(&mut session, Duration::from_secs(5), |s| matches!(
+            s.link().map(|link| &link.state),
+            Some(LinkState::Connecting { .. })
+        )),
+        "past its deadline the read is given up on: {:?}, {:?}",
+        session.link().map(|link| &link.state),
+        session.pane().model().status()
+    );
+    let began = world.reads_began();
+    // While the read is out, the folder is listed again by itself and the
+    // mount answers "not answering" at once: no second read waits on it.
+    pump_for(&mut session, Duration::from_secs(3), |_| false);
+    assert_eq!(world.reads_began(), began, "one stuck read per mount");
+    world.let_reads_go();
+    assert!(
+        pump_for(&mut session, RETRY_WAIT, |s| s.link().is_none()
+            && shows(s, &shown.join("srv"))
+            && s.pane().model().visible_len() == 2),
+        "{:?}, {:?}",
+        session.link().map(|link| &link.state),
+        session.pane().model().status()
+    );
+    assert_eq!(
+        session.pane().model().selection().cursor(),
+        Some(&EntryId::Name("b.txt".into()))
+    );
+}
+
+/// A read that returns after its deadline, when the folder has been listed
+/// again meanwhile, is for a listing nobody waits for: it is ignored, and
+/// the view is the newer listing's, each entry once.
+#[test]
+fn a_read_that_returns_after_its_deadline_is_ignored() {
+    let world = world();
+    let shown = world.server(NAS, &["srv"]);
+    fs::write(world.stash.join(World::name(NAS)).join("srv/a.txt"), "a").unwrap();
+    let mut session = session(&world);
+    session.mount_server("sftp://nas/srv".into());
+    assert!(pump_until(&mut session, |s| shows(s, &shown.join("srv"))));
+    world.hang_next_reads(1);
+    session.reload();
+    assert!(pump_for(&mut session, Duration::from_secs(5), |s| s
+        .link()
+        .is_some()));
+    // The folder changes, the late read returns, and the folder is listed
+    // again.
+    fs::write(shown.join("srv/b.txt"), "b").unwrap();
+    world.let_reads_go();
+    assert!(pump_for(&mut session, RETRY_WAIT, |s| s.link().is_none()
+        && shows(s, &shown.join("srv"))
+        && listed(s) == ["a.txt", "b.txt"]));
+    pump_for(&mut session, Duration::from_millis(500), |_| false);
+    assert_eq!(listed(&session), ["a.txt", "b.txt"], "each entry once");
+}
+
+/// Two reads crossing: the connection lands and a listing starts; another
+/// starts before it returns (a reload, a re-look); the newer one completes
+/// first and is shown, and the older one, returning after, changes nothing.
+/// The current listing's result is never the one dropped.
+#[test]
+fn two_reads_crossing_show_the_newer_one() {
+    let world = world();
+    let shown = world.server(NAS, &["srv"]);
+    fs::write(world.stash.join(World::name(NAS)).join("srv/a.txt"), "a").unwrap();
+    let mut session = session(&world);
+    world.hang_next_reads(1);
+    session.mount_server("sftp://nas/srv".into());
+    assert!(pump_until(&mut session, |_| world.reads_began() >= 1));
+    // Within the first read's deadline, a second listing of the same folder.
+    session.reload();
+    assert!(
+        pump_for(&mut session, Duration::from_secs(5), |s| s.link().is_none()
+            && shows(s, &shown.join("srv"))
+            && listed(s) == ["a.txt"]),
+        "the newer read is shown: {:?}, {:?}",
+        session.link().map(|link| &link.state),
+        session.pane().model().status()
+    );
+    world.let_reads_go();
+    pump_for(&mut session, Duration::from_secs(2), |_| false);
+    assert!(shows(&session, &shown.join("srv")));
+    assert_eq!(listed(&session), ["a.txt"]);
+    assert!(session.link().is_none());
 }
 
 /// When not even the mount's own folder answers while the nearest folder

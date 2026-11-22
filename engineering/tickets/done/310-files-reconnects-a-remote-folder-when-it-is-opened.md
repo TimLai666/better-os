@@ -235,5 +235,37 @@ open comes back by itself".
   (`a_climb_that_finds_nothing_connects_again`), and the re-check lasts
   5 s. Every message of the real-server test now says the wait, location,
   listing, notice and GVfs's folders, so another failure names its cause.
+- CI on `c1e67db4`: the same test failed at the favourite opened after the
+  restart with `wait None, at …/projects, listing Loading, mounts [the
+  mount]`: the mount back, the tab on the right folder, nothing waiting,
+  the listing never done. A server folder's listing ran with no deadline
+  once the probe said the folder was there, against the ticket's own rule.
+  Fixed whatever the runner's cause: `reader::list_bounded` reads on a
+  thread of its own and gives up after 10 s with nothing read (progress
+  every 32 entries); the tab then connects again by listing, at most one
+  stuck read per mount (`Probing::read_stuck`), and the folder is listed
+  again by itself. Model tests against a gated reader:
+  `a_read_that_never_returns_is_given_up_on_and_listed_again`,
+  `a_read_that_returns_after_its_deadline_is_ignored`,
+  `two_reads_crossing_show_the_newer_one` (the last also shows the pane's
+  generation logic keeps the current result). The real-server test now
+  waits on the product's events after a remount (`opens_after_remount`:
+  the folder listed, or its read given up on, logged with every thread's
+  kernel wait channel). Local reproduction failed: 24 runs under CPU load,
+  12 with the sandbox's own `gvfsd-fuse` and `gvfsd-sftp` paused 300 ms in
+  600, and three whole-suite copies at once (where two unrelated watcher
+  timing tests failed from the load, and this one passed).
+- Loops with the deadline in place (the real-server test alone, several
+  copies at once): 4 copies and 2 CPU burners failed at run 133 on the
+  first SMB connection, `gvfsd-smb` saying "Network dropped connection on
+  reset" (ENETRESET from an `smbd` under that load), which the reason table
+  did not know; ENETRESET and ECONNABORTED now read as "didn't answer".
+  3 copies failed once at run 137: the alias did not come back within 75 s
+  of its server's restart, the page "didn't answer" with no detail, so no
+  GVfs attempt had finished after 30 s; its cause was not found. The
+  failure message now carries every wait's state, timers and network, the
+  attempts in flight with their age, and the host looks out. The final
+  code then passed 240 of 240 (3 copies, 2 CPU burners), with no read given
+  up on.
 - Not seen: the "another network" page on screen (the sandbox cannot change
   the network), NetworkManager's UUID on a real Wi-Fi change.

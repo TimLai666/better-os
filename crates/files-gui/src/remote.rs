@@ -699,11 +699,24 @@ pub enum Probed {
 /// Probes in flight, by mount folder, across listings: a mount whose probe
 /// has been out past its deadline is not probed again and does not answer.
 #[derive(Clone, Default)]
-pub struct Probing(Arc<Mutex<std::collections::HashMap<PathBuf, (u64, Instant)>>>);
+pub struct Probing(
+    Arc<Mutex<std::collections::HashMap<PathBuf, (u64, Instant)>>>,
+    /// Listings of a mount's folders in flight, by mount: each read's token
+    /// and when it last made progress. A read with no progress past the
+    /// listing deadline is stuck: the mount answers "not answering" at once
+    /// until it returns, so no second thread waits on it (ticket 310).
+    Arc<Mutex<std::collections::HashMap<PathBuf, (u64, Instant)>>>,
+);
 
 /// Tells one probe from another, so a probe that comes back late takes out
 /// only its own entry.
 static PROBES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// How long a server folder's listing may go without reading anything
+/// before the folder counts as not answering (ticket 310's second round:
+/// a listing has a deadline like a probe). Progress is counted in small
+/// batches, so a large folder that keeps coming never reaches it.
+pub const LISTING_DEADLINE: Duration = Duration::from_secs(10);
 
 impl Probing {
     pub fn is_probing(&self, mount_folder: &Path) -> bool {
@@ -714,6 +727,45 @@ impl Probing {
     /// the dead one no longer speaks for it.
     pub fn forget(&self, mount_folder: &Path) {
         self.0.lock().expect("probes").remove(mount_folder);
+        self.1.lock().expect("reads").remove(mount_folder);
+    }
+
+    /// A listing of a folder on `mount_folder` begins; returns its token.
+    pub fn read_begins(&self, mount_folder: &Path) -> u64 {
+        let token = PROBES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.1
+            .lock()
+            .expect("reads")
+            .insert(mount_folder.to_path_buf(), (token, Instant::now()));
+        token
+    }
+
+    /// The listing `token` read something.
+    pub fn read_progressed(&self, mount_folder: &Path, token: u64) {
+        if let Some(entry) = self.1.lock().expect("reads").get_mut(mount_folder)
+            && entry.0 == token
+        {
+            entry.1 = Instant::now();
+        }
+    }
+
+    /// The listing `token` returned, however late: it speaks for the mount
+    /// no more.
+    pub fn read_ended(&self, mount_folder: &Path, token: u64) {
+        let mut reads = self.1.lock().expect("reads");
+        if reads.get(mount_folder).map(|(known, _)| *known) == Some(token) {
+            reads.remove(mount_folder);
+        }
+    }
+
+    /// Whether a listing of this mount has gone without progress past
+    /// `deadline`: the mount does not answer.
+    pub fn read_stuck(&self, mount_folder: &Path, deadline: Duration) -> bool {
+        self.1
+            .lock()
+            .expect("reads")
+            .get(mount_folder)
+            .is_some_and(|(_, progressed)| progressed.elapsed() >= deadline)
     }
 
     /// A probe that never comes back, for tests.
@@ -826,6 +878,11 @@ const SYSTEM_ERRORS: &[(i32, Reason)] = &[
     (libc::EHOSTUNREACH, Reason::NoAnswer),
     (libc::ENETUNREACH, Reason::NoAnswer),
     (libc::ECONNRESET, Reason::NoAnswer),
+    // `gvfsd-smb` says "Network dropped connection on reset" when the
+    // server drops the connection while it is made (seen against an `smbd`
+    // under load in ticket 310's sandbox).
+    (libc::ENETRESET, Reason::NoAnswer),
+    (libc::ECONNABORTED, Reason::NoAnswer),
     (libc::EACCES, Reason::SignInRefused),
 ];
 
@@ -1272,6 +1329,7 @@ struct Attempt {
     address: String,
     server: String,
     result: Receiver<Result<Mounted, MountError>>,
+    started: Instant,
 }
 
 /// The connections being made, one per mount.
@@ -1323,8 +1381,19 @@ impl Attempts {
             address,
             server: remote.server(),
             result,
+            started: Instant::now(),
         });
         true
+    }
+
+    /// The attempts in flight and how long each has been out, for a test's
+    /// failure message.
+    pub fn describe(&self) -> String {
+        self.live
+            .iter()
+            .map(|attempt| format!("{} for {:?}", attempt.key, attempt.started.elapsed()))
+            .collect::<Vec<_>>()
+            .join("; ")
     }
 
     pub fn is_connecting(&self, key: &str) -> bool {
@@ -2052,6 +2121,19 @@ mod tests {
         assert_eq!(said(&gone), Reason::ShareGone);
         let refused = crate::gvfs::system_message_in(libc::ECONNREFUSED, zh).unwrap();
         assert_eq!(said(&refused), Reason::Refused);
+        // A server that dropped the connection while it was made.
+        assert_eq!(
+            Reason::of_in(
+                &MountError::new(
+                    MountFailure::Failed,
+                    "Failed to mount Windows share: Network dropped connection on reset"
+                ),
+                "nas",
+                true,
+                c"C"
+            ),
+            Reason::NoAnswer
+        );
         // And in English, as before.
         assert_eq!(
             Reason::of_in(

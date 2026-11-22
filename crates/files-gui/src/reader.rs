@@ -130,7 +130,15 @@ pub struct FilesReader {
     /// The Applications view's sizes (ticket 128). Never read for a reader
     /// built with [`Self::new`], so a test never asks the host's dpkg.
     application_sizes: crate::app_sizes::ApplicationSizes,
+    /// How long a server folder's listing may read nothing (ticket 310).
+    listing_deadline: Duration,
+    /// Called on a server folder's reading thread before it reads, for a
+    /// test to hold a read as a dead mount would.
+    read_gate: Option<ReadGate>,
 }
+
+/// What a test holds a server folder's reading thread on.
+pub type ReadGate = Arc<dyn Fn(&std::path::Path) + Send + Sync>;
 
 impl FilesReader {
     pub fn new(
@@ -152,7 +160,17 @@ impl FilesReader {
             recent_list: None,
             recent_mime: None,
             application_sizes: crate::app_sizes::ApplicationSizes::none(),
+            listing_deadline: crate::remote::LISTING_DEADLINE,
+            read_gate: None,
         }
+    }
+
+    /// Another listing deadline, and a gate each server folder's reading
+    /// thread passes before it reads. For tests.
+    pub fn with_slow_reads(mut self, deadline: Duration, gate: ReadGate) -> Self {
+        self.listing_deadline = deadline;
+        self.read_gate = Some(gate);
+        self
     }
 
     /// The reader a running window uses: MIME detection from the session's
@@ -445,6 +463,8 @@ impl FilesReader {
         let local = self.local.clone();
         let probing = self.probing_remote.clone();
         let deadline = self.probe_deadline;
+        let listing_deadline = self.listing_deadline;
+        let gate = self.read_gate.clone();
         let _ = thread::Builder::new()
             .name("files-remote-listing".to_string())
             .spawn(move || {
@@ -453,10 +473,26 @@ impl FilesReader {
                         .map(|remote| remote.address())
                         .unwrap_or_default()
                 };
+                // A read of this mount that has gone without progress past
+                // its deadline is still out: the mount does not answer, and
+                // no second thread waits on it.
+                if probing.read_stuck(&mount, listing_deadline) {
+                    sink.fail(ListingError::NotAnswering { address: address() });
+                    return;
+                }
                 match crate::remote::probe(&path, &mount, deadline, &probing) {
                     crate::remote::Probed::Folder
                     | crate::remote::Probed::NotFolder
-                    | crate::remote::Probed::Missing => local.start(request, sink),
+                    | crate::remote::Probed::Missing => list_bounded(
+                        &local,
+                        request,
+                        sink,
+                        &mount,
+                        &probing,
+                        listing_deadline,
+                        gate,
+                        address(),
+                    ),
                     crate::remote::Probed::NotMounted => {
                         sink.fail(ListingError::NotConnected { address: address() })
                     }
@@ -465,6 +501,97 @@ impl FilesReader {
                     }
                 }
             });
+    }
+}
+
+/// Lists a server folder with a deadline (ticket 310's second round): the
+/// read runs on a thread of its own and its entries are passed on as they
+/// come; when it reads nothing for `deadline`, the listing fails "not
+/// answering" and the read is left to return when it will. Until it does
+/// (or the mount is made again), the mount answers "not answering" at once,
+/// so at most one thread per mount waits on it. Whatever it returns then is
+/// for a listing nobody waits for any more and goes nowhere.
+#[allow(clippy::too_many_arguments)]
+fn list_bounded(
+    local: &LocalDirectoryReader,
+    request: ListingRequest,
+    mut sink: ListingSink,
+    mount: &Path,
+    probing: &crate::remote::Probing,
+    deadline: Duration,
+    gate: Option<ReadGate>,
+    address: String,
+) {
+    // The read reports its progress in small batches, so a large folder
+    // that keeps coming is never taken for one that stopped.
+    let inner_request = ListingRequest {
+        listing: files_core::listing::ListingId::next(),
+        batch_size: 32,
+        ..request.clone()
+    };
+    let (mut inner, inner_sink) = ListingSession::start(&inner_request);
+    let token = probing.read_begins(mount);
+    let config = local.config().clone();
+    let (reads, folder, ended) = (probing.clone(), mount.to_path_buf(), probing.clone());
+    let path = request.location.clone();
+    let spawned = thread::Builder::new()
+        .name("files-remote-read".to_string())
+        .spawn(move || {
+            if let (Some(gate), Location::Local(path)) = (&gate, &path) {
+                gate(path.as_path());
+            }
+            files_platform::list_directory_blocking(&inner_request, &config, inner_sink);
+            ended.read_ended(&folder, token);
+        });
+    if spawned.is_err() {
+        reads.read_ended(mount, token);
+        sink.fail(ListingError::NotAnswering { address });
+        return;
+    }
+    // The person may leave the folder meanwhile: looked at often.
+    let step = deadline.min(Duration::from_millis(250));
+    let mut quiet_since = Instant::now();
+    loop {
+        if sink.is_cancelled() {
+            inner.cancel();
+            return;
+        }
+        match inner.recv_timeout(step) {
+            Some(Some(ListingEvent::Batch(batch))) => {
+                quiet_since = Instant::now();
+                reads.read_progressed(mount, token);
+                for entry in batch.entries {
+                    if sink.push(entry).is_err() {
+                        inner.cancel();
+                        return;
+                    }
+                }
+                if sink.flush().is_err() {
+                    inner.cancel();
+                    return;
+                }
+            }
+            Some(Some(ListingEvent::Complete(summary))) => {
+                for skipped in summary.skipped {
+                    let _ = sink.skip(skipped.name, skipped.error);
+                }
+                let _ = sink.finish();
+                return;
+            }
+            Some(Some(ListingEvent::Failed { error, .. })) => {
+                sink.fail(error);
+                return;
+            }
+            // Cancelled, or the read is gone without a word: so is this one.
+            Some(Some(ListingEvent::Cancelled { .. })) | Some(None) => return,
+            None if quiet_since.elapsed() >= deadline => {
+                // Abandoned: it returns when the mount lets it.
+                inner.cancel();
+                sink.fail(ListingError::NotAnswering { address });
+                return;
+            }
+            None => {}
+        }
     }
 }
 

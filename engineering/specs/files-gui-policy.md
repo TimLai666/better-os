@@ -275,7 +275,17 @@ empties the clipboard only if the clipboard still holds that cut.
 minutes. The mount list is read from GVfs's tracker over the bus on a worker
 thread with a 2 s limit; a remote folder is probed on a thread of its own with
 a 3 s limit before it is listed, and a mount whose probe has not come back is
-known not to answer, so no second probe waits on it; the sidebar decides a
+known not to answer, so no second probe waits on it. The listing itself has
+a deadline too: a remote folder's read runs on a thread of its own and is
+given up on when it reads nothing for 10 s (progress counted every 32
+entries, so a large folder that keeps coming never reaches it). The tab
+then says it is connecting again, with Cancel, as for a folder that stopped
+answering; the read is left to return when it will, and until it does the
+mount answers "not answering" at once, so at most one thread per mount
+waits on it; the folder is listed again by itself every 5 s and comes back
+to the same selection and scroll. What the abandoned read returns belongs
+to a listing nobody waits for and is never shown, and the current
+listing's result is never the one dropped. The sidebar decides a
 remote favourite's state from the mount list alone and never touches its
 folder; a favourite on any other network or FUSE filesystem is probed off
 the window's thread; the address bar's check and Tab completion do not read a
