@@ -34,6 +34,7 @@ SUPERVISOR=better-os-login-supervisor.service
 GREETER=better-os-greeter.service
 BACKSTOP=better-os-login-backstop.service
 FAILED_BACKSTOP=better-os-login-backstop-failed.service
+FAILED_TIMER=better-os-login-backstop-failed.timer
 TIMER=better-os-login-backstop.timer
 TTY8=better-os-login-fallback@tty8.service
 TTY9=better-os-login-fallback@tty9.service
@@ -43,7 +44,7 @@ RECORDS=/var/lib/better-os/boot-watch
 dump() {
     echo "--- journal of the login path ---" >&2
     journalctl -b --no-pager -o short-monotonic \
-        -u "$SUPERVISOR" -u "$GREETER" -u "$BACKSTOP" -u "$FAILED_BACKSTOP" -u "$TIMER" \
+        -u "$SUPERVISOR" -u "$GREETER" -u "$BACKSTOP" -u "$FAILED_BACKSTOP" -u "$FAILED_TIMER" -u "$TIMER" \
         -u 'better-os-login-fallback@*' -u 'session-g*.scope' 2>/dev/null | tail -n 150 >&2 || true
     echo "--- $RUN ---" >&2
     ls -la "$RUN" >&2 2>/dev/null || true
@@ -120,7 +121,7 @@ printf '%s\n' '[Unit]' 'Description=Stand-in for Ubuntu'"'"'s plymouth-quit.serv
 
 install -m 0755 /login/better-os-login-supervisor /usr/sbin/better-os-login-supervisor
 install -m 0755 /login/better-os-login-status /usr/bin/better-os-login-status
-for unit in "$SUPERVISOR" "$GREETER" "$BACKSTOP" "$FAILED_BACKSTOP" "$TIMER" \
+for unit in "$SUPERVISOR" "$GREETER" "$BACKSTOP" "$FAILED_BACKSTOP" "$FAILED_TIMER" "$TIMER" \
     better-os-login-fallback@.service; do
     install -m 0644 "/login/greeter/$unit" "/usr/lib/systemd/system/$unit"
 done
@@ -168,11 +169,12 @@ expect "logind" active "$(show systemd-logind.service ActiveState)"
 expect "display-manager.service" "$SUPERVISOR" "$(show display-manager.service Id)"
 verify="$(systemd-analyze verify "/usr/lib/systemd/system/$SUPERVISOR" \
     "/usr/lib/systemd/system/$BACKSTOP" "/usr/lib/systemd/system/$FAILED_BACKSTOP" \
+    "/usr/lib/systemd/system/$FAILED_TIMER" \
     "/usr/lib/systemd/system/$TIMER" 2>&1)" \
     || fail "systemd-analyze verify: expected the units accepted, found: $verify"
 
 reset() {
-    systemctl stop display-manager.service "$GREETER" "$BACKSTOP" "$FAILED_BACKSTOP" "$TIMER" \
+    systemctl stop display-manager.service "$GREETER" "$BACKSTOP" "$FAILED_BACKSTOP" "$FAILED_TIMER" "$TIMER" \
         "$TTY8" "$TTY9" 'session-g*.scope' 2>/dev/null || true
     systemctl unmask "$TTY8" 2>/dev/null || true
     systemctl reset-failed 2>/dev/null || true
@@ -182,21 +184,48 @@ reset() {
 }
 greeter_starts() { journal "$GREETER" | grep -c '^Started ' || true; }
 
-# --- The boot transaction: getty on tty1 and plymouth-quit stand aside ---------
+# --- The boot transaction: getty on tty1 and plymouth-quit ---------------------
 
-systemctl start getty@tty1.service plymouth-quit.service || true
-expect "getty@tty1 while this is the display manager" inactive "$(show getty@tty1.service ActiveState)"
-expect "plymouth-quit while this is the display manager" inactive "$(show plymouth-quit.service ActiveState)"
-[[ ! -e "$RUN/plymouth-calls" ]] || fail "plymouth-quit quit the splash: $(cat "$RUN/plymouth-calls")"
-# With another display manager chosen they run as before.
+# tty1's getty, without a terminal to run on (the drop-in that sets it aside
+# is the package's; this one only replaces what it runs).
+mkdir -p /etc/systemd/system/getty@tty1.service.d
+printf '%s\n' '[Service]' 'ExecStart=' 'ExecStart=/bin/sleep infinity' \
+    'StandardInput=null' 'StandardOutput=journal' 'TTYReset=no' 'TTYVHangup=no' \
+    'TTYVTDisallocate=no' 'UtmpIdentifier=' \
+    > /etc/systemd/system/getty@tty1.service.d/zz-stand-in.conf
+systemctl daemon-reload
+stock_runs() {
+    local why="$1"
+    rm -f "$RUN/plymouth-calls"
+    systemctl stop plymouth-quit.service getty@tty1.service 2>/dev/null || true
+    systemctl start plymouth-quit.service getty@tty1.service || true
+    expect "plymouth-quit $why" active "$(show plymouth-quit.service ActiveState)"
+    grep -qx quit "$RUN/plymouth-calls" 2>/dev/null || fail "plymouth-quit $why: expected 'quit', found none"
+    expect "the getty on tty1 $why" active "$(show getty@tty1.service ActiveState)"
+    systemctl stop plymouth-quit.service getty@tty1.service
+}
+# The link set and the supervisor never started (a boot to multi-user.target,
+# kernel parameter 3): stock behaviour.
+stock_runs "with the link set and the supervisor not started"
+# The supervisor masked.
+systemctl mask "$SUPERVISOR"
+stock_runs "with the supervisor masked"
+systemctl unmask "$SUPERVISOR"
+# Its unit file broken.
+printf '[Service]\nType=simple\n' > "/etc/systemd/system/$SUPERVISOR"
+systemctl daemon-reload
+expect "the broken unit's state" inactive "$(show "$SUPERVISOR" ActiveState)"
+stock_runs "with the supervisor's unit broken"
+rm -f "/etc/systemd/system/$SUPERVISOR"
+ln -sf "/usr/lib/systemd/system/$SUPERVISOR" /etc/systemd/system/display-manager.service
+systemctl daemon-reload
+# Another display manager chosen: stock behaviour.
 ln -sf /lib/systemd/system/gdm3.service /etc/systemd/system/display-manager.service
-systemctl start plymouth-quit.service
-expect "plymouth-quit with another display manager" active "$(show plymouth-quit.service ActiveState)"
-systemctl stop plymouth-quit.service
+stock_runs "with another display manager chosen"
 ln -sf "/usr/lib/systemd/system/$SUPERVISOR" /etc/systemd/system/display-manager.service
 systemctl daemon-reload
 rm -f "$RUN/plymouth-calls"
-pass "getty on tty1 and plymouth-quit stand aside while this is the display manager, and only then"
+pass "getty on tty1 and plymouth-quit run as they always do on every boot the supervisor does not run"
 
 # --- A. The greeter never becomes ready -------------------------------------
 
@@ -209,6 +238,13 @@ invocation="$(show "$SUPERVISOR" InvocationID)"
 timer_active="$(show "$TIMER" ActiveEnterTimestampMonotonic)"
 ((timer_active > 0 && timer_active <= t0 && t0 - timer_active < 2000000)) \
     || fail "the backstop timer: expected active right before the supervisor's start ($t0), found $timer_active"
+# While it runs, tty1's getty and plymouth-quit stand aside.
+calls_before="$(grep -c . "$RUN/plymouth-calls" 2>/dev/null || true)"
+systemctl start plymouth-quit.service getty@tty1.service || true
+expect "plymouth-quit while the supervisor runs" inactive "$(show plymouth-quit.service ActiveState)"
+expect "the getty on tty1 while the supervisor runs" inactive "$(show getty@tty1.service ActiveState)"
+grep -qx quit <(tail -n +"$((calls_before + 1))" "$RUN/plymouth-calls" 2>/dev/null) \
+    && fail "plymouth-quit quit the splash while the supervisor runs"
 wait_for "the text login on tty8" 85 active "$TTY8"
 text_login="$(show "$TTY8" ActiveEnterTimestampMonotonic)"
 after="$(seconds_between "$t0" "$text_login")"
@@ -353,6 +389,7 @@ expect "the supervisor" failed "$(show "$SUPERVISOR" ActiveState)"
 restarts="$(show "$SUPERVISOR" NRestarts)"
 ((restarts >= 4)) || fail "the supervisor's restarts before the backstop: expected at least 4, found $restarts"
 expect "the failed supervisor's backstop" success "$(show "$FAILED_BACKSTOP" Result)"
+expect "the failed supervisor's backstop's timer" active "$(show "$FAILED_TIMER" ActiveState)"
 expect "the text login on tty8" inactive "$(show "$TTY8" ActiveState)"
 grep -qx quit "$RUN/plymouth-calls" || fail "the backstop: expected 'plymouth quit'"
 grep -qF "couldn't be shown (the login supervisor couldn't run, " "$RUN/login-fallback.issue" \
@@ -361,33 +398,39 @@ grep -qF "couldn't be shown (the login supervisor couldn't run, " "$RUN/login-fa
 expect "the backstop timer" active "$(show "$TIMER" ActiveState)"
 pass "a supervisor that cannot start: the backstop's text login on tty9 in ${took} s"
 
-# The present, not the boot's history: with a text login running, nothing.
+# The present, looked at again every 30 s by its timer. With a text login
+# running: nothing.
 tty9="$(show "$TTY9" InvocationID)"
 rm -f "$RUN/login-fallback.active"
-# A condition that is not met skips the unit; systemctl's own status is not
-# what is checked.
 systemctl start "$FAILED_BACKSTOP" || true
-expect "the text login after a second run with one running" "$tty9" "$(show "$TTY9" InvocationID)"
-# With a greeter alive now (its heartbeat fresh): nothing.
+expect "the text login after a run with one running" "$tty9" "$(show "$TTY9" InvocationID)"
+# A greeter that is ready now (`ready`, written in the last 30 s): nothing.
 systemctl stop "$TTY9"
 mkdir -p /run/better-os-greeter
 echo ready > /run/better-os-greeter/alive
 systemctl start "$FAILED_BACKSTOP" || true
-expect "the text login with a greeter alive" inactive "$(show "$TTY9" ActiveState)"
-# The heartbeat old, nobody signed in, no text login: it runs, whatever this
-# boot saw before (the greeter was ready once).
-touch -d '-1 minute' /run/better-os-greeter/alive
+expect "the text login with a greeter ready" inactive "$(show "$TTY9" ActiveState)"
+# One stuck on `starting` is no login screen: it runs.
+echo starting > /run/better-os-greeter/alive
 : > /run/better-os-greeter/ready-seen
 : > "$RUN/login-held"
 systemctl start "$FAILED_BACKSTOP" || true
-wait_for "the failed supervisor's backstop after the property once held" 10 active "$TTY9"
+wait_for "the failed supervisor's backstop beside a greeter stuck on starting" 10 active "$TTY9"
+# And without anyone asking: the greeter that was ready dies, nobody runs
+# the backstop by hand, and the timer's next look gives the text login.
+systemctl stop "$TTY9"
+echo ready > /run/better-os-greeter/alive
+systemctl start "$FAILED_BACKSTOP" || true
+expect "the text login while the greeter is ready" inactive "$(show "$TTY9" ActiveState)"
+touch -d '-1 minute' /run/better-os-greeter/alive
+wait_for "the timer's next look giving the text login" 40 active "$TTY9"
 # The timer's backstop keeps to the boot's history: with the greeter ready
 # once this boot, nothing.
-systemctl stop "$TTY9"
+systemctl stop "$FAILED_TIMER" "$TTY9"
 rm -f "$RUN/login-fallback.active"
 systemctl start "$BACKSTOP" || true
 expect "the timer's backstop after the greeter was ready" inactive "$(show "$TTY9" ActiveState)"
-pass "the failed supervisor's backstop looks at the present, the timer's at the boot"
+pass "the failed supervisor's backstop looks at the present, again every 30 s; the timer's at the boot"
 
 rm -rf "/etc/systemd/system/$SUPERVISOR.d"
 systemctl daemon-reload

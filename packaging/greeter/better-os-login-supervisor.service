@@ -16,10 +16,11 @@ After=rc-local.service plymouth-start.service systemd-user-sessions.service
 Wants=better-os-login-backstop.timer better-os-gnome-unlock.service
 # When systemd gives up on it (five starts in two minutes: a hang loop of
 # watchdog 10 s, abort 5 s and restart 1 s makes five in 80 s, a crash loop
-# in 5 s), the backstop for a failed supervisor, which runs no Better OS
-# code, gives the text login on tty9 if nobody is signed in and no greeter
-# lives now.
-OnFailure=better-os-login-backstop-failed.service
+# in 5 s), the timer of the failed supervisor's backstop, which runs no
+# Better OS code, looks at once and then every 30 s, and gives the text
+# login on tty9 whenever nobody is signed in, no greeter is ready and no
+# text login runs.
+OnFailure=better-os-login-backstop-failed.timer
 StartLimitIntervalSec=120
 StartLimitBurst=5
 

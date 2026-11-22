@@ -378,6 +378,53 @@ fn activate(tty: Vt) -> Result<(), String> {
     )
 }
 
+/// `SIGKILL` to every process of a greeter session's scope, read again
+/// now: if any process of it runs as anyone but root or the greeter's
+/// account, nothing is sent. Each process is reached through a pidfd
+/// opened first and its uid and cgroup checked after, so a pid that is
+/// reused in between is never signalled (the pidfd still names the
+/// process that exited, and the signal fails).
+fn kill_scope(path: &str, greeter: u32) -> Result<(), String> {
+    if !is_session_scope(path) {
+        return Err(format!("{path} is not a session scope"));
+    }
+    let proc = Path::new(paths::PROC);
+    let processes = read::scope_processes(Path::new(paths::CGROUPS), path, proc)
+        .ok_or_else(|| format!("{path}: cannot be read"))?;
+    if processes.iter().any(|p| p.uid != 0 && p.uid != greeter) {
+        return Err(format!(
+            "{path} holds a process of another account; left alone"
+        ));
+    }
+    for process in &processes {
+        // SAFETY: pidfd_open takes a pid and flags and returns a new
+        // descriptor or -1.
+        let pidfd = unsafe { libc::syscall(libc::SYS_pidfd_open, process.pid as libc::pid_t, 0) };
+        if pidfd < 0 {
+            continue;
+        }
+        let pidfd = pidfd as libc::c_int;
+        let same = read::cgroup_of(proc, process.pid).as_deref() == Some(path)
+            && read::uid_of_process(proc, process.pid)
+                .is_some_and(|uid| uid == 0 || uid == greeter);
+        if same {
+            // SAFETY: a valid pidfd, a signal number, no siginfo, no flags.
+            unsafe {
+                libc::syscall(
+                    libc::SYS_pidfd_send_signal,
+                    pidfd,
+                    libc::SIGKILL,
+                    std::ptr::null::<libc::siginfo_t>(),
+                    0,
+                )
+            };
+        }
+        // SAFETY: the descriptor was opened above and is closed once.
+        unsafe { libc::close(pidfd) };
+    }
+    Ok(())
+}
+
 fn write_file(path: &str, text: &str) -> Result<(), String> {
     crate::state::write_atomic(Path::new(path), text.as_bytes()).map_err(|e| format!("{path}: {e}"))
 }
@@ -431,6 +478,24 @@ impl World for SystemWorld {
                 processes,
             });
         }
+        let text_login_alone = needs.text_login_alone.and_then(|tty| {
+            let group = run_bounded(
+                SYSTEMCTL,
+                &[
+                    "show",
+                    "--property=ControlGroup",
+                    "--value",
+                    crate::rules::Unit::Fallback(tty).name(),
+                ],
+                Duration::from_micros(limits::CALL),
+            )
+            .ok()?;
+            let group = group.trim();
+            if !group.starts_with("/system.slice/") || group.contains("..") {
+                return None;
+            }
+            read::only_a_getty(&Path::new(paths::CGROUPS).join(&group[1..]), proc)
+        });
         let text_login_active = needs.text_login.map(|tty| {
             run_bounded(
                 SYSTEMCTL,
@@ -454,6 +519,7 @@ impl World for SystemWorld {
                 None
             },
             text_login_active,
+            text_login_alone,
             heartbeat: read::heartbeat(Path::new(paths::HEARTBEAT)),
             plymouth: self.plymouth_state(),
             greeter_uid: read::greeter_uid(Path::new(paths::PASSWD)),
@@ -506,19 +572,7 @@ impl World for SystemWorld {
                     _ => Ok(()),
                 }
             }
-            Action::KillScope { path, greeter } => {
-                if !is_session_scope(path) {
-                    return Err(format!("{path} is not a session scope"));
-                }
-                let proc = Path::new(paths::PROC);
-                let processes = read::scope_processes(Path::new(paths::CGROUPS), path, proc)
-                    .ok_or_else(|| format!("{path}: cannot be read"))?;
-                for process in processes.iter().filter(|p| p.uid == 0 || p.uid == *greeter) {
-                    // SAFETY: kill has no memory preconditions.
-                    unsafe { libc::kill(process.pid as libc::pid_t, libc::SIGKILL) };
-                }
-                Ok(())
-            }
+            Action::KillScope { path, greeter } => kill_scope(path, *greeter),
             Action::ResetVt(vt) => reset_tty(*vt),
             Action::ActivateVt(tty) => activate(tty.vt()),
             Action::ClearFallbackActive => match std::fs::remove_file(paths::FALLBACK_ACTIVE) {

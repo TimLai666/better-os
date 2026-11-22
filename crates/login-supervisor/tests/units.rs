@@ -52,13 +52,14 @@ fn named(unit: &BTreeMap<String, Vec<String>>, key: &str) -> Vec<String> {
 }
 
 const SUPERVISOR: &str = "better-os-login-supervisor.service";
-const FILES: [&str; 8] = [
+const FILES: [&str; 9] = [
     SUPERVISOR,
     "better-os-greeter.service",
     "better-os-login-fallback@.service",
     "better-os-login-backstop.service",
     "better-os-login-backstop-failed.service",
     "better-os-login-backstop.timer",
+    "better-os-login-backstop-failed.timer",
     "getty@tty1.service.d/better-os-login.conf",
     "plymouth-quit.service.d/better-os-login.conf",
 ];
@@ -127,7 +128,7 @@ fn the_supervisor_restarts_itself_and_hands_over_to_the_backstop() {
     assert!(4 * hang_cycle < 120);
     assert_eq!(
         one(&s, "Unit.OnFailure"),
-        "better-os-login-backstop-failed.service"
+        "better-os-login-backstop-failed.timer"
     );
     assert!(named(&s, "Unit.Wants").contains(&"better-os-login-backstop.timer".to_string()));
     assert_eq!(
@@ -247,7 +248,11 @@ fn check_backstop_steps(file: &str) {
             STANDARD.contains(&program),
             "{file}: {program} is not a standard program"
         );
-        assert!(!exec.contains("better-os-login-supervisor"), "{exec}");
+        // It may look at the supervisor's state; it never runs its program.
+        assert!(
+            !exec.contains("/usr/sbin/better-os-login-supervisor"),
+            "{exec}"
+        );
     }
     let starts: Vec<&String> = b["Service.ExecStart"].iter().collect();
     let position = |what: &str| {
@@ -324,10 +329,26 @@ fn the_failed_supervisors_backstop_looks_at_the_present_not_at_the_boots_history
         );
     }
     assert!(conditions.iter().any(|c| c.contains("is-active --quiet better-os-login-fallback@tty8.service better-os-login-fallback@tty9.service")));
+    // A live greeter is one that says `ready` and wrote it in the last
+    // 30 s: one stuck on `starting` is no login screen.
     assert!(
         conditions
             .iter()
-            .any(|c| c.contains("/run/better-os-greeter/alive -newermt"))
+            .any(|c| c.contains("/run/better-os-greeter/alive -newermt")
+                && c.contains("grep -D skip -qx ready /run/better-os-greeter/alive"))
+    );
+    // And only while the supervisor does not run: the timer that looks
+    // again every 30 s must never act beside a supervisor started again.
+    assert!(conditions.iter().any(|c| {
+        c.contains("! /usr/bin/systemctl is-active --quiet better-os-login-supervisor.service")
+    }));
+    let t = unit("better-os-login-backstop-failed.timer");
+    assert_eq!(one(&t, "Timer.OnActiveSec"), "0");
+    assert_eq!(one(&t, "Timer.OnUnitInactiveSec"), "30");
+    assert_eq!(one(&t, "Timer.AccuracySec"), "1s");
+    assert_eq!(
+        one(&t, "Timer.Unit"),
+        "better-os-login-backstop-failed.service"
     );
     assert!(
         conditions
@@ -360,19 +381,23 @@ fn the_backstop_timer_counts_from_the_supervisors_first_start() {
 }
 
 #[test]
-fn getty_on_tty1_and_plymouth_quit_stand_aside_only_while_this_is_the_display_manager() {
+fn getty_on_tty1_and_plymouth_quit_stand_aside_only_while_the_supervisor_runs() {
     for file in [
         "getty@tty1.service.d/better-os-login.conf",
         "plymouth-quit.service.d/better-os-login.conf",
     ] {
         let d = unit(file);
         let condition = one(&d, "Service.ExecCondition");
+        // The supervisor's own state in this boot, never the link: a boot
+        // that does not start the display manager keeps stock behaviour.
         assert_eq!(
             condition,
-            "/bin/sh -c 'case \"$$(/usr/bin/readlink /etc/systemd/system/display-manager.service)\" in */better-os-login-supervisor.service) exit 1 ;; esac'",
+            "/bin/sh -c 'case \"$$(/usr/bin/timeout 5 /usr/bin/systemctl show --property=ActiveState --value better-os-login-supervisor.service 2>/dev/null)\" in active|activating|reloading) exit 1 ;; esac'",
             "{file}"
         );
-        assert_eq!(d.len(), 1, "{file} does nothing else");
+        assert!(!condition.contains("display-manager.service"), "{file}");
+        assert_eq!(one(&d, "Unit.After"), SUPERVISOR, "{file}");
+        assert_eq!(d.len(), 2, "{file} does nothing else");
     }
 }
 

@@ -366,8 +366,6 @@ impl Note {
 
 /// The most notes one appearance keeps; the journal has every line.
 const MAX_NOTES: usize = 64;
-/// The most session scopes one appearance remembers.
-const MAX_SCOPES: usize = 8;
 
 /// A `plymouth` command.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -451,6 +449,8 @@ pub struct Needs {
     pub drm_holders: bool,
     /// Whether this text login unit is active.
     pub text_login: Option<TextTty>,
+    /// Whether this text login unit's cgroup holds nothing but its getty.
+    pub text_login_alone: Option<TextTty>,
 }
 
 // What the supervisor saw. Unknown is `None` wherever it matters, and the
@@ -520,6 +520,10 @@ pub struct LogindSession {
     pub kind: String,
     /// Its scope unit, `session-<id>.scope`.
     pub scope: String,
+    /// logind's `STATE=closing`: its leader is gone and processes are left
+    /// in its scope. Never a person's session that runs; still a greeter
+    /// session whose scope has to be ended.
+    pub closing: bool,
 }
 
 impl LogindSession {
@@ -530,7 +534,7 @@ impl LogindSession {
 
     /// A person's session of any kind (a text login included).
     pub fn is_person(&self) -> bool {
-        self.class.starts_with("user")
+        self.class.starts_with("user") && !self.closing
     }
 
     pub fn is_greeter(&self) -> bool {
@@ -628,10 +632,14 @@ pub struct Seen {
     /// The processes holding a `/dev/dri/card*` open, `plymouthd` left out
     /// (its own path quits or kills it); `None` when not asked for or
     /// unreadable.
-    pub drm_holders: Option<Vec<u32>>,
+    pub drm_holders: Option<Vec<Process>>,
     /// Whether the text login asked about is active; `None` when not asked
     /// for or unknown.
     pub text_login_active: Option<bool>,
+    /// Whether the text login asked about holds nothing but a root
+    /// `agetty`: nobody has started to sign in on it. `None` when not asked
+    /// for or unknown.
+    pub text_login_alone: Option<bool>,
     /// `None`: no heartbeat file, or not one that can be read.
     pub heartbeat: Option<HeartbeatFile>,
     /// `None`: the edges have no command running or finished (after a
@@ -650,7 +658,7 @@ impl Seen {
                 .as_ref()?
                 .sessions
                 .iter()
-                .find(|s| s.is_greeter())
+                .find(|s| s.is_greeter() && !s.closing)
                 .map(|s| s.uid)
         })
     }
@@ -724,7 +732,7 @@ impl Seen {
                 logind
                     .sessions
                     .iter()
-                    .any(|s| s.is_greeter() && greeter.is_none_or(|uid| uid == s.uid))
+                    .any(|s| s.is_greeter() && !s.closing && greeter.is_none_or(|uid| uid == s.uid))
             }
             None => {
                 self.greetd
@@ -996,7 +1004,7 @@ pub fn start(
             };
             machine.state.unit_restarts = unit.restarts.or(machine.state.unit_restarts);
             let actions = if own_restart {
-                machine.resumed()
+                machine.resumed(now)
             } else {
                 machine.started_again(t0_of(unit, now))
             };
@@ -1020,7 +1028,7 @@ impl Machine {
     /// A supervisor restarted in the middle: it says so and asks again for
     /// what it may have been cut off asking. Starting and stopping a unit
     /// are both idempotent.
-    fn resumed(&mut self) -> Vec<Action> {
+    fn resumed(&mut self, now: Micros) -> Vec<Action> {
         let mut actions = Vec::new();
         self.note(
             Step::Supervisor,
@@ -1028,11 +1036,17 @@ impl Machine {
             Reason::Restarted,
             &mut actions,
         );
-        match self.state.phase {
-            Phase::Stopping { .. } | Phase::FallingBack { .. } => {
+        match &mut self.state.phase {
+            // A stop the restart interrupted gets its kill and the kernel's
+            // time to reap once more: past its 4 s, the session's scope is
+            // killed at the first look and the stop judged 2 s later, never
+            // before the kill it may have missed.
+            Phase::Stopping { issued, .. } | Phase::FallingBack { issued, .. } => {
+                *issued = (*issued).max(now.saturating_sub(limits::KILL_SESSION));
                 actions.push(Action::StopUnit(Unit::Greeter));
             }
             Phase::Attempt { number, .. } => {
+                let number = *number;
                 actions.push(Action::SetGreeterMode(mode(number)));
                 actions.push(Action::StartUnit(Unit::Greeter));
             }
@@ -1040,7 +1054,7 @@ impl Machine {
                 tty,
                 confirmed: false,
                 ..
-            } => actions.push(Action::StartUnit(Unit::Fallback(tty))),
+            } => actions.push(Action::StartUnit(Unit::Fallback(*tty))),
             _ => {}
         }
         actions
@@ -1074,6 +1088,14 @@ impl Machine {
                     confirmed: false,
                     ..
                 } => Some(tty),
+                _ => None,
+            },
+            text_login_alone: match self.state.phase {
+                Phase::TextLogin {
+                    tty,
+                    confirmed: true,
+                    ..
+                } if self.state.no_screen => Some(tty),
                 _ => None,
             },
         }
@@ -1126,12 +1148,19 @@ impl Machine {
         }
     }
 
-    /// Every greeter session scope seen is remembered for the appearance:
-    /// once greetd is gone, the scope is no longer found through its tree.
+    /// Every greeter session scope seen with a process in it is remembered
+    /// until it is gone: once greetd is gone, the scope is no longer found
+    /// through its tree. A remembered scope seen empty (or no longer there)
+    /// is dropped at once, so the list holds only scopes that still have
+    /// processes, or that cannot be read, however many greeters a boot has
+    /// had; there is no cap that could leave the live one out.
     fn track_scopes(&mut self, seen: &Seen) {
+        self.state.scopes.retain(|path| {
+            seen.scope(path)
+                .is_none_or(|s| s.processes.as_ref().is_none_or(|p| !p.is_empty()))
+        });
         for scope in &seen.scopes {
-            if self.state.scopes.len() < MAX_SCOPES
-                && !self.state.scopes.contains(&scope.path)
+            if !self.state.scopes.contains(&scope.path)
                 && scope.processes.as_ref().is_some_and(|p| !p.is_empty())
                 && seen.is_greeter_scope(scope)
             {
@@ -1141,25 +1170,54 @@ impl Machine {
     }
 
     /// The greeter's unit and every remembered session scope have no
-    /// process, and no process holds a card. Unknown is not gone.
+    /// process, and no process of the greeter's holds a card: none in the
+    /// unit's cgroup, in a greeter scope, or of the greeter's account. A
+    /// card held by anyone else (a person's compositor on a text login, a
+    /// container given the device) is not the greeter's to wait for.
+    /// Unknown is not gone.
     fn greeter_gone(&self, seen: &Seen) -> bool {
+        let greeter = seen.greeter();
+        let ours = |holder: &Process| {
+            Some(holder.uid) == greeter
+                || seen.greetd.as_ref().is_some_and(|t| {
+                    t.processes
+                        .iter()
+                        .any(|p| p.pid == holder.pid && p.in_cgroup)
+                })
+                || seen.scopes.iter().any(|s| {
+                    (self.state.scopes.contains(&s.path) || seen.is_greeter_scope(s))
+                        && s.processes
+                            .as_ref()
+                            .is_some_and(|p| p.iter().any(|p| p.pid == holder.pid))
+                })
+        };
         seen.greetd.as_ref().is_some_and(Greetd::unit_empty)
             && self.state.scopes.iter().all(|path| {
                 seen.scope(path)
                     .and_then(|s| s.processes.as_ref())
                     .is_some_and(|p| p.is_empty())
             })
-            && seen.drm_holders.as_ref().is_some_and(|h| h.is_empty())
+            && seen
+                .drm_holders
+                .as_ref()
+                .is_some_and(|holders| !holders.iter().any(ours))
     }
 
-    /// `SIGKILL` to the remembered greeter session scopes that still have
-    /// a process, never one with a process of a person's.
+    /// `SIGKILL` to the greeter session scopes that still have a process,
+    /// the remembered ones and the ones seen this look, never one with a
+    /// process of a person's.
     fn kill_scopes(&mut self, seen: &Seen, step: Step, out: &mut Vec<Action>) {
         let Some(greeter) = seen.greeter() else {
             return;
         };
         let mut killed = false;
-        for path in &self.state.scopes {
+        let mut paths = self.state.scopes.clone();
+        for scope in &seen.scopes {
+            if !paths.contains(&scope.path) && seen.is_greeter_scope(scope) {
+                paths.push(scope.path.clone());
+            }
+        }
+        for path in &paths {
             let Some(processes) = seen.scope(path).and_then(|s| s.processes.as_ref()) else {
                 continue;
             };
@@ -1710,6 +1768,10 @@ impl Machine {
             if self.state.no_screen
                 && Cards::of(seen.drm.as_ref()).screen()
                 && seen.nobody_signed_in()
+                // Someone may sign in on the text login while logind is
+                // down, unseen by it: the unit is stopped only while its
+                // own cgroup holds nothing but a root agetty.
+                && seen.text_login_alone == Some(true)
             {
                 self.note(Step::Device, Outcome::Ok, Reason::ScreenConnected, out);
                 out.push(Action::StopUnit(Unit::Fallback(tty)));

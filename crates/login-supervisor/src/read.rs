@@ -121,7 +121,8 @@ pub fn drm(dir: &Path) -> Option<Drm> {
 
 /// logind's session files (`/run/systemd/sessions/<id>`): its own record
 /// of each session, read without asking it. Sessions that are closing are
-/// left out. logind makes the directory with its first session, so none
+/// kept and marked (their scope may still hold a greeter's processes); the
+/// rules never count one as a person's session. logind makes the directory with its first session, so none
 /// is no session; `None` when it is there and cannot be read.
 pub fn sessions(dir: &Path) -> Option<Vec<LogindSession>> {
     let mut sessions = Vec::new();
@@ -148,9 +149,6 @@ pub fn sessions(dir: &Path) -> Option<Vec<LogindSession>> {
                 .unwrap_or("")
                 .to_string()
         };
-        if field("STATE") == "closing" {
-            continue;
-        }
         let Ok(uid) = field("UID").parse::<u32>() else {
             continue;
         };
@@ -162,6 +160,7 @@ pub fn sessions(dir: &Path) -> Option<Vec<LogindSession>> {
             seat: field("SEAT"),
             kind: field("TYPE"),
             scope: field("SCOPE"),
+            closing: field("STATE") == "closing",
         });
     }
     sessions.sort_by(|a, b| a.id.cmp(&b.id));
@@ -173,6 +172,10 @@ fn pids(text: &str) -> impl Iterator<Item = u32> + '_ {
 }
 
 /// A process's real uid, from `/proc/<pid>/status`.
+pub fn uid_of_process(proc: &Path, pid: u32) -> Option<u32> {
+    uid_of(proc, pid)
+}
+
 fn uid_of(proc: &Path, pid: u32) -> Option<u32> {
     let bytes = read_bounded(&proc.join(pid.to_string()).join("status"), 64 * 1024)?;
     let text = String::from_utf8_lossy(&bytes);
@@ -270,9 +273,11 @@ pub fn scope_processes(cgroup_root: &Path, path: &str, proc: &Path) -> Option<Ve
     Some(processes)
 }
 
-/// Every process with a `/dev/dri/card*` open, `plymouthd` left out (its
-/// own path quits or kills it). Only the links' targets are compared.
-pub fn drm_holders(proc: &Path) -> Option<Vec<u32>> {
+/// Every process with a `/dev/dri/card*` open, with its uid, `plymouthd`
+/// left out (its own path quits or kills it). Only the links' targets are
+/// compared; `/proc/<pid>/comm` and `/proc/<pid>/status` are read for the
+/// name and the uid.
+pub fn drm_holders(proc: &Path) -> Option<Vec<Process>> {
     let mut holders = Vec::new();
     for entry in std::fs::read_dir(proc).ok()?.flatten().take(65_536) {
         let Some(pid) = entry
@@ -292,7 +297,11 @@ pub fn drm_holders(proc: &Path) -> Option<Vec<u32>> {
             // Not knowing what a process holds is not knowing the card is
             // free.
             Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
-                holders.push(pid);
+                holders.push(Process {
+                    pid,
+                    uid: uid_of(proc, pid).unwrap_or(0),
+                    in_cgroup: false,
+                });
                 continue;
             }
             // Gone, or a kernel thread.
@@ -306,11 +315,15 @@ pub fn drm_holders(proc: &Path) -> Option<Vec<u32>> {
                     .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
             })
         });
-        if holds {
-            holders.push(pid);
+        if holds && let Some(uid) = uid_of(proc, pid) {
+            holders.push(Process {
+                pid,
+                uid,
+                in_cgroup: false,
+            });
         }
     }
-    holders.sort_unstable();
+    holders.sort_by_key(|p| p.pid);
     Some(holders)
 }
 
@@ -352,6 +365,28 @@ pub fn heartbeat(path: &Path) -> Option<HeartbeatFile> {
         identity: hasher.finish(),
         word,
     })
+}
+
+/// Whether a unit's cgroup holds nothing but a root `agetty`: nobody has
+/// begun to sign in on that text login (`login` and the person's shell
+/// would be there). `None` when it cannot be read; an empty cgroup is not
+/// "alone" either.
+pub fn only_a_getty(cgroup: &Path, proc: &Path) -> Option<bool> {
+    let text = std::fs::read_to_string(cgroup.join("cgroup.procs")).ok()?;
+    let mut any = false;
+    for pid in pids(&text).take(4096) {
+        let comm = read_bounded(&proc.join(pid.to_string()).join("comm"), 64)
+            .map(|c| String::from_utf8_lossy(&c).trim().to_string());
+        let Some(uid) = uid_of(proc, pid) else {
+            // Gone between the listing and the read.
+            continue;
+        };
+        if uid != 0 || comm.as_deref() != Some("agetty") {
+            return Some(false);
+        }
+        any = true;
+    }
+    Some(any)
 }
 
 /// `_better-greeter`'s uid in `/etc/passwd`, read directly: a name service
@@ -437,7 +472,7 @@ mod tests {
     }
 
     #[test]
-    fn logind_session_files_give_class_service_seat_and_uid_and_skip_closing() {
+    fn logind_session_files_give_class_service_seat_and_uid_and_mark_closing() {
         let dir = tempfile::tempdir().unwrap();
         write(
             &dir.path().join("2"),
@@ -454,12 +489,15 @@ mod tests {
         write(&dir.path().join("2.ref"), "");
         write(&dir.path().join("7"), "CLASS=user\n");
         let sessions = sessions(dir.path()).unwrap();
-        assert_eq!(sessions.len(), 2, "{sessions:?}");
+        assert_eq!(sessions.len(), 3, "{sessions:?}");
         assert!(sessions[0].is_greetd_person());
         assert_eq!(sessions[0].uid, 1000);
-        assert!(sessions[1].is_greeter());
-        assert_eq!(sessions[1].uid, 118);
-        assert_eq!(sessions[1].scope, "session-c1.scope");
+        // Closing: kept for its scope, never a person's session.
+        assert!(sessions[1].closing);
+        assert!(!sessions[1].is_person());
+        assert!(sessions[2].is_greeter());
+        assert_eq!(sessions[2].uid, 118);
+        assert_eq!(sessions[2].scope, "session-c1.scope");
         assert_eq!(
             super::sessions(&dir.path().join("absent")),
             Some(Vec::new())
@@ -570,7 +608,49 @@ mod tests {
             std::fs::write(proc.join(format!("{pid}/comm")), format!("{name}\n")).unwrap();
             symlink(target, proc.join(format!("{pid}/fd/3"))).unwrap();
         }
-        assert_eq!(drm_holders(proc), Some(vec![10]));
+        std::fs::write(proc.join("10/status"), "Uid:\t118\t118\t118\t118\n").unwrap();
+        assert_eq!(
+            drm_holders(proc),
+            Some(vec![Process {
+                pid: 10,
+                uid: 118,
+                in_cgroup: false
+            }])
+        );
+    }
+
+    #[test]
+    fn a_text_login_is_alone_only_while_its_cgroup_holds_a_root_agetty_and_nothing_else() {
+        let dir = tempfile::tempdir().unwrap();
+        let cgroup = dir.path().join("cgroup");
+        let proc = dir.path().join("proc");
+        let process = |pid: u32, uid: u32, comm: &str| {
+            write(
+                &proc.join(format!("{pid}/status")),
+                &format!("Uid:\t{uid}\t{uid}\t{uid}\t{uid}\n"),
+            );
+            write(&proc.join(format!("{pid}/comm")), &format!("{comm}\n"));
+        };
+        process(10, 0, "agetty");
+        process(11, 0, "login");
+        process(12, 1000, "bash");
+        write(&cgroup.join("cgroup.procs"), "10\n");
+        assert_eq!(only_a_getty(&cgroup, &proc), Some(true));
+        write(&cgroup.join("cgroup.procs"), "11\n");
+        assert_eq!(
+            only_a_getty(&cgroup, &proc),
+            Some(false),
+            "a sign-in has begun"
+        );
+        write(&cgroup.join("cgroup.procs"), "10\n12\n");
+        assert_eq!(
+            only_a_getty(&cgroup, &proc),
+            Some(false),
+            "a person's shell"
+        );
+        write(&cgroup.join("cgroup.procs"), "");
+        assert_eq!(only_a_getty(&cgroup, &proc), Some(false));
+        assert_eq!(only_a_getty(&dir.path().join("none"), &proc), None);
     }
 
     #[test]

@@ -127,3 +127,10 @@ also holds, and the package must ship:
 - the text logins on tty8 and tty9 (ADR 0047, proposed), and the
   supervisor's `DeviceAllow=` for `/dev/tty1`, `/dev/tty8`, `/dev/tty9`;
 - `StartLimitIntervalSec=120` on the supervisor's unit.
+
+After the third review of ticket 267 (2026-11-22): the supervisor's
+`OnFailure=` is now `better-os-login-backstop-failed.timer` (at once and
+every 30 s), which the package ships beside the service; the two drop-ins
+gained `After=better-os-login-supervisor.service` and test the
+supervisor's state, not the display-manager link, so they are safe on every
+boot whatever is chosen.

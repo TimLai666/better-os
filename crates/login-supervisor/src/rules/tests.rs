@@ -42,6 +42,7 @@ fn session(class: &str, service: &str, uid: u32) -> LogindSession {
         seat: "seat0".into(),
         kind: "wayland".into(),
         scope: "session-s.scope".into(),
+        closing: false,
     }
 }
 
@@ -84,6 +85,7 @@ fn good() -> Seen {
         scopes: Vec::new(),
         drm_holders: Some(Vec::new()),
         text_login_active: None,
+        text_login_alone: None,
         heartbeat: None,
         plymouth: None,
         greeter_uid: Some(GREETER),
@@ -406,7 +408,11 @@ fn a_greeter_session_scope_that_outlives_greetd_is_killed_and_waited_for() {
     let mut m = stopping(issued);
     let mut seen = good();
     seen.scopes = vec![scope(SCOPE, &[0, GREETER])];
-    seen.drm_holders = Some(vec![201]);
+    seen.drm_holders = Some(vec![Process {
+        pid: 201,
+        uid: GREETER,
+        in_cgroup: false,
+    }]);
     let actions = m.step(issued + SECOND, &seen);
     assert!(
         actions.is_empty(),
@@ -439,6 +445,85 @@ fn a_greeter_session_scope_that_outlives_greetd_is_killed_and_waited_for() {
 const TICK_FOR_TEST: Micros = limits::TICK;
 
 #[test]
+fn a_remembered_scope_that_is_gone_is_dropped_at_the_next_look() {
+    let mut m = stopping(T0 + 20 * SECOND);
+    let mut seen = good();
+    seen.scopes = vec![scope(SCOPE, &[])];
+    seen.drm_holders = Some(Vec::new());
+    m.track_scopes(&seen);
+    assert!(m.state.scopes.is_empty(), "{:?}", m.state.scopes);
+    // One that cannot be read is kept.
+    m.state.scopes.push(SCOPE.into());
+    seen.scopes = vec![ScopeSeen {
+        processes: None,
+        ..scope(SCOPE, &[])
+    }];
+    m.track_scopes(&seen);
+    assert_eq!(m.state.scopes, [SCOPE]);
+}
+
+#[test]
+fn every_live_greeter_scope_is_remembered_however_many_there_are() {
+    let mut m = machine();
+    let mut seen = good();
+    seen.scopes = (0..12)
+        .map(|i| {
+            scope(
+                &format!("/user.slice/user-118.slice/session-c{i}.scope"),
+                &[GREETER],
+            )
+        })
+        .collect();
+    m.track_scopes(&seen);
+    assert_eq!(m.state.scopes.len(), 12);
+}
+
+#[test]
+fn a_greeter_scope_seen_this_look_is_killed_even_when_not_remembered() {
+    let mut m = machine();
+    let mut seen = good();
+    seen.scopes = vec![scope(SCOPE, &[0, GREETER])];
+    let mut out = Vec::new();
+    m.kill_scopes(&seen, Step::Greeter, &mut out);
+    assert!(
+        out.contains(&Action::KillScope {
+            path: SCOPE.into(),
+            greeter: GREETER
+        }),
+        "{out:?}"
+    );
+}
+
+#[test]
+fn a_restart_with_systemds_count_unknown_after_a_text_login_continues_it() {
+    // `systemctl show` did not answer at the start: the start is taken as
+    // the supervisor's own restart, which keeps the earlier deadlines and,
+    // here, the confirmed text login; it is never taken as a new start.
+    let mut text_login = machine().state;
+    text_login.unit_restarts = Some(0);
+    text_login.phase = Phase::TextLogin {
+        step: Step::Greeter,
+        tty: TextTty::Tty8,
+        started: T0 + 70 * SECOND,
+        starts: 1,
+        confirmed: true,
+    };
+    let (m, actions) = start(
+        Loaded::Found(Box::new(text_login.clone())),
+        None,
+        UnitStart {
+            began: None,
+            restarts: None,
+        },
+        T0 + 300 * SECOND,
+    );
+    assert_eq!(m.state.phase, text_login.phase);
+    assert_eq!(m.state.appearance, 1);
+    assert!(journal(&actions, "REASON=restarted"));
+    assert!(!actions.iter().any(|a| matches!(a, Action::StartUnit(_))));
+}
+
+#[test]
 fn a_scope_with_a_persons_process_is_never_killed() {
     let issued = T0 + 20 * SECOND;
     let mut m = stopping(issued);
@@ -459,7 +544,11 @@ fn a_greeter_that_cannot_be_killed_gets_the_text_login_at_the_stops_deadline() {
     let mut m = stopping(issued);
     let mut seen = good();
     seen.scopes = vec![scope(SCOPE, &[GREETER])];
-    seen.drm_holders = Some(vec![200]);
+    seen.drm_holders = Some(vec![Process {
+        pid: 200,
+        uid: GREETER,
+        in_cgroup: false,
+    }]);
     assert!(starts_text_login(&m.step(issued + 5 * SECOND, &seen)).is_none());
     let actions = m.step(issued + 6 * SECOND, &seen);
     assert_eq!(starts_text_login(&actions), Some(TextTty::Tty8));
@@ -826,6 +915,17 @@ fn a_screen_connected_after_a_text_login_on_a_machine_with_none_brings_the_greet
     }]);
     assert!(m.step(T0 + 101 * SECOND, &seen).is_empty());
     seen.logind = logind(Vec::new());
+    // Someone began to sign in on it while logind was down: unseen by
+    // logind, it is in the text login's own cgroup.
+    seen.text_login_alone = Some(false);
+    assert!(m.step(T0 + 102 * SECOND, &seen).is_empty());
+    seen.text_login_alone = None;
+    assert!(
+        m.step(T0 + 102 * SECOND, &seen).is_empty(),
+        "unknown is not alone"
+    );
+    seen.text_login_alone = Some(true);
+    assert_eq!(m.needs().text_login_alone, Some(TextTty::Tty8));
     let actions = m.step(T0 + 102 * SECOND, &seen);
     assert!(actions.contains(&Action::StopUnit(Unit::Fallback(TextTty::Tty8))));
     assert!(actions.contains(&Action::ClearFallbackActive));

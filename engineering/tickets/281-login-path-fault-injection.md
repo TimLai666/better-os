@@ -99,3 +99,19 @@ the container cannot:
   manager stopped and started again beginning anew, tty8 refused moving to
   tty9, the timer active right before the supervisor, getty on tty1 and
   plymouth-quit standing aside, and both backstops' conditions.
+
+After the third review of ticket 267 (2026-11-22):
+
+- **A hung logind holding the greeter's card.** `SIGSTOP` systemd-logind
+  with the greeter up, `SIGKILL` `cosmic-comp`, let the supervisor fall
+  back: record `fuser -v /dev/dri/card*` (logind's own copy is expected to
+  hold it), whether tty8 is drawn, and whether it is once logind is
+  `SIGCONT`ed. The spec states it as a limit.
+- **The drop-ins on a boot without the display manager.** With the Better
+  OS login screen chosen, boot with `systemd.unit=multi-user.target`, with
+  `3`, with the supervisor masked and with its unit made unloadable: each
+  must end with Plymouth gone and a getty prompt on tty1 (the container
+  check covers the units, not a boot).
+- **The restart bounds.** The supervisor `SIGKILL`ed, and `SIGSTOP`ped for
+  its watchdog, at the tick that decides the text login's start: the
+  prompt by 86 s and by 101 s (90 s at boot).

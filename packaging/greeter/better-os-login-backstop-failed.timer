@@ -1,0 +1,17 @@
+[Unit]
+Description=Better OS login backstop for a failed login supervisor, now and every 30 s
+Documentation=https://github.com/TimLai666/better-os/blob/main/design/login-screen-spec.md
+# Started by the supervisor's OnFailure= once systemd has given up on it.
+# What is true at that moment (a greeter about to become ready, a person
+# signed in) may stop being true while no supervisor is left, so the
+# backstop looks again 30 s after each look, for the rest of the boot; it
+# does nothing while the supervisor runs again.
+DefaultDependencies=no
+Conflicts=shutdown.target
+Before=shutdown.target
+
+[Timer]
+OnActiveSec=0
+OnUnitInactiveSec=30
+AccuracySec=1s
+Unit=better-os-login-backstop-failed.service

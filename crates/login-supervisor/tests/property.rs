@@ -95,8 +95,20 @@ struct Scenario {
     refused: Vec<TextTty>,
     /// After the person's logout greetd's first start shows nothing.
     nothing_after_logout: bool,
-    /// How long each `systemctl` call takes.
+    /// How long each `systemctl` call takes, the ones made while looking
+    /// and at start included.
     latency: Micros,
+    /// More logins and logouts after the first (`person`): each logout
+    /// makes greetd start a new greeter session, in a new scope.
+    cycles: Vec<(Micros, Micros)>,
+    /// The greeter's heartbeat stops changing from then on (since T0).
+    heartbeat_freezes_at: Option<Micros>,
+    /// A person's compositor holds a card the whole time.
+    foreign_card_holder: bool,
+    /// Someone signs in on the text login, unseen by logind.
+    signed_in_on_text_login: bool,
+    /// Neither greetd's tree nor logind can be read in this window.
+    sessions_unknown: Option<(Micros, Micros)>,
 }
 
 impl Scenario {
@@ -116,6 +128,11 @@ impl Scenario {
             refused: Vec::new(),
             nothing_after_logout: false,
             latency: 0,
+            cycles: Vec::new(),
+            heartbeat_freezes_at: None,
+            foreign_card_holder: false,
+            signed_in_on_text_login: false,
+            sessions_unknown: None,
         }
     }
 
@@ -169,6 +186,10 @@ struct Fake {
     readies: Vec<Micros>,
     accepting: bool,
     downtime: Micros,
+    /// The supervisor dies after this many more actions, mid-tick: what is
+    /// left of the tick is not done and not saved.
+    crash_after_performs: Option<usize>,
+    crashed: bool,
 }
 
 impl Fake {
@@ -199,6 +220,8 @@ impl Fake {
             readies: Vec::new(),
             accepting: false,
             downtime: 0,
+            crash_after_performs: None,
+            crashed: false,
         }
     }
 
@@ -236,8 +259,32 @@ impl Fake {
             && self.scenario.logind_until.is_none_or(|until| t < until)
     }
 
-    fn scope_path(number: u32) -> String {
-        format!("/user.slice/user-{GREETER_UID}.slice/session-c{number}.scope")
+    fn scope_path(number: u32, session: u32) -> String {
+        format!("/user.slice/user-{GREETER_UID}.slice/session-c{number}s{session}.scope")
+    }
+
+    /// Each logout makes greetd start a new greeter session.
+    fn session_index(&self) -> u32 {
+        let t = self.since_t0();
+        let first = u32::from(self.logged_out());
+        first
+            + self
+                .scenario
+                .cycles
+                .iter()
+                .filter(|(_, out)| t >= *out)
+                .count() as u32
+    }
+
+    fn current_scope_path(&self, run: &GreeterRun) -> String {
+        Self::scope_path(run.number, self.session_index())
+    }
+
+    fn sessions_unknown(&self) -> bool {
+        let t = self.since_t0();
+        self.scenario
+            .sessions_unknown
+            .is_some_and(|(from, until)| t >= from && t < until)
     }
 
     /// Settles every stop as the stop behaviour says.
@@ -292,14 +339,18 @@ impl Fake {
         if self.scenario.automatic_login && run.number == 1 {
             return self.now >= run.started_at + SECOND;
         }
-        match self.scenario.person {
-            Some((login, logout)) => {
-                self.first_ready.is_some()
-                    && self.since_t0() >= login
-                    && logout.is_none_or(|out| self.since_t0() < out)
-            }
+        let t = self.since_t0();
+        let first = match self.scenario.person {
+            Some((login, logout)) => t >= login && logout.is_none_or(|out| t < out),
             None => false,
-        }
+        };
+        self.first_ready.is_some()
+            && (first
+                || self
+                    .scenario
+                    .cycles
+                    .iter()
+                    .any(|(login, logout)| t >= *login && t < *logout))
     }
 
     fn greeter_session_open(&self) -> bool {
@@ -332,9 +383,17 @@ impl Fake {
             }
             _ => None,
         };
+        // The freeze is the first greetd's greeter's.
+        let frozen = frozen.or(self.scenario.heartbeat_freezes_at.and_then(|at| {
+            (run.number == 1 && self.since_t0() >= at)
+                .then(|| (T0 + at).saturating_sub(run.started_at + first))
+        }));
         let generation = frozen.unwrap_or(since_first) / (5 * SECOND);
         Some(HeartbeatFile {
-            identity: (u64::from(run.number) << 40) | (generation << 1) | u64::from(ready),
+            identity: (u64::from(run.number) << 40)
+                | (u64::from(self.session_index()) << 32)
+                | (generation << 1)
+                | u64::from(ready),
             word: if ready { Word::Ready } else { Word::Starting },
         })
     }
@@ -352,7 +411,12 @@ impl Fake {
             let open_at = run.started_at + s;
             self.now >= open_at && run.stop_at.is_none_or(|stop| stop > open_at)
         });
-        if !run.scope_alive || !opened || !self.scenario.account || self.scenario.automatic_login {
+        if !run.scope_alive
+            || !opened
+            || !self.scenario.account
+            || self.scenario.automatic_login
+            || (self.current().is_some_and(|r| r.number == run.number) && self.person_session())
+        {
             return Vec::new();
         }
         vec![
@@ -406,18 +470,24 @@ impl Fake {
         };
         let current = self.current().copied();
         let mut sessions = Vec::new();
-        if self.greeter_session_open()
-            && let Some(run) = current
-        {
-            sessions.push(LogindSession {
-                id: format!("c{}", run.number),
-                uid: GREETER_UID,
-                class: "greeter".into(),
-                service: "greetd-greeter".into(),
-                seat: "seat0".into(),
-                kind: "wayland".into(),
-                scope: format!("session-c{}.scope", run.number),
-            });
+        // logind lists a greeter session while its scope has processes: as
+        // closing once greetd, its leader's parent, is gone.
+        for run in &self.runs {
+            let open =
+                current.is_some_and(|c| c.number == run.number) && self.greeter_session_open();
+            let lingering = !self.scope_processes(run).is_empty();
+            if open || lingering {
+                sessions.push(LogindSession {
+                    id: format!("c{}", run.number),
+                    uid: GREETER_UID,
+                    class: "greeter".into(),
+                    service: "greetd-greeter".into(),
+                    seat: "seat0".into(),
+                    kind: "wayland".into(),
+                    scope: format!("session-c{}s{}.scope", run.number, self.session_index()),
+                    closing: !open,
+                });
+            }
         }
         if self.person_session() {
             sessions.push(LogindSession {
@@ -428,6 +498,7 @@ impl Fake {
                 seat: "seat0".into(),
                 kind: "wayland".into(),
                 scope: "session-2.scope".into(),
+                closing: false,
             });
         }
         let logind = self.logind_answers().then_some(Logind {
@@ -470,7 +541,7 @@ impl Fake {
             && run.greetd_alive
             && !self.scope_processes(&run).is_empty()
         {
-            paths.push((Self::scope_path(run.number), false));
+            paths.push((self.current_scope_path(&run), false));
         }
         paths.extend(needs.scopes.iter().map(|p| (p.clone(), false)));
         for (path, greeter_session) in paths {
@@ -481,7 +552,7 @@ impl Fake {
             let processes = self
                 .runs
                 .iter()
-                .find(|r| Self::scope_path(r.number) == path)
+                .find(|r| self.current_scope_path(r) == path)
                 .map(|r| self.scope_processes(r))
                 .unwrap_or_default();
             scopes.push(ScopeSeen {
@@ -491,12 +562,23 @@ impl Fake {
             });
         }
         // A live compositor holds the card.
-        let holders: Vec<u32> = self
+        let mut holders: Vec<Process> = self
             .runs
             .iter()
             .filter(|r| !self.scope_processes(r).is_empty())
-            .map(|r| 151 + r.number * 10)
+            .map(|r| Process {
+                pid: 151 + r.number * 10,
+                uid: GREETER_UID,
+                in_cgroup: false,
+            })
             .collect();
+        if self.scenario.foreign_card_holder {
+            holders.push(Process {
+                pid: 900,
+                uid: PERSON_UID,
+                in_cgroup: false,
+            });
+        }
         if let Some((command, at)) = self.plymouth
             && !self.scenario.plymouth_hangs
             && !(self.scenario.quit_hangs && command != PlymouthCommand::Deactivate)
@@ -508,16 +590,30 @@ impl Fake {
                 self.plymouthd_alive = false;
             }
         }
+        let text_login_alone = needs.text_login_alone.map(|tty| {
+            self.fallbacks.iter().any(|(t, _)| *t == tty) && !self.scenario.signed_in_on_text_login
+        });
+        // `systemctl is-active` and `show` take their time while looking.
+        if needs.text_login.is_some() || needs.text_login_alone.is_some() {
+            self.now += self.scenario.latency;
+        }
+        let unknown = self.sessions_unknown();
         let text_login_active = needs.text_login.map(|tty| {
             self.fallbacks.iter().any(|(t, _)| *t == tty) && !self.scenario.refused.contains(&tty)
         });
+        let (logind, greetd) = if unknown {
+            (None, None)
+        } else {
+            (logind, Some(Greetd { processes }))
+        };
         Seen {
             drm,
             logind,
-            greetd: Some(Greetd { processes }),
+            greetd,
             scopes,
             drm_holders: needs.drm_holders.then_some(holders),
             text_login_active,
+            text_login_alone,
             heartbeat: self.heartbeat(),
             plymouth: if self.plymouth.is_some() {
                 Some(Job::Running)
@@ -557,6 +653,16 @@ impl World for Fake {
     }
 
     fn perform(&mut self, action: &Action) -> Result<(), String> {
+        if self.crashed {
+            return Ok(());
+        }
+        if let Some(left) = self.crash_after_performs.as_mut() {
+            if *left == 0 {
+                self.crashed = true;
+                return Ok(());
+            }
+            *left -= 1;
+        }
         match action {
             Action::StartUnit(unit) => {
                 self.now += self.scenario.latency;
@@ -614,12 +720,12 @@ impl World for Fake {
             Action::KillScope { path, greeter } => {
                 assert_eq!(*greeter, GREETER_UID);
                 let now = self.now;
-                if let Some(run) = self
+                let index = self
                     .runs
-                    .iter_mut()
-                    .find(|r| Self::scope_path(r.number) == *path)
-                {
-                    run.killed_at.get_or_insert(now);
+                    .iter()
+                    .position(|r| self.current_scope_path(r) == *path);
+                if let Some(index) = index {
+                    self.runs[index].killed_at.get_or_insert(now);
                 }
             }
             Action::Plymouth(command) => {
@@ -646,7 +752,9 @@ impl World for Fake {
     }
 
     fn save(&mut self, state: &State) -> Result<(), String> {
-        self.saved = Some(serde_json::to_string(state).unwrap());
+        if !self.crashed {
+            self.saved = Some(serde_json::to_string(state).unwrap());
+        }
         Ok(())
     }
 
@@ -715,8 +823,8 @@ impl Run {
         );
         assert_eq!(
             self.fake.starts_under_a_live_greeter, 0,
-            "a start under an earlier greeter's session that could have been killed; journal {:?}",
-            self.fake.journal
+            "a start under an earlier greeter's session that could have been killed; journal {:?}\nruns {:?}\nstate {:?}",
+            self.fake.journal, self.fake.runs, self.state
         );
         if let Some((tty, marked)) = self.fake.fallback_marker {
             let started = self
@@ -760,8 +868,23 @@ impl Run {
 /// Runs the supervisor for `seconds` of fake time from T0, restarting it at
 /// each `(seconds after T0, downtime)` of `restarts` from what it saved, as
 /// systemd's automatic restart does (one more `NRestarts`).
-fn run_with_restarts(scenario: Scenario, seconds: u64, restarts: &[(u64, Micros)]) -> Run {
+/// A restart of the supervisor: when (since T0), how long it is down, and
+/// whether it dies in the middle of a tick, after this many of the tick's
+/// actions, with the rest undone and unsaved.
+#[derive(Clone, Copy, Debug)]
+struct Restart {
+    at: Micros,
+    downtime: Micros,
+    mid_tick: Option<usize>,
+}
+
+/// Runs the supervisor for `seconds` of fake time from T0, restarting it at
+/// each of `restarts` from what it last saved, as systemd's automatic
+/// restart does (one more `NRestarts`). Every start pays the scenario's
+/// latency for its `systemctl show`.
+fn run_restarting(scenario: Scenario, seconds: u64, restarts: &[Restart]) -> Run {
     let mut fake = Fake::new(scenario);
+    fake.now += fake.scenario.latency;
     let mut supervisor = Supervisor::start(
         &mut fake,
         Loaded::Absent,
@@ -775,14 +898,22 @@ fn run_with_restarts(scenario: Scenario, seconds: u64, restarts: &[(u64, Micros)
     let mut done = 0;
     let mut restarted = 0;
     while fake.now < end {
-        if let Some((at, downtime)) = restarts.get(done)
-            && fake.now >= T0 + at * SECOND
-        {
+        let due = restarts
+            .get(done)
+            .filter(|r| fake.now >= T0 + r.at)
+            .copied();
+        if let Some(restart) = due {
+            if let Some(after) = restart.mid_tick {
+                fake.crash_after_performs = Some(after);
+                supervisor.tick(&mut fake);
+            }
             done += 1;
             restarted += 1;
+            fake.crash_after_performs = None;
+            fake.crashed = false;
             fake.forget_children();
-            fake.now += downtime;
-            fake.downtime += downtime;
+            fake.now += restart.downtime + fake.scenario.latency;
+            fake.downtime += restart.downtime;
             let saved: State = serde_json::from_str(fake.saved.as_ref().unwrap()).unwrap();
             let now = fake.now;
             supervisor = Supervisor::start(
@@ -804,6 +935,18 @@ fn run_with_restarts(scenario: Scenario, seconds: u64, restarts: &[(u64, Micros)
         state: supervisor.state().clone(),
         fake,
     }
+}
+
+fn run_with_restarts(scenario: Scenario, seconds: u64, restarts: &[(u64, Micros)]) -> Run {
+    let restarts: Vec<Restart> = restarts
+        .iter()
+        .map(|(at, downtime)| Restart {
+            at: at * SECOND,
+            downtime: *downtime,
+            mid_tick: None,
+        })
+        .collect();
+    run_restarting(scenario, seconds, &restarts)
 }
 
 fn run(scenario: Scenario, seconds: u64) -> Run {
@@ -1378,9 +1521,34 @@ fn random_greeter(rng: &mut Rng) -> Greeter {
     }
 }
 
+/// What one restart of the supervisor may cost beyond its downtime: the
+/// `systemctl show` at start, the call it asks for again and the next
+/// tick's call, each at the scenario's latency; a stop it interrupted given
+/// its kill and 2 s to reap once more; and a tick.
+fn restart_cost(latency: Micros) -> Micros {
+    3 * latency + (limits::STOP - limits::KILL_SESSION) + limits::TICK
+}
+
+/// The bound a run is held to: 80 s, plus each restart's downtime and
+/// cost, plus, when tty8 is refused, the other terminal's 3 s, the call
+/// that starts it and the looks that find it not active.
+fn bound(scenario: &Scenario, restarts: &[Restart]) -> Micros {
+    let refused = if scenario.refused.is_empty() {
+        0
+    } else {
+        limits::TEXT_LOGIN + 3 * scenario.latency + limits::TICK
+    };
+    limits::BUDGET
+        + restarts
+            .iter()
+            .map(|r| r.downtime + restart_cost(scenario.latency))
+            .sum::<Micros>()
+        + refused
+}
+
 #[test]
 fn any_order_of_failures_ends_in_a_prompt_within_the_budget() {
-    for seed in 1..=1500u64 {
+    for seed in 1..=2000u64 {
         let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
         let cards = rng.pick(&[
             Cards::Real,
@@ -1417,32 +1585,183 @@ fn any_order_of_failures_ends_in_a_prompt_within_the_budget() {
             refused: Vec::new(),
             nothing_after_logout: false,
             latency: rng.below(9) * SECOND / 4,
+            cycles: Vec::new(),
+            heartbeat_freezes_at: None,
+            foreign_card_holder: rng.chance(10),
+            signed_in_on_text_login: false,
+            sessions_unknown: if rng.chance(10) {
+                let from = rng.below(60) * SECOND;
+                Some((from, from + rng.below(40) * SECOND))
+            } else {
+                None
+            },
         };
         if rng.chance(5) {
             scenario.refused = vec![TextTty::Tty8];
         }
-        let restarts: Vec<(u64, Micros)> = (0..rng.below(3))
-            .map(|i| {
-                (
-                    5 + i * 25 + rng.below(20),
-                    SECOND + rng.below(5) * SECOND / 4,
-                )
+        // A person who signs in once the greeter is up and out again.
+        let person = rng.chance(10);
+        if person {
+            let login = rng.below(30) * SECOND;
+            scenario.person = Some((login, Some(login + rng.below(30) * SECOND)));
+        }
+        let restarts: Vec<Restart> = (0..rng.below(3))
+            .map(|i| Restart {
+                at: (5 + i * 25 + rng.below(20)) * SECOND + rng.below(4) * SECOND / 4,
+                // A crash (about a second) or a hang (watchdog 10 s,
+                // abort 5 s, restart 1 s).
+                downtime: if rng.chance(25) {
+                    16 * SECOND
+                } else {
+                    SECOND + rng.below(5) * SECOND / 4
+                },
+                mid_tick: if rng.chance(50) {
+                    Some(rng.below(8) as usize)
+                } else {
+                    None
+                },
             })
             .collect();
-        let refused = !scenario.refused.is_empty();
-        let run = run_with_restarts(scenario.clone(), 150, &restarts);
-        let bound =
-            limits::BUDGET + run.fake.downtime + if refused { limits::TEXT_LOGIN } else { 0 };
+        let run = run_restarting(scenario.clone(), 200, &restarts);
+        let bound = bound(&scenario, &restarts);
         let prompt = run.prompt_at();
+        // A person's session satisfies the property too.
+        let satisfied = prompt.is_some_and(|at| at <= T0 + bound)
+            || (person && run.fake.first_ready.is_some_and(|at| at <= T0 + bound));
         assert!(
-            prompt.is_some_and(|at| at <= T0 + bound),
+            satisfied,
             "seed {seed}: prompt {:?} s, bound {} s\n{scenario:?}\nrestarts {restarts:?}\n{:?}",
             prompt.map(|at| (at - T0) as f64 / SECOND as f64),
-            bound / SECOND,
+            bound as f64 / SECOND as f64,
             run.fake.journal
         );
         run.check_invariants();
     }
+}
+
+#[test]
+fn the_restart_bounds_in_the_spec_hold_with_every_call_at_its_limit() {
+    // A crash or a hang in the tick that decides the text login's start,
+    // with every call taking its whole 2 s: the spec states 86 s and 101 s.
+    let worst = Greeter {
+        session: Some(SECOND),
+        heartbeat: Some(2 * SECOND),
+        ready: None,
+        hangs_after_ready: None,
+        stop: Stop::AtTheLimit,
+    };
+    let mut scenario = Scenario::good().starts(&[worst]);
+    scenario.latency = limits::CALL;
+    let plain = run(scenario.clone(), 140);
+    plain.assert_property();
+    let (_, decided) = plain.fake.fallbacks[0];
+    let mut worst_crash = 0;
+    let mut worst_hang = 0;
+    for offset in 0..24u64 {
+        for mid_tick in [None, Some(0), Some(1), Some(3)] {
+            for (downtime, worst_seen) in
+                [(SECOND, &mut worst_crash), (16 * SECOND, &mut worst_hang)]
+            {
+                let at = (decided - T0).saturating_sub(4 * SECOND) + offset * limits::TICK;
+                let restarts = [Restart {
+                    at,
+                    downtime,
+                    mid_tick,
+                }];
+                let run = run_restarting(scenario.clone(), 200, &restarts);
+                let prompt = run.prompt_at().expect("a prompt") - T0;
+                *worst_seen = (*worst_seen).max(prompt);
+                run.check_invariants();
+            }
+        }
+    }
+    assert!(
+        worst_crash <= 86 * SECOND,
+        "a crash: {} s",
+        worst_crash as f64 / 1e6
+    );
+    assert!(
+        worst_hang <= 101 * SECOND,
+        "a hang: {} s",
+        worst_hang as f64 / 1e6
+    );
+    // And the double fault: tty8 refused, every call at its limit: 86 s.
+    let mut refused = scenario.clone();
+    refused.refused = vec![TextTty::Tty8];
+    let run = run(refused, 140);
+    run.assert_property_within(86 * SECOND);
+}
+
+#[test]
+fn nine_logouts_then_a_greeter_that_ignores_sigterm_still_has_its_session_killed() {
+    let stubborn = Greeter {
+        stop: Stop::CompositorIgnoresTerm,
+        ..GOOD
+    };
+    let mut scenario = Scenario::good().starts(&[stubborn, GOOD]);
+    // Ten sessions in one boot: nine sign-ins and sign-outs, each logout
+    // leaving greetd's greeter in a new session scope.
+    scenario.person = Some((20 * SECOND, Some(30 * SECOND)));
+    scenario.cycles = (1..9u64)
+        .map(|i| ((20 + 20 * i) * SECOND, (30 + 20 * i) * SECOND))
+        .collect();
+    // Then that greeter's heartbeat freezes: a restart, whose stop its
+    // compositor ignores.
+    scenario.heartbeat_freezes_at = Some(200 * SECOND);
+    let run = run(scenario, 280);
+    run.check_invariants();
+    assert_eq!(run.state.appearance, 11, "{:?}", run.fake.journal);
+    assert!(run.has_line("7", "retried", "heartbeat-stale"));
+    assert!(
+        run.has_line("7", "ok", "session-killed"),
+        "{:?}",
+        run.fake.journal
+    );
+    assert_eq!(run.fake.runs.len(), 2);
+    assert!(!run.fake.runs[0].scope_alive);
+    assert!(run.state.scopes.len() <= 1, "{:?}", run.state.scopes);
+}
+
+#[test]
+fn a_persons_compositor_holding_a_card_does_not_hold_up_the_greeters_stops() {
+    let mut scenario = Scenario::good().starts(&[no_heartbeat(), GOOD]);
+    scenario.foreign_card_holder = true;
+    let run = run(scenario, 80);
+    run.assert_property();
+    assert_eq!(run.fake.runs.len(), 2, "the second attempt was started");
+    assert!(run.fake.fallbacks.is_empty());
+}
+
+#[test]
+fn someone_signed_in_on_the_text_login_unseen_by_logind_keeps_it_when_a_screen_comes() {
+    let mut scenario = Scenario::good().starts(&[no_heartbeat()]);
+    scenario.cards = Cards::RealNoScreen;
+    scenario.cards_later = Some((120 * SECOND, Cards::Real));
+    scenario.signed_in_on_text_login = true;
+    let run = run(scenario, 200);
+    run.check_invariants();
+    assert_eq!(run.state.appearance, 1, "the text login was left alone");
+    assert!(matches!(run.state.phase, Phase::TextLogin { .. }));
+}
+
+#[test]
+fn with_greetds_tree_and_logind_both_unreadable_the_text_login_comes_beside_the_greeter() {
+    let mut scenario = Scenario::good().starts(&[no_heartbeat()]);
+    scenario.sessions_unknown = Some((0, 200 * SECOND));
+    let run = run(scenario, 100);
+    run.assert_property();
+    assert!(
+        run.fake.runs.iter().all(|r| r.stop_at.is_none()),
+        "nothing stopped"
+    );
+    assert!(
+        run.fake
+            .journal
+            .iter()
+            .any(|l| l.ends_with("RESULT=fell-back REASON=sessions-unknown")),
+        "{:?}",
+        run.fake.journal
+    );
 }
 
 #[test]
@@ -1459,6 +1778,7 @@ fn a_stale_logind_session_does_not_hold_the_greeter_once_greetds_tree_is_empty()
                 seat: "seat0".into(),
                 kind: "wayland".into(),
                 scope: "session-2.scope".into(),
+                closing: false,
             }],
         }),
         greetd: Some(Greetd {

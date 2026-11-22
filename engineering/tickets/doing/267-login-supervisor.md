@@ -3,6 +3,8 @@
 **Spec:** `design/login-screen-spec.md` section 5.10; `engineering/specs/login-screen-security.md` (the supervisor, the backstop); ADR 0044 and its amendment of 2026-11-22; ADR 0033 (the records' format)
 **Blocked by:** 260
 
+**Blocked:** on the owner's decision about ADR 0047 (proposed 2026-11-22; the owner has been asked): the scope kill, the DRM-holder reads and the move to tty8 and tty9 widen what ADR 0044 and AGENTS.md let the supervisor do. Accepted, AGENTS.md takes the rule text the ADR gives and this ticket goes to `done/`; refused, the supervisor needs another way to end the greeter's session.
+
 ## Why
 
 The owner's requirement (2026-11-21): a boot must never stay on the splash
@@ -182,3 +184,39 @@ tickets 264, 265 and 281.
   conditions. That run's `installer` job failed on one shellcheck note in
   `login-path.sh`, fixed in the commit that moved this ticket here.
 
+2026-11-22, the third review round (`/home/tim/Developer/better-os-evidence/267/review-2-2026-11-22.md`),
+every item fixed and tested:
+
+- The drop-ins for `getty@tty1` and `plymouth-quit` skip only while the
+  supervisor's own state is active, activating or reloading, read with a
+  time limit and ordered after it; never by the link. Container: with the
+  link set and the supervisor not started, masked, or its unit broken, and
+  with another display manager, both run; while it runs, both stand aside.
+- Scopes are remembered until seen gone, at every look, with no cap; the
+  kill reaches the scopes seen that look too, and closing greeter sessions
+  in logind's files are read for their scope (a session that opened just
+  before its stop was missed otherwise: found by the randomized run).
+  Property: nine logouts, then a greeter whose compositor ignores
+  `SIGTERM`.
+- The failed supervisor's backstop runs from a timer, at once and every
+  30 s, only while the supervisor does not run, and a greeter counts as
+  alive only when it says `ready`. Container: a greeter stuck on `starting`
+  gets the text login; a ready greeter that goes stale gets it at the
+  timer's next look.
+- A text login on a machine that had no screen is stopped for the greeter
+  only while its own cgroup holds nothing but a root `agetty`.
+- The kill goes through pidfds, the scope read again at that moment; DRM
+  holders count only when they are the greeter's.
+- A restart that cut a stop short gives it its kill and 2 s to reap once
+  more. Restated bounds, measured in `tests/property.rs` with every call at
+  2 s, latency in the looks and at start, crashes between ticks and in the
+  middle of one: 86 s after a crash, 101 s after a hang, 86 s for tty8
+  refused; 90 s at boot under the timer. The randomized run (2000 seeds)
+  now has 16 s hangs, crashes mid-tick, unknown sessions, a person's
+  session and a person's compositor holding a card.
+- Investigated: a hung logind keeps the DRM master through its own copy of
+  the descriptor; the supervisor may not end logind and no longer waits for
+  it; stated in the spec's limits, checked in ticket 281.
+- Corrected: no released Better Manager reads these records at all (the
+  reader came with ticket 140 after v0.2.16), so nothing released drops
+  them; the lenient reading is for versions to come.

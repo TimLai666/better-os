@@ -1236,8 +1236,8 @@ decided anything. Now:
 | `better-os-gnome-unlock.service` | the GNOME unlock service | `Wants=` from the supervisor | `Type=dbus`, `BusName=org.gnome.DisplayManager`, `Restart=always`, `Conflicts=gdm.service` |
 | `better-os-login-fallback@.service` | `agetty` with the fall back's message, on **tty8** (the supervisor's) or **tty9** (the supervisor's second, and the backstops') | only the supervisor or a backstop | `Conflicts=getty@%i.service`, `Type=simple` (getty's `Type=idle` may wait 5 s), `StartLimitIntervalSec=0`. Both terminals are past logind's automatic VTs (`NAutoVTs=6`): logind starts `autovt@ttyN` when the screen switches to a VT of 1 to 6 with nobody on it, and that getty would conflict a text login there out and lose its message; on tty8 and tty9 nothing is ever spawned |
 | `better-os-login-backstop.service` | the boot's last guard, with no Better OS code in it | `better-os-login-backstop.timer`: `OnActiveSec=82`, `AccuracySec=1s` (the default is a minute), `DefaultDependencies=no`, `After=` everything the supervisor is after and `Before=better-os-login-supervisor.service`, so it becomes active the moment before the supervisor's first start (with the default dependencies it would start at `sysinit.target` and fire mid-attempt on a boot that waits for rc-local or the network) | `ExecCondition=` that the greeter never reported `ready` this boot (`/run/better-os-greeter/ready-seen` absent), no fall back is running (`/run/better-os/login-fallback.active` absent), and the supervisor never saw the property hold this boot (`/run/better-os/login-held` absent: an automatic login has no greeter); then only standard programs, the prompt first: `cp --update=none` of the fixed message for the "supervisor" row into `/run/better-os/login-fallback.issue`, `systemctl --no-block start better-os-login-fallback@tty9.service`, `touch /run/better-os/login-fallback.active`, `timeout 2 chvt 9`, `timeout 4 plymouth quit`, `pkill -KILL -x plymouthd`, `timeout 2 chvt 9`: 82 + 2 + 4 + 2 = 90 s at the most |
-| `better-os-login-backstop-failed.service` | the guard of a supervisor systemd gave up on, at any point of the boot | the supervisor's `OnFailure=` | the same steps; its `ExecCondition=` is the present, not the boot's history: no text login is active (`systemctl is-active` of both instances), no greeter is alive (`/run/better-os-greeter/alive` changed in the last 30 s, by `find -newermt`), and nobody is signed in through greetd (logind's own session files, `SERVICE=greetd`, `CLASS=user*`, not `STATE=closing`, read by `grep -D skip` without asking logind) |
-| drop-ins for `getty@tty1.service` and `plymouth-quit.service` | take Ubuntu's getty on tty1 and its `plymouth-quit.service` out of the boot while this display manager is chosen, as GDM's `Conflicts=` does, without a conflict the supervisor would be stopped by | the package | `ExecCondition=` that `/etc/systemd/system/display-manager.service` does not link to `better-os-login-supervisor.service`; with another display manager chosen they change nothing. So the splash is quit only by the supervisor, and no text login sits on tty1 before the greeter for a person to sign in on and lose when the greeter's unit conflicts it out |
+| `better-os-login-backstop-failed.service` | the guard of a supervisor systemd gave up on, at any point of the boot | `better-os-login-backstop-failed.timer`, which the supervisor's `OnFailure=` starts: it looks at once and again 30 s after each look (`OnActiveSec=0`, `OnUnitInactiveSec=30`), for the rest of the boot, because what is true when the supervisor fails (a greeter about to be ready, a person signed in) can stop being true with no supervisor left | the same steps; its `ExecCondition=` is the present, not the boot's history: the supervisor does not run (`systemctl is-active`), no text login is active (both instances), no greeter is ready (`/run/better-os-greeter/alive` says `ready` **and** changed in the last 30 s; one stuck on `starting` is no login screen), and nobody is signed in through greetd (logind's own session files, `SERVICE=greetd`, `CLASS=user*`, not `STATE=closing`, read by `grep -D skip` without asking logind) |
+| drop-ins for `getty@tty1.service` and `plymouth-quit.service` | take Ubuntu's getty on tty1 and its `plymouth-quit.service` out of the boot while the supervisor runs, as GDM's `Conflicts=` does, without a conflict the supervisor would be stopped by | the package | `After=better-os-login-supervisor.service` and an `ExecCondition=` that skips the unit only while the supervisor's own `ActiveState` is `active`, `activating` or `reloading` (`timeout 5 systemctl show`); never the display-manager link, which is set on boots that never start the display manager (`multi-user.target`, kernel parameter `3`, the supervisor masked or its unit broken): there, and whenever `systemctl show` does not answer, the units run as they always do, so Plymouth is quit and every getty ordered after `plymouth-quit-wait.service` gets its prompt. So, on a boot that starts the supervisor, the splash is quit only by it, and no text login sits on tty1 before the greeter for a person to sign in on and lose |
 
 The supervisor keeps T0, the attempt count and the stage reached in
 `/run/better-os/login-path.json` (rewritten atomically after each step that
@@ -1282,16 +1282,26 @@ the greeter session's scope (`/user.slice/user-<uid>.slice/session-cN.scope`),
 which a stop of `better-os-greeter.service` never reaches: systemd's
 `SIGKILL` at `TimeoutStopSec=4` reaches greetd only, and greetd sends its
 session `SIGTERM` and nothing more. So the supervisor finds that scope by
-fact (logind's greeter session's `SCOPE=`, and the cgroup of greetd's
-descendants, which also works when logind does not answer), remembers it
-for the appearance (once greetd is gone the scope is no longer greetd's
-descendant), sends `SIGKILL` to its processes 4 s into every stop, as
-systemd does to greetd, and never to a scope with a process of any account
-but root and `_better-greeter`. A stop has completed only when the unit's
-cgroup and every remembered scope are empty **and** no process (`plymouthd`
-left out, its own path ends it) holds a `/dev/dri/card*` open, read from
-`/proc/<pid>/fd`; unknown is not complete. Only then does the next attempt
-or the text login start.
+fact (the `SCOPE=` of logind's greeter session in its session files,
+closing sessions included, since a session whose leader died is
+`STATE=closing` while its compositor lives; and the cgroup of greetd's
+descendants, which also works when logind does not answer). It remembers
+each one with a process in it until it is seen empty or gone, at every look,
+with no cap that could leave the live one out (once greetd is gone the
+scope is no longer greetd's descendant). 4 s into every stop, and at once
+after a restart of its own that cut a stop short, it sends `SIGKILL` to
+the processes of the remembered scopes and of the greeter scopes seen that
+look, and never to a scope with a process of any account but root and
+`_better-greeter`: it reads the scope again at that moment, opens a pidfd
+for each process, checks its uid and cgroup through `/proc` after opening
+it, and signals through the pidfd, so a pid reused in between is never
+signalled. A stop has completed only when the unit's cgroup and every
+remembered scope are empty **and** none of the greeter's processes holds a
+`/dev/dri/card*` open (`/proc/<pid>/fd`): a holder counts only when it is
+in the unit's cgroup, in a greeter scope, or runs as `_better-greeter`, so
+a person's compositor on a text login, logind's own copy of a device or a
+container given the card never keeps a stop from completing. Unknown is not
+complete. Only then does the next attempt or the text login start.
 
 #### The property
 
@@ -1303,9 +1313,9 @@ or the text login start.
 > `BETTER_OS_LOGIN_STAGE=<stage> RESULT=<ok|retried|fell-back> REASON=<…>`
 > for every stage that did not pass. If the supervisor itself cannot run,
 > a backstop gives the same text login within **90 seconds**. If the
-> supervisor is restarted during an appearance, the bound is **80 seconds
-> plus its downtime**: about 81 for a crash, 96 for a hang (90 at boot,
-> where the backstop's timer caps it).
+> supervisor is restarted during an appearance, the bound is **86 seconds
+> after a crash and 101 seconds after a hang** (90 at boot, where the
+> backstop's timer caps it).
 
 Why 80 (the first version said 60 and counted stopping a unit as free; the
 review found greetd's own unit has `TimeoutStopSec=30s` and that a process
@@ -1320,18 +1330,25 @@ their own 5 s limit. Because the calls to systemd take time too (up to 2 s
 each) and nothing else may stretch the sum, the fall back begins by
 **T0 + 68 s** whatever happened before, cutting the third attempt short if
 it must: 68 + a tick + 6 (the stop) + a tick + 2 (the start's call) + 3 =
-79.5 s. A text login systemd refuses on tty8 moves to tty9 3 s later, so
-that double fault is 83 s.
+79.5 s. A text login systemd refuses on tty8 moves to tty9 3 s later; with every
+call at its 2 s limit, including the look that asks whether it is active,
+that double fault is **86 s**.
 
 **The supervisor's own restart.** A restart continues the appearance with
-its deadlines, so what it costs is its downtime: about a second for a crash
-(`RestartSec=1`), up to 16 s for a hang (watchdog 10 s, abort 5 s, restart
-1 s). The honest bound for an appearance during which the supervisor
-restarts is therefore **80 s plus its downtime**: about 81 s for a crash,
-96 s for a hang at the worst moment. At boot the backstop's timer caps that
-at 90 s (it fires at 82 s if the property has not held); at a later
-appearance there is no timer, and 96 s is the bound. The owner was told
-(ticket 267's notes). "Accepting input" is defined, not
+its deadlines, so what it costs is its downtime and the calls it makes
+again: up to 2 s for `systemctl show` at its start, up to 2 s for the stop
+or start it asks for again, up to 2 s for the next tick's call, and, for a
+stop it interrupted, the scope's kill and 2 s for the kernel to reap once
+more. Its downtime is about a second for a crash (`RestartSec=1`) and up to
+16 s for a hang (watchdog 10 s, abort 5 s, restart 1 s). With every call at
+its limit and the restart at the worst tick (the one that decides the text
+login's start, crashing in the middle), the bounds are **86 s after a crash
+and 101 s after a hang**; `tests/property.rs` measures them (every tick
+around the decision, crashes between ticks and in the middle of one) and a
+2000-seed randomized run holds each appearance to 80 s plus each restart's
+downtime and cost. At boot the backstop's timer caps both at 90 s (it fires
+at 82 s if the property has not held); at a later appearance there is no
+timer, and 101 s is the bound. The owner was told (ticket 267's notes). "Accepting input" is defined, not
 guessed: the greeter writes `ready` to `/run/better-os-greeter/alive` (and
 creates `ready-seen`) only after its first frame is presented on every
 output and its password field has keyboard focus, and then rewrites the
@@ -1462,8 +1479,30 @@ seat within 80 seconds counts.
 - **`NAutoVTs` raised past 7.** The text logins are on tty8 and tty9 because
   logind's automatic VTs stop at 6 by default; a machine configured with
   more gets an autovt getty there that can conflict the text login out.
-- **The supervisor's own restarts** cost their downtime on top of 80 s (the
-  budget above): 90 s at boot, up to 96 s at a later appearance.
+- **The supervisor's own restarts** cost their downtime and calls on top of
+  80 s (the budget above): 90 s at boot, up to 86 s after a crash and 101 s
+  after a hang at a later appearance.
+- **A logind that hangs while it holds the greeter's card.** logind opens
+  every device a session takes (`TakeDevice`) and keeps its own copy of the
+  descriptor, which is the same open file and so carries the same DRM
+  master; it lets go (`DROP_MASTER` and close) only on its own path when
+  the session's controller goes away. A kernel that sees no master closed
+  never gives the device back to the console (`drm_master_internal_acquire`
+  refuses fbdev's restore while `dev->master` is set). So with logind
+  stopped or hung and the compositor killed, the master stays with logind's
+  copy: the text login on tty8 runs and may not be drawn. The supervisor
+  may not kill or stop logind, and holds no descriptor that could drop the
+  master; it no longer waits for logind's copy either (only the greeter's
+  own processes count as holders), so the text login at least runs and
+  needs no supervisor action once logind recovers. Stated, not solved;
+  ticket 281 checks it (logind stopped with the greeter up, `cosmic-comp`
+  killed, `fuser /dev/dri/card*` and whether tty8 shows).
+- **A greeter session's scope that logind no longer lists and greetd no
+  longer leads.** The supervisor finds the scope through logind's session
+  files (closing sessions included) and greetd's descendants; a greeter
+  whose session opened after the supervisor's last look and whose logind
+  record is gone with logind's files unreadable is not found, and its stop
+  ends in the text login at 6 s.
 - Ticket 139's own cause is unknown. This design does not claim to fix it;
   it makes sure that, whatever the cause, the Better OS path ends in a login
   prompt that says what failed instead of a splash, within the limits above.
