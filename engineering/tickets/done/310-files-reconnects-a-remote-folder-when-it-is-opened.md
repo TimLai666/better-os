@@ -267,5 +267,17 @@ open comes back by itself".
   attempts in flight with their age, and the host looks out. The final
   code then passed 240 of 240 (3 copies, 2 CPU burners), with no read given
   up on.
+- CI on `152cd4c0` failed once more, and its new message named the cause:
+  the wait was `Failed { NoAnswer }`, dropped, with no retry scheduled, no
+  attempt and no host look out, the listing "not answering", and no reading
+  thread stuck. On the runner the remounted folder answered slowly at first
+  (probe or read past its deadline). The product then stalled: once a
+  retrying wait's page says why (after 30 s), `follow_listings` ignored its
+  listings' "not answering" and "not connected" ("the page already says
+  why"), so nothing was scheduled again. Every earlier red with "None" or
+  "didn't answer, no detail" fits it. A dropped wait's listings now go on
+  counting as its tries whatever its page says
+  (`a_folder_not_answering_past_the_first_page_still_comes_back`, which
+  fails without the fix with CI's exact state).
 - Not seen: the "another network" page on screen (the sandbox cannot change
   the network), NetworkManager's UUID on a real Wi-Fi change.

@@ -1119,6 +1119,42 @@ fn a_read_that_never_returns_is_given_up_on_and_listed_again() {
     );
 }
 
+/// Seen in CI (`152cd4c0`): a folder that did not answer for longer than
+/// the "connecting again" time shows why, and goes on being listed again
+/// behind that page until it answers. It used to stop there: its listings
+/// were ignored once the page said why, and nothing was left scheduled.
+#[test]
+fn a_folder_not_answering_past_the_first_page_still_comes_back() {
+    let world = world();
+    let shown = world.server(NAS, &["srv"]);
+    let mut session = session(&world);
+    session.set_says_why_after(Duration::from_secs(1));
+    session.mount_server("sftp://nas/srv".into());
+    assert!(pump_until(&mut session, |s| shows(s, &shown.join("srv"))));
+    session.hold_probe_for_tests(&shown);
+    session.reload();
+    assert!(
+        pump_for(&mut session, RETRY_WAIT, |s| matches!(
+            s.link().map(|link| &link.state),
+            Some(LinkState::Failed {
+                reason: Reason::NoAnswer,
+                ..
+            })
+        )),
+        "{:?}",
+        session.link().map(|link| &link.state)
+    );
+    // Behind the page it goes on: more listings fail the same way.
+    pump_for(&mut session, Duration::from_secs(6), |_| false);
+    session.release_probe_for_tests(&shown);
+    assert!(
+        pump_for(&mut session, RETRY_WAIT, |s| s.link().is_none()
+            && shows(s, &shown.join("srv"))),
+        "it stalled: {:?}",
+        session.link().map(|link| &link.state)
+    );
+}
+
 /// A read that returns after its deadline, when the folder has been listed
 /// again meanwhile, is for a listing nobody waits for: it is ignored, and
 /// the view is the newer listing's, each entry once.

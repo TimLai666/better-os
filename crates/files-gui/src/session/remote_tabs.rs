@@ -153,6 +153,9 @@ pub(crate) struct RemoteSide {
     pub(crate) open_on: Vec<(TabId, crate::remote::Network)>,
     /// How long after a drop it is tried again by itself.
     pub(crate) retry_limit: Duration,
+    /// How long a retrying wait says "connecting again" before it says why
+    /// (while it goes on trying).
+    pub(crate) says_why_after: Duration,
     /// Looks at hosts running, by tab.
     pub(crate) reach_checks: Vec<(TabId, std::sync::mpsc::Receiver<HostState>)>,
     /// Pastes whose connection came, waiting for their folder's listing.
@@ -182,6 +185,7 @@ impl RemoteSide {
             network: crate::remote::NetworkWatch::new(),
             open_on: Vec::new(),
             retry_limit: RETRY_LIMIT,
+            says_why_after: DROPPED_LIMIT,
             reach_checks: Vec::new(),
             pending_pastes: Vec::new(),
         }
@@ -317,6 +321,12 @@ impl FilesSession {
     /// How long after a drop it is tried again by itself. For tests.
     pub fn set_retry_limit(&mut self, limit: Duration) {
         self.remote.retry_limit = limit;
+    }
+
+    /// How long a retrying wait says "connecting again" before it says why.
+    /// For tests.
+    pub fn set_says_why_after(&mut self, after: Duration) {
+        self.remote.says_why_after = after;
     }
 
     // --- What the person does ---------------------------------------------
@@ -676,7 +686,7 @@ impl FilesSession {
     fn try_dropped(&mut self, tab: TabId) {
         let network = self.remote.network.current();
         let known = self.remote.network.known();
-        let limit = self.remote.retry_limit;
+        let limit = (self.remote.retry_limit, self.remote.says_why_after);
         let Some(link) = self.remote.links.iter_mut().find(|link| link.tab == tab) else {
             return;
         };
@@ -697,9 +707,7 @@ impl FilesSession {
             let paused = *link.paused_at.get_or_insert_with(Instant::now);
             link.retry_at = Some(Instant::now() + RETRY_EVERY);
             // Past its first 30 s the page says why, while it waits on.
-            if paused.elapsed() >= DROPPED_LIMIT
-                && matches!(link.state, LinkState::Connecting { .. })
-            {
+            if paused.elapsed() >= limit.1 && matches!(link.state, LinkState::Connecting { .. }) {
                 link.state = LinkState::Failed {
                     reason: Reason::NoNetwork,
                     detail: String::new(),
@@ -714,7 +722,7 @@ impl FilesSession {
             self.leave_tab(tab, LinkState::OtherNetwork);
             return;
         }
-        if waited(link) >= limit {
+        if waited(link) >= limit.0 {
             // Past the limit: only a click tries again.
             schedule_retry(link, limit);
         } else if link.answering_only {
@@ -769,7 +777,7 @@ impl FilesSession {
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => false,
             });
         let changed = !found.is_empty();
-        let limit = self.remote.retry_limit;
+        let limit = (self.remote.retry_limit, self.remote.says_why_after);
         for (tab, state) in found {
             let Some(link) = self
                 .remote
@@ -991,7 +999,16 @@ impl FilesSession {
                 .links
                 .iter()
                 .find(|link| link.tab == tab && link.location == location)
-                .map(|link| link.state.clone());
+                .map(|link| {
+                    // A dropped connection past its first 30 s shows why
+                    // while it goes on trying: its listings are still its
+                    // tries (seen stalled in CI when they were ignored).
+                    if link.dropped {
+                        LinkState::Connecting { again: true }
+                    } else {
+                        link.state.clone()
+                    }
+                });
             let was_open = self
                 .remote
                 .good
@@ -1107,7 +1124,7 @@ impl FilesSession {
     }
 
     fn schedule_answering(&mut self, tab: TabId) {
-        let limit = self.remote.retry_limit;
+        let limit = (self.remote.retry_limit, self.remote.says_why_after);
         if let Some(link) = self.remote.links.iter_mut().find(|link| link.tab == tab) {
             link.answering_only = true;
             if link.retry_at.is_none() && link.dropped {
@@ -1391,7 +1408,7 @@ impl FilesSession {
 
     fn refuse(&mut self, key: &str, error: &MountError) {
         let network_up = (self.remote.network_up)();
-        let limit = self.remote.retry_limit;
+        let limit = (self.remote.retry_limit, self.remote.says_why_after);
         for link in &mut self.remote.links {
             // A dropped connection past its first 30 s shows why while it
             // goes on trying: its tries are still its own.
@@ -1671,7 +1688,7 @@ fn view_of(model: &files_core::DirectoryModel) -> SavedView {
 /// `limit` of the drop; past it, the page says the server did not answer
 /// and only a click tries again. Past its first 30 s the page says why
 /// while it goes on trying.
-fn schedule_retry(link: &mut TabLink, limit: Duration) {
+fn schedule_retry(link: &mut TabLink, (limit, says_why_after): (Duration, Duration)) {
     let no_answer = LinkState::Failed {
         reason: Reason::NoAnswer,
         detail: String::new(),
@@ -1685,7 +1702,7 @@ fn schedule_retry(link: &mut TabLink, limit: Duration) {
         return;
     }
     link.retry_at = Some(Instant::now() + RETRY_EVERY);
-    if waited(link) >= DROPPED_LIMIT && matches!(link.state, LinkState::Connecting { .. }) {
+    if waited(link) >= says_why_after && matches!(link.state, LinkState::Connecting { .. }) {
         link.state = no_answer;
     }
 }
