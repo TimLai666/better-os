@@ -18,8 +18,11 @@ Unfinished work that has no ticket. Delete a section when its work is done, and 
 - **Sources:** tickets 43, 45, 47, 48, 61 and 147.
 
 
-## Release 0.2.17 before the desktop session
-- **Asked:** owner, 2026-11-22: ticket 310 goes ahead of the queue, and a release is published before the Better OS session is built.
-- **Done and checked:** nothing of the release itself yet.
-- **Next:** when pull requests 31 (ticket 101) and 34 (ticket 272) and ticket 310 are merged and main's CI is green, cut 0.2.17 by `engineering/specs/release-packaging.md`: bump the version (and `SELF_UPGRADING_SINCE`/`HANDOFF_SINCE` only as AGENTS.md says), build all packages for 22.04 and 24.04 on amd64 and arm64 in CI, publish, download the public assets again, write their checksums into the manifests, and correct the comment above each block. Not in this release: the screenshot program (no package until ticket 203), the tray's power-mode item (waits for the icon design), anything of the session or the login path. After it is installed on the owner's machine, the confirmations that waited for a release are theirs to give: tickets 131, 134, 136, 170, 129, and 101's measurement.
-- **Sources:** tickets 101, 272, 310; `engineering/specs/release-packaging.md`.
+## After release 0.2.17
+- **Asked:** owner, 2026-11-22: a release before the Better OS session is built; 0.2.17 was published that day without ticket 310, which follows in 0.2.18.
+- **Done and checked:** v0.2.17 is public with 82 assets; the 40 packages downloaded back are byte-identical to the build's, and the manifests carry their checksums.
+- **Next:**
+  - Ticket 310 (pull request 38) merges when its real-server test has passed six CI runs in a row; then cut 0.2.18 by `engineering/specs/release-packaging.md`.
+  - After 0.2.17 is installed on the owner's machine, these confirmations are the owner's to give, and each ticket stays open until then: 131 (a hand on the touchpad), 134 (the Default apps page on Zorin), 136 (the keyboard's colour on the real keyboard), 170 (the battery line at the limit), 129 ("Show in folder" opening Better Files), 295 (the tray item on the owner's panel), 101 (the USB-C fault recovered when it next occurs; the ticket's notes name the journal lines).
+  - Pull requests 37 (ticket 203) and 39 (ticket 267) were held as drafts until this release; they can merge now, each after a last look at its newest head.
+- **Sources:** tickets 101, 129, 131, 134, 136, 170, 203, 267, 295, 310.
