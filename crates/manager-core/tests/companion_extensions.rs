@@ -60,14 +60,14 @@ fn adapter_files() -> InstalledFiles {
 }
 
 /// What `dpkg-query` reported on the owner's machine: all three packages at
-/// 0.2.16, the extension in the companion's list and not in the manager's.
+/// one version (0.2.16 then; the workspace's own now), the extension in the companion's list and not in the manager's.
 fn packages(with_adapter: bool) -> FixedPackageStateProbe {
     let mut installed = vec![
-        ("better-manager", "0.2.16"),
-        ("better-manager-daemon", "0.2.16"),
+        ("better-manager", env!("CARGO_PKG_VERSION")),
+        ("better-manager-daemon", env!("CARGO_PKG_VERSION")),
     ];
     if with_adapter {
-        installed.push(("better-shell-adapter", "0.2.16"));
+        installed.push(("better-shell-adapter", env!("CARGO_PKG_VERSION")));
     }
     let probe = FixedPackageStateProbe::new(&installed)
         .with_files("better-manager", own_files())
@@ -87,7 +87,7 @@ fn installed(enabled: bool) -> ManagerState {
     state.components.insert(
         better_manager(),
         ComponentRecord {
-            installed_version: Some("0.2.16".to_string()),
+            installed_version: Some(env!("CARGO_PKG_VERSION").to_string()),
             enabled,
             health: HealthState::Healthy,
             installed_artifact: None,

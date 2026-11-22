@@ -53,7 +53,7 @@ fn installed(enabled: bool) -> ManagerState {
     state.components.insert(
         files_component(),
         ComponentRecord {
-            installed_version: Some("0.2.16".to_string()),
+            installed_version: Some(env!("CARGO_PKG_VERSION").to_string()),
             enabled,
             health: HealthState::Healthy,
             installed_artifact: None,
@@ -102,7 +102,7 @@ fn run(
     hooks: &FakeHookRunner,
 ) -> OperationProgress {
     let manager = manager();
-    let packages = FixedPackageStateProbe::new(&[("better-files", "0.2.16")])
+    let packages = FixedPackageStateProbe::new(&[("better-files", env!("CARGO_PKG_VERSION"))])
         .with_files("better-files", files(with_hook));
     let health = FakeHealthProbe::with_files(files(with_hook).paths);
     let downloader: &'static HttpDownloader = Box::leak(Box::new(HttpDownloader::new(
