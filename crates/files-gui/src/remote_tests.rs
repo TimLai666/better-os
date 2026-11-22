@@ -50,7 +50,7 @@ struct World {
     network: Mutex<crate::remote::Network>,
     /// How many of the next server folder reads hang, as on a dead mount,
     /// until `let_reads_go`; and how many reads began.
-    hang_reads: std::sync::atomic::AtomicUsize,
+    hang_reads: Mutex<usize>,
     reads_began: std::sync::atomic::AtomicUsize,
     reads_let_go: (Mutex<bool>, Condvar),
 }
@@ -151,8 +151,7 @@ impl World {
     /// The next `count` reads of a server folder hang until let go.
     fn hang_next_reads(&self, count: usize) {
         *self.reads_let_go.0.lock().unwrap() = false;
-        self.hang_reads
-            .store(count, std::sync::atomic::Ordering::Release);
+        *self.hang_reads.lock().unwrap() = count;
     }
 
     fn let_reads_go(&self) {
@@ -168,12 +167,12 @@ impl World {
     fn read_gate(&self) {
         use std::sync::atomic::Ordering;
         self.reads_began.fetch_add(1, Ordering::AcqRel);
-        let hang = self
-            .hang_reads
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |left| {
-                left.checked_sub(1)
-            })
-            .is_ok();
+        let hang = {
+            let mut left = self.hang_reads.lock().unwrap();
+            let hang = *left > 0;
+            *left = left.saturating_sub(1);
+            hang
+        };
         if hang {
             let mut gone = self.reads_let_go.0.lock().unwrap();
             let until = Instant::now() + Duration::from_secs(60);
@@ -289,7 +288,7 @@ fn world() -> Arc<World> {
         released: (Mutex::new(false), Condvar::new()),
         up: std::sync::atomic::AtomicBool::new(true),
         network: Mutex::new(home_network()),
-        hang_reads: std::sync::atomic::AtomicUsize::new(0),
+        hang_reads: Mutex::new(0),
         reads_began: std::sync::atomic::AtomicUsize::new(0),
         reads_let_go: (Mutex::new(false), Condvar::new()),
     })
