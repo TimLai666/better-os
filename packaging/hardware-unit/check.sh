@@ -257,6 +257,29 @@ out="$(systemd-run --quiet --wait --pipe --collect "${probe_props[@]}" \
 [[ "$out" == *"takes no value"* ]] || fail "the reload helper did not start in its unit: $out"
 echo "PASS reload helper: properties accepted; /sys holds only module/compression, modules readable, CAP_SYS_MODULE only"
 
+# 6a'. The check before a reload has to run in the helper's unit: the daemon's
+# own unit has ProtectKernelModules=yes, which hides /usr/lib/modules, and a
+# check made there refuses every reload ("ucsi_acpi is not under
+# /lib/modules/<release>", seen on the owner's machine with 0.2.17). A
+# stand-in module file for the running kernel: the helper's unit finds it,
+# and a unit with the daemon's property does not.
+ucsi_dir="/usr/lib/modules/$(uname -r)/kernel/drivers/usb/typec/ucsi"
+mkdir -p "$ucsi_dir"
+: > "$ucsi_dir/ucsi_acpi.ko"
+chmod 644 "$ucsi_dir/ucsi_acpi.ko"
+out="$(systemd-run --quiet --wait --pipe --collect "${probe_props[@]}" \
+    /usr/libexec/better-manager-daemon --check-ucsi 2>&1 || true)"
+[[ "$out" == *"ready"* ]] \
+    || fail "the helper's unit did not find the module file (expected: ready; found: $out)"
+out="$(systemd-run --quiet --wait --pipe --collect -p ProtectKernelModules=yes \
+    /usr/libexec/better-manager-daemon --check-ucsi 2>&1 || true)"
+[[ "$out" == *"is not under"* ]] \
+    || fail "a unit with ProtectKernelModules=yes was expected not to see the module file; found: $out"
+grep -q '^ProtectKernelModules=yes' /usr/lib/systemd/system/better-manager-daemon.service \
+    || fail "the daemon's unit no longer sets ProtectKernelModules=yes: this check and the helper's check unit need another look"
+rm -f "$ucsi_dir/ucsi_acpi.ko"
+echo "PASS driver check: found in the helper's unit, hidden from a unit like the daemon's"
+
 # 6b. The rebind helper: its unit sees the driver's two files and the
 # function's identity and nothing else, cannot change the identity, and the
 # real helper rebinds the stand-in function by its address.

@@ -118,9 +118,12 @@ PCI restriction is on BAR access and config space, `kernel_lockdown(7)`).
   (`obj-$(CONFIG_MODULE_DECOMPRESS) += decompress.o`,
   `kernel/module/Makefile`; both read on torvalds/linux `master`,
   2026-11-22), so it exists exactly when the kernel can, and names the
-  format; this machine reads `zstd`. The daemon makes the same check before
-  it starts the helper, and a no is refused as `usb_module_cannot_load`,
-  which the Fixes page says in words. Only then does it call `delete_module("ucsi_acpi", O_NONBLOCK)`
+  format; this machine reads `zstd`. Before the reload the daemon asks for the same
+  check in a unit of the helper's kind (`--check-ucsi`, which unloads and
+  loads nothing): the daemon's own unit has `ProtectKernelModules=yes`,
+  which hides `/usr/lib/modules`, so a check made in the daemon itself
+  refuses every reload (as 0.2.17 did on the owner's machine). A no is
+  refused as `usb_module_cannot_load`, which the Fixes page says in words. Only then does it call `delete_module("ucsi_acpi", O_NONBLOCK)`
   and `finit_module(2)` on the open file, twice if the first load fails;
   any check that fails leaves the loaded module alone. The kernel checks
   the signature. Its unit is `helper_sandbox()` with

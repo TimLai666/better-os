@@ -68,6 +68,8 @@ pub const AFTER_SLEEP_UNIT: &str = "better-os-usb-after-sleep";
 /// at once, whoever started them (the window's call or the after-sleep
 /// run): systemd refuses a second unit with a name that exists.
 pub const UCSI_RELOAD_UNIT: &str = "better-os-ucsi-reload";
+/// The transient unit that only looks at the file the reload would load.
+pub const UCSI_CHECK_UNIT: &str = "better-os-ucsi-check";
 pub const XHCI_REBIND_UNIT: &str = "better-os-xhci-rebind";
 
 /// The sleep services the after-sleep run is ordered after.
@@ -132,7 +134,10 @@ pub trait UsbMachine: Send + Sync {
     fn workers(&self) -> Vec<Worker>;
     fn pause(&self, duration: Duration);
     /// Whether the running kernel can load the distribution's `ucsi_acpi`
-    /// file ([`module_loadable`]); the reason when it cannot.
+    /// file; the reason when it cannot. The daemon cannot look itself: its
+    /// unit has `ProtectKernelModules=yes`, which hides `/usr/lib/modules`
+    /// from it, so the real machine asks the helper's unit
+    /// ([`check_ucsi_main`]), where the tree is readable.
     fn ucsi_module_ready(&self) -> Result<(), String>;
     /// Runs the reload helper.
     fn reload_ucsi(&self) -> Result<(), DaemonError>;
@@ -244,13 +249,14 @@ impl UsbMachine for SystemUsbMachine {
     }
 
     fn ucsi_module_ready(&self) -> Result<(), String> {
-        let release = kernel_release().ok_or("the kernel release is unknown")?;
-        module_loadable(
-            &self.root.path(COMPRESSION_ATTRIBUTE),
-            &self.root.path("lib/modules"),
-            &self.root.path(&format!("boot/config-{release}")),
-            &release,
+        run_helper(
+            UCSI_CHECK_UNIT,
+            "Better OS USB-C interface driver check",
+            ucsi_helper_properties(),
+            &self.program,
+            &["--check-ucsi"],
         )
+        .map_err(|error| error.to_string())
     }
 
     fn reload_ucsi(&self) -> Result<(), DaemonError> {
@@ -908,24 +914,6 @@ fn decompresses(attribute: &Path, config: &Path, path: &Path) -> Result<(), Stri
     }
 }
 
-/// The check the daemon makes before it starts the reload helper, and the
-/// helper makes again: the distribution's file is there, and the running
-/// kernel can load it. A no is `usb_module_cannot_load`, said on the Fixes
-/// page, and nothing is unloaded.
-pub fn module_loadable(
-    attribute: &Path,
-    modules: &Path,
-    config: &Path,
-    release: &str,
-) -> Result<(), String> {
-    let (path, compressed) = ucsi_module_file(modules, release)
-        .ok_or_else(|| format!("{UCSI_MODULE} is not under {}/{release}", modules.display()))?;
-    if compressed {
-        decompresses(attribute, config, &path)?;
-    }
-    Ok(())
-}
-
 /// Finds, opens, and checks the file to load, before anything is unloaded:
 /// under `modules/<release>`, not a link, a regular file owned by `owner`
 /// (root in the helper) that nobody else can write, and, when compressed,
@@ -1058,15 +1046,26 @@ pub fn reload_module(
 /// nothing from outside: the name is fixed and the kernel checks the
 /// signature.
 pub fn reload_ucsi_main() -> Result<String, String> {
+    reload_module(&SystemModuleCalls, prepare_for_this_kernel())
+}
+
+/// The check the daemon asks for before a reload: the same finding,
+/// opening, and checking of the file, in the helper's unit (the daemon's
+/// own unit cannot see `/usr/lib/modules`), and nothing else. Nothing is
+/// unloaded or loaded.
+pub fn check_ucsi_main() -> Result<String, String> {
+    prepare_for_this_kernel().map(|_| "ready".to_string())
+}
+
+fn prepare_for_this_kernel() -> Result<ModuleFile, String> {
     let release = kernel_release().ok_or("the kernel release is unknown")?;
-    let prepared = prepare_module(
+    prepare_module(
         &Path::new("/").join(COMPRESSION_ATTRIBUTE),
         Path::new("/lib/modules"),
         &PathBuf::from(format!("/boot/config-{release}")),
         &release,
         0,
-    );
-    reload_module(&SystemModuleCalls, prepared)
+    )
 }
 
 fn read_hex(path: &Path) -> Option<u32> {

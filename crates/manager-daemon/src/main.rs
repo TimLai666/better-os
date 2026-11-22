@@ -73,6 +73,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("{}", manager_daemon::usb_recovery::reload_ucsi_main()?);
             return Ok(());
         }
+        // In the same kind of unit, where /usr/lib/modules is readable (the
+        // daemon's own unit hides it): only look at the file a reload would
+        // load.
+        Some("--check-ucsi") => {
+            if arguments.len() > 1 {
+                return Err("--check-ucsi takes no value".into());
+            }
+            println!("{}", manager_daemon::usb_recovery::check_ucsi_main()?);
+            return Ok(());
+        }
         // In a transient unit whose /sys holds xhci_hcd's unbind and bind:
         // the one function the daemon decided on.
         Some("--rebind-xhci") => {

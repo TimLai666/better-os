@@ -256,3 +256,17 @@ notification as the person, the logind calls (`Docked` included), whether
 apt holds a logind inhibitor while dpkg runs, and the post hook after a
 failed attempt (the hook also queues the run from its `pre` call).
 
+### First run on the owner's machine (2026-11-22, 0.2.17)
+
+Reset USB-C was refused with `daemon.error.usb_module_cannot_load`, and the
+daemon logged "ucsi_acpi is not under /lib/modules/7.0.0-43-generic". The
+file is there and the kernel loads zstd modules (`/sys/module/compression`
+reads `zstd`). The cause: the check before a reload ran in the daemon, whose
+unit has `ProtectKernelModules=yes`, which hides `/usr/lib/modules` from it,
+so the check could never find the file and every reload was refused before
+the helper started. Nothing was unloaded. The check now runs in the helper's
+kind of unit (`--check-ucsi`), and `packaging/hardware-unit/check.sh` proves
+on a real systemd that it finds the file there and does not in a unit with
+the daemon's property. Still owed: the reload itself on the owner's machine
+with the release that carries this.
+

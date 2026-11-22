@@ -933,9 +933,22 @@ fn the_kernel_says_which_compressed_modules_it_loads() {
     let ko_dir = modules.join(release).join(recovery::UCSI_MODULE_DIR);
     std::fs::create_dir_all(&ko_dir).unwrap();
     std::fs::write(ko_dir.join("ucsi_acpi.ko.zst"), b"m").unwrap();
+    // The file check refuses one that group or others can write, whatever
+    // this process's umask is.
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(
+            ko_dir.join("ucsi_acpi.ko.zst"),
+            std::fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+    }
     let attribute = dir.path().join("compression");
     let config = dir.path().join("config");
-    let check = || recovery::module_loadable(&attribute, &modules, &config, release);
+    use std::os::unix::fs::MetadataExt as _;
+    let owner = std::fs::metadata(dir.path()).unwrap().uid();
+    let check =
+        || recovery::prepare_module(&attribute, &modules, &config, release, owner).map(|_| ());
     // Neither source: refused.
     assert!(check().is_err());
     // The config alone.
@@ -954,8 +967,16 @@ fn the_kernel_says_which_compressed_modules_it_loads() {
     // An uncompressed module needs neither.
     std::fs::remove_file(ko_dir.join("ucsi_acpi.ko.zst")).unwrap();
     std::fs::write(ko_dir.join("ucsi_acpi.ko"), b"m").unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(
+            ko_dir.join("ucsi_acpi.ko"),
+            std::fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+    }
     std::fs::remove_file(&attribute).unwrap();
-    assert!(check().is_ok());
+    assert_eq!(check(), Ok(()));
     // No file at all.
     std::fs::remove_file(ko_dir.join("ucsi_acpi.ko")).unwrap();
     assert!(check().is_err());
