@@ -97,7 +97,7 @@ jobs:
         run: |
           set -o pipefail
           log="$RUNNER_TEMP/test-output.log"
-          cargo test --workspace -- --show-output 2>&1 | tee "$log"
+          cargo test --workspace --no-fail-fast -- --show-output 2>&1 | tee "$log"
           if grep -nE 'better-os-test-skipped:|^(skipping|skipped):' "$log"; then
             echo "A test skipped on CI. Install what it needs in the install step above." >&2
             exit 1
