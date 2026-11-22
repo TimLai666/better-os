@@ -12,7 +12,7 @@ use monitor_service::{BUS_NAME, ServiceConfig, StoreWait, spawn_sampling, start_
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let config = ServiceConfig::system();
+    let config = ServiceConfig::for_session();
     let store_root = config.store_root.clone();
 
     // A window collecting for itself may hold the store while Better Monitor

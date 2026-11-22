@@ -39,7 +39,6 @@ fn hue(reading: Reading) -> [u8; 4] {
         Reading::Gpu => [255, 0x4f, 0xcf, 0xd6],
         Reading::Disk => [255, 0x7f, 0xcf, 0x4a],
         Reading::Network => [255, 0xf0, 0xa3, 0x5a],
-        Reading::Battery => [255, 0x7f, 0xcf, 0x4a],
         Reading::Temperature => [255, 0xf2, 0x78, 0x6b],
     }
 }
@@ -82,6 +81,7 @@ fn glyph(character: char) -> [u8; 5] {
 /// A small canvas of ARGB pixels.
 struct Canvas {
     width: usize,
+    height: usize,
     pixels: Vec<[u8; 4]>,
 }
 
@@ -89,12 +89,13 @@ impl Canvas {
     fn new(width: usize) -> Self {
         Self {
             width,
-            pixels: vec![[0; 4]; width * HEIGHT],
+            height: width,
+            pixels: vec![[0; 4]; width * width],
         }
     }
 
     fn set(&mut self, x: usize, y: usize, color: [u8; 4]) {
-        if x < self.width && y < HEIGHT {
+        if x < self.width && y < self.height {
             self.pixels[y * self.width + x] = color;
         }
     }
@@ -158,7 +159,7 @@ impl Canvas {
 
     fn pixmap(&self, scale: usize) -> Pixmap {
         let width = self.width * scale;
-        let height = HEIGHT * scale;
+        let height = self.height * scale;
         let mut bytes = Vec::with_capacity(width * height * 4);
         for y in 0..height {
             for x in 0..width {
@@ -201,7 +202,6 @@ pub fn short_value(reading: Reading, readings: &TrayReadings) -> String {
         Reading::Cpu => percent(readings.cpu),
         Reading::Memory => percent(readings.memory_fraction()),
         Reading::Gpu => percent(readings.gpu),
-        Reading::Battery => percent(readings.battery),
         Reading::Disk => readings
             .disk_total()
             .map(short_rate)
@@ -225,7 +225,6 @@ pub fn bar_fraction(reading: Reading, readings: &TrayReadings) -> Option<f64> {
         Reading::Cpu => readings.cpu,
         Reading::Memory => readings.memory_fraction(),
         Reading::Gpu => readings.gpu,
-        Reading::Battery => readings.battery,
         Reading::Disk => readings.disk_total().map(log),
         Reading::Network => readings.network_total().map(log),
         Reading::Temperature => readings.hottest.map(|t| (t / 100.0).clamp(0.0, 1.0)),
@@ -264,22 +263,56 @@ pub fn compact_value(reading: Reading, readings: &TrayReadings) -> String {
 /// icon into a square slot. So bars share the width, and numbers are up to
 /// two rows of values in each reading's colour.
 pub fn draw(shown: &[Reading], style: IconStyle, readings: &TrayReadings) -> Vec<Pixmap> {
+    let canvas = paint(shown, style, readings, HEIGHT);
+    vec![canvas.pixmap(1), canvas.pixmap(2)]
+}
+
+/// The size of the grid the picture with the power mode's mark draws the
+/// readings on (ticket 295): the panel's icon size, so every cell of the
+/// readings is one logical pixel and none is dropped by scaling.
+pub const GRID: usize = 16;
+
+/// The readings drawn natively on a `size`-pixel square grid, as one ARGB32
+/// pixmap in network byte order.
+pub fn draw_on_grid(
+    shown: &[Reading],
+    style: IconStyle,
+    readings: &TrayReadings,
+    size: usize,
+) -> Pixmap {
+    paint(shown, style, readings, size).pixmap(1)
+}
+
+/// The gap between bars: on the 22-pixel canvas the rule the icon always
+/// had, on a smaller grid the widest gap that still fits every bar at two
+/// pixels.
+fn bar_gap(count: usize, room: usize, size: usize) -> usize {
+    if size == HEIGHT {
+        return if count <= 4 { 2 } else { 1 };
+    }
+    [2, 1, 0]
+        .into_iter()
+        .find(|gap| 2 * count + gap * (count - 1) <= room)
+        .unwrap_or(0)
+}
+
+fn paint(shown: &[Reading], style: IconStyle, readings: &TrayReadings, size: usize) -> Canvas {
     let shown: Vec<Reading> = shown
         .iter()
         .copied()
         .filter(|reading| readings.has(*reading))
         .collect();
-    let mut canvas = Canvas::new(HEIGHT);
+    let mut canvas = Canvas::new(size);
     match style {
         IconStyle::Bars => {
             let count = shown.len().max(1);
-            let gap = if count <= 4 { 2 } else { 1 };
             // A pixel is kept free on each side for the dark edge.
-            let room = HEIGHT - 2;
+            let room = size - 2;
+            let gap = bar_gap(count, room, size);
             let bar = ((room - gap * (count - 1)) / count).max(2);
             let used = bar * count + gap * (count - 1);
             let left = 1 + (room - used.min(room)) / 2;
-            let (top, bottom) = (1, HEIGHT - 1);
+            let (top, bottom) = (1, size - 1);
             for index in 0..count {
                 let x = left + index * (bar + gap);
                 canvas.rect(x, top, bar, 1, FRAME);
@@ -303,19 +336,26 @@ pub fn draw(shown: &[Reading], style: IconStyle, readings: &TrayReadings) -> Vec
             }
         }
         IconStyle::Numbers => {
+            // Double-size figures on the 22-pixel canvas; on a smaller grid
+            // the figures at their own size, two rows centred.
+            let (scale, step, first) = if size >= HEIGHT {
+                (2, 11, 1)
+            } else {
+                (1, 7, (size - 12) / 2)
+            };
             for (row, reading) in shown.iter().take(MAX_NUMBER_ROWS).enumerate() {
                 let value = compact_value(*reading, readings);
-                let width = (value.chars().count() * 4).saturating_sub(1) * 2;
-                let x = HEIGHT.saturating_sub(width) / 2;
-                canvas.text(x, 1 + row * 11, &value, 2, hue(*reading));
+                let width = (value.chars().count() * 4).saturating_sub(1) * scale;
+                let x = size.saturating_sub(width) / 2;
+                canvas.text(x, first + row * step, &value, scale, hue(*reading));
             }
             if shown.is_empty() {
-                canvas.text(8, 6, "-", 2, INK);
+                canvas.text(size / 2 - scale, size / 2 - 2 * scale, "-", scale, INK);
             }
         }
     }
     canvas.outline();
-    vec![canvas.pixmap(1), canvas.pixmap(2)]
+    canvas
 }
 
 #[cfg(test)]
@@ -420,7 +460,7 @@ mod tests {
 
     #[test]
     fn a_reading_the_machine_lacks_is_left_out_and_the_icon_never_vanishes() {
-        let icons = draw(&[Reading::Battery], IconStyle::Bars, &readings());
+        let icons = draw(&[Reading::Gpu], IconStyle::Bars, &readings());
         assert!(icons[0].2.chunks(4).any(|pixel| pixel[0] > 0));
     }
 

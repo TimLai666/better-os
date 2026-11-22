@@ -405,19 +405,8 @@ fn component_is_on() -> bool {
 /// Start collecting in this window: on the shared store when Better Monitor
 /// is off and nobody else has it open, otherwise on a private one.
 fn start_embedded() -> Result<Embedded, monitor_store::StoreError> {
-    let mut config = ServiceConfig::system();
-    // A debug build reads `power_supply` and the rest of `/sys` from a
-    // fixture tree when one is named, so a sandbox can show a battery held at
-    // its charge limit without the machine being there (ticket 170).
-    if cfg!(debug_assertions)
-        && let Some(root) = std::env::var_os(hardware_core::DEBUG_SYS_ROOT_VARIABLE)
-    {
-        config.roots = monitor_collectors_linux::Roots::new(
-            "/proc",
-            std::path::PathBuf::from(root).join("sys"),
-            "/etc/passwd",
-        );
-    }
+    // A debug build may read `/sys` from a fixture tree, as the service does.
+    let mut config = ServiceConfig::for_session();
     let on = component_is_on();
     if embedded_store(on) == EmbeddedStore::Shared {
         match MonitorEngine::start(config.clone()) {

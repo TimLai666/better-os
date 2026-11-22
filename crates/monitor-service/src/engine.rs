@@ -94,6 +94,29 @@ pub struct ServiceConfig {
     pub slowdowns: SlowdownRules,
 }
 
+/// The roots a fixture tree laid out as `<root>/sys` gives: its `sys`, and
+/// its `proc` and `etc/passwd` when it has them (so a screenshot names
+/// fixture processes, never the machine's), the machine's own otherwise. An
+/// empty value is no tree.
+pub fn debug_roots(root: Option<std::ffi::OsString>) -> Option<Roots> {
+    let root = PathBuf::from(root.filter(|root| !root.is_empty())?);
+    let proc = root.join("proc");
+    let passwd = root.join("etc/passwd");
+    Some(Roots::new(
+        if proc.is_dir() {
+            proc
+        } else {
+            PathBuf::from("/proc")
+        },
+        root.join("sys"),
+        if passwd.is_file() {
+            passwd
+        } else {
+            PathBuf::from("/etc/passwd")
+        },
+    ))
+}
+
 impl Default for ServiceConfig {
     fn default() -> Self {
         Self::system()
@@ -114,6 +137,22 @@ impl ServiceConfig {
             audit: AuditSources::system(),
             slowdowns: SlowdownRules::default(),
         }
+    }
+
+    /// [`Self::system`] as the session service and a window collecting for
+    /// itself run it: a debug build reads `power_supply` and the rest of
+    /// `/sys` from the fixture tree `BETTER_OS_DEBUG_SYS_ROOT` names, so a
+    /// sandbox can show a battery in any state without the machine being
+    /// there (tickets 170 and 295). A release build never reads it.
+    pub fn for_session() -> Self {
+        let mut config = Self::system();
+        if cfg!(debug_assertions)
+            && let Some(roots) =
+                debug_roots(std::env::var_os(hardware_core::DEBUG_SYS_ROOT_VARIABLE))
+        {
+            config.roots = roots;
+        }
+        config
     }
 
     /// A service reading a captured machine and writing to a temporary
@@ -826,4 +865,29 @@ fn unavailable_metrics(
 /// The declared catalog for one collector.
 fn descriptors_for(collector: &CollectorId) -> Vec<MetricDescriptor> {
     LinuxCollectors::descriptors_of(collector.as_str())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::debug_roots;
+
+    #[test]
+    fn a_fixture_tree_stands_in_for_sys_only() {
+        let roots = debug_roots(Some("/tmp/fixture".into())).expect("a tree");
+        assert_eq!(
+            roots.sys("class/power_supply"),
+            std::path::Path::new("/tmp/fixture/sys/class/power_supply")
+        );
+        assert_eq!(roots.proc("stat"), std::path::Path::new("/proc/stat"));
+        assert!(debug_roots(None).is_none());
+        assert!(debug_roots(Some("".into())).is_none());
+    }
+
+    #[test]
+    fn a_fixture_tree_with_processes_stands_in_for_them_too() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("proc")).unwrap();
+        let roots = debug_roots(Some(dir.path().as_os_str().to_owned())).unwrap();
+        assert_eq!(roots.proc("stat"), dir.path().join("proc/stat"));
+    }
 }
